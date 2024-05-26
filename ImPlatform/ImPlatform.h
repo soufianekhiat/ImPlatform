@@ -2,6 +2,19 @@
 
 #include <imgui.h>
 
+// - [ x ] WIN32_OPENGL3
+// - [ x ] WIN32_DIRECTX9
+// - [ x ] WIN32_DIRECTX10
+// - [ x ] WIN32_DIRECTX11
+// - [ x ] WIN32_DIRECTX12
+// - [   ] GLFW_OPENGL2
+// - [   ] GLFW_OPENGL3
+// - [   ] GLFW_VULKAN
+// - [   ] SDL2_DIRECTX11
+// - [   ] SDL2_OPENGL2
+// - [   ] SDL2_OPENGL3
+// - [   ] SDL2_SDLRENDERER2
+// - [   ] SDL2_VULKAN
 
 // INTERNAL_MACRO
 #define IM_GFX_OPENGL2		( 1u << 0u )

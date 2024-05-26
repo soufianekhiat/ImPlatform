@@ -1,6 +1,21 @@
 # ImPlatform
 ImPlatform aim to simplify the multiplatform development with Dear ImGui
 
+// TODO:
+- [x] WIN32_OPENGL3
+- [x] WIN32_DIRECTX9
+- [x] WIN32_DIRECTX10
+- [x] WIN32_DIRECTX11
+- [x] WIN32_DIRECTX12
+- [ ] GLFW_OPENGL2
+- [ ] GLFW_OPENGL3
+- [ ] GLFW_VULKAN
+- [ ] SDL2_DIRECTX11
+- [ ] SDL2_OPENGL2
+- [ ] SDL2_OPENGL3
+- [ ] SDL2_SDLRENDERER2
+- [ ] SDL2_VULKAN
+
 ### Incentivise development:
 
 [<img src="https://c5.patreon.com/external/logo/become_a_patron_button@2x.png" alt="Become a Patron" width="150"/>](https://www.patreon.com/SoufianeKHIAT)
