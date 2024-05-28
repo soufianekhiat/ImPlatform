@@ -5,16 +5,12 @@
 // IM_TARGET_WIN32_DX10
 // IM_TARGET_WIN32_DX11
 // IM_TARGET_WIN32_DX12
-// IM_TARGET_APPLE_METAL
-// IM_TARGET_APPLE_OPENGL2
-// IM_TARGET_GLFW_OPENGL2
-// IM_TARGET_GLFW_OPENGL3
-// IM_TARGET_GLFW_VULKAN
-// IM_TARGET_GLFW_METAL
+// IM_TARGET_WIN32_OPENGL3
 
 // Available Permutations:
 //	OS
 //		__DEAR_WIN__
+//		__DEAR_GLFW__
 //		__DEAR_LINUX__
 //		__DEAR_MAC__
 //	Gfx API:
@@ -25,7 +21,7 @@
 //		__DEAR_GFX_OGL2__
 //		__DEAR_GFX_OGL3__
 //		__DEAR_GFX_VULKAN__
-//		__DEAR_METAL__
+//		__DEAR_GFX_METAL__
 
 #define IM_PLATFORM_IMPLEMENTATION // It will include ImPlatform.cpp internally
 // // Define target
@@ -33,9 +29,10 @@
 // Or
 //#define IM_CURRENT_TARGET (IM_PLATFORM_WIN32 | IM_GFX_OPENGL3)
 // Or a permutation, Not all permutation are valid for instance __DEAR_MAC__ + __DEAR_GFX_DX11__
-#define __DEAR_WIN__
-#define __DEAR_GFX_DX9__
-//#define __DEAR_GFX_OGL3__
+#define __DEAR_GLFW__
+//#define __DEAR_WIN__
+#define __DEAR_GFX_OGL2__
+//#define IM_CURRENT_TARGET IM_TARGET_GLFW_OPENGL3
 #include <ImPlatform.h>
 
 #include <stdio.h>
@@ -51,7 +48,7 @@ int main()
 	bGood = ImPlatform::ImSimpleStart( "ImPlatform Simple Demo", 1024, 764 );
 	if ( !bGood )
 	{
-		printf( "ImPlatform: Cannot Simple Start." );
+		fprintf( stderr, "ImPlatform: Cannot Simple Start." );
 		return false;
 	}
 
@@ -73,7 +70,7 @@ int main()
 	bGood = ImPlatform::ImSimpleInitialize( io.ConfigFlags & ImGuiConfigFlags_ViewportsEnable );
 	if ( !bGood )
 	{
-		printf( "ImPlatform: Cannot Initialize." );
+		fprintf( stderr, "ImPlatform: Cannot Initialize." );
 		return false;
 	}
 
@@ -104,24 +101,23 @@ int main()
 	bool bGood;
 
 	bGood = ImPlatform::ImCreateWindow( "ImPlatform Demo", 1024, 764 );
-
 	if ( !bGood )
 	{
-		printf( "ImPlatform: Cannot create window." );
+		fprintf( stderr, "ImPlatform: Cannot create window." );
 		return false;
 	}
 
 	bGood = ImPlatform::ImInitGfxAPI();
 	if ( !bGood )
 	{
-		printf( "ImPlatform: Cannot initialize the Graphics API." );
+		fprintf( stderr, "ImPlatform: Cannot initialize the Graphics API." );
 		return false;
 	}
 
 	bGood = ImPlatform::ImShowWindow();
 	if ( !bGood )
 	{
-		printf( "ImPlatform: Cannot show the window." );
+		fprintf( stderr, "ImPlatform: Cannot show the window." );
 		return false;
 	}
 
@@ -129,7 +125,7 @@ int main()
 	bGood = ImGui::CreateContext() != nullptr;
 	if ( !bGood )
 	{
-		printf( "ImGui: Cannot create context." );
+		fprintf( stderr, "ImGui: Cannot create context." );
 		return false;
 	}
 
@@ -159,13 +155,13 @@ int main()
 	bGood = ImPlatform::ImInitPlatform();
 	if ( !bGood )
 	{
-		printf( "ImPlatform: Cannot initialize platform." );
+		fprintf( stderr, "ImPlatform: Cannot initialize platform." );
 		return false;
 	}
 	bGood = ImPlatform::ImInitGfx();
 	if ( !bGood )
 	{
-		printf( "ImPlatform: Cannot initialize graphics." );
+		fprintf( stderr, "ImPlatform: Cannot initialize graphics." );
 		return false;
 	}
 
@@ -198,6 +194,8 @@ int main()
 		// Update and Render additional Platform Windows
 		if ( io.ConfigFlags & ImGuiConfigFlags_ViewportsEnable )
 		{
+			ImPlatform::ImGfxViewportPre();
+
 			ImGui::UpdatePlatformWindows();
 			ImGui::RenderPlatformWindowsDefault();
 

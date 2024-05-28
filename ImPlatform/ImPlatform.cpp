@@ -1,15 +1,14 @@
-#include <ImPlatform.h>
+//#include <ImPlatform.h>
 
 #if (IM_CURRENT_PLATFORM == IM_PLATFORM_WIN32)
-//#include <backends/imgui_impl_win32.h>
 #include <backends/imgui_impl_win32.cpp>
 #define DIRECTINPUT_VERSION 0x0800
-extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
-
+extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler( HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam );
 #elif (IM_CURRENT_PLATFORM == IM_PLATFORM_GLFW)
+#if (IM_CURRENT_GFX != IM_GFX_OPENGL2) && (IM_CURRENT_GFX != IM_GFX_OPENGL3)
 #include <backends/imgui_impl_glfw.cpp>
-#include <GLFW/glfw3.h>
-
+#endif
+#pragma comment( lib, "../GLFW/lib-vc2010-64/glfw3.lib" )
 #elif (IM_CURRENT_PLATFORM) == IM_PLATFORM_APPLE)
 #else
 #error IM_CURRENT_TARGET not specified correctly
@@ -17,47 +16,54 @@ extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg
 
 #if (IM_CURRENT_GFX == IM_GFX_DIRECTX9)
 #include <backends/imgui_impl_dx9.cpp>
-//#include <d3d9.h>
-
+#include <d3d9.h>
 #pragma comment( lib, "d3d9.lib" )
-
 #elif (IM_CURRENT_GFX == IM_GFX_DIRECTX10)
 #include <backends/imgui_impl_dx10.cpp>
-
 #pragma comment( lib, "d3d10.lib" )
 #pragma comment( lib, "d3dcompiler.lib" )
 #pragma comment( lib, "dxgi.lib" )
-
 #elif (IM_CURRENT_GFX == IM_GFX_DIRECTX11)
 #include <backends/imgui_impl_dx11.cpp>
-
 #pragma comment( lib, "d3d11.lib" )
 #pragma comment( lib, "d3dcompiler.lib" )
 #pragma comment( lib, "dxgi.lib" )
-
 #elif (IM_CURRENT_GFX == IM_GFX_DIRECTX12)
 #include <backends/imgui_impl_dx12.cpp>
-
 #pragma comment( lib, "d3d12.lib" )
 #pragma comment( lib, "d3dcompiler.lib" )
 #pragma comment( lib, "dxgi.lib" )
-
 #elif (IM_CURRENT_GFX == IM_GFX_VULKAN)
 #include <backends/imgui_impl_vulkan.cpp>
 #elif (IM_CURRENT_GFX == IM_GFX_METAL)
 #include <backends/imgui_impl_metal.cpp>
 #elif (IM_CURRENT_GFX == IM_GFX_OPENGL2)
+#if (IM_CURRENT_PLATFORM != IM_PLATFORM_GLFW)
 #include <backends/imgui_impl_opengl2.cpp>
-
+#endif
 #pragma comment( lib, "opengl32.lib" )
 #elif (IM_CURRENT_GFX == IM_GFX_OPENGL3)
+#if (IM_CURRENT_PLATFORM != IM_PLATFORM_GLFW)
 #include <backends/imgui_impl_opengl3.cpp>
-
+#endif
 #pragma comment( lib, "opengl32.lib" )
-
 #elif (IM_CURRENT_GFX == IM_GFX_WGPU)
 #include <backends/imgui_impl_wgpu.cpp>
+#endif
 
+#if (IM_CURRENT_GFX == IM_GFX_OPENGL2 || IM_CURRENT_GFX == IM_GFX_OPENGL3) && (IM_CURRENT_PLATFORM == IM_PLATFORM_GLFW)
+#if (IM_CURRENT_GFX == IM_GFX_OPENGL2)
+#include <backends/imgui_impl_opengl2.cpp>
+#elif (IM_CURRENT_GFX == IM_GFX_OPENGL3)
+#include <backends/imgui_impl_opengl3.cpp>
+#endif
+#include <backends/imgui_impl_glfw.cpp>
+#if _MSC_VER
+#pragma comment(linker, "/NODEFAULTLIB:msvcrt.lib")
+#endif
+#if defined(_MSC_VER) && (_MSC_VER >= 1900) && !defined(IMGUI_DISABLE_WIN32_FUNCTIONS)
+#pragma comment(lib, "legacy_stdio_definitions")
+#endif
 #endif
 
 PlatformDataImpl PlatformData;
@@ -473,7 +479,7 @@ namespace ImPlatform
 		ImGui_ImplDX9_CreateDeviceObjects();
 	}
 #endif
-#elif IM_CURRENT_GFX == IM_GFX_OPENGL2 || IM_CURRENT_GFX == IM_GFX_OPENGL3
+#elif IM_CURRENT_PLATFORM == IM_PLATFORM_WIN32 && (IM_CURRENT_GFX == IM_GFX_OPENGL2 || IM_CURRENT_GFX == IM_GFX_OPENGL3)
 
 bool ImCreateDeviceWGL( HWND hWnd, PlatformDataImpl::WGL_WindowData* data )
 {
@@ -602,6 +608,13 @@ static void Im_Hook_Renderer_SwapBuffers( ImGuiViewport* viewport, void* )
 	}
 #endif
 
+#if IM_CURRENT_PLATFORM == IM_PLATFORM_GLFW
+	static void ImGLFWErrorCallback(int error, const char* description)
+	{
+		fprintf( stderr, "GLFW Error %d: %s\n", error, description );
+	}
+#endif
+
 	// TODO: Add support for Windows Position, maximize/minimize/...
 	bool ImCreateWindow( char const* pWindowsName, ImU32 const uWidth, ImU32 const uHeight )
 	{
@@ -621,26 +634,36 @@ static void Im_Hook_Renderer_SwapBuffers( ImGuiViewport* viewport, void* )
 
 #elif (IM_CURRENT_PLATFORM == IM_PLATFORM_GLFW)
 
+		glfwSetErrorCallback( ImGLFWErrorCallback );
 		if ( !glfwInit() )
 			return false;
 
-#if (IM_CURRENT_GFX == IM_GFX_OPENGL3)
+		// Decide GL+GLSL versions
+#if (IM_CURRENT_GFX == IM_GFX_OPENGL2)
+		// GL ES 2.0 + GLSL 100
+		PlatformData.pGLSLVersion = "#version 100";
+		glfwWindowHint( GLFW_CONTEXT_VERSION_MAJOR, 2 );
+		glfwWindowHint( GLFW_CONTEXT_VERSION_MINOR, 0 );
+		glfwWindowHint( GLFW_CLIENT_API, GLFW_OPENGL_ES_API );
+#elif (IM_CURRENT_PLATFORM == IM_PLATFORM_APPLE)
+		// GL 3.2 + GLSL 150
+		PlatformData.pGLSLVersion = "#version 150";
+		glfwWindowHint( GLFW_CONTEXT_VERSION_MAJOR, 3 );
+		glfwWindowHint( GLFW_CONTEXT_VERSION_MINOR, 2 );
+		glfwWindowHint( GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE );	// 3.2+ only
+		glfwWindowHint( GLFW_OPENGL_FORWARD_COMPAT, GL_TRUE );				// Required on Mac
+#elif (IM_CURRENT_GFX == IM_GFX_OPENGL3)
 		// GL 3.0 + GLSL 130
-		const char* glsl_version = "#version 130";
+		PlatformData.pGLSLVersion = "#version 130";
 		glfwWindowHint( GLFW_CONTEXT_VERSION_MAJOR, 3 );
 		glfwWindowHint( GLFW_CONTEXT_VERSION_MINOR, 0 );
-		//glfwWindowHint( GLFW_CONTEXT_VERSION_MAJOR, 4 );
-		//glfwWindowHint( GLFW_CONTEXT_VERSION_MINOR, 6 );
-		///glfwWindowHint( GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE ); // 3.2+ only
-		//glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GL_TRUE);           // 3.0+ only
+		//glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);		// 3.2+ only
+		//glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GL_TRUE);				// 3.0+ only
 #endif
 
 		PlatformData.pWindow = glfwCreateWindow( uWidth, uHeight, pWindowsName, nullptr, nullptr );
 		if ( PlatformData.pWindow == nullptr )
 			return false;
-
-		glfwMakeContextCurrent( PlatformData.pWindow );
-		glfwSwapInterval( 1 );
 
 #elif (IM_CURRENT_PLATFORM) == IM_PLATFORM_APPLE)
 #endif
@@ -686,7 +709,8 @@ static void Im_Hook_Renderer_SwapBuffers( ImGuiViewport* viewport, void* )
 		::UpdateWindow( PlatformData.pHandle );
 #elif (IM_CURRENT_PLATFORM == IM_PLATFORM_GLFW)
 
-		
+		glfwMakeContextCurrent( PlatformData.pWindow );
+		glfwSwapInterval( 1 );
 
 #elif (IM_CURRENT_PLATFORM) == IM_PLATFORM_APPLE)
 #endif
@@ -703,6 +727,7 @@ static void Im_Hook_Renderer_SwapBuffers( ImGuiViewport* viewport, void* )
 	bool ImInitPlatform()
 	{
 		bool bGood;
+
 #if (IM_CURRENT_PLATFORM == IM_PLATFORM_WIN32)
 
 #if (IM_CURRENT_GFX == IM_GFX_OPENGL2) || (IM_CURRENT_GFX == IM_GFX_OPENGL3)
@@ -724,18 +749,21 @@ static void Im_Hook_Renderer_SwapBuffers( ImGuiViewport* viewport, void* )
 		bGood = ImGui_ImplWin32_Init( PlatformData.pHandle );
 		ZeroMemory( &PlatformData.oMessage, sizeof( PlatformData.oMessage ) );
 #endif
+#elif (IM_CURRENT_PLATFORM == IM_PLATFORM_GLFW)
+
+#if IM_CURRENT_GFX == IM_GFX_OPENGL2 || IM_CURRENT_GFX == IM_GFX_OPENGL3
+		bGood = ImGui_ImplGlfw_InitForOpenGL( PlatformData.pWindow, true );
+#ifdef __EMSCRIPTEN__
+		ImGui_ImplGlfw_InstallEmscriptenCanvasResizeCallback( "#canvas" );
+#endif
+#endif
+
+#endif
 		return bGood;
 	}
 
 	bool ImInitGfx()
 	{
-#elif (IM_CURRENT_PLATFORM == IM_PLATFORM_GLFW)
-#if (IM_CURRENT_GFX == IM_GFX_OPENGL3)
-		return ImGui_ImplGlfw_InitForOpenGL( PlatformData.pWindow, true );
-#endif
-#elif (IM_CURRENT_PLATFORM) == IM_PLATFORM_APPLE)
-#endif
-
 #if (IM_CURRENT_GFX == IM_GFX_OPENGL2)
 		return ImGui_ImplOpenGL2_Init();
 #elif (IM_CURRENT_GFX == IM_GFX_OPENGL3)
@@ -812,11 +840,22 @@ static void Im_Hook_Renderer_SwapBuffers( ImGuiViewport* viewport, void* )
 		return true;
 	}
 
+	void ImGfxViewportPre()
+	{
+#if IM_CURRENT_PLATFORM == IM_PLATFORM_GLFW
+		PlatformData.pBackupContext = glfwGetCurrentContext();
+#endif
+	}
+
 	void ImGfxViewportPost()
 	{
+#if IM_CURRENT_PLATFORM == IM_PLATFORM_WIN32
 #if IM_CURRENT_GFX == IM_GFX_OPENGL2 || IM_CURRENT_GFX == IM_GFX_OPENGL3
 		// Restore the OpenGL rendering context to the main window DC, since platform windows might have changed it.
 		wglMakeCurrent( PlatformData.oMainWindow.hDC, PlatformData.pRC );
+#endif
+#elif IM_CURRENT_PLATFORM == IM_PLATFORM_GLFW
+		glfwMakeContextCurrent( PlatformData.pBackupContext );
 #endif
 	}
 
@@ -893,24 +932,22 @@ static void Im_Hook_Renderer_SwapBuffers( ImGuiViewport* viewport, void* )
 		ImGui::EndFrame();
 #endif
 
-#if (IM_CURRENT_GFX == IM_GFX_OPENGL2)
-
-
-
-#elif (IM_CURRENT_GFX == IM_GFX_OPENGL3)
+#if IM_CURRENT_GFX == IM_GFX_OPENGL2 || IM_CURRENT_GFX == IM_GFX_OPENGL3
 
 #if (IM_CURRENT_PLATFORM == IM_PLATFORM_WIN32)
 
 		// TODO
+		glViewport( 0, 0, PlatformData.iWidth, PlatformData.iHeight );
 
 #elif (IM_CURRENT_PLATFORM == IM_PLATFORM_GLFW)
 
+		int iWidth, iHeight;
 		glfwGetFramebufferSize( PlatformData.pWindow, &iWidth, &iHeight );
+		glViewport( 0, 0, iWidth, iHeight );
 
 #elif (IM_CURRENT_PLATFORM) == IM_PLATFORM_APPLE)
 #endif
 
-		glViewport( 0, 0, PlatformData.iWidth, PlatformData.iHeight );
 		glClearColor( vClearColor.x, vClearColor.y, vClearColor.z, vClearColor.w );
 		glClear( GL_COLOR_BUFFER_BIT );
 
@@ -1028,15 +1065,6 @@ static void Im_Hook_Renderer_SwapBuffers( ImGuiViewport* viewport, void* )
 		::SwapBuffers( PlatformData.oMainWindow.hDC );
 
 #elif (IM_CURRENT_PLATFORM == IM_PLATFORM_GLFW)
-
-		ImGuiIO& io = ImGui::GetIO();
-		if ( io.ConfigFlags & ImGuiConfigFlags_ViewportsEnable )
-		{
-			GLFWwindow* pBackupCurrentContext = glfwGetCurrentContext();
-			ImGui::UpdatePlatformWindows();
-			ImGui::RenderPlatformWindowsDefault();
-			glfwMakeContextCurrent( pBackupCurrentContext );
-		}
 
 		glfwSwapBuffers( PlatformData.pWindow );
 #elif (IM_CURRENT_PLATFORM) == IM_PLATFORM_APPLE)
@@ -1189,6 +1217,8 @@ static void Im_Hook_Renderer_SwapBuffers( ImGuiViewport* viewport, void* )
 
 		if ( hasViewport )
 		{
+			ImPlatform::ImGfxViewportPre();
+
 			ImGui::UpdatePlatformWindows();
 			ImGui::RenderPlatformWindowsDefault();
 

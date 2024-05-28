@@ -71,10 +71,10 @@
   </ImportGroup>
   <PropertyGroup Label="UserMacros" />
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
-    <IncludePath>$(SolutionDir)\..\ImPlatform;$(SolutionDir)\..\imgui..;$(IncludePath)</IncludePath>
+    <IncludePath>$(SolutionDir)\..\ImPlatform;$(SolutionDir)\..\imgui;$(SolutionDir)\..\GLFW\include;$(IncludePath)</IncludePath>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
-    <IncludePath>$(SolutionDir)\..\ImPlatform;$(SolutionDir)\..\imgui..;$(IncludePath)</IncludePath>
+    <IncludePath>$(SolutionDir)\..\ImPlatform;$(SolutionDir)\..\imgui;$(SolutionDir)\..\GLFW\include;$(IncludePath)</IncludePath>
   </PropertyGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
     <ClCompile>
@@ -114,6 +114,8 @@
     <Link>
       <SubSystem>Console</SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
+      <IgnoreAllDefaultLibraries>
+      </IgnoreAllDefaultLibraries>
     </Link>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
