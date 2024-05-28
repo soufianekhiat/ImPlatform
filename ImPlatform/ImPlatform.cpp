@@ -603,7 +603,7 @@ static void Im_Hook_Renderer_SwapBuffers( ImGuiViewport* viewport, void* )
 #endif
 
 	// TODO: Add support for Windows Position, maximize/minimize/...
-	bool ImInitWindow( char const* pWindowsName, ImU32 const uWidth, ImU32 const uHeight )
+	bool ImCreateWindow( char const* pWindowsName, ImU32 const uWidth, ImU32 const uHeight )
 	{
 #if (IM_CURRENT_PLATFORM == IM_PLATFORM_WIN32)
 
@@ -693,41 +693,20 @@ static void Im_Hook_Renderer_SwapBuffers( ImGuiViewport* viewport, void* )
 		return true;
 	}
 
-	bool ImInit( char const* pWindowsName, ImU32 const uWidth, ImU32 const uHeight )
+	//void ImNewFrame()
+	//{
+	//	ImPlatform::ImGfxAPINewFrame();
+	//	ImPlatform::ImPlatformNewFrame();
+	//	ImGui::NewFrame();
+	//}
+
+	bool ImInitPlatform()
 	{
 		bool bGood;
-
-		bGood = ImPlatform::ImInitWindow( pWindowsName, uWidth, uHeight );
-		if ( !bGood )
-			return false;
-		bGood = ImPlatform::ImInitGfxAPI();
-		if ( !bGood )
-			return false;
-		bGood = ImPlatform::ImShowWindow();
-		if ( !bGood )
-			return false;
-
-		IMGUI_CHECKVERSION();
-		bGood = ImGui::CreateContext() != nullptr;
-		if ( !bGood )
-			return false;
-
-		return bGood;
-	}
-
-	void ImNewFrame()
-	{
-		ImPlatform::ImGfxAPINewFrame();
-		ImPlatform::ImPlatformNewFrame();
-		ImGui::NewFrame();
-	}
-
-	void ImBegin()
-	{
 #if (IM_CURRENT_PLATFORM == IM_PLATFORM_WIN32)
 
 #if (IM_CURRENT_GFX == IM_GFX_OPENGL2) || (IM_CURRENT_GFX == IM_GFX_OPENGL3)
-		ImGui_ImplWin32_InitForOpenGL( PlatformData.pHandle );
+		bGood = ImGui_ImplWin32_InitForOpenGL( PlatformData.pHandle );
 		ImGuiIO& io = ImGui::GetIO();
 		if ( io.ConfigFlags & ImGuiConfigFlags_ViewportsEnable )
 		{
@@ -742,50 +721,48 @@ static void Im_Hook_Renderer_SwapBuffers( ImGuiViewport* viewport, void* )
 			platform_io.Platform_RenderWindow	= Im_Hook_Platform_RenderWindow;
 		}
 #else
-		ImGui_ImplWin32_Init( PlatformData.pHandle );
+		bGood = ImGui_ImplWin32_Init( PlatformData.pHandle );
 		ZeroMemory( &PlatformData.oMessage, sizeof( PlatformData.oMessage ) );
 #endif
+		return bGood;
+	}
 
+	bool ImInitGfx()
+	{
 #elif (IM_CURRENT_PLATFORM == IM_PLATFORM_GLFW)
 #if (IM_CURRENT_GFX == IM_GFX_OPENGL3)
-		ImGui_ImplGlfw_InitForOpenGL( PlatformData.pWindow, true );
+		return ImGui_ImplGlfw_InitForOpenGL( PlatformData.pWindow, true );
 #endif
 #elif (IM_CURRENT_PLATFORM) == IM_PLATFORM_APPLE)
 #endif
 
 #if (IM_CURRENT_GFX == IM_GFX_OPENGL2)
-		ImGui_ImplOpenGL2_Init();
+		return ImGui_ImplOpenGL2_Init();
 #elif (IM_CURRENT_GFX == IM_GFX_OPENGL3)
-		ImGui_ImplOpenGL3_Init( PlatformData.pGLSLVersion );
+		return ImGui_ImplOpenGL3_Init( PlatformData.pGLSLVersion );
 #elif (IM_CURRENT_GFX == IM_GFX_DIRECTX9)
-		ImGui_ImplDX9_Init( PlatformData.pD3DDevice );
+		return ImGui_ImplDX9_Init( PlatformData.pD3DDevice );
 #elif (IM_CURRENT_GFX == IM_GFX_DIRECTX10)
-		ImGui_ImplDX10_Init( PlatformData.pD3DDevice );
+		return ImGui_ImplDX10_Init( PlatformData.pD3DDevice );
 #elif (IM_CURRENT_GFX == IM_GFX_DIRECTX11)
-		ImGui_ImplDX11_Init( PlatformData.pD3DDevice, PlatformData.pD3DDeviceContext );
+		return ImGui_ImplDX11_Init( PlatformData.pD3DDevice, PlatformData.pD3DDeviceContext );
 #elif (IM_CURRENT_GFX == IM_GFX_DIRECTX12)
-		ImGui_ImplDX12_Init( PlatformData.pD3DDevice, PlatformData.NUM_FRAMES_IN_FLIGHT,
+		return ImGui_ImplDX12_Init( PlatformData.pD3DDevice, PlatformData.NUM_FRAMES_IN_FLIGHT,
 							 DXGI_FORMAT_R8G8B8A8_UNORM, PlatformData.pD3DSRVDescHeap,
 							 PlatformData.pD3DSRVDescHeap->GetCPUDescriptorHandleForHeapStart(),
 							 PlatformData.pD3DSRVDescHeap->GetGPUDescriptorHandleForHeapStart() );
 #elif (IM_CURRENT_GFX) == IM_GFX_VULKAN)
-		ImGui_ImplVulkan_Init(..);
+		return ImGui_ImplVulkan_Init(..);
 #elif (IM_CURRENT_GFX) == IM_GFX_METAL)
-		ImGui_ImplMetal_Init(..);
+		return ImGui_ImplMetal_Init(..);
 #else
 #error IM_CURRENT_TARGET not specified correctly
+		return false;
 #endif
 	}
 
-	void ImEnd()
+	void ImDestroyWindow()
 	{
-		ImShutdownGfxAPI();
-		ImShutdownWindow();
-
-		ImGui::DestroyContext();
-
-		ImShutdownPostGfxAPI();
-
 #if (IM_CURRENT_PLATFORM == IM_PLATFORM_WIN32)
 		::DestroyWindow( PlatformData.pHandle );
 		::UnregisterClass( PlatformData.oWinStruct.lpszClassName, PlatformData.oWinStruct.hInstance );
@@ -796,26 +773,7 @@ static void Im_Hook_Renderer_SwapBuffers( ImGuiViewport* viewport, void* )
 #endif
 	}
 
-	bool ImWindowResize()
-	{
-#if (IM_CURRENT_GFX == IM_GFX_DIRECTX9)
-		PlatformData.oD3Dpp.BackBufferWidth		= PlatformData.uResizeWidth;
-		PlatformData.oD3Dpp.BackBufferHeight	= PlatformData.uResizeHeight;
-		PlatformData.uResizeWidth = PlatformData.uResizeHeight = 0;
-		ImResetDevice();
-
-#elif (IM_CURRENT_GFX == IM_GFX_DIRECTX10) || (IM_CURRENT_GFX == IM_GFX_DIRECTX11)
-		ImCleanupRenderTarget();
-		PlatformData.pSwapChain->ResizeBuffers( 0, PlatformData.uResizeWidth, PlatformData.uResizeHeight, DXGI_FORMAT_UNKNOWN, 0 );
-		PlatformData.uResizeWidth = PlatformData.uResizeHeight = 0;
-		ImCreateRenderTarget();
-#endif
-
-		return true;
-	}
-
-
-	bool ImBeginFrame()
+	bool ImGfxCheck()
 	{
 #if (IM_CURRENT_GFX == IM_GFX_DIRECTX9)
 		// Handle lost D3D9 device
@@ -845,24 +803,13 @@ static void Im_Hook_Renderer_SwapBuffers( ImGuiViewport* viewport, void* )
 		// Handle window resize (we don't resize directly in the WM_SIZE handler)
 		if ( PlatformData.uResizeWidth != 0 && PlatformData.uResizeHeight != 0 )
 		{
-			ImWindowResize();
+			Internal::ImWindowResize();
 		}
 #endif
 
-		ImPlatform::ImNewFrame();
+		//ImPlatform::ImNewFrame();
 
 		return true;
-	}
-
-	void ImEndFrame( ImVec4 const vClearColor )
-	{
-		ImPlatform::ImGfxAPIClear( vClearColor );
-		ImPlatform::ImGfxAPIRender( vClearColor );
-	}
-
-	void ImSwapGfx()
-	{
-		ImPlatform::ImGfxAPISwapBuffer();
 	}
 
 	void ImGfxViewportPost()
@@ -905,7 +852,7 @@ static void Im_Hook_Renderer_SwapBuffers( ImGuiViewport* viewport, void* )
 #endif
 	}
 
-	bool ImGfxAPINewFrame()
+	void ImGfxAPINewFrame()
 	{
 #if (IM_CURRENT_GFX == IM_GFX_OPENGL2)
 		ImGui_ImplOpenGL2_NewFrame();
@@ -928,11 +875,9 @@ static void Im_Hook_Renderer_SwapBuffers( ImGuiViewport* viewport, void* )
 #else
 #error IM_CURRENT_TARGET not specified correctly
 #endif
-
-		return true;
 	}
 
-	bool ImPlatformNewFrame()
+	void ImPlatformNewFrame()
 	{
 #if (IM_CURRENT_PLATFORM == IM_PLATFORM_WIN32)
 		ImGui_ImplWin32_NewFrame();
@@ -940,8 +885,6 @@ static void Im_Hook_Renderer_SwapBuffers( ImGuiViewport* viewport, void* )
 		ImGui_ImplGlfw_NewFrame();
 #elif (IM_CURRENT_PLATFORM) == IM_PLATFORM_APPLE)
 #endif
-
-		return true;
 	}
 
 	bool ImGfxAPIClear( ImVec4 const vClearColor )
@@ -1186,5 +1129,93 @@ static void Im_Hook_Renderer_SwapBuffers( ImGuiViewport* viewport, void* )
 #elif (IM_CURRENT_PLATFORM == IM_PLATFORM_APPLE)
 #else
 #endif
+	}
+
+	//////////////////////////////////////////////////////////////////////////
+	bool ImSimpleStart( char const* pWindowsName, ImU32 const uWidth, ImU32 const uHeight )
+	{
+		bool bGood = true;
+
+		bGood &= ImPlatform::ImCreateWindow( pWindowsName, uWidth, uHeight );
+		bGood &= ImPlatform::ImInitGfxAPI();
+		bGood &= ImPlatform::ImShowWindow();
+		IMGUI_CHECKVERSION();
+		bGood &= ImGui::CreateContext() != nullptr;
+
+		return bGood;
+	}
+
+	bool ImSimpleInitialize( bool hasViewport )
+	{
+		bool bGood = true;
+
+		if ( hasViewport )
+		{
+			ImGuiStyle& style = ImGui::GetStyle();
+			style.WindowRounding = 0.0f;
+			style.Colors[ ImGuiCol_WindowBg ].w = 1.0f;
+		}
+
+		bGood &= ImPlatform::ImInitPlatform();
+		bGood &= ImPlatform::ImInitGfx();
+
+		return bGood;
+	}
+
+	void ImSimpleFinish()
+	{
+		ImPlatform::ImShutdownGfxAPI();
+		ImPlatform::ImShutdownWindow();
+
+		ImGui::DestroyContext();
+
+		ImPlatform::ImShutdownPostGfxAPI();
+
+		ImPlatform::ImDestroyWindow();
+	}
+
+	void ImSimpleBegin()
+	{
+		ImPlatform::ImGfxAPINewFrame();
+		ImPlatform::ImPlatformNewFrame();
+
+		ImGui::NewFrame();
+	}
+
+	void ImSimpleEnd( ImVec4 const vClearColor, bool hasViewport )
+	{
+		ImPlatform::ImGfxAPIClear( vClearColor );
+		ImPlatform::ImGfxAPIRender( vClearColor );
+
+		if ( hasViewport )
+		{
+			ImGui::UpdatePlatformWindows();
+			ImGui::RenderPlatformWindowsDefault();
+
+			ImPlatform::ImGfxViewportPost();
+		}
+
+		ImPlatform::ImGfxAPISwapBuffer();
+	}
+
+	namespace Internal
+	{
+		bool ImWindowResize()
+		{
+#if (IM_CURRENT_GFX == IM_GFX_DIRECTX9)
+			PlatformData.oD3Dpp.BackBufferWidth = PlatformData.uResizeWidth;
+			PlatformData.oD3Dpp.BackBufferHeight = PlatformData.uResizeHeight;
+			PlatformData.uResizeWidth = PlatformData.uResizeHeight = 0;
+			ImResetDevice();
+
+#elif (IM_CURRENT_GFX == IM_GFX_DIRECTX10) || (IM_CURRENT_GFX == IM_GFX_DIRECTX11)
+			ImCleanupRenderTarget();
+			PlatformData.pSwapChain->ResizeBuffers( 0, PlatformData.uResizeWidth, PlatformData.uResizeHeight, DXGI_FORMAT_UNKNOWN, 0 );
+			PlatformData.uResizeWidth = PlatformData.uResizeHeight = 0;
+			ImCreateRenderTarget();
+#endif
+
+			return true;
+		}
 	}
 }

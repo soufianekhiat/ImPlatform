@@ -231,38 +231,41 @@ extern PlatformDataImpl PlatformData;
 
 namespace ImPlatform
 {
-	// Functions as FrontEnd;
-	bool ImInit( char const* pWindowsName, ImU32 const uWidth, ImU32 const uHeight );
-	void ImBegin();
-	void ImEnd();
-	bool ImBeginFrame();
-	void ImEndFrame( ImVec4 const vClearColor );
-	void ImSwapGfx();
+	// SimpleAPI:
+	bool ImSimpleStart( char const* pWindowsName, ImU32 const uWidth, ImU32 const uHeight );
+	bool ImSimpleInitialize( bool hasViewport );
+	void ImSimpleFinish();
 
-	void ImGfxViewportPost();
+	void ImSimpleBegin();
+	void ImSimpleEnd( ImVec4 const vClearColor, bool hasViewport );
 
-	bool ImPlatformContinue();
-	bool ImPlatformEvents();
-
-	// Internal-Use Only
-	void ImNewFrame();
-
-	bool ImInitWindow( char const* pWindowsName, ImU32 const uWidth, ImU32 const uHeight );
+	// ExplicitAPI:
+	bool ImCreateWindow( char const* pWindowsName, ImU32 const uWidth, ImU32 const uHeight );
 	bool ImInitGfxAPI();
 	bool ImShowWindow();
-	bool ImWindowResize( ImU32 const uWidth, ImU32 const uHeight );
-
-	bool ImGfxAPINewFrame();
-	bool ImPlatformNewFrame();
-
+	bool ImInitPlatform();
+	bool ImInitGfx();
+	bool ImPlatformContinue();
+	bool ImPlatformEvents();
+	bool ImGfxCheck();
+	void ImGfxAPINewFrame();
+	void ImPlatformNewFrame();
 	bool ImGfxAPIClear( ImVec4 const vClearColor );
 	// Need to pass the clear color to support dx12
 	bool ImGfxAPIRender( ImVec4 const vClearColor );
+	void ImGfxViewportPost();
 	bool ImGfxAPISwapBuffer();
-
 	void ImShutdownGfxAPI();
-	void ImShutdownPostGfxAPI();
 	void ImShutdownWindow();
+	void ImShutdownPostGfxAPI();
+	void ImDestroyWindow();
+
+	// Internal API:
+	namespace Internal
+	{
+		// Resize is not handle in the same way depending on the GfxAPI, do not call by yourself
+		bool ImWindowResize();
+	}
 }
 
 #ifdef IM_PLATFORM_IMPLEMENTATION
