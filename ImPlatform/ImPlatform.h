@@ -1,15 +1,19 @@
 #pragma once
 
+#ifndef __IM_PLATFORM_H__
+#define __IM_PLATFORM_H__
+
 #include <imgui.h>
 
-// - [ x ] WIN32_OPENGL3
-// - [ x ] WIN32_DIRECTX9
-// - [ x ] WIN32_DIRECTX10
-// - [ x ] WIN32_DIRECTX11
-// - [ x ] WIN32_DIRECTX12
-// - [   ] GLFW_OPENGL2
-// - [   ] GLFW_OPENGL3
+// - [ O ] WIN32_OPENGL3
+// - [ O ] WIN32_DIRECTX9
+// - [ O ] WIN32_DIRECTX10
+// - [ O ] WIN32_DIRECTX11
+// - [ O ] WIN32_DIRECTX12
+// - [ X ] GLFW_OPENGL2 // Produce clear_color frame
+// - [ O ] GLFW_OPENGL3 // Do not work well with high DPI
 // - [   ] GLFW_VULKAN
+// - [   ] GLFW_EMSCRIPTEM_OPENGL3
 // - [   ] SDL2_DIRECTX11
 // - [   ] SDL2_OPENGL2
 // - [   ] SDL2_OPENGL3
@@ -26,6 +30,7 @@
 #define IM_GFX_VULKAN		( 1u << 6u )
 #define IM_GFX_METAL		( 1u << 7u )
 #define IM_GFX_WGPU			( 1u << 8u )
+#define IM_GFX_EMSCRIPTEM	( 1u << 9u )
 
 #define IM_GFX_MASK			0x0000FFFFu
 
@@ -36,13 +41,17 @@
 #define IM_PLATFORM_MASK	0xFFFF0000u
 
 #ifndef IM_CURRENT_TARGET
+
 #ifdef __DEAR_WIN__
 #define IM_CURRENT_PLATFORM IM_PLATFORM_WIN32
 #elif defined(__DEAR_LINUX__)
 #define IM_CURRENT_PLATFORM IM_PLATFORM_GLFW
+#elif defined(__DEAR_GLFW__)
+#define IM_CURRENT_PLATFORM IM_PLATFORM_GLFW
 #elif defined(__DEAR_MAC__)
 #define IM_CURRENT_PLATFORM IM_PLATFORM_APPLE
 #else
+#error __DEAR_{X}__ not specified correctly
 #endif
 
 #ifdef __DEAR_GFX_DX9__
@@ -62,6 +71,7 @@
 #elif defined(__DEAR_METAL__)
 #define IM_CURRENT_GFX IM_GFX_METAL
 #else
+#error __DEAR_GFX_{X}__ not specified correctly
 #endif
 
 #define IM_CURRENT_TARGET	(IM_CURRENT_PLATFORM | IM_CURRENT_GFX)
@@ -78,7 +88,7 @@
 #define IM_TARGET_WIN32_DX10	( IM_PLATFORM_WIN32 | IM_GFX_DIRECTX10 )
 #define IM_TARGET_WIN32_DX11	( IM_PLATFORM_WIN32 | IM_GFX_DIRECTX11 )
 #define IM_TARGET_WIN32_DX12	( IM_PLATFORM_WIN32 | IM_GFX_DIRECTX12 )
-#define IM_TARGET_WIN32_OGL3	( IM_PLATFORM_WIN32 | IM_GFX_OPENGL3 )
+#define IM_TARGET_WIN32_OPENGL3	( IM_PLATFORM_WIN32 | IM_GFX_OPENGL3 )
 
 #define IM_TARGET_APPLE_METAL	( IM_PLATFORM_APPLE | IM_GFX_METAL )
 #define IM_TARGET_APPLE_OPENGL2	( IM_PLATFORM_APPLE | IM_GFX_OPENGL2 )
@@ -90,7 +100,12 @@
 
 #define IM_TARGET_GLFW_METAL	( IM_PLATFORM_GLFW | IM_GFX_METAL )
 
-#if IM_CURRENT_TARGET != IM_TARGET_WIN32_DX9 && IM_CURRENT_TARGET != IM_TARGET_WIN32_DX10 && IM_CURRENT_TARGET != IM_TARGET_WIN32_DX11 && IM_CURRENT_TARGET != IM_TARGET_WIN32_OGL3
+#if IM_CURRENT_TARGET != IM_TARGET_WIN32_DX9		&&	\
+	IM_CURRENT_TARGET != IM_TARGET_WIN32_DX10		&&	\
+	IM_CURRENT_TARGET != IM_TARGET_WIN32_DX11		&&	\
+	IM_CURRENT_TARGET != IM_TARGET_WIN32_DX12		&&	\
+	IM_CURRENT_TARGET != IM_TARGET_WIN32_OPENGL3	&&	\
+	IM_CURRENT_TARGET != IM_TARGET_GLFW_OPENGL3			
 
 //#warning ImPlatform unsupported permutation
 #pragma message( "ImPlatform unsupported permutation" )
@@ -103,14 +118,12 @@
 #include <dinput.h>
 #include <tchar.h>
 extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
-
 #ifndef WM_DPICHANGED
 #define WM_DPICHANGED 0x02E0 // From Windows SDK 8.1+ headers
 #endif
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
-
 #elif (IM_CURRENT_PLATFORM == IM_PLATFORM_GLFW)
 #include <backends/imgui_impl_glfw.h>
 #elif (IM_CURRENT_PLATFORM == IM_PLATFORM_APPLE)
@@ -118,6 +131,8 @@ extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg
 #else
 #error IM_CURRENT_TARGET not specified correctly
 #endif
+
+
 
 #if (IM_CURRENT_GFX == IM_GFX_DIRECTX9)
 #include <backends/imgui_impl_dx9.h>
@@ -145,6 +160,8 @@ extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg
 #include <backends/imgui_impl_wgpu.h>
 #endif
 
+#include <stdio.h>
+
 struct PlatformDataImpl
 {
 #if (IM_CURRENT_PLATFORM == IM_PLATFORM_WIN32)
@@ -159,13 +176,15 @@ struct PlatformDataImpl
 #endif
 
 #elif (IM_CURRENT_PLATFORM == IM_PLATFORM_GLFW)
-	GLFWwindow*	pWindow		=	nullptr;
+	GLFWwindow*	pWindow			= nullptr;
+	GLFWwindow* pBackupContext	= nullptr;
 #elif (IM_CURRENT_PLATFORM) == IM_PLATFORM_APPLE)
 #else
 #error IM_CURRENT_TARGET not specified correctly
 #endif
 
 #if (IM_CURRENT_GFX == IM_GFX_OPENGL2)
+	char const* pGLSLVersion						= "#version 100";
 #elif (IM_CURRENT_GFX == IM_GFX_OPENGL3)
 
 #if (IM_CURRENT_PLATFORM == IM_PLATFORM_WIN32)
@@ -253,6 +272,7 @@ namespace ImPlatform
 	bool ImGfxAPIClear( ImVec4 const vClearColor );
 	// Need to pass the clear color to support dx12
 	bool ImGfxAPIRender( ImVec4 const vClearColor );
+	void ImGfxViewportPre();
 	void ImGfxViewportPost();
 	bool ImGfxAPISwapBuffer();
 	void ImShutdownGfxAPI();
@@ -270,4 +290,6 @@ namespace ImPlatform
 
 #ifdef IM_PLATFORM_IMPLEMENTATION
 #include <ImPlatform.cpp>
+#endif
+
 #endif
