@@ -34,14 +34,104 @@
 //#define IM_CURRENT_TARGET (IM_PLATFORM_WIN32 | IM_GFX_OPENGL3)
 // Or a permutation, Not all permutation are valid for instance __DEAR_MAC__ + __DEAR_GFX_DX11__
 #define __DEAR_WIN__
-//#define __DEAR_GFX_DX12__
-#define __DEAR_GFX_OGL3__
+#define __DEAR_GFX_DX9__
+//#define __DEAR_GFX_OGL3__
 #include <ImPlatform.h>
+
+#include <stdio.h>
+
+#define SIMPLE_API 0
 
 int main()
 {
-	if ( !ImPlatform::ImInit( "ImPlatform Demo", 1024, 764 ) )
-		return 1;
+	// ImPlatform::SimpleAPI
+#if SIMPLE_API
+	bool bGood;
+
+	bGood = ImPlatform::ImSimpleStart( "ImPlatform Simple Demo", 1024, 764 );
+	if ( !bGood )
+	{
+		printf( "ImPlatform: Cannot Simple Start." );
+		return false;
+	}
+
+	// Setup Dear ImGui context
+	ImGuiIO& io = ImGui::GetIO(); ( void )io;
+	io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;	// Enable Keyboard Controls
+	io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;	// Enable Gamepad Controls
+	io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;		// Enable Docking
+	io.ConfigFlags |= ImGuiConfigFlags_ViewportsEnable;		// Enable Multi-Viewport / Platform Windows
+
+	// Setup Dear ImGui style
+	ImGui::StyleColorsDark();
+
+	//io.Fonts->AddFontFromFileTTF( "../extern/FiraCode/distr/ttf/FiraCode-Medium.ttf", 16.0f );
+
+	// When viewports are enabled we tweak WindowRounding/WindowBg so platform windows can look identical to regular ones.
+	ImGuiStyle& style = ImGui::GetStyle();
+
+	bGood = ImPlatform::ImSimpleInitialize( io.ConfigFlags & ImGuiConfigFlags_ViewportsEnable );
+	if ( !bGood )
+	{
+		printf( "ImPlatform: Cannot Initialize." );
+		return false;
+	}
+
+	ImVec4 clear_color = ImVec4( 0.461f, 0.461f, 0.461f, 1.0f );
+	while ( ImPlatform::ImPlatformContinue() )
+	{
+		bool quit = ImPlatform::ImPlatformEvents();
+		if ( quit )
+			break;
+
+		if ( !ImPlatform::ImGfxCheck() )
+		{
+			continue;
+		}
+
+		ImPlatform::ImSimpleBegin();
+
+		// ImGui Code
+		bool show = true;
+		ImGui::ShowDemoWindow( &show );
+
+		ImPlatform::ImSimpleEnd( clear_color, io.ConfigFlags & ImGuiConfigFlags_ViewportsEnable );
+	}
+
+	ImPlatform::ImSimpleFinish();
+#else
+	// ImPlatform::ExplicitAPI
+	bool bGood;
+
+	bGood = ImPlatform::ImCreateWindow( "ImPlatform Demo", 1024, 764 );
+
+	if ( !bGood )
+	{
+		printf( "ImPlatform: Cannot create window." );
+		return false;
+	}
+
+	bGood = ImPlatform::ImInitGfxAPI();
+	if ( !bGood )
+	{
+		printf( "ImPlatform: Cannot initialize the Graphics API." );
+		return false;
+	}
+
+	bGood = ImPlatform::ImShowWindow();
+	if ( !bGood )
+	{
+		printf( "ImPlatform: Cannot show the window." );
+		return false;
+	}
+
+	IMGUI_CHECKVERSION();
+	bGood = ImGui::CreateContext() != nullptr;
+	if ( !bGood )
+	{
+		printf( "ImGui: Cannot create context." );
+		return false;
+	}
 
 	// Setup Dear ImGui context
 	ImGuiIO& io = ImGui::GetIO(); ( void )io;
@@ -66,25 +156,44 @@ int main()
 		style.Colors[ ImGuiCol_WindowBg ].w = 1.0f;
 	}
 
-	ImPlatform::ImBegin();
+	bGood = ImPlatform::ImInitPlatform();
+	if ( !bGood )
+	{
+		printf( "ImPlatform: Cannot initialize platform." );
+		return false;
+	}
+	bGood = ImPlatform::ImInitGfx();
+	if ( !bGood )
+	{
+		printf( "ImPlatform: Cannot initialize graphics." );
+		return false;
+	}
 
-	ImVec4 clear_color = ImVec4( 0.0f, 0.0f, 0.0f, 1.0f );
+	ImVec4 clear_color = ImVec4( 0.461f, 0.461f, 0.461f, 1.0f );
 	while ( ImPlatform::ImPlatformContinue() )
 	{
 		bool quit = ImPlatform::ImPlatformEvents();
 		if ( quit )
 			break;
 
-		if ( !ImPlatform::ImBeginFrame() )
+		if ( !ImPlatform::ImGfxCheck() )
 		{
 			continue;
 		}
+
+		ImPlatform::ImGfxAPINewFrame();
+		ImPlatform::ImPlatformNewFrame();
+
+		ImGui::NewFrame();
 
 		// ImGui Code
 		bool show = true;
 		ImGui::ShowDemoWindow( &show );
 
-		ImPlatform::ImEndFrame( clear_color );
+		//ImPlatform::ImEndFrame( clear_color );
+
+		ImPlatform::ImGfxAPIClear( clear_color );
+		ImPlatform::ImGfxAPIRender( clear_color );
 
 		// Update and Render additional Platform Windows
 		if ( io.ConfigFlags & ImGuiConfigFlags_ViewportsEnable )
@@ -95,10 +204,18 @@ int main()
 			ImPlatform::ImGfxViewportPost();
 		}
 
-		ImPlatform::ImSwapGfx();
+		ImPlatform::ImGfxAPISwapBuffer();
 	}
 
-	ImPlatform::ImEnd();
+	ImPlatform::ImShutdownGfxAPI();
+	ImPlatform::ImShutdownWindow();
+
+	ImGui::DestroyContext();
+
+	ImPlatform::ImShutdownPostGfxAPI();
+
+	ImPlatform::ImDestroyWindow();
+#endif
 
 	return 0;
 }
