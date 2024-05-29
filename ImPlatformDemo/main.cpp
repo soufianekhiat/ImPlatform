@@ -31,13 +31,14 @@
 // Or a permutation, Not all permutation are valid for instance __DEAR_MAC__ + __DEAR_GFX_DX11__
 #define __DEAR_GLFW__
 //#define __DEAR_WIN__
-#define __DEAR_GFX_OGL2__
+//#define __DEAR_GFX_DX11__
+#define __DEAR_GFX_OGL3__
 //#define IM_CURRENT_TARGET IM_TARGET_GLFW_OPENGL3
 #include <ImPlatform.h>
 
 #include <stdio.h>
 
-#define SIMPLE_API 0
+#define SIMPLE_API 1
 
 int main()
 {
