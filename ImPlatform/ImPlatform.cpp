@@ -196,8 +196,6 @@ namespace ImPlatform
 		if ( PlatformData.pD3D->CreateDevice( D3DADAPTER_DEFAULT, D3DDEVTYPE_HAL, hWnd, D3DCREATE_HARDWARE_VERTEXPROCESSING, &PlatformData.oD3Dpp, &PlatformData.pD3DDevice ) < 0 )
 			return false;
 
-		return true;
-
 #elif (IM_CURRENT_GFX == IM_GFX_DIRECTX10)
 
 		// Setup swap chain
@@ -412,6 +410,7 @@ namespace ImPlatform
 		{
 			PlatformData.pD3DDevice->Release();
 			PlatformData.pD3DDevice = nullptr;
+		}
 #elif (IM_CURRENT_GFX == IM_GFX_DIRECTX12)
 		ImCleanupRenderTarget();
 		if ( PlatformData.pSwapChain )
@@ -479,7 +478,7 @@ namespace ImPlatform
 		ImGui_ImplDX9_CreateDeviceObjects();
 	}
 #endif
-#elif IM_CURRENT_PLATFORM == IM_PLATFORM_WIN32 && (IM_CURRENT_GFX == IM_GFX_OPENGL2 || IM_CURRENT_GFX == IM_GFX_OPENGL3)
+#elif ((IM_CURRENT_PLATFORM == IM_PLATFORM_WIN32) && (IM_CURRENT_GFX == IM_GFX_OPENGL2 || IM_CURRENT_GFX == IM_GFX_OPENGL3))
 
 bool ImCreateDeviceWGL( HWND hWnd, PlatformDataImpl::WGL_WindowData* data )
 {
