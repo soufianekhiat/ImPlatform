@@ -3,6 +3,8 @@
 #ifndef __IM_PLATFORM_H__
 #define __IM_PLATFORM_H__
 
+// For Dx12: #define ImTextureID ImU64
+
 #include <imgui.h>
 
 // - [ O ] WIN32_OPENGL3
@@ -250,6 +252,55 @@ extern PlatformDataImpl PlatformData;
 
 namespace ImPlatform
 {
+	enum ImPixelType
+	{
+		IM_UINT8,
+		IM_UINT16,
+		IM_UINT32,
+		IM_UINT64,
+		IM_INT8,
+		IM_INT16,
+		IM_INT32,
+		IM_INT64,
+		IM_FLOAT16,
+		IM_FLOAT32,
+		IM_FLOAT64
+	};
+
+	enum ImPixelChannel
+	{
+		IM_R = 1,
+		IM_RG,
+		IM_RGB,
+		IM_RGBA
+	};
+
+	enum ImTextureFilter
+	{
+		IM_POINT,
+		IM_LINEAR
+	};
+
+	enum ImTextureBoundary
+	{
+		IM_CLAMP,
+		IM_REPEAT,
+		IM_MIRROR_REPEAT
+	};
+
+	struct ImImageDesc
+	{
+		ImPixelChannel		eChannel;
+		ImPixelType			eType;
+		ImTextureFilter		eFiltering;
+		ImTextureBoundary	eBoundaryU;
+		ImTextureBoundary	eBoundaryV;
+	};
+
+	// Generic
+	ImTextureID	ImCreateTexture2D	( char const* pData, ImU32 const uWidth, ImU32 const uHeight, ImImageDesc const& oImgDesc );
+	void		ImReleaseTexture2D	( ImTextureID id );
+
 	// SimpleAPI:
 	bool ImSimpleStart( char const* pWindowsName, ImU32 const uWidth, ImU32 const uHeight );
 	bool ImSimpleInitialize( bool hasViewport );

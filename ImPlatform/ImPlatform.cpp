@@ -70,6 +70,901 @@ PlatformDataImpl PlatformData;
 
 namespace ImPlatform
 {
+#if (IM_CURRENT_GFX == IM_GFX_OPENGL2) || (IM_CURRENT_GFX == IM_GFX_OPENGL3)
+
+	void ImPixelTypeChannelToOGL( GLint* internalFormat, GLenum* format, ImPixelType const eType, ImPixelChannel const eChannel )
+	{
+#if (IM_CURRENT_GFX == IM_GFX_OPENGL2)
+		switch ( eChannel )
+		{
+		case IM_R:
+			*internalformat = *format = GL_LUMINANCE;
+			break;
+		case IM_RG:
+			*internalformat = *format = GL_LUMINANCE_ALPHA;
+			break;
+		case IM_RGB:
+			*internalformat = *format = GL_RGB;
+			break;
+		case IM_RGBA:
+			*internalformat = *format = GL_RGBA;
+			break;
+		default:
+			fprintf( stderr, "ImChannelToOGL eChannel unsupported on OpenGL2 {IM_R, IM_RG, IM_RGB, IM_RGBA}\n" );
+			break;
+		}
+#else
+		switch ( eChannel )
+		{
+		case IM_R:
+			*format = GL_RED;
+			switch ( eType )
+			{
+			case IM_UINT8:
+				*internalformat = GL_R8UI;
+				break;
+			case IM_UINT16:
+				*internalformat = GL_R16UI;
+				break;
+			case IM_UINT32:
+				*internalformat = GL_R32UI;
+				break;
+			case IM_INT8:
+				*internalformat = GL_R8I;
+				break;
+			case IM_INT16:
+				*internalformat = GL_R16I;
+				break;
+			case IM_INT32:
+				*internalformat = GL_R32I;
+				break;
+			case IM_FLOAT16:
+				*internalformat = GL_R16F;
+				break;
+			case IM_FLOAT32:
+				*internalformat = GL_R32F;
+				break;
+			default:
+				fprintf( stderr, "ImCreateImage ImType unsupported on OpenGL2 {IM_UINT8, IM_UINT16, IM_UINT32, IM_INT8, IM_INT16, IM_INT32, IM_FLOAT16, IM_FLOAT32}\n" );
+				break;
+			}
+			break;
+		case IM_RG:
+			*format = GL_RG;
+			switch ( eType )
+			{
+			case IM_UINT8:
+				*internalformat = GL_RG8UI;
+				break;
+			case IM_UINT16:
+				*internalformat = GL_RG16UI;
+				break;
+			case IM_UINT32:
+				*internalformat = GL_RG32UI;
+				break;
+			case IM_INT8:
+				*internalformat = GL_RG8I;
+				break;
+			case IM_INT16:
+				*internalformat = GL_RG16I;
+				break;
+			case IM_INT32:
+				*internalformat = GL_RG32I;
+				break;
+			case IM_FLOAT16:
+				*internalformat = GL_RG16F;
+				break;
+			case IM_FLOAT32:
+				*internalformat = GL_RG32F;
+				break;
+			default:
+				fprintf( stderr, "ImCreateImage ImType unsupported on OpenGL2 {IM_UINT8, IM_UINT16, IM_UINT32, IM_INT8, IM_INT16, IM_INT32, IM_FLOAT16, IM_FLOAT32}\n" );
+				break;
+			}
+			break;
+		case IM_RGB:
+			*format = GL_RGB;
+			switch ( eType )
+			{
+			case IM_UINT8:
+				*internalformat = GL_RGB8UI;
+				break;
+			case IM_UINT16:
+				*internalformat = GL_RGB16UI;
+				break;
+			case IM_UINT32:
+				*internalformat = GL_RGB32UI;
+				break;
+			case IM_INT8:
+				*internalformat = GL_RGB8I;
+				break;
+			case IM_INT16:
+				*internalformat = GL_RGB16I;
+				break;
+			case IM_INT32:
+				*internalformat = GL_RGB32I;
+				break;
+			case IM_FLOAT16:
+				*internalformat = GL_RGB16F;
+				break;
+			case IM_FLOAT32:
+				*internalformat = GL_RGB32F;
+				break;
+			default:
+				fprintf( stderr, "ImCreateImage ImType unsupported on OpenGL2 {IM_UINT8, IM_UINT16, IM_UINT32, IM_INT8, IM_INT16, IM_INT32, IM_FLOAT16, IM_FLOAT32}\n" );
+				break;
+			}
+			break;
+		case IM_RGBA:
+			*format = GL_RGBA;
+			switch ( eType )
+			{
+			case IM_UINT8:
+				*internalformat = GL_RGBA8UI;
+				break;
+			case IM_UINT16:
+				*internalformat = GL_RGBA16UI;
+				break;
+			case IM_UINT32:
+				*internalformat = GL_RGBA32UI;
+				break;
+			case IM_INT8:
+				*internalformat = GL_RGBA8I;
+				break;
+			case IM_INT16:
+				*internalformat = GL_RGBA16I;
+				break;
+			case IM_INT32:
+				*internalformat = GL_RGBA32I;
+				break;
+			case IM_FLOAT16:
+				*internalformat = GL_RGBA16F;
+				break;
+			case IM_FLOAT32:
+				*internalformat = GL_RGBA32F;
+				break;
+			default:
+				fprintf( stderr, "ImCreateImage ImType unsupported on OpenGL2 {IM_UINT8, IM_UINT16, IM_UINT32, IM_INT8, IM_INT16, IM_INT32, IM_FLOAT16, IM_FLOAT32}\n" );
+				break;
+			}
+			break;
+		default:
+			fprintf( stderr, "ImCreateImage eChannel unsupported on OpenGL3 {IM_R, IM_RG, IM_RGB, IM_RGBA}\n" );
+			break;
+		}
+#endif
+	}
+
+	void ImPixelTypeToOGL( GLenum* type, ImPixelType const eType )
+	{
+#if (IM_CURRENT_GFX == IM_GFX_OPENGL2)
+		switch ( oImgDesc.eType )
+		{
+		case IM_UINT8:
+			*type = GL_UNSIGNED_BYTE;
+			break;
+		case IM_UINT16:
+			*type = GL_UNSIGNED_SHORT;
+			break;
+		case IM_UINT32:
+			*type = GL_UNSIGNED_INT;
+			break;
+		case IM_FLOAT32:
+			*type = GL_FLOAT;
+			break;
+		default:
+			fprintf( stderr, "ImCreateImage ImType unsupported on OpenGL2 {IM_UINT8, IM_UINT16, IM_UINT32, IM_FLOAT32}\n" );
+			break;
+		}
+#else
+		switch ( oImgDesc.eType )
+		{
+		case IM_UINT8:
+			*type = GL_UNSIGNED_BYTE;
+			break;
+		case IM_UINT16:
+			*type = GL_UNSIGNED_SHORT;
+			break;
+		case IM_UINT32:
+			*type = GL_UNSIGNED_INT;
+			break;
+		case IM_INT8:
+			*type = GL_BYTE;
+			break;
+		case IM_INT16:
+			*type = GL_SHORT;
+			break;
+		case IM_INT32:
+			*type = GL_INT;
+			break;
+		case IM_FLOAT16:
+			*type = GL_HALF_FLOAT;
+			break;
+		case IM_FLOAT32:
+			*type = GL_FLOAT;
+			break;
+		default:
+			fprintf( stderr, "ImCreateImage ImType unsupported on OpenGL2 {IM_UINT8, IM_UINT16, IM_UINT32, IM_INT8, IM_INT16, IM_INT32, IM_FLOAT32}\n" );
+			break;
+		}
+#endif
+	}
+
+	void ImBoundaryToOGL( GLint* wrap, ImTextureBoundary const eBoundary )
+	{
+		switch ( eBoundary )
+		{
+		case IM_CLAMP:
+			*wrap = GL_CLAMP_TO_EDGE;
+			break;
+		case IM_REPEAT:
+			*wrap = GL_REPEAT;
+			break;
+		case IM_MIRROR_REPEAT:
+			*wrapS = GL_MIRRORED_REPEAT;
+		default:
+			fprintf( stderr, "ImCreateImage eBoundaryU unsupported on OpenGL {IM_CLAMP, IM_REPEAT, IM_MIRROR_REPEAT}\n" );
+			break;
+		}
+	}
+
+#elif (IM_CURRENT_GFX == IM_GFX_DIRECTX9)
+	ImS32 ImPixelTypeChannelToDx9( D3DFORMAT* internalformat, ImPixelType const eType, ImPixelChannel const eChannel )
+	{
+		int sizeofChannel = -1;
+		switch ( eChannel )
+		{
+		case IM_R:
+			switch ( eType )
+			{
+			case IM_UINT8:
+			case IM_INT8:
+				sizeofChannel = 1;
+				*internalformat = D3DFMT_L8;
+				break;
+			case IM_UINT16:
+			case IM_INT16:
+				sizeofChannel = 2;
+				*internalformat = D3DFMT_L16;
+				break;
+			case IM_FLOAT16:
+				sizeofChannel = 2;
+				*internalformat = D3DFMT_R16F;
+				break;
+			case IM_FLOAT32:
+				sizeofChannel = 4;
+				*internalformat = D3DFMT_R32F;
+				break;
+			default:
+				fprintf( stderr, "ImPixelTypeChannelToDx9 ImType unsupported on Dx9 for Single channel image.\n" );
+				break;
+			}
+			break;
+		case IM_RG:
+			switch ( eType )
+			{
+			case IM_UINT8:
+			case IM_INT8:
+				sizeofChannel = 1;
+				*internalformat = D3DFMT_A8L8;
+				break;
+			case IM_UINT16:
+			case IM_INT16:
+				sizeofChannel = 2;
+				*internalformat = D3DFMT_G16R16;
+				break;
+			case IM_UINT32:
+			case IM_INT32:
+				sizeofChannel = 4;
+				*internalformat = D3DFMT_R3G3B2;
+				break;
+			case IM_FLOAT16:
+				sizeofChannel = 2;
+				*internalformat = D3DFMT_G16R16F;
+				break;
+			case IM_FLOAT32:
+				sizeofChannel = 4;
+				*internalformat = D3DFMT_G32R32F;
+				break;
+			default:
+				fprintf( stderr, "ImPixelTypeChannelToDx9 ImType unsupported on Dx9 for RG channel image.\n" );
+				break;
+			}
+			break;
+		case IM_RGB:
+			switch ( eType )
+			{
+			case IM_UINT8:
+			case IM_INT8:
+				sizeofChannel = 1;
+				*internalformat = D3DFMT_R8G8B8;
+				break;
+			default:
+				fprintf( stderr, "ImPixelTypeChannelToDx9 ImType unsupported on Dx9 for RGB channel image.\n" );
+				break;
+			}
+			break;
+		case IM_RGBA:
+			switch ( eType )
+			{
+			case IM_UINT8:
+			case IM_INT8:
+				sizeofChannel = 1;
+				*internalformat = D3DFMT_A8R8G8B8;
+				break;
+			case IM_UINT16:
+			case IM_INT16:
+				sizeofChannel = 2;
+				*internalformat = D3DFMT_A16B16G16R16;
+				break;
+			case IM_FLOAT16:
+				sizeofChannel = 2;
+				*internalformat = D3DFMT_A16B16G16R16F;
+				break;
+			case IM_FLOAT32:
+				sizeofChannel = 4;
+				*internalformat = D3DFMT_A32B32G32R32F;
+				break;
+			default:
+				fprintf( stderr, "ImPixelTypeChannelToDx9 ImType unsupported on Dx9 for RGBA channel image.\n" );
+				break;
+			}
+			break;
+		default:
+			fprintf( stderr, "ImPixelTypeChannelToDx9 eChannel unsupported on Dx9 {IM_R, IM_RG, IM_RGB, IM_RGBA}\n" );
+			break;
+		}
+
+		return sizeofChannel;
+	}
+
+	D3DTEXTUREADDRESS ImTextureBoundaryToDX9( ImTextureBoundary const eBoundary )
+	{
+		switch ( eBoundary )
+		{
+		case IM_CLAMP:
+			return D3DTADDRESS_CLAMP;
+		case IM_REPEAT:
+			return D3DTADDRESS_WRAP;
+		case IM_MIRROR_REPEAT:
+			return D3DTADDRESS_MIRROR;
+		default:
+			fprintf( stderr, "ImTextureBoundaryToDX9 eBoundary unsupported on Dx9 {IM_CLAMP, IM_REPEAT, IM_MIRROR_REPEAT}\n" );
+			return D3DTADDRESS_FORCE_DWORD;
+		}
+	}
+
+	D3DTEXTUREADDRESS ImTextureBoundaryToDX9( ImTextureBoundary const eBoundary )
+	{
+		switch ( eBoundary )
+		{
+		case IM_CLAMP:
+			return D3DTADDRESS_CLAMP;
+		case IM_REPEAT:
+			return D3DTADDRESS_WRAP;
+		case IM_MIRROR_REPEAT:
+			return D3DTADDRESS_MIRROR;
+		default:
+			fprintf( stderr, "ImTextureBoundaryToDX9 eBoundary unsupported on Dx9 {IM_CLAMP, IM_REPEAT, IM_MIRROR_REPEAT}\n" );
+			return D3DTADDRESS_FORCE_DWORD;
+		}
+	}
+#elif (IM_CURRENT_GFX == IM_GFX_DIRECTX10) || (IM_CURRENT_GFX == IM_GFX_DIRECTX11) || (IM_CURRENT_GFX == IM_GFX_DIRECTX12)
+	ImS32 ImPixelTypeChannelToDx10_11_12( DXGI_FORMAT* internalformat, ImPixelType const eType, ImPixelChannel const eChannel )
+	{
+		int sizeofChannel = -1;
+		switch ( eChannel )
+		{
+		case IM_R:
+			switch ( eType )
+			{
+			case IM_UINT8:
+				sizeofChannel = 1;
+				*internalformat = DXGI_FORMAT_R8_UINT;
+				break;
+			case IM_INT8:
+				sizeofChannel = 1;
+				*internalformat = DXGI_FORMAT_R8_SINT;
+				break;
+			case IM_UINT16:
+				sizeofChannel = 2;
+				*internalformat = DXGI_FORMAT_R16_UINT;
+				break;
+			case IM_INT16:
+				sizeofChannel = 2;
+				*internalformat = DXGI_FORMAT_R16_SINT;
+				break;
+			case IM_FLOAT16:
+				sizeofChannel = 2;
+				*internalformat = DXGI_FORMAT_R16_FLOAT;
+				break;
+			case IM_FLOAT32:
+				sizeofChannel = 4;
+				*internalformat = DXGI_FORMAT_R32_FLOAT;
+				break;
+			default:
+				fprintf( stderr, "ImPixelTypeChannelToDx10_11 ImType unsupported on Dx for Single channel image.\n" );
+				break;
+			}
+			break;
+		case IM_RG:
+			switch ( eType )
+			{
+			case IM_UINT8:
+				sizeofChannel = 1;
+				*internalformat = DXGI_FORMAT_R8G8_UINT;
+				break;
+			case IM_INT8:
+				sizeofChannel = 1;
+				*internalformat = DXGI_FORMAT_R8G8_SINT;
+				break;
+			case IM_UINT16:
+				sizeofChannel = 2;
+				*internalformat = DXGI_FORMAT_R16G16_UINT;
+				break;
+			case IM_INT16:
+				sizeofChannel = 2;
+				*internalformat = DXGI_FORMAT_R16G16_SINT;
+				break;
+			case IM_UINT32:
+				sizeofChannel = 4;
+				*internalformat = DXGI_FORMAT_R32G32_UINT;
+				break;
+			case IM_INT32:
+				sizeofChannel = 4;
+				*internalformat = DXGI_FORMAT_R32G32_SINT;
+				break;
+			case IM_FLOAT16:
+				sizeofChannel = 2;
+				*internalformat = DXGI_FORMAT_R16G16_FLOAT;
+				break;
+			case IM_FLOAT32:
+				sizeofChannel = 4;
+				*internalformat = DXGI_FORMAT_R32G32_FLOAT;
+				break;
+			default:
+				fprintf( stderr, "ImPixelTypeChannelToDx10_11 ImType unsupported on Dx for RG channel image.\n" );
+				break;
+			}
+			break;
+		case IM_RGB:
+			switch ( eType )
+			{
+			case IM_UINT32:
+				sizeofChannel = 4;
+				*internalformat = DXGI_FORMAT_R32G32B32_UINT;
+				break;
+			case IM_INT32:
+				sizeofChannel = 4;
+				*internalformat = DXGI_FORMAT_R32G32B32_SINT;
+				break;
+			case IM_FLOAT32:
+				sizeofChannel = 4;
+				*internalformat = DXGI_FORMAT_R32G32B32_FLOAT;
+				break;
+			default:
+				fprintf( stderr, "ImPixelTypeChannelToDx10_11 ImType unsupported on Dx for RGB channel image.\n" );
+				break;
+			}
+			break;
+		case IM_RGBA:
+			switch ( eType )
+			{
+			case IM_UINT8:
+				sizeofChannel = 1;
+				*internalformat = DXGI_FORMAT_R8G8B8A8_UINT;
+				break;
+			case IM_INT8:
+				sizeofChannel = 1;
+				*internalformat = DXGI_FORMAT_R8G8B8A8_SINT;
+				break;
+			case IM_UINT16:
+				sizeofChannel = 2;
+				*internalformat = DXGI_FORMAT_R16G16B16A16_UINT;
+				break;
+			case IM_INT16:
+				sizeofChannel = 2;
+				*internalformat = DXGI_FORMAT_R16G16B16A16_SINT;
+				break;
+			case IM_UINT32:
+				sizeofChannel = 4;
+				*internalformat = DXGI_FORMAT_R32G32B32A32_UINT;
+				break;
+			case IM_INT32:
+				sizeofChannel = 4;
+				*internalformat = DXGI_FORMAT_R32G32B32A32_SINT;
+				break;
+			case IM_FLOAT16:
+				sizeofChannel = 2;
+				*internalformat = DXGI_FORMAT_R16G16B16A16_FLOAT;
+				break;
+			case IM_FLOAT32:
+				sizeofChannel = 4;
+				*internalformat = DXGI_FORMAT_R32G32B32A32_FLOAT;
+				break;
+			default:
+				fprintf( stderr, "ImPixelTypeChannelToDx10_11 ImType unsupported on Dx for RGBA channel image.\n" );
+				break;
+			}
+			break;
+		default:
+			fprintf( stderr, "ImPixelTypeChannelToDx9 eChannel unsupported on Dx9 {IM_R, IM_RG, IM_RGB, IM_RGBA}\n" );
+			break;
+			}
+
+		return sizeofChannel;
+	}
+#endif
+
+	ImTextureID	ImCreateTexture2D( char const* pData, ImU32 const uWidth, ImU32 const uHeight, ImImageDesc const& oImgDesc )
+	{
+#if (IM_CURRENT_GFX == IM_GFX_OPENGL2) || (IM_CURRENT_GFX == IM_GFX_OPENGL3)
+
+		GLint internalformat;
+		GLenum format;
+		ImPixelTypeChannelToOGL( &internalformat, &format, oImgDesc.eType, oImgDesc.eChannel );
+
+		GLenum type;
+		ImPixelTypeToOGL( &type, oImgDesc.eType );
+
+		GLuint image_texture;
+		glGenTextures( 1, &image_texture );
+		glBindTexture( GL_TEXTURE_2D, image_texture );
+
+		GLint minMag;
+		GLint magMag;
+		switch ( oImgDesc.eFiltering )
+		{
+		case IM_POINT:
+			minMag = magMag = GL_NEAREST;
+			break;
+		case IM_LINEAR:
+			minMag = magMag = GL_LINEAR;
+			break;
+		default:
+			fprintf( stderr, "ImCreateImage eSampler unsupported on OpenGL {IM_NEAREST, IM_LINEAR}\n" );
+			break;
+		}
+
+		GLint wrapS;
+		GLint wrapT;
+		ImBoundaryToOGL( &wrapS, oImgDesc.eBoundaryU );
+		ImBoundaryToOGL( &wrapT, oImgDesc.eBoundaryV );
+
+		glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, minMag );
+		glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, magMag );
+		glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, wrapS );
+		glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, wrapT );
+
+#if defined(GL_UNPACK_ROW_LENGTH) && !defined(__EMSCRIPTEN__)
+		glPixelStorei( GL_UNPACK_ROW_LENGTH, 0 );
+#endif
+		glTexImage2D( GL_TEXTURE_2D, 0, internalformat, ( GLsizei )uWidth, ( GLsizei )uHeight, 0, format, type, pData );
+
+		return image_texture;
+
+#elif (IM_CURRENT_GFX == IM_GFX_DIRECTX9)
+
+		D3DFORMAT internalformat;
+		int iSizeOf = ImPixelTypeChannelToDx9( &internalformat, oImgDesc.eType, oImgDesc.eChannel );
+
+		LPDIRECT3DTEXTURE9 pTexture;
+		PlatformData.pD3DDevice->CreateTexture( uWidth, uHeight, 1, 0,
+												internalformat, D3DPOOL_MANAGED, &pTexture, 0 );
+		if ( !pTexture )
+		{
+			fprintf( stderr, "ImCreateImage wasn't able to create the texture on Dx9\n" );
+		}
+
+		D3DLOCKED_RECT rect;
+		pTexture->LockRect( 0, &rect, 0, D3DLOCK_DISCARD );
+		unsigned char* dest = static_cast< unsigned char* >( rect.pBits );
+		memcpy( dest, &pData[ 0 ], iSizeOf * uWidth * uHeight * int( oImgDesc.eChannel ) );
+		pTexture->UnlockRect( 0 );
+
+		HRESULT hr = PlatformData.pD3DDevice->SetTexture( 0, pTexture );
+		if ( hr != D3D_OK )
+		{
+			//handle error
+		}
+
+		D3DTEXTUREFILTERTYPE eFiltering;
+		switch ( oImgDesc.eFiltering )
+		{
+		case IM_POINT:
+			eFiltering = D3DTEXF_POINT;
+			break;
+		case IM_LINEAR:
+			eFiltering = D3DTEXF_LINEAR;
+			break;
+		default:
+			fprintf( stderr, "ImCreateImage eSampler unsupported on Dx9 {IM_NEAREST, IM_LINEAR}\n" );
+			break;
+		}
+
+		D3DTEXTUREADDRESS eBoundaryU = ImTextureBoundaryToDX9( oImgDesc.eBoundaryU );
+		D3DTEXTUREADDRESS eBoundaryV = ImTextureBoundaryToDX9( oImgDesc.eBoundaryV );
+		PlatformData.pD3DDevice->SetSamplerState( 0, D3DSAMP_ADDRESSU, eBoundaryU );
+		PlatformData.pD3DDevice->SetSamplerState( 0, D3DSAMP_ADDRESSV, eBoundaryV );
+		PlatformData.pD3DDevice->SetSamplerState( 0, D3DSAMP_MINFILTER, eFiltering );
+		PlatformData.pD3DDevice->SetSamplerState( 0, D3DSAMP_MAGFILTER, eFiltering );
+
+		return pTexture;
+
+#elif (IM_CURRENT_GFX == IM_GFX_DIRECTX10)
+
+		ID3D10ShaderResourceView* out_srv = NULL;
+
+		DXGI_FORMAT internalformat;
+		int iSizeOf = ImPixelTypeChannelToDx10_11_12( &internalformat, oImgDesc.eType, oImgDesc.eChannel );
+
+		// Create texture
+		D3D10_TEXTURE2D_DESC desc;
+		ZeroMemory( &desc, sizeof( desc ) );
+		desc.Width = uWidth;
+		desc.Height = uHeight;
+		desc.MipLevels = 1;
+		desc.ArraySize = 1;
+		desc.Format = internalformat;
+		desc.SampleDesc.Count = 1;
+		desc.Usage = D3D10_USAGE_DEFAULT;
+		desc.BindFlags = D3D10_BIND_SHADER_RESOURCE;
+		desc.CPUAccessFlags = 0;
+
+		ID3D10Texture2D* pTexture = NULL;
+		D3D10_SUBRESOURCE_DATA subResource;
+		subResource.pSysMem = pData;
+		subResource.SysMemPitch = desc.Width * int( oImgDesc.eChannel ) * iSizeOf;
+		subResource.SysMemSlicePitch = 0;
+		PlatformData.pD3DDevice->CreateTexture2D( &desc, &subResource, &pTexture );
+
+		// Create texture view
+		D3D10_SHADER_RESOURCE_VIEW_DESC srvDesc;
+		ZeroMemory( &srvDesc, sizeof( srvDesc ) );
+		srvDesc.Format = internalformat;
+		srvDesc.ViewDimension = D3D10_SRV_DIMENSION_TEXTURE2D;
+		srvDesc.Texture2D.MipLevels = desc.MipLevels;
+		srvDesc.Texture2D.MostDetailedMip = 0;
+		PlatformData.pD3DDevice->CreateShaderResourceView( pTexture, &srvDesc, &out_srv );
+		pTexture->Release();
+
+		// TODO add sampler
+		//D3D10_SAMPLER_DESC desc;
+		//ZeroMemory( &desc, sizeof( desc ) );
+		//desc.Filter = D3D10_FILTER_MIN_MAG_MIP_LINEAR;
+		//desc.AddressU = D3D10_TEXTURE_ADDRESS_WRAP;
+		//desc.AddressV = D3D10_TEXTURE_ADDRESS_WRAP;
+		//desc.AddressW = D3D10_TEXTURE_ADDRESS_WRAP;
+		//desc.MipLODBias = 0.f;
+		//desc.ComparisonFunc = D3D10_COMPARISON_ALWAYS;
+		//desc.MinLOD = 0.f;
+		//desc.MaxLOD = 0.f;
+		//PlatformData.pD3DDevice->CreateSamplerState( &desc, &Sampler );
+
+		return out_srv;
+
+#elif (IM_CURRENT_GFX == IM_GFX_DIRECTX11)
+
+		ID3D11ShaderResourceView* out_srv = NULL;
+
+		DXGI_FORMAT internalformat;
+		int iSizeOf = ImPixelTypeChannelToDx10_11_12( &internalformat, oImgDesc.eType, oImgDesc.eChannel );
+
+		// Create texture
+		D3D11_TEXTURE2D_DESC desc;
+		ZeroMemory( &desc, sizeof( desc ) );
+		desc.Width = uWidth;
+		desc.Height = uHeight;
+		desc.MipLevels = 1;
+		desc.ArraySize = 1;
+		desc.Format = internalformat;
+		desc.SampleDesc.Count = 1;
+		desc.Usage = D3D11_USAGE_DEFAULT;
+		desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+		desc.CPUAccessFlags = 0;
+
+		ID3D11Texture2D* pTexture = NULL;
+		D3D11_SUBRESOURCE_DATA subResource;
+		subResource.pSysMem = pData;
+		subResource.SysMemPitch = desc.Width * int( oImgDesc.eChannel ) * iSizeOf;
+		subResource.SysMemSlicePitch = 0;
+		PlatformData.pD3DDevice->CreateTexture2D( &desc, &subResource, &pTexture );
+
+		// Create texture view
+		D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc;
+		ZeroMemory( &srvDesc, sizeof( srvDesc ) );
+		srvDesc.Format = internalformat;
+		srvDesc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
+		srvDesc.Texture2D.MipLevels = desc.MipLevels;
+		srvDesc.Texture2D.MostDetailedMip = 0;
+		PlatformData.pD3DDevice->CreateShaderResourceView( pTexture, &srvDesc, &out_srv );
+		pTexture->Release();
+
+		// TODO Sampler
+		//D3D11_SAMPLER_DESC desc;
+		//ZeroMemory( &desc, sizeof( desc ) );
+		//desc.Filter = D3D11_FILTER_MIN_MAG_MIP_LINEAR;
+		//desc.AddressU = D3D11_TEXTURE_ADDRESS_WRAP;
+		//desc.AddressV = D3D11_TEXTURE_ADDRESS_WRAP;
+		//desc.AddressW = D3D11_TEXTURE_ADDRESS_WRAP;
+		//desc.MipLODBias = 0.f;
+		//desc.ComparisonFunc = D3D11_COMPARISON_ALWAYS;
+		//desc.MinLOD = 0.f;
+		//desc.MaxLOD = 0.f;
+		//PlatformData.pD3DDevice->CreateSamplerState( &desc, &Sampler );
+
+		return out_srv;
+
+#elif (IM_CURRENT_GFX == IM_GFX_DIRECTX12)
+
+		DXGI_FORMAT internalformat;
+		int iSizeOf = ImPixelTypeChannelToDx10_11_12( &internalformat, oImgDesc.eType, oImgDesc.eChannel );
+
+		D3D12_HEAP_PROPERTIES props;
+		memset( &props, 0, sizeof( D3D12_HEAP_PROPERTIES ) );
+		props.Type = D3D12_HEAP_TYPE_DEFAULT;
+		props.CPUPageProperty = D3D12_CPU_PAGE_PROPERTY_UNKNOWN;
+		props.MemoryPoolPreference = D3D12_MEMORY_POOL_UNKNOWN;
+
+		D3D12_RESOURCE_DESC desc;
+		ZeroMemory( &desc, sizeof( desc ) );
+		desc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+		desc.Alignment = 0;
+		desc.Width = uWidth;
+		desc.Height = uHeight;
+		desc.DepthOrArraySize = 1;
+		desc.MipLevels = 1;
+		desc.Format = internalformat;
+		desc.SampleDesc.Count = 1;
+		desc.SampleDesc.Quality = 0;
+		desc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
+		desc.Flags = D3D12_RESOURCE_FLAG_NONE;
+
+		ID3D12Resource* pTexture = nullptr;
+		PlatformData.pD3DDevice->CreateCommittedResource( &props, D3D12_HEAP_FLAG_NONE, &desc,
+												 D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS( &pTexture ) );
+
+		UINT uploadPitch = ( uWidth * ((int)oImgDesc.eChannel ) + D3D12_TEXTURE_DATA_PITCH_ALIGNMENT - 1u ) & ~( D3D12_TEXTURE_DATA_PITCH_ALIGNMENT - 1u );
+		UINT uploadSize = uHeight * uploadPitch;
+		desc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+		desc.Alignment = 0;
+		desc.Width = uploadSize;
+		desc.Height = 1;
+		desc.DepthOrArraySize = 1;
+		desc.MipLevels = 1;
+		desc.Format = DXGI_FORMAT_UNKNOWN;
+		desc.SampleDesc.Count = 1;
+		desc.SampleDesc.Quality = 0;
+		desc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+		desc.Flags = D3D12_RESOURCE_FLAG_NONE;
+
+		props.Type = D3D12_HEAP_TYPE_UPLOAD;
+		props.CPUPageProperty = D3D12_CPU_PAGE_PROPERTY_UNKNOWN;
+		props.MemoryPoolPreference = D3D12_MEMORY_POOL_UNKNOWN;
+
+		ID3D12Resource* uploadBuffer = nullptr;
+		HRESULT hr = PlatformData.pD3DDevice->CreateCommittedResource( &props, D3D12_HEAP_FLAG_NONE, &desc,
+															  D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS( &uploadBuffer ) );
+		IM_ASSERT( SUCCEEDED( hr ) );
+
+		void* mapped = nullptr;
+		D3D12_RANGE range = { 0, uploadSize };
+		hr = uploadBuffer->Map( 0, &range, &mapped );
+		IM_ASSERT( SUCCEEDED( hr ) );
+		for ( int y = 0; y < (int)uHeight; y++ )
+			memcpy( ( void* )( ( uintptr_t )mapped + y * uploadPitch ), pData + y * uHeight * ((int)oImgDesc.eFiltering ), uWidth * ((int)oImgDesc.eChannel));
+		uploadBuffer->Unmap( 0, &range );
+
+		D3D12_TEXTURE_COPY_LOCATION srcLocation = {};
+		srcLocation.pResource = uploadBuffer;
+		srcLocation.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+		srcLocation.PlacedFootprint.Footprint.Format = internalformat;
+		srcLocation.PlacedFootprint.Footprint.Width = uWidth;
+		srcLocation.PlacedFootprint.Footprint.Height = uHeight;
+		srcLocation.PlacedFootprint.Footprint.Depth = 1;
+		srcLocation.PlacedFootprint.Footprint.RowPitch = uploadPitch;
+
+		D3D12_TEXTURE_COPY_LOCATION dstLocation = {};
+		dstLocation.pResource = pTexture;
+		dstLocation.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+		dstLocation.SubresourceIndex = 0;
+
+		D3D12_RESOURCE_BARRIER barrier = {};
+		barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+		barrier.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
+		barrier.Transition.pResource = pTexture;
+		barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+		barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
+		barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+
+		ID3D12Fence* fence = nullptr;
+		hr = PlatformData.pD3DDevice->CreateFence( 0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS( &fence ) );
+		IM_ASSERT( SUCCEEDED( hr ) );
+
+		HANDLE event = CreateEvent( 0, 0, 0, 0 );
+		IM_ASSERT( event != nullptr );
+
+		D3D12_COMMAND_QUEUE_DESC queueDesc = {};
+		queueDesc.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
+		queueDesc.Flags = D3D12_COMMAND_QUEUE_FLAG_NONE;
+		queueDesc.NodeMask = 1;
+
+		ID3D12CommandQueue* cmdQueue = nullptr;
+		hr = PlatformData.pD3DDevice->CreateCommandQueue( &queueDesc, IID_PPV_ARGS( &cmdQueue ) );
+		IM_ASSERT( SUCCEEDED( hr ) );
+
+		ID3D12CommandAllocator* cmdAlloc = nullptr;
+		hr = PlatformData.pD3DDevice->CreateCommandAllocator( D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS( &cmdAlloc ) );
+		IM_ASSERT( SUCCEEDED( hr ) );
+
+		ID3D12GraphicsCommandList* cmdList = nullptr;
+		hr = PlatformData.pD3DDevice->CreateCommandList( 0, D3D12_COMMAND_LIST_TYPE_DIRECT, cmdAlloc, nullptr, IID_PPV_ARGS( &cmdList ) );
+		IM_ASSERT( SUCCEEDED( hr ) );
+
+		cmdList->CopyTextureRegion( &dstLocation, 0, 0, 0, &srcLocation, nullptr );
+		cmdList->ResourceBarrier( 1, &barrier );
+
+		hr = cmdList->Close();
+		IM_ASSERT( SUCCEEDED( hr ) );
+
+		cmdQueue->ExecuteCommandLists( 1, ( ID3D12CommandList* const* )&cmdList );
+		hr = cmdQueue->Signal( fence, 1 );
+		IM_ASSERT( SUCCEEDED( hr ) );
+
+		fence->SetEventOnCompletion( 1, event );
+		WaitForSingleObject( event, INFINITE );
+
+		cmdList->Release();
+		cmdAlloc->Release();
+		cmdQueue->Release();
+		CloseHandle( event );
+		fence->Release();
+		uploadBuffer->Release();
+
+		// Create texture view
+		D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc;
+		ZeroMemory( &srvDesc, sizeof( srvDesc ) );
+		srvDesc.Format = internalformat;
+		srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+		srvDesc.Texture2D.MipLevels = desc.MipLevels;
+		srvDesc.Texture2D.MostDetailedMip = 0;
+		srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+		PlatformData.pD3DDevice->CreateShaderResourceView( pTexture, &srvDesc, PlatformData.pD3DSRVDescHeap->GetCPUDescriptorHandleForHeapStart() );
+
+		return reinterpret_cast< ImTextureID >( pTexture );
+#endif
+	}
+
+	void		ImReleaseTexture2D( ImTextureID id )
+	{
+#if (IM_CURRENT_GFX == IM_GFX_OPENGL2) || (IM_CURRENT_GFX == IM_GFX_OPENGL3)
+
+		GLuint tex = id;
+		glDeleteTextures( 1, &tex );
+
+#elif (IM_CURRENT_GFX == IM_GFX_DIRECTX9)
+
+		( ( LPDIRECT3DTEXTURE9 )id )->Release();
+		( ( LPDIRECT3DTEXTURE9 )id ) = NULL;
+
+#elif (IM_CURRENT_GFX == IM_GFX_DIRECTX10)
+
+		( ( ID3D11ShaderResourceView* )id )->Release();
+		( ( ID3D11ShaderResourceView* )id ) = NULL;
+
+#elif (IM_CURRENT_GFX == IM_GFX_DIRECTX11)
+
+		( ( ID3D11ShaderResourceView* )id )->Release();
+		( ( ID3D11ShaderResourceView* )id ) = NULL;
+
+#elif (IM_CURRENT_GFX == IM_GFX_DIRECTX12)
+
+		( *reinterpret_cast< ID3D12Resource** >( &id ) )->Release();
+		( *reinterpret_cast< ID3D12Resource** >( &id ) ) = NULL;
+
+#endif
+	}
+
 #if (IM_CURRENT_PLATFORM == IM_PLATFORM_WIN32)
 	LRESULT WINAPI WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
 #endif
