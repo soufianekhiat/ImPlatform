@@ -254,17 +254,17 @@ namespace ImPlatform
 {
 	enum ImPixelType
 	{
-		IM_UINT8,
-		IM_UINT16,
-		IM_UINT32,
-		IM_UINT64,
-		IM_INT8,
-		IM_INT16,
-		IM_INT32,
-		IM_INT64,
-		IM_FLOAT16,
-		IM_FLOAT32,
-		IM_FLOAT64
+		IM_TYPE_UINT8,
+		IM_TYPE_UINT16,
+		IM_TYPE_UINT32,
+		IM_TYPE_UINT64,
+		IM_TYPE_INT8,
+		IM_TYPE_INT16,
+		IM_TYPE_INT32,
+		IM_TYPE_INT64,
+		IM_TYPE_FLOAT16,
+		IM_TYPE_FLOAT32,
+		IM_TYPE_FLOAT64
 	};
 
 	enum ImPixelChannel
@@ -277,15 +277,15 @@ namespace ImPlatform
 
 	enum ImTextureFilter
 	{
-		IM_POINT,
-		IM_LINEAR
+		IM_FILTERING_POINT,
+		IM_FILTERING_LINEAR
 	};
 
 	enum ImTextureBoundary
 	{
-		IM_CLAMP,
-		IM_REPEAT,
-		IM_MIRROR_REPEAT
+		IM_BOUNDARY_CLAMP,
+		IM_BOUNDARY_REPEAT,
+		IM_BOUNDARY_MIRROR
 	};
 
 	struct ImImageDesc
@@ -298,7 +298,7 @@ namespace ImPlatform
 	};
 
 	// Generic
-	ImTextureID	ImCreateTexture2D	( char const* pData, ImU32 const uWidth, ImU32 const uHeight, ImImageDesc const& oImgDesc );
+	ImTextureID	ImCreateTexture2D	( char* pData, ImU32 const uWidth, ImU32 const uHeight, ImImageDesc const& oImgDesc );
 	void		ImReleaseTexture2D	( ImTextureID id );
 
 	// SimpleAPI:
