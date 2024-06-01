@@ -94,34 +94,45 @@ namespace ImPlatform
 			break;
 		}
 #else
+#if 1
+		switch ( eChannel )
+		{
+		case IM_RGBA:
+			*internalFormat = *format = GL_RGBA;
+			break;
+		default:
+			fprintf( stderr, "ImChannelToOGL eChannel unsupported on OpenGL3 {IM_RGBA}\n" );
+			break;
+		}
+#else
 		switch ( eChannel )
 		{
 		case IM_R:
 			*format = GL_RED;
 			switch ( eType )
 			{
-			case IM_UINT8:
+			case IM_TYPE_UINT8:
 				*internalformat = GL_R8UI;
 				break;
-			case IM_UINT16:
+			case IM_TYPE_UINT16:
 				*internalformat = GL_R16UI;
 				break;
-			case IM_UINT32:
+			case IM_TYPE_UINT32:
 				*internalformat = GL_R32UI;
 				break;
-			case IM_INT8:
+			case IM_TYPE_INT8:
 				*internalformat = GL_R8I;
 				break;
-			case IM_INT16:
+			case IM_TYPE_INT16:
 				*internalformat = GL_R16I;
 				break;
-			case IM_INT32:
+			case IM_TYPE_INT32:
 				*internalformat = GL_R32I;
 				break;
-			case IM_FLOAT16:
+			case IM_TYPE_FLOAT16:
 				*internalformat = GL_R16F;
 				break;
-			case IM_FLOAT32:
+			case IM_TYPE_FLOAT32:
 				*internalformat = GL_R32F;
 				break;
 			default:
@@ -133,28 +144,28 @@ namespace ImPlatform
 			*format = GL_RG;
 			switch ( eType )
 			{
-			case IM_UINT8:
+			case IM_TYPE_UINT8:
 				*internalformat = GL_RG8UI;
 				break;
-			case IM_UINT16:
+			case IM_TYPE_UINT16:
 				*internalformat = GL_RG16UI;
 				break;
-			case IM_UINT32:
+			case IM_TYPE_UINT32:
 				*internalformat = GL_RG32UI;
 				break;
-			case IM_INT8:
+			case IM_TYPE_INT8:
 				*internalformat = GL_RG8I;
 				break;
-			case IM_INT16:
+			case IM_TYPE_INT16:
 				*internalformat = GL_RG16I;
 				break;
-			case IM_INT32:
+			case IM_TYPE_INT32:
 				*internalformat = GL_RG32I;
 				break;
-			case IM_FLOAT16:
+			case IM_TYPE_FLOAT16:
 				*internalformat = GL_RG16F;
 				break;
-			case IM_FLOAT32:
+			case IM_TYPE_FLOAT32:
 				*internalformat = GL_RG32F;
 				break;
 			default:
@@ -166,28 +177,28 @@ namespace ImPlatform
 			*format = GL_RGB;
 			switch ( eType )
 			{
-			case IM_UINT8:
+			case IM_TYPE_UINT8:
 				*internalformat = GL_RGB8UI;
 				break;
-			case IM_UINT16:
+			case IM_TYPE_UINT16:
 				*internalformat = GL_RGB16UI;
 				break;
-			case IM_UINT32:
+			case IM_TYPE_UINT32:
 				*internalformat = GL_RGB32UI;
 				break;
-			case IM_INT8:
+			case IM_TYPE_INT8:
 				*internalformat = GL_RGB8I;
 				break;
-			case IM_INT16:
+			case IM_TYPE_INT16:
 				*internalformat = GL_RGB16I;
 				break;
-			case IM_INT32:
+			case IM_TYPE_INT32:
 				*internalformat = GL_RGB32I;
 				break;
-			case IM_FLOAT16:
+			case IM_TYPE_FLOAT16:
 				*internalformat = GL_RGB16F;
 				break;
-			case IM_FLOAT32:
+			case IM_TYPE_FLOAT32:
 				*internalformat = GL_RGB32F;
 				break;
 			default:
@@ -199,28 +210,28 @@ namespace ImPlatform
 			*format = GL_RGBA;
 			switch ( eType )
 			{
-			case IM_UINT8:
+			case IM_TYPE_UINT8:
 				*internalformat = GL_RGBA8UI;
 				break;
-			case IM_UINT16:
+			case IM_TYPE_UINT16:
 				*internalformat = GL_RGBA16UI;
 				break;
-			case IM_UINT32:
+			case IM_TYPE_UINT32:
 				*internalformat = GL_RGBA32UI;
 				break;
-			case IM_INT8:
+			case IM_TYPE_INT8:
 				*internalformat = GL_RGBA8I;
 				break;
-			case IM_INT16:
+			case IM_TYPE_INT16:
 				*internalformat = GL_RGBA16I;
 				break;
-			case IM_INT32:
+			case IM_TYPE_INT32:
 				*internalformat = GL_RGBA32I;
 				break;
-			case IM_FLOAT16:
+			case IM_TYPE_FLOAT16:
 				*internalformat = GL_RGBA16F;
 				break;
-			case IM_FLOAT32:
+			case IM_TYPE_FLOAT32:
 				*internalformat = GL_RGBA32F;
 				break;
 			default:
@@ -233,23 +244,24 @@ namespace ImPlatform
 			break;
 		}
 #endif
+#endif
 	}
 
 	void ImPixelTypeToOGL( GLenum* type, ImPixelType const eType )
 	{
 #if (IM_CURRENT_GFX == IM_GFX_OPENGL2)
-		switch ( oImgDesc.eType )
+		switch ( eType )
 		{
-		case IM_UINT8:
+		case IM_TYPE_UINT8:
 			*type = GL_UNSIGNED_BYTE;
 			break;
-		case IM_UINT16:
+		case IM_TYPE_UINT16:
 			*type = GL_UNSIGNED_SHORT;
 			break;
-		case IM_UINT32:
+		case IM_TYPE_UINT32:
 			*type = GL_UNSIGNED_INT;
 			break;
-		case IM_FLOAT32:
+		case IM_TYPE_FLOAT32:
 			*type = GL_FLOAT;
 			break;
 		default:
@@ -257,30 +269,50 @@ namespace ImPlatform
 			break;
 		}
 #else
-		switch ( oImgDesc.eType )
+#if 1
+		switch ( eType )
 		{
-		case IM_UINT8:
+		case IM_TYPE_UINT8:
 			*type = GL_UNSIGNED_BYTE;
 			break;
-		case IM_UINT16:
+		case IM_TYPE_UINT16:
 			*type = GL_UNSIGNED_SHORT;
 			break;
-		case IM_UINT32:
+		case IM_TYPE_UINT32:
 			*type = GL_UNSIGNED_INT;
 			break;
-		case IM_INT8:
+		case IM_TYPE_FLOAT32:
+			*type = GL_FLOAT;
+			break;
+		default:
+			fprintf( stderr, "ImCreateImage ImType unsupported on OpenGL3 {IM_UINT8, IM_UINT16, IM_UINT32, IM_FLOAT32}\n" );
+			break;
+		}
+#else
+		switch ( eType )
+		{
+		case IM_TYPE_UINT8:
+			*type = GL_UNSIGNED_BYTE;
+			break;
+		case IM_TYPE_UINT16:
+			*type = GL_UNSIGNED_SHORT;
+			break;
+		case IM_TYPE_UINT32:
+			*type = GL_UNSIGNED_INT;
+			break;
+		case IM_TYPE_INT8:
 			*type = GL_BYTE;
 			break;
-		case IM_INT16:
+		case IM_TYPE_INT16:
 			*type = GL_SHORT;
 			break;
-		case IM_INT32:
+		case IM_TYPE_INT32:
 			*type = GL_INT;
 			break;
-		case IM_FLOAT16:
+		case IM_TYPE_FLOAT16:
 			*type = GL_HALF_FLOAT;
 			break;
-		case IM_FLOAT32:
+		case IM_TYPE_FLOAT32:
 			*type = GL_FLOAT;
 			break;
 		default:
@@ -288,25 +320,26 @@ namespace ImPlatform
 			break;
 		}
 #endif
+#endif
 	}
 
-	void ImBoundaryToOGL( GLint* wrap, ImTextureBoundary const eBoundary )
-	{
-		switch ( eBoundary )
-		{
-		case IM_CLAMP:
-			*wrap = GL_CLAMP_TO_EDGE;
-			break;
-		case IM_REPEAT:
-			*wrap = GL_REPEAT;
-			break;
-		case IM_MIRROR_REPEAT:
-			*wrapS = GL_MIRRORED_REPEAT;
-		default:
-			fprintf( stderr, "ImCreateImage eBoundaryU unsupported on OpenGL {IM_CLAMP, IM_REPEAT, IM_MIRROR_REPEAT}\n" );
-			break;
-		}
-	}
+	//void ImBoundaryToOGL( GLint* wrap, ImTextureBoundary const eBoundary )
+	//{
+	//	switch ( eBoundary )
+	//	{
+	//	case IM_BOUNDARY_CLAMP:
+	//		*wrap = GL_CLAMP_TO_EDGE;
+	//		break;
+	//	case IM_BOUNDARY_REPEAT:
+	//		*wrap = GL_REPEAT;
+	//		break;
+	//	case IM_BOUNDARY_MIRROR:
+	//		*wrapS = GL_MIRRORED_REPEAT;
+	//	default:
+	//		fprintf( stderr, "ImCreateImage eBoundaryU unsupported on OpenGL {IM_CLAMP, IM_REPEAT, IM_MIRROR_REPEAT}\n" );
+	//		break;
+	//	}
+	//}
 
 #elif (IM_CURRENT_GFX == IM_GFX_DIRECTX9)
 	ImS32 ImPixelTypeChannelToDx9( D3DFORMAT* internalformat, ImPixelType const eType, ImPixelChannel const eChannel )
@@ -317,21 +350,21 @@ namespace ImPlatform
 		case IM_R:
 			switch ( eType )
 			{
-			case IM_UINT8:
-			case IM_INT8:
+			case IM_TYPE_UINT8:
+			case IM_TYPE_INT8:
 				sizeofChannel = 1;
 				*internalformat = D3DFMT_L8;
 				break;
-			case IM_UINT16:
-			case IM_INT16:
+			case IM_TYPE_UINT16:
+			case IM_TYPE_INT16:
 				sizeofChannel = 2;
 				*internalformat = D3DFMT_L16;
 				break;
-			case IM_FLOAT16:
+			case IM_TYPE_FLOAT16:
 				sizeofChannel = 2;
 				*internalformat = D3DFMT_R16F;
 				break;
-			case IM_FLOAT32:
+			case IM_TYPE_FLOAT32:
 				sizeofChannel = 4;
 				*internalformat = D3DFMT_R32F;
 				break;
@@ -343,26 +376,26 @@ namespace ImPlatform
 		case IM_RG:
 			switch ( eType )
 			{
-			case IM_UINT8:
-			case IM_INT8:
+			case IM_TYPE_UINT8:
+			case IM_TYPE_INT8:
 				sizeofChannel = 1;
 				*internalformat = D3DFMT_A8L8;
 				break;
-			case IM_UINT16:
-			case IM_INT16:
+			case IM_TYPE_UINT16:
+			case IM_TYPE_INT16:
 				sizeofChannel = 2;
 				*internalformat = D3DFMT_G16R16;
 				break;
-			case IM_UINT32:
-			case IM_INT32:
+			case IM_TYPE_UINT32:
+			case IM_TYPE_INT32:
 				sizeofChannel = 4;
 				*internalformat = D3DFMT_R3G3B2;
 				break;
-			case IM_FLOAT16:
+			case IM_TYPE_FLOAT16:
 				sizeofChannel = 2;
 				*internalformat = D3DFMT_G16R16F;
 				break;
-			case IM_FLOAT32:
+			case IM_TYPE_FLOAT32:
 				sizeofChannel = 4;
 				*internalformat = D3DFMT_G32R32F;
 				break;
@@ -374,8 +407,8 @@ namespace ImPlatform
 		case IM_RGB:
 			switch ( eType )
 			{
-			case IM_UINT8:
-			case IM_INT8:
+			case IM_TYPE_UINT8:
+			case IM_TYPE_INT8:
 				sizeofChannel = 1;
 				*internalformat = D3DFMT_R8G8B8;
 				break;
@@ -387,21 +420,21 @@ namespace ImPlatform
 		case IM_RGBA:
 			switch ( eType )
 			{
-			case IM_UINT8:
-			case IM_INT8:
+			case IM_TYPE_UINT8:
+			case IM_TYPE_INT8:
 				sizeofChannel = 1;
-				*internalformat = D3DFMT_A8R8G8B8;
+				*internalformat = D3DFMT_A8B8G8R8;
 				break;
-			case IM_UINT16:
-			case IM_INT16:
+			case IM_TYPE_UINT16:
+			case IM_TYPE_INT16:
 				sizeofChannel = 2;
 				*internalformat = D3DFMT_A16B16G16R16;
 				break;
-			case IM_FLOAT16:
+			case IM_TYPE_FLOAT16:
 				sizeofChannel = 2;
 				*internalformat = D3DFMT_A16B16G16R16F;
 				break;
-			case IM_FLOAT32:
+			case IM_TYPE_FLOAT32:
 				sizeofChannel = 4;
 				*internalformat = D3DFMT_A32B32G32R32F;
 				break;
@@ -422,11 +455,11 @@ namespace ImPlatform
 	{
 		switch ( eBoundary )
 		{
-		case IM_CLAMP:
+		case IM_BOUNDARY_CLAMP:
 			return D3DTADDRESS_CLAMP;
-		case IM_REPEAT:
+		case IM_BOUNDARY_REPEAT:
 			return D3DTADDRESS_WRAP;
-		case IM_MIRROR_REPEAT:
+		case IM_BOUNDARY_MIRROR:
 			return D3DTADDRESS_MIRROR;
 		default:
 			fprintf( stderr, "ImTextureBoundaryToDX9 eBoundary unsupported on Dx9 {IM_CLAMP, IM_REPEAT, IM_MIRROR_REPEAT}\n" );
@@ -434,21 +467,6 @@ namespace ImPlatform
 		}
 	}
 
-	D3DTEXTUREADDRESS ImTextureBoundaryToDX9( ImTextureBoundary const eBoundary )
-	{
-		switch ( eBoundary )
-		{
-		case IM_CLAMP:
-			return D3DTADDRESS_CLAMP;
-		case IM_REPEAT:
-			return D3DTADDRESS_WRAP;
-		case IM_MIRROR_REPEAT:
-			return D3DTADDRESS_MIRROR;
-		default:
-			fprintf( stderr, "ImTextureBoundaryToDX9 eBoundary unsupported on Dx9 {IM_CLAMP, IM_REPEAT, IM_MIRROR_REPEAT}\n" );
-			return D3DTADDRESS_FORCE_DWORD;
-		}
-	}
 #elif (IM_CURRENT_GFX == IM_GFX_DIRECTX10) || (IM_CURRENT_GFX == IM_GFX_DIRECTX11) || (IM_CURRENT_GFX == IM_GFX_DIRECTX12)
 	ImS32 ImPixelTypeChannelToDx10_11_12( DXGI_FORMAT* internalformat, ImPixelType const eType, ImPixelChannel const eChannel )
 	{
@@ -458,27 +476,27 @@ namespace ImPlatform
 		case IM_R:
 			switch ( eType )
 			{
-			case IM_UINT8:
+			case IM_TYPE_UINT8:
 				sizeofChannel = 1;
 				*internalformat = DXGI_FORMAT_R8_UINT;
 				break;
-			case IM_INT8:
+			case IM_TYPE_INT8:
 				sizeofChannel = 1;
 				*internalformat = DXGI_FORMAT_R8_SINT;
 				break;
-			case IM_UINT16:
+			case IM_TYPE_UINT16:
 				sizeofChannel = 2;
 				*internalformat = DXGI_FORMAT_R16_UINT;
 				break;
-			case IM_INT16:
+			case IM_TYPE_INT16:
 				sizeofChannel = 2;
 				*internalformat = DXGI_FORMAT_R16_SINT;
 				break;
-			case IM_FLOAT16:
+			case IM_TYPE_FLOAT16:
 				sizeofChannel = 2;
 				*internalformat = DXGI_FORMAT_R16_FLOAT;
 				break;
-			case IM_FLOAT32:
+			case IM_TYPE_FLOAT32:
 				sizeofChannel = 4;
 				*internalformat = DXGI_FORMAT_R32_FLOAT;
 				break;
@@ -490,35 +508,35 @@ namespace ImPlatform
 		case IM_RG:
 			switch ( eType )
 			{
-			case IM_UINT8:
+			case IM_TYPE_UINT8:
 				sizeofChannel = 1;
 				*internalformat = DXGI_FORMAT_R8G8_UINT;
 				break;
-			case IM_INT8:
+			case IM_TYPE_INT8:
 				sizeofChannel = 1;
 				*internalformat = DXGI_FORMAT_R8G8_SINT;
 				break;
-			case IM_UINT16:
+			case IM_TYPE_UINT16:
 				sizeofChannel = 2;
 				*internalformat = DXGI_FORMAT_R16G16_UINT;
 				break;
-			case IM_INT16:
+			case IM_TYPE_INT16:
 				sizeofChannel = 2;
 				*internalformat = DXGI_FORMAT_R16G16_SINT;
 				break;
-			case IM_UINT32:
+			case IM_TYPE_UINT32:
 				sizeofChannel = 4;
 				*internalformat = DXGI_FORMAT_R32G32_UINT;
 				break;
-			case IM_INT32:
+			case IM_TYPE_INT32:
 				sizeofChannel = 4;
 				*internalformat = DXGI_FORMAT_R32G32_SINT;
 				break;
-			case IM_FLOAT16:
+			case IM_TYPE_FLOAT16:
 				sizeofChannel = 2;
 				*internalformat = DXGI_FORMAT_R16G16_FLOAT;
 				break;
-			case IM_FLOAT32:
+			case IM_TYPE_FLOAT32:
 				sizeofChannel = 4;
 				*internalformat = DXGI_FORMAT_R32G32_FLOAT;
 				break;
@@ -530,15 +548,15 @@ namespace ImPlatform
 		case IM_RGB:
 			switch ( eType )
 			{
-			case IM_UINT32:
+			case IM_TYPE_UINT32:
 				sizeofChannel = 4;
 				*internalformat = DXGI_FORMAT_R32G32B32_UINT;
 				break;
-			case IM_INT32:
+			case IM_TYPE_INT32:
 				sizeofChannel = 4;
 				*internalformat = DXGI_FORMAT_R32G32B32_SINT;
 				break;
-			case IM_FLOAT32:
+			case IM_TYPE_FLOAT32:
 				sizeofChannel = 4;
 				*internalformat = DXGI_FORMAT_R32G32B32_FLOAT;
 				break;
@@ -550,35 +568,35 @@ namespace ImPlatform
 		case IM_RGBA:
 			switch ( eType )
 			{
-			case IM_UINT8:
+			case IM_TYPE_UINT8:
 				sizeofChannel = 1;
-				*internalformat = DXGI_FORMAT_R8G8B8A8_UINT;
+				*internalformat = DXGI_FORMAT_R8G8B8A8_UNORM;
 				break;
-			case IM_INT8:
+			case IM_TYPE_INT8:
 				sizeofChannel = 1;
 				*internalformat = DXGI_FORMAT_R8G8B8A8_SINT;
 				break;
-			case IM_UINT16:
+			case IM_TYPE_UINT16:
 				sizeofChannel = 2;
 				*internalformat = DXGI_FORMAT_R16G16B16A16_UINT;
 				break;
-			case IM_INT16:
+			case IM_TYPE_INT16:
 				sizeofChannel = 2;
 				*internalformat = DXGI_FORMAT_R16G16B16A16_SINT;
 				break;
-			case IM_UINT32:
+			case IM_TYPE_UINT32:
 				sizeofChannel = 4;
 				*internalformat = DXGI_FORMAT_R32G32B32A32_UINT;
 				break;
-			case IM_INT32:
+			case IM_TYPE_INT32:
 				sizeofChannel = 4;
 				*internalformat = DXGI_FORMAT_R32G32B32A32_SINT;
 				break;
-			case IM_FLOAT16:
+			case IM_TYPE_FLOAT16:
 				sizeofChannel = 2;
 				*internalformat = DXGI_FORMAT_R16G16B16A16_FLOAT;
 				break;
-			case IM_FLOAT32:
+			case IM_TYPE_FLOAT32:
 				sizeofChannel = 4;
 				*internalformat = DXGI_FORMAT_R32G32B32A32_FLOAT;
 				break;
@@ -596,7 +614,7 @@ namespace ImPlatform
 	}
 #endif
 
-	ImTextureID	ImCreateTexture2D( char const* pData, ImU32 const uWidth, ImU32 const uHeight, ImImageDesc const& oImgDesc )
+	ImTextureID	ImCreateTexture2D( char* pData, ImU32 const uWidth, ImU32 const uHeight, ImImageDesc const& oImgDesc )
 	{
 #if (IM_CURRENT_GFX == IM_GFX_OPENGL2) || (IM_CURRENT_GFX == IM_GFX_OPENGL3)
 
@@ -615,33 +633,34 @@ namespace ImPlatform
 		GLint magMag;
 		switch ( oImgDesc.eFiltering )
 		{
-		case IM_POINT:
-			minMag = magMag = GL_NEAREST;
-			break;
-		case IM_LINEAR:
+		//case IM_FILTERING_POINT:
+		//	minMag = magMag = GL_NEAREST;
+		//	break;
+		case IM_FILTERING_LINEAR:
 			minMag = magMag = GL_LINEAR;
 			break;
 		default:
-			fprintf( stderr, "ImCreateImage eSampler unsupported on OpenGL {IM_NEAREST, IM_LINEAR}\n" );
+			fprintf( stderr, "ImCreateImage eSampler unsupported on OpenGL {IM_LINEAR}\n" );
+			//fprintf( stderr, "ImCreateImage eSampler unsupported on OpenGL {IM_NEAREST, IM_LINEAR}\n" );
 			break;
 		}
 
-		GLint wrapS;
-		GLint wrapT;
-		ImBoundaryToOGL( &wrapS, oImgDesc.eBoundaryU );
-		ImBoundaryToOGL( &wrapT, oImgDesc.eBoundaryV );
+		//GLint wrapS;
+		//GLint wrapT;
+		//ImBoundaryToOGL( &wrapS, oImgDesc.eBoundaryU );
+		//ImBoundaryToOGL( &wrapT, oImgDesc.eBoundaryV );
 
 		glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, minMag );
 		glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, magMag );
-		glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, wrapS );
-		glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, wrapT );
+		//glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, wrapS );
+		//glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, wrapT );
 
 #if defined(GL_UNPACK_ROW_LENGTH) && !defined(__EMSCRIPTEN__)
 		glPixelStorei( GL_UNPACK_ROW_LENGTH, 0 );
 #endif
 		glTexImage2D( GL_TEXTURE_2D, 0, internalformat, ( GLsizei )uWidth, ( GLsizei )uHeight, 0, format, type, pData );
 
-		return image_texture;
+		return ( void* )( intptr_t )image_texture;
 
 #elif (IM_CURRENT_GFX == IM_GFX_DIRECTX9)
 
@@ -671,10 +690,10 @@ namespace ImPlatform
 		D3DTEXTUREFILTERTYPE eFiltering;
 		switch ( oImgDesc.eFiltering )
 		{
-		case IM_POINT:
+		case IM_FILTERING_POINT:
 			eFiltering = D3DTEXF_POINT;
 			break;
-		case IM_LINEAR:
+		case IM_FILTERING_LINEAR:
 			eFiltering = D3DTEXF_LINEAR;
 			break;
 		default:
@@ -929,7 +948,15 @@ namespace ImPlatform
 		srvDesc.Texture2D.MipLevels = desc.MipLevels;
 		srvDesc.Texture2D.MostDetailedMip = 0;
 		srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-		PlatformData.pD3DDevice->CreateShaderResourceView( pTexture, &srvDesc, PlatformData.pD3DSRVDescHeap->GetCPUDescriptorHandleForHeapStart() );
+
+		UINT handle_increment = PlatformData.pD3DDevice->GetDescriptorHandleIncrementSize( D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV );
+		int descriptor_index = 1; // The descriptor table index to use (not normally a hard-coded constant, but in this case we'll assume we have slot 1 reserved for us)
+		D3D12_CPU_DESCRIPTOR_HANDLE my_texture_srv_cpu_handle = PlatformData.pD3DSRVDescHeap->GetCPUDescriptorHandleForHeapStart();
+		my_texture_srv_cpu_handle.ptr += ( handle_increment * descriptor_index );
+		D3D12_GPU_DESCRIPTOR_HANDLE my_texture_srv_gpu_handle = PlatformData.pD3DSRVDescHeap->GetGPUDescriptorHandleForHeapStart();
+		my_texture_srv_gpu_handle.ptr += ( handle_increment * descriptor_index );
+
+		PlatformData.pD3DDevice->CreateShaderResourceView( pTexture, &srvDesc, my_texture_srv_cpu_handle );
 
 		return reinterpret_cast< ImTextureID >( pTexture );
 #endif
@@ -939,23 +966,20 @@ namespace ImPlatform
 	{
 #if (IM_CURRENT_GFX == IM_GFX_OPENGL2) || (IM_CURRENT_GFX == IM_GFX_OPENGL3)
 
-		GLuint tex = id;
+		GLuint tex = ( GLuint )( intptr_t )id;
 		glDeleteTextures( 1, &tex );
 
 #elif (IM_CURRENT_GFX == IM_GFX_DIRECTX9)
 
 		( ( LPDIRECT3DTEXTURE9 )id )->Release();
-		( ( LPDIRECT3DTEXTURE9 )id ) = NULL;
 
 #elif (IM_CURRENT_GFX == IM_GFX_DIRECTX10)
 
-		( ( ID3D11ShaderResourceView* )id )->Release();
-		( ( ID3D11ShaderResourceView* )id ) = NULL;
+		( ( ID3D10ShaderResourceView* )id )->Release();
 
 #elif (IM_CURRENT_GFX == IM_GFX_DIRECTX11)
 
 		( ( ID3D11ShaderResourceView* )id )->Release();
-		( ( ID3D11ShaderResourceView* )id ) = NULL;
 
 #elif (IM_CURRENT_GFX == IM_GFX_DIRECTX12)
 
@@ -1212,6 +1236,7 @@ namespace ImPlatform
 		{
 			D3D12_DESCRIPTOR_HEAP_DESC desc = {};
 			desc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
+			//desc.NumDescriptors = 1;
 			desc.NumDescriptors = 1;
 			desc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
 			if ( PlatformData.pD3DDevice->CreateDescriptorHeap( &desc, IID_PPV_ARGS( &PlatformData.pD3DSRVDescHeap ) ) != S_OK )
