@@ -173,7 +173,11 @@ struct PlatformDataImpl
 {
 #if (IM_CURRENT_PLATFORM == IM_PLATFORM_WIN32)
 	HWND		pHandle		= nullptr;
-	WNDCLASSEX	oWinStruct;
+#ifdef UNICODE
+	WNDCLASSEXW	oWinStruct;
+#else
+	WNDCLASSEXA	oWinStruct;
+#endif
 	MSG			oMessage;
 
 	// Dx12 Backend uses WM_SIZE to resize buffers

@@ -1541,17 +1541,20 @@ static void Im_Hook_Renderer_SwapBuffers( ImGuiViewport* viewport, void* )
 	{
 #if (IM_CURRENT_PLATFORM == IM_PLATFORM_WIN32)
 
+		//ImGui_ImplWin32_EnableDpiAwareness();
+
 #ifdef UNICODE
 		const size_t WCHARBUF = 4096;
 		wchar_t  wszDest[ WCHARBUF ];
 		MultiByteToWideChar( CP_ACP, MB_PRECOMPOSED, pWindowsName, -1, wszDest, WCHARBUF );
-#endif
-
-		//ImGui_ImplWin32_EnableDpiAwareness();
-
 		PlatformData.oWinStruct = { sizeof( PlatformData.oWinStruct ), CS_CLASSDC, WndProc, 0L, 0L, GetModuleHandle( nullptr ), nullptr, nullptr, nullptr, nullptr, L"ImPlatform", nullptr };
 		::RegisterClassExW( &PlatformData.oWinStruct );
 		PlatformData.pHandle = ::CreateWindowW( PlatformData.oWinStruct.lpszClassName, wszDest, WS_OVERLAPPEDWINDOW, 100, 100, uWidth, uHeight, nullptr, nullptr, PlatformData.oWinStruct.hInstance, nullptr );
+#else
+		PlatformData.oWinStruct = { sizeof( PlatformData.oWinStruct ), CS_CLASSDC, WndProc, 0L, 0L, GetModuleHandle( nullptr ), nullptr, nullptr, nullptr, nullptr, "ImPlatform", nullptr };
+		::RegisterClassExA( &PlatformData.oWinStruct );
+		PlatformData.pHandle = ::CreateWindowA( PlatformData.oWinStruct.lpszClassName, pWindowsName, WS_OVERLAPPEDWINDOW, 100, 100, uWidth, uHeight, nullptr, nullptr, PlatformData.oWinStruct.hInstance, nullptr );
+#endif
 
 #elif (IM_CURRENT_PLATFORM == IM_PLATFORM_GLFW)
 
