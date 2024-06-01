@@ -8,7 +8,9 @@ extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler( HWND hWnd, UINT ms
 #if (IM_CURRENT_GFX != IM_GFX_OPENGL2) && (IM_CURRENT_GFX != IM_GFX_OPENGL3)
 #include <backends/imgui_impl_glfw.cpp>
 #endif
+#if IM_GLFW3_AUTO_LINK
 #pragma comment( lib, "../GLFW/lib-vc2010-64/glfw3.lib" )
+#endif
 #elif (IM_CURRENT_PLATFORM) == IM_PLATFORM_APPLE)
 #else
 #error IM_CURRENT_TARGET not specified correctly

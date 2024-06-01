@@ -46,7 +46,7 @@
 #include <stb_image.h>
 #endif
 
-bool g_bSimpleAPI = true;
+static bool g_bSimpleAPI = true;
 
 int main()
 {
