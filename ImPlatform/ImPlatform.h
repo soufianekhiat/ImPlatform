@@ -7,6 +7,11 @@
 
 #include <imgui.h>
 
+// To override the link of glfw3 use to 1
+#ifndef IM_GLFW3_AUTO_LINK 
+#define IM_GLFW3_AUTO_LINK 1
+#endif
+
 // - [ O ] WIN32_OPENGL3
 // - [ O ] WIN32_DIRECTX9
 // - [ O ] WIN32_DIRECTX10
@@ -172,7 +177,7 @@ struct PlatformDataImpl
 	MSG			oMessage;
 
 	// Dx12 Backend uses WM_SIZE to resize buffers
-#if (IM_CURRENT_GFX != IM_GFX_DIRECTX12) && (IM_CURRENT_GFX != IM_GFX_OPENGL3) && (IM_CURRENT_GFX != IM_GFX_OPENGL2s)
+#if (IM_CURRENT_GFX != IM_GFX_DIRECTX12) && (IM_CURRENT_GFX != IM_GFX_OPENGL3) && (IM_CURRENT_GFX != IM_GFX_OPENGL2)
 	UINT		uResizeWidth	= 0;
 	UINT		uResizeHeight	= 0;
 #endif
