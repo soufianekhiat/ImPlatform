@@ -31,9 +31,12 @@
 // Or a permutation, Not all permutation are valid for instance __DEAR_MAC__ + __DEAR_GFX_DX11__
 //#define __DEAR_GLFW__
 #define __DEAR_WIN__
-#define __DEAR_GFX_DX11__
+//#define IM_GLFW3_AUTO_LINK
+//#define __DEAR_GLFW__
+#define __DEAR_GFX_DX9__
 //#define __DEAR_GFX_OGL3__
 //#define IM_CURRENT_TARGET IM_TARGET_GLFW_OPENGL3
+//#define IM_THE_CHERNO_GLFW3
 #include <ImPlatform.h>
 
 #include <stdio.h>
@@ -46,16 +49,50 @@
 #include <stb_image.h>
 #endif
 
-static bool g_bSimpleAPI = true;
+//////////////////////////////////////////////////////////////////////////
+// Global Options
+static bool g_bSimpleAPI		= true;
+static bool g_bCustomTitleBar	= false;
+//////////////////////////////////////////////////////////////////////////
 
 int main()
 {
+	// Setup for an image
+	int width;
+	int height;
+	int channel;
+#if IM_HAS_STBI
+	stbi_uc* data = stbi_load( "MyImage01.jpg", &width, &height, &channel, STBI_rgb_alpha );
+#else
+	// If we don't have stb_image we create an image manually instead of loading the file.
+	width = height = 256;
+	channel = 4;
+	unsigned char* data = ( unsigned char* )malloc( width * height * channel );
+	for ( int j = 0; j < height; ++j )
+	{
+		for ( int i = 0; i < width; ++i )
+		{
+			float x = floorf( ( float )i / 16.0f );
+			float y = floorf( ( float )j / 16.0f );
+			float PatternMask = fmodf( x + fmodf( y, 2.0f ), 2.0f );
+			unsigned char val = PatternMask ? 255 : 0;
+			data[ channel * ( j * height + i ) + 0 ] = val;
+			data[ channel * ( j * height + i ) + 1 ] = val;
+			data[ channel * ( j * height + i ) + 2 ] = val;
+			data[ channel * ( j * height + i ) + 3 ] = 0xFFu;
+		}
+	}
+#endif
+
+	if ( g_bCustomTitleBar )
+		ImPlatform::ImEnableCustomTitleBar();
+
 	// ImPlatform::SimpleAPI
 	if ( g_bSimpleAPI )
 	{
 		bool bGood;
 
-		bGood = ImPlatform::ImSimpleStart( "ImPlatform Simple Demo", 1024, 764 );
+		bGood = ImPlatform::ImSimpleStart( "ImPlatform Simple Demo", ImVec2( 100, 100 ), 1024, 764 );
 		if ( !bGood )
 		{
 			fprintf( stderr, "ImPlatform: Cannot Simple Start." );
@@ -83,39 +120,14 @@ int main()
 			fprintf( stderr, "ImPlatform : Cannot Initialize." );
 			return false;
 		}
-
-		int width;
-		int height;
-		int channel;
-#if IM_HAS_STBI
-		stbi_uc* data = stbi_load( "MyImage01.jpg", &width, &height, &channel, STBI_rgb_alpha );
-#else
-		width = height = 256;
-		channel = 4;
-		unsigned char* data = ( unsigned char* )malloc( width * height * channel );
-		for ( int j = 0; j < height; ++j )
-		{
-			for ( int i = 0; i < width; ++i )
-			{
-				float x = floorf( ( float )i / 16.0f );
-				float y = floorf( ( float )j / 16.0f );
-				float PatternMask = fmodf( x + fmodf( y, 2.0f ), 2.0f );
-				unsigned char val = PatternMask ? 255 : 0;
-				data[ channel * ( j * height + i ) + 0 ] = val;
-				data[ channel * ( j * height + i ) + 1 ] = val;
-				data[ channel * ( j * height + i ) + 2 ] = val;
-				data[ channel * ( j * height + i ) + 3 ] = 0xFFu;
-			}
-		}
-#endif
 		ImTextureID img = ImPlatform::ImCreateTexture2D( ( char* )data, width, height,
-											 {
-												ImPlatform::IM_RGBA,
-												ImPlatform::IM_TYPE_UINT8,
-												ImPlatform::IM_FILTERING_LINEAR,
-												ImPlatform::IM_BOUNDARY_CLAMP,
-												ImPlatform::IM_BOUNDARY_CLAMP
-											 } );
+														 {
+															ImPlatform::IM_RGBA,
+															ImPlatform::IM_TYPE_UINT8,
+															ImPlatform::IM_FILTERING_LINEAR,
+															ImPlatform::IM_BOUNDARY_CLAMP,
+															ImPlatform::IM_BOUNDARY_CLAMP
+														 } );
 #if IM_HAS_STBI
 		stbi_image_free( data );
 #else
@@ -135,6 +147,28 @@ int main()
 			}
 
 			ImPlatform::ImSimpleBegin();
+
+			if ( ImPlatform::ImCustomTitleBarEnabled() )
+			{
+				if ( ImPlatform::ImBeginCustomTitleBar( 64.0f ) )
+				{
+					ImGui::Text( "ImPlatform with Custom Title Bar" );
+					ImGui::SameLine( 0.0f, 64.0f );
+
+					if ( ImGui::Button( "Minimize" ) )
+						ImPlatform::ImMinimizeApp();
+					ImGui::SameLine();
+
+					if ( ImGui::Button( "Maximize" ) )
+						ImPlatform::ImMaximizeApp();
+					ImGui::SameLine();
+
+					if ( ImGui::Button( "Close" ) )
+						ImPlatform::ImCloseApp();
+					ImGui::SameLine();
+				}
+				ImPlatform::ImEndCustomTitleBar();
+			}
 
 			// ImGui Code
 			bool show = true;
@@ -156,7 +190,7 @@ int main()
 		// ImPlatform::ExplicitAPI
 		bool bGood;
 
-		bGood = ImPlatform::ImCreateWindow( "ImPlatform Demo", 1024, 764 );
+		bGood = ImPlatform::ImCreateWindow( "ImPlatform Demo", ImVec2( 100, 100 ), 1024, 764 );
 		if ( !bGood )
 		{
 			fprintf( stderr, "ImPlatform: Cannot create window." );
@@ -220,6 +254,19 @@ int main()
 			fprintf( stderr, "ImPlatform: Cannot initialize graphics." );
 			return false;
 		}
+		ImTextureID img = ImPlatform::ImCreateTexture2D( ( char* )data, width, height,
+														 {
+															ImPlatform::IM_RGBA,
+															ImPlatform::IM_TYPE_UINT8,
+															ImPlatform::IM_FILTERING_LINEAR,
+															ImPlatform::IM_BOUNDARY_CLAMP,
+															ImPlatform::IM_BOUNDARY_CLAMP
+														 } );
+#if IM_HAS_STBI
+		stbi_image_free( data );
+#else
+		free( data );
+#endif
 
 		ImVec4 clear_color = ImVec4( 0.461f, 0.461f, 0.461f, 1.0f );
 		while ( ImPlatform::ImPlatformContinue() )
@@ -241,8 +288,33 @@ int main()
 			// ImGui Code
 			bool show = true;
 			ImGui::ShowDemoWindow( &show );
+			if ( ImGui::Begin( "Image" ) )
+			{
+				ImGui::Image( img, ImGui::GetContentRegionAvail() );
+			}
+			ImGui::End();
 
-			//ImPlatform::ImEndFrame( clear_color );
+			if ( ImPlatform::ImCustomTitleBarEnabled() )
+			{
+				if ( ImPlatform::ImBeginCustomTitleBar( 64.0f ) )
+				{
+					ImGui::Text( "ImPlatform with Custom Title Bar" );
+					ImGui::SameLine();
+
+					if ( ImGui::Button( "Minimize" ) )
+						ImPlatform::ImMinimizeApp();
+					ImGui::SameLine();
+
+					if ( ImGui::Button( "Maximize" ) )
+						ImPlatform::ImMaximizeApp();
+					ImGui::SameLine();
+
+					if ( ImGui::Button( "Close" ) )
+						ImPlatform::ImCloseApp();
+					ImGui::SameLine();
+				}
+				ImPlatform::ImEndCustomTitleBar();
+			}
 
 			ImPlatform::ImGfxAPIClear( clear_color );
 			ImPlatform::ImGfxAPIRender( clear_color );
