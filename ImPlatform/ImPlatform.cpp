@@ -1110,7 +1110,6 @@ namespace ImPlatform
 
 		ImGuiViewport* pViewport = ImGui::GetMainViewport();
 		ImVec2 vDragZoneSize = ImVec2( pViewport->Size.x, fHeight );
-		const ImVec2 windowPadding = ImGui::GetCurrentWindow()->WindowPadding;
 
 		float titlebarVerticalOffset = ImIsMaximized() ? -6.0f : 0.0f;
 
@@ -1118,9 +1117,10 @@ namespace ImPlatform
 		ImGui::SetNextWindowSize( vDragZoneSize );
 		ImGui::SetNextWindowViewport( pViewport->ID );
 
-		//ImGui::SetCursorPos( ImVec2( windowPadding.x, windowPadding.y + titlebarVerticalOffset ) );
-		ImVec2 vPos = ImGui::GetCursorPos();
 		bool bRet = ImGui::Begin( "##ImPlatformCustomTitleBar", 0, ImGuiWindowFlags_NoDecoration );
+		const ImVec2 windowPadding = ImGui::GetCurrentWindow()->WindowPadding;
+		ImGui::SetCursorPos( ImVec2( windowPadding.x, windowPadding.y + titlebarVerticalOffset ) );
+		ImVec2 vPos = ImGui::GetCursorPos();
 		ImGui::SetNextItemAllowOverlap();
 		ImGui::InvisibleButton( "##ImPlatformCustomTitleBarDragZone", vDragZoneSize );
 		PlatformData.bTitleBarHovered = ImGui::IsItemHovered();
