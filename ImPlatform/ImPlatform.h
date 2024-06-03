@@ -7,7 +7,7 @@
 
 #include <imgui.h>
 
-// To override the link of glfw3 use
+// To override the link of glfw3 do not use, other it ImPlatform will use the lib included on imgui
 //#define IM_GLFW3_AUTO_LINK
 // Use https://github.com/TheCherno/glfw/tree/dev to have CustomTitleBar Available
 //#define IM_THE_CHERNO_GLFW3
@@ -15,8 +15,8 @@
 // - [ O ] WIN32_OPENGL3
 // - [ O ] WIN32_DIRECTX9
 // - [ O ] WIN32_DIRECTX10
-// - [ O ] WIN32_DIRECTX11
-// - [ O ] WIN32_DIRECTX12
+// - [ X ] WIN32_DIRECTX11 // Buggy resize windows
+// - [ X ] WIN32_DIRECTX12 // Buggy resize windows
 // - [ X ] GLFW_OPENGL2 // Produce clear_color frame
 // - [ O ] GLFW_OPENGL3 // Do not work well with high DPI
 // - [   ] GLFW_VULKAN
