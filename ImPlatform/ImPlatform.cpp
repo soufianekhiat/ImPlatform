@@ -1,5 +1,7 @@
 //#include <ImPlatform.h>
 
+#include <imgui_internal.h>
+
 #if (IM_CURRENT_PLATFORM == IM_PLATFORM_WIN32)
 #include <backends/imgui_impl_win32.cpp>
 #define DIRECTINPUT_VERSION 0x0800
@@ -8,8 +10,8 @@ extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler( HWND hWnd, UINT ms
 #if (IM_CURRENT_GFX != IM_GFX_OPENGL2) && (IM_CURRENT_GFX != IM_GFX_OPENGL3)
 #include <backends/imgui_impl_glfw.cpp>
 #endif
-#if IM_GLFW3_AUTO_LINK
-#pragma comment( lib, "../GLFW/lib-vc2010-64/glfw3.lib" )
+#ifdef IM_GLFW3_AUTO_LINK
+#pragma comment( lib, "lib-vc2010-64/glfw3.lib" )
 #endif
 #elif (IM_CURRENT_PLATFORM) == IM_PLATFORM_APPLE)
 #else
@@ -991,6 +993,150 @@ namespace ImPlatform
 #endif
 	}
 
+	bool		ImIsMaximized()
+	{
+#if (IM_CURRENT_PLATFORM == IM_PLATFORM_WIN32)
+
+		return ( ( ( ( DWORD )GetWindowLong( PlatformData.pHandle, GWL_STYLE ) ) & ( WS_MAXIMIZE ) ) != 0L );
+
+#elif (IM_CURRENT_PLATFORM == IM_PLATFORM_GLFW)
+
+		return ( bool )glfwGetWindowAttrib( PlatformData.pWindow, GLFW_MAXIMIZED );
+
+#elif (IM_CURRENT_PLATFORM) == IM_PLATFORM_APPLE)
+
+#endif
+	}
+
+	bool		ImCustomTitleBarEnabled()
+	{
+		return PlatformData.bCustomTitleBar;
+	}
+
+	void		ImEnableCustomTitleBar()
+	{
+		PlatformData.bCustomTitleBar = true;
+#if (IM_CURRENT_PLATFORM == IM_PLATFORM_GLFW)
+#ifndef IM_THE_CHERNO_GLFW3
+		fprintf( stderr, "To have the support of Custom Title Bar on GLFW3, need CHERNO dev version of GLFW3 (https://github.com/TheCherno/glfw/tree/dev).\n" );
+#endif
+#endif
+	}
+
+	void		ImDisableCustomTitleBar()
+	{
+		PlatformData.bCustomTitleBar = false;
+	}
+
+	void		ImDrawCustomMenuBarDefault()
+	{
+		ImGui::Text( "ImPlatform with Custom Title Bar" );
+		ImGui::SameLine();
+
+		if ( ImGui::Button( "Minimize" ) )
+			ImPlatform::ImMinimizeApp();
+		ImGui::SameLine();
+
+		if ( ImGui::Button( "Maximize" ) )
+			ImPlatform::ImMaximizeApp();
+		ImGui::SameLine();
+
+		if ( ImGui::Button( "Close" ) )
+			ImPlatform::ImCloseApp();
+		ImGui::SameLine();
+	}
+
+	void		ImMinimizeApp()
+	{
+#if (IM_CURRENT_PLATFORM == IM_PLATFORM_WIN32)
+
+		ShowWindow( PlatformData.pHandle, SW_MINIMIZE );
+
+#elif (IM_CURRENT_PLATFORM == IM_PLATFORM_GLFW)
+
+		glfwIconifyWindow( PlatformData.pWindow );
+
+#elif (IM_CURRENT_PLATFORM == IM_PLATFORM_APPLE)
+#error Not yet implemented supported
+#else
+#error Not yet implemented supported
+#endif
+	}
+
+	void		ImMaximizeApp()
+	{
+#if (IM_CURRENT_PLATFORM == IM_PLATFORM_WIN32)
+
+		if ( ImIsMaximized() )
+			ShowWindow( PlatformData.pHandle, SW_RESTORE );
+		else
+			ShowWindow( PlatformData.pHandle, SW_SHOWMAXIMIZED );
+
+#elif (IM_CURRENT_PLATFORM == IM_PLATFORM_GLFW)
+
+		if ( ImIsMaximized() )
+			glfwRestoreWindow( PlatformData.pWindow );
+		else
+			glfwMaximizeWindow( PlatformData.pWindow );
+
+#elif (IM_CURRENT_PLATFORM == IM_PLATFORM_APPLE)
+#error Not yet implemented supported
+#else
+#error Not yet implemented supported
+#endif
+	}
+
+	void		ImCloseApp()
+	{
+#if (IM_CURRENT_PLATFORM == IM_PLATFORM_WIN32)
+
+		PostQuitMessage( WM_CLOSE );
+
+#elif (IM_CURRENT_PLATFORM == IM_PLATFORM_GLFW)
+
+		glfwSetWindowShouldClose( PlatformData.pWindow, true );
+
+#elif (IM_CURRENT_PLATFORM == IM_PLATFORM_APPLE)
+#error Not yet implemented supported
+#else
+#error Not yet implemented supported
+#endif
+	}
+
+#pragma optimize( "", off )
+	bool		ImBeginCustomTitleBar( float fHeight, ImDrawCustomTitleBar pImDrawCustomTitleBar, ImDrawCustomMenuBar pImDrawCustomMenuBar )
+	{
+		IM_ASSERT( ImPlatform::ImCustomTitleBarEnabled() );
+
+		ImGuiViewport* pViewport = ImGui::GetMainViewport();
+		ImVec2 vDragZoneSize = ImVec2( pViewport->Size.x, fHeight );
+		const ImVec2 windowPadding = ImGui::GetCurrentWindow()->WindowPadding;
+
+		float titlebarVerticalOffset = ImIsMaximized() ? -6.0f : 0.0f;
+
+		ImGui::SetNextWindowPos( ImVec2( pViewport->Pos.x, pViewport->Pos.y + titlebarVerticalOffset ) );
+		ImGui::SetNextWindowSize( vDragZoneSize );
+		ImGui::SetNextWindowViewport( pViewport->ID );
+
+		//ImGui::SetCursorPos( ImVec2( windowPadding.x, windowPadding.y + titlebarVerticalOffset ) );
+		ImVec2 vPos = ImGui::GetCursorPos();
+		bool bRet = ImGui::Begin( "##ImPlatformCustomTitleBar", 0, ImGuiWindowFlags_NoDecoration );
+		ImGui::SetNextItemAllowOverlap();
+		ImGui::InvisibleButton( "##ImPlatformCustomTitleBarDragZone", vDragZoneSize );
+		PlatformData.bTitleBarHovered = ImGui::IsItemHovered();
+		PlatformData.vEndCustomToolBar = ImGui::GetCursorPos();
+		ImGui::SetCursorPos( vPos );
+		return bRet;
+	}
+
+	void		ImEndCustomTitleBar()
+	{
+		IM_ASSERT( ImPlatform::ImCustomTitleBarEnabled() );
+
+		ImGui::SetCursorPos( PlatformData.vEndCustomToolBar );
+		ImGui::End();
+	}
+
 #if (IM_CURRENT_PLATFORM == IM_PLATFORM_WIN32)
 	LRESULT WINAPI WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
 #endif
@@ -1481,6 +1627,7 @@ static void Im_Hook_Renderer_SwapBuffers( ImGuiViewport* viewport, void* )
 		if ( ImGui_ImplWin32_WndProcHandler( hWnd, msg, wParam, lParam ) )
 			return true;
 
+		static RECT border_thickness = { 4, 4, 4, 4 };
 		switch ( msg )
 		{
 		case WM_SIZE:
@@ -1514,8 +1661,69 @@ static void Im_Hook_Renderer_SwapBuffers( ImGuiViewport* viewport, void* )
 				return 0;
 			break;
 		case WM_DESTROY:
-			::PostQuitMessage(0);
+			::PostQuitMessage( 0 );
 			return 0;
+		case WM_NCCALCSIZE:
+			if ( ImCustomTitleBarEnabled() && lParam )
+			{
+				NCCALCSIZE_PARAMS* sz = ( NCCALCSIZE_PARAMS* )lParam;
+				sz->rgrc[ 0 ].left += border_thickness.left;
+				sz->rgrc[ 0 ].right -= border_thickness.right;
+				sz->rgrc[ 0 ].bottom -= border_thickness.bottom;
+				return 0;
+			}
+			break;
+		case WM_NCHITTEST:
+		{
+			if ( !ImCustomTitleBarEnabled() )
+				break;
+
+			if ( !ImIsMaximized() )
+			{
+				RECT winRc;
+				GetClientRect( hWnd, &winRc );
+				// Hit test for custom frames
+				POINT pt = { GET_X_LPARAM( lParam ), GET_Y_LPARAM( lParam ) };
+				ScreenToClient( hWnd, &pt );
+				const int verticalBorderSize = GetSystemMetrics( SM_CYFRAME );
+
+				if ( PtInRect( &winRc, pt ) )
+				{
+					enum
+					{
+						left = 1, top = 2, right = 4, bottom = 8
+					};
+					int hit = 0;
+					if ( pt.x <= border_thickness.left )
+						hit |= left;
+					if ( pt.x >= winRc.right - border_thickness.right )
+						hit |= right;
+					if ( pt.y <= border_thickness.top || pt.y < verticalBorderSize )
+						hit |= top;
+					if ( pt.y >= winRc.bottom - border_thickness.bottom )
+						hit |= bottom;
+					if ( hit )
+						fprintf( stderr, "\n" );
+
+					if ( hit & top && hit & left )		return HTTOPLEFT;
+					if ( hit & top && hit & right )		return HTTOPRIGHT;
+					if ( hit & bottom && hit & left )	return HTBOTTOMLEFT;
+					if ( hit & bottom && hit & right )	return HTBOTTOMRIGHT;
+					if ( hit & left )					return HTLEFT;
+					if ( hit & top )					return HTTOP;
+					if ( hit & right )					return HTRIGHT;
+					if ( hit & bottom )					return HTBOTTOM;
+				}
+			}
+			if ( ImCustomTitleBarEnabled() && PlatformData.bTitleBarHovered )
+			{
+				return HTCAPTION;
+			}
+			else
+			{
+				return HTCLIENT;
+			}
+		}
 		case WM_DPICHANGED:
 			if ( ImGui::GetIO().ConfigFlags & ImGuiConfigFlags_DpiEnableScaleViewports )
 			{
@@ -1525,7 +1733,7 @@ static void Im_Hook_Renderer_SwapBuffers( ImGuiViewport* viewport, void* )
 				::SetWindowPos( hWnd, nullptr, suggested_rect->left, suggested_rect->top, suggested_rect->right - suggested_rect->left, suggested_rect->bottom - suggested_rect->top, SWP_NOZORDER | SWP_NOACTIVATE );
 			}
 		}
-		return ::DefWindowProc(hWnd, msg, wParam, lParam);
+		return ::DefWindowProc( hWnd, msg, wParam, lParam );
 	}
 #endif
 
@@ -1536,8 +1744,8 @@ static void Im_Hook_Renderer_SwapBuffers( ImGuiViewport* viewport, void* )
 	}
 #endif
 
-	// TODO: Add support for Windows Position, maximize/minimize/...
-	bool ImCreateWindow( char const* pWindowsName, ImU32 const uWidth, ImU32 const uHeight )
+	// TODO: Add support for maximize/minimize/...
+	bool ImCreateWindow( char const* pWindowsName, ImVec2 const vPos, ImU32 const uWidth, ImU32 const uHeight )
 	{
 #if (IM_CURRENT_PLATFORM == IM_PLATFORM_WIN32)
 
@@ -1549,11 +1757,29 @@ static void Im_Hook_Renderer_SwapBuffers( ImGuiViewport* viewport, void* )
 		MultiByteToWideChar( CP_ACP, MB_PRECOMPOSED, pWindowsName, -1, wszDest, WCHARBUF );
 		PlatformData.oWinStruct = { sizeof( PlatformData.oWinStruct ), CS_CLASSDC, WndProc, 0L, 0L, GetModuleHandle( nullptr ), nullptr, nullptr, nullptr, nullptr, L"ImPlatform", nullptr };
 		::RegisterClassExW( &PlatformData.oWinStruct );
-		PlatformData.pHandle = ::CreateWindowW( PlatformData.oWinStruct.lpszClassName, wszDest, WS_OVERLAPPEDWINDOW, 100, 100, uWidth, uHeight, nullptr, nullptr, PlatformData.oWinStruct.hInstance, nullptr );
+		PlatformData.pHandle = ::CreateWindowW(
+			PlatformData.oWinStruct.lpszClassName,
+			wszDest,
+			PlatformData.bCustomTitleBar ? ( WS_POPUPWINDOW | WS_THICKFRAME ) : WS_OVERLAPPEDWINDOW,
+			( int )vPos.x, ( int )vPos.y,
+			uWidth, uHeight,
+			nullptr,
+			nullptr,
+			PlatformData.oWinStruct.hInstance,
+			nullptr );
 #else
 		PlatformData.oWinStruct = { sizeof( PlatformData.oWinStruct ), CS_CLASSDC, WndProc, 0L, 0L, GetModuleHandle( nullptr ), nullptr, nullptr, nullptr, nullptr, "ImPlatform", nullptr };
 		::RegisterClassExA( &PlatformData.oWinStruct );
-		PlatformData.pHandle = ::CreateWindowA( PlatformData.oWinStruct.lpszClassName, pWindowsName, WS_OVERLAPPEDWINDOW, 100, 100, uWidth, uHeight, nullptr, nullptr, PlatformData.oWinStruct.hInstance, nullptr );
+		PlatformData.pHandle = ::CreateWindowA(
+			PlatformData.oWinStruct.lpszClassName,
+			pWindowsName,
+			PlatformData.bCustomTitleBar ? ( WS_POPUPWINDOW | WS_THICKFRAME ) : WS_OVERLAPPEDWINDOW,
+			( int )vPos.x, ( int )vPos.y,
+			uWidth, uHeight,
+			nullptr,
+			nullptr,
+			PlatformData.oWinStruct.hInstance,
+			nullptr );
 #endif
 
 #elif (IM_CURRENT_PLATFORM == IM_PLATFORM_GLFW)
@@ -1585,9 +1811,34 @@ static void Im_Hook_Renderer_SwapBuffers( ImGuiViewport* viewport, void* )
 		//glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GL_TRUE);				// 3.0+ only
 #endif
 
+		if ( PlatformData.bCustomTitleBar )
+		{
+			//	glfwWindowHint( GLFW_CLIENT_API, GLFW_NO_API );
+#ifdef IM_THE_CHERNO_GLFW3
+			glfwWindowHint( GLFW_TITLEBAR, false );
+#endif
+
+			// NOTE(Yan): Undecorated windows are probably
+			//            also desired, so make this an option
+			//glfwWindowHint( GLFW_DECORATED, false );
+			glfwWindowHint( GLFW_VISIBLE, GLFW_FALSE );
+		}
+
 		PlatformData.pWindow = glfwCreateWindow( uWidth, uHeight, pWindowsName, nullptr, nullptr );
 		if ( PlatformData.pWindow == nullptr )
 			return false;
+
+		if ( PlatformData.bCustomTitleBar )
+		{
+			glfwSetWindowUserPointer( PlatformData.pWindow, &PlatformData );
+#ifdef IM_THE_CHERNO_GLFW3
+			glfwSetTitlebarHitTestCallback( PlatformData.pWindow,
+											[]( GLFWwindow* window, int x, int y, int* hit ){
+												PlatformDataImpl* app = ( PlatformDataImpl* )glfwGetWindowUserPointer( window );
+												*hit = app->bTitleBarHovered;
+											} );
+#endif
+		}
 
 #elif (IM_CURRENT_PLATFORM) == IM_PLATFORM_APPLE)
 #endif
@@ -1608,6 +1859,10 @@ static void Im_Hook_Renderer_SwapBuffers( ImGuiViewport* viewport, void* )
 			return false;
 		}
 		wglMakeCurrent( PlatformData.oMainWindow.hDC, PlatformData.pRC );
+#elif (IM_CURRENT_PLATFORM == IM_PLATFORM_GLFW)
+
+		glfwMakeContextCurrent( PlatformData.pWindow );
+
 #endif
 
 #elif (IM_CURRENT_GFX == IM_GFX_DIRECTX9) || (IM_CURRENT_GFX == IM_GFX_DIRECTX10) || (IM_CURRENT_GFX == IM_GFX_DIRECTX11) || (IM_CURRENT_GFX == IM_GFX_DIRECTX12)
@@ -1636,17 +1891,12 @@ static void Im_Hook_Renderer_SwapBuffers( ImGuiViewport* viewport, void* )
 		glfwMakeContextCurrent( PlatformData.pWindow );
 		glfwSwapInterval( 1 );
 
+		glfwShowWindow( PlatformData.pWindow );
+
 #elif (IM_CURRENT_PLATFORM) == IM_PLATFORM_APPLE)
 #endif
 		return true;
 	}
-
-	//void ImNewFrame()
-	//{
-	//	ImPlatform::ImGfxAPINewFrame();
-	//	ImPlatform::ImPlatformNewFrame();
-	//	ImGui::NewFrame();
-	//}
 
 	bool ImInitPlatform()
 	{
@@ -1758,8 +2008,6 @@ static void Im_Hook_Renderer_SwapBuffers( ImGuiViewport* viewport, void* )
 			Internal::ImWindowResize();
 		}
 #endif
-
-		//ImPlatform::ImNewFrame();
 
 		return true;
 	}
@@ -2084,11 +2332,11 @@ static void Im_Hook_Renderer_SwapBuffers( ImGuiViewport* viewport, void* )
 	}
 
 	//////////////////////////////////////////////////////////////////////////
-	bool ImSimpleStart( char const* pWindowsName, ImU32 const uWidth, ImU32 const uHeight )
+	bool ImSimpleStart( char const* pWindowsName, ImVec2 const vPos, ImU32 const uWidth, ImU32 const uHeight )
 	{
 		bool bGood = true;
 
-		bGood &= ImPlatform::ImCreateWindow( pWindowsName, uWidth, uHeight );
+		bGood &= ImPlatform::ImCreateWindow( pWindowsName, vPos, uWidth, uHeight );
 		bGood &= ImPlatform::ImInitGfxAPI();
 		bGood &= ImPlatform::ImShowWindow();
 		IMGUI_CHECKVERSION();
@@ -2161,7 +2409,6 @@ static void Im_Hook_Renderer_SwapBuffers( ImGuiViewport* viewport, void* )
 			PlatformData.oD3Dpp.BackBufferHeight = PlatformData.uResizeHeight;
 			PlatformData.uResizeWidth = PlatformData.uResizeHeight = 0;
 			ImResetDevice();
-
 #elif (IM_CURRENT_GFX == IM_GFX_DIRECTX10) || (IM_CURRENT_GFX == IM_GFX_DIRECTX11)
 			ImCleanupRenderTarget();
 			PlatformData.pSwapChain->ResizeBuffers( 0, PlatformData.uResizeWidth, PlatformData.uResizeHeight, DXGI_FORMAT_UNKNOWN, 0 );

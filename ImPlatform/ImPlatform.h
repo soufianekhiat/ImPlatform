@@ -7,10 +7,10 @@
 
 #include <imgui.h>
 
-// To override the link of glfw3 use to 1
-#ifndef IM_GLFW3_AUTO_LINK 
-#define IM_GLFW3_AUTO_LINK 1
-#endif
+// To override the link of glfw3 use
+//#define IM_GLFW3_AUTO_LINK
+// Use https://github.com/TheCherno/glfw/tree/dev to have CustomTitleBar Available
+//#define IM_THE_CHERNO_GLFW3
 
 // - [ O ] WIN32_OPENGL3
 // - [ O ] WIN32_DIRECTX9
@@ -255,6 +255,10 @@ struct PlatformDataImpl
 															= {};
 	bool							bSwapChainOccluded		= false;
 #endif
+
+	bool	bCustomTitleBar		=	false;
+	bool	bTitleBarHovered	=	false;
+	ImVec2	vEndCustomToolBar	=	ImVec2( 0.0f, 0.0f );
 };
 
 extern PlatformDataImpl PlatformData;
@@ -310,8 +314,27 @@ namespace ImPlatform
 	ImTextureID	ImCreateTexture2D	( char* pData, ImU32 const uWidth, ImU32 const uHeight, ImImageDesc const& oImgDesc );
 	void		ImReleaseTexture2D	( ImTextureID id );
 
+	bool		ImIsMaximized();
+
+	// Custom Title Bar
+	typedef	void	( *ImDrawCustomTitleBar )();
+	typedef	void	( *ImDrawCustomMenuBar )();
+
+	bool		ImCustomTitleBarEnabled();
+	void		ImEnableCustomTitleBar();
+	void		ImDisableCustomTitleBar();
+
+	void		ImDrawCustomMenuBarDefault();
+
+	void		ImMinimizeApp();
+	void		ImMaximizeApp();
+	void		ImCloseApp();
+
+	bool		ImBeginCustomTitleBar( float fHeight, ImDrawCustomTitleBar pImDrawCustomTitleBar = &ImDrawCustomMenuBarDefault, ImDrawCustomMenuBar pImDrawCustomMenuBar = NULL );
+	void		ImEndCustomTitleBar();
+
 	// SimpleAPI:
-	bool ImSimpleStart( char const* pWindowsName, ImU32 const uWidth, ImU32 const uHeight );
+	bool ImSimpleStart( char const* pWindowsName, ImVec2 const vPos, ImU32 const uWidth, ImU32 const uHeight );
 	bool ImSimpleInitialize( bool hasViewport );
 	void ImSimpleFinish();
 
@@ -319,7 +342,7 @@ namespace ImPlatform
 	void ImSimpleEnd( ImVec4 const vClearColor, bool hasViewport );
 
 	// ExplicitAPI:
-	bool ImCreateWindow( char const* pWindowsName, ImU32 const uWidth, ImU32 const uHeight );
+	bool ImCreateWindow( char const* pWindowsName, ImVec2 const vPos, ImU32 const uWidth, ImU32 const uHeight );
 	bool ImInitGfxAPI();
 	bool ImShowWindow();
 	bool ImInitPlatform();
