@@ -8,7 +8,7 @@ Work on Win32 & GLFW.
 For GLFW that need a fork from @TheCherno, the dev branch of glfw3 of https://github.com/TheCherno/glfw/tree/dev.
 
 Window with Custom Title Bar:
-![image](./ImPlatformDemo/ImPlatformDemo.png)
+![ImPlatformDemo_U66gRkAD7S](https://github.com/soufianekhiat/ImPlatform/assets/4236325/78c72221-209a-4640-90c2-77abff0983c2)
 
 // TODO:
 - [ O ] WIN32_OPENGL3
