@@ -3,20 +3,28 @@ ImPlatform aim to simplify the multiplatform development with Dear ImGui
 
 ImPlatform had 2 API, "Simple" and "Explicit". Please to not mix and do not call Internal::API
 
+Add support of CustomTitleBar, still WIP, not working (yet) with Docking.
+Work on Win32 & GLFW.
+For GLFW that need a fork from @TheCherno, the dev branch of glfw3 of https://github.com/TheCherno/glfw/tree/dev.
+
+Window with Custom Title Bar:
+![image](./ImPlatformDemo/ImPlatformDemo.png)
+
 // TODO:
-- [x] WIN32_OPENGL3
-- [x] WIN32_DIRECTX9
-- [x] WIN32_DIRECTX10
-- [x] WIN32_DIRECTX11
-- [x] WIN32_DIRECTX12
-- [ ] GLFW_OPENGL2
-- [ ] GLFW_OPENGL3
-- [ ] GLFW_VULKAN
-- [ ] SDL2_DIRECTX11
-- [ ] SDL2_OPENGL2
-- [ ] SDL2_OPENGL3
-- [ ] SDL2_SDLRENDERER2
-- [ ] SDL2_VULKAN
+- [ O ] WIN32_OPENGL3
+- [ O ] WIN32_DIRECTX9
+- [ O ] WIN32_DIRECTX10
+- [ X ] WIN32_DIRECTX11 // Buggy resize windows
+- [ X ] WIN32_DIRECTX12 // Buggy resize windows
+- [ X ] GLFW_OPENGL2 // Produce clear_color frame
+- [ O ] GLFW_OPENGL3 // Do not work well with high DPI
+- [   ] GLFW_VULKAN
+- [   ] GLFW_EMSCRIPTEM_OPENGL3
+- [   ] SDL2_DIRECTX11
+- [   ] SDL2_OPENGL2
+- [   ] SDL2_OPENGL3
+- [   ] SDL2_SDLRENDERER2
+- [   ] SDL2_VULKAN
 
 ### Incentivise development:
 
@@ -45,6 +53,9 @@ https://www.patreon.com/SoufianeKHIAT
 
 int main()
 {
+	ImPlatform::ImEnableCustomTitleBar();
+
+	// Simple API
 	bool bGood;
 
 	bGood = ImPlatform::ImSimpleStart( "ImPlatform Simple Demo", 1024, 764 );
@@ -90,6 +101,24 @@ int main()
 
 		ImPlatform::ImSimpleBegin();
 
+		if ( ImPlatform::ImBeginCustomTitleBar( 64.0f ) )
+		{
+			ImGui::Text( "ImPlatform with Custom Title Bar" );
+			ImGui::SameLine();
+
+			if ( ImGui::Button( "Minimize" ) )
+				ImPlatform::ImMinimizeApp();
+			ImGui::SameLine();
+
+			if ( ImGui::Button( "Maximize" ) )
+				ImPlatform::ImMaximizeApp();
+			ImGui::SameLine();
+
+			if ( ImGui::Button( "Close" ) )
+				ImPlatform::ImCloseApp();
+		}
+		ImPlatform::ImEndCustomTitleBar();
+
 		// ImGui Code
 		bool show = true;
 		ImGui::ShowDemoWindow( &show );
@@ -122,6 +151,8 @@ int main()
 
 int main()
 {
+	ImPlatform::ImEnableCustomTitleBar();
+
 	// ImPlatform::ExplicitAPI
 	bool bGood;
 
@@ -207,6 +238,24 @@ int main()
 		ImPlatform::ImPlatformNewFrame();
 
 		ImGui::NewFrame();
+
+		if ( ImPlatform::ImBeginCustomTitleBar( 64.0f ) )
+		{
+			ImGui::Text( "ImPlatform with Custom Title Bar" );
+			ImGui::SameLine();
+
+			if ( ImGui::Button( "Minimize" ) )
+				ImPlatform::ImMinimizeApp();
+			ImGui::SameLine();
+
+			if ( ImGui::Button( "Maximize" ) )
+				ImPlatform::ImMaximizeApp();
+			ImGui::SameLine();
+
+			if ( ImGui::Button( "Close" ) )
+				ImPlatform::ImCloseApp();
+		}
+		ImPlatform::ImEndCustomTitleBar();
 
 		// ImGui Code
 		bool show = true;

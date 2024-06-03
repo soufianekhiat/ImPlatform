@@ -52,7 +52,7 @@
 //////////////////////////////////////////////////////////////////////////
 // Global Options
 static bool g_bSimpleAPI		= true;
-static bool g_bCustomTitleBar	= false;
+static bool g_bCustomTitleBar	= false; // Not working well with docking space for now.
 //////////////////////////////////////////////////////////////////////////
 
 int main()
@@ -153,7 +153,7 @@ int main()
 				if ( ImPlatform::ImBeginCustomTitleBar( 64.0f ) )
 				{
 					ImGui::Text( "ImPlatform with Custom Title Bar" );
-					ImGui::SameLine( 0.0f, 64.0f );
+					ImGui::SameLine();
 
 					if ( ImGui::Button( "Minimize" ) )
 						ImPlatform::ImMinimizeApp();
@@ -165,7 +165,6 @@ int main()
 
 					if ( ImGui::Button( "Close" ) )
 						ImPlatform::ImCloseApp();
-					ImGui::SameLine();
 				}
 				ImPlatform::ImEndCustomTitleBar();
 			}
