@@ -1114,7 +1114,9 @@ namespace ImPlatform
 
 		ImGui::SetNextWindowPos( ImVec2( pViewport->Pos.x, pViewport->Pos.y + titlebarVerticalOffset ), ImGuiCond_Always );
 		ImGui::SetNextWindowSize( vDragZoneSize );
+#ifdef IMGUI_HAS_VIEWPORT
 		ImGui::SetNextWindowViewport( pViewport->ID );
+#endif
 
 		bool bRet = ImGui::Begin( "##ImPlatformCustomTitleBar", 0, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoDocking );
 
@@ -2393,8 +2395,10 @@ static void Im_Hook_Renderer_SwapBuffers( ImGuiViewport* viewport, void* )
 		{
 			ImPlatform::ImGfxViewportPre();
 
+#ifdef IMGUI_HAS_VIEWPORT
 			ImGui::UpdatePlatformWindows();
 			ImGui::RenderPlatformWindowsDefault();
+#endif
 
 			ImPlatform::ImGfxViewportPost();
 		}
