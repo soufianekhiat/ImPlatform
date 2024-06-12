@@ -256,9 +256,10 @@ struct PlatformDataImpl
 	bool							bSwapChainOccluded		= false;
 #endif
 
-	bool	bCustomTitleBar		=	false;
-	bool	bTitleBarHovered	=	false;
-	ImVec2	vEndCustomToolBar	=	ImVec2( 0.0f, 0.0f );
+	ImVec2	vEndCustomToolBar		= ImVec2( 0.0f, 0.0f );
+	float	fCustomTitleBarHeight	= 32.0f;
+	bool	bCustomTitleBar			= false;
+	bool	bTitleBarHovered		= false;
 };
 
 extern PlatformDataImpl PlatformData;
@@ -317,9 +318,6 @@ namespace ImPlatform
 	bool		ImIsMaximized();
 
 	// Custom Title Bar
-	typedef	void	( *ImDrawCustomTitleBar )();
-	typedef	void	( *ImDrawCustomMenuBar )();
-
 	bool		ImCustomTitleBarEnabled();
 	void		ImEnableCustomTitleBar();
 	void		ImDisableCustomTitleBar();
@@ -330,7 +328,7 @@ namespace ImPlatform
 	void		ImMaximizeApp();
 	void		ImCloseApp();
 
-	bool		ImBeginCustomTitleBar( float fHeight, ImDrawCustomTitleBar pImDrawCustomTitleBar = &ImDrawCustomMenuBarDefault, ImDrawCustomMenuBar pImDrawCustomMenuBar = NULL );
+	bool		ImBeginCustomTitleBar( float fHeight );
 	void		ImEndCustomTitleBar();
 
 	// SimpleAPI:
