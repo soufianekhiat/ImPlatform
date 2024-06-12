@@ -52,7 +52,7 @@
 //////////////////////////////////////////////////////////////////////////
 // Global Options
 static bool g_bSimpleAPI		= true;
-static bool g_bCustomTitleBar	= false; // Not working well with docking space for now.
+static bool g_bCustomTitleBar	= true;
 //////////////////////////////////////////////////////////////////////////
 
 int main()
@@ -150,7 +150,7 @@ int main()
 
 			if ( ImPlatform::ImCustomTitleBarEnabled() )
 			{
-				if ( ImPlatform::ImBeginCustomTitleBar( 64.0f ) )
+				if ( ImPlatform::ImBeginCustomTitleBar( 32.0f ) )
 				{
 					ImGui::Text( "ImPlatform with Custom Title Bar" );
 					ImGui::SameLine();
@@ -167,17 +167,29 @@ int main()
 						ImPlatform::ImCloseApp();
 				}
 				ImPlatform::ImEndCustomTitleBar();
+
+				// ImGui Code
+				bool show = true;
+				ImGui::ShowDemoWindow( &show );
+
+				if ( ImGui::Begin( "Image" ) )
+				{
+					ImGui::Image( img, ImGui::GetContentRegionAvail() );
+				}
+				ImGui::End();
 			}
-
-			// ImGui Code
-			bool show = true;
-			ImGui::ShowDemoWindow( &show );
-
-			if ( ImGui::Begin( "Image" ) )
+			else
 			{
-				ImGui::Image( img, ImGui::GetContentRegionAvail() );
+				// ImGui Code
+				bool show = true;
+				ImGui::ShowDemoWindow( &show );
+
+				if ( ImGui::Begin( "Image" ) )
+				{
+					ImGui::Image( img, ImGui::GetContentRegionAvail() );
+				}
+				ImGui::End();
 			}
-			ImGui::End();
 
 			ImPlatform::ImSimpleEnd( clear_color, io.ConfigFlags & ImGuiConfigFlags_ViewportsEnable );
 		}
@@ -284,15 +296,6 @@ int main()
 
 			ImGui::NewFrame();
 
-			// ImGui Code
-			bool show = true;
-			ImGui::ShowDemoWindow( &show );
-			if ( ImGui::Begin( "Image" ) )
-			{
-				ImGui::Image( img, ImGui::GetContentRegionAvail() );
-			}
-			ImGui::End();
-
 			if ( ImPlatform::ImCustomTitleBarEnabled() )
 			{
 				if ( ImPlatform::ImBeginCustomTitleBar( 64.0f ) )
@@ -314,6 +317,15 @@ int main()
 				}
 				ImPlatform::ImEndCustomTitleBar();
 			}
+
+			// ImGui Code
+			bool show = true;
+			ImGui::ShowDemoWindow( &show );
+			if ( ImGui::Begin( "Image" ) )
+			{
+				ImGui::Image( img, ImGui::GetContentRegionAvail() );
+			}
+			ImGui::End();
 
 			ImPlatform::ImGfxAPIClear( clear_color );
 			ImPlatform::ImGfxAPIRender( clear_color );

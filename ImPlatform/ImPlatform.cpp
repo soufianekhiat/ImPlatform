@@ -1103,8 +1103,7 @@ namespace ImPlatform
 #endif
 	}
 
-#pragma optimize( "", off )
-	bool		ImBeginCustomTitleBar( float fHeight, ImDrawCustomTitleBar pImDrawCustomTitleBar, ImDrawCustomMenuBar pImDrawCustomMenuBar )
+	bool		ImBeginCustomTitleBar( float fHeight )
 	{
 		IM_ASSERT( ImPlatform::ImCustomTitleBarEnabled() );
 
@@ -1113,16 +1112,18 @@ namespace ImPlatform
 
 		float titlebarVerticalOffset = ImIsMaximized() ? 6.0f : 0.0f;
 
-		ImGui::SetNextWindowPos( ImVec2( pViewport->Pos.x, pViewport->Pos.y + titlebarVerticalOffset ) );
+		ImGui::SetNextWindowPos( ImVec2( pViewport->Pos.x, pViewport->Pos.y + titlebarVerticalOffset ), ImGuiCond_Always );
 		ImGui::SetNextWindowSize( vDragZoneSize );
 		ImGui::SetNextWindowViewport( pViewport->ID );
 
-		bool bRet = ImGui::Begin( "##ImPlatformCustomTitleBar", 0, ImGuiWindowFlags_NoDecoration );
+		bool bRet = ImGui::Begin( "##ImPlatformCustomTitleBar", 0, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoDocking );
+
 		ImVec2 vPos = ImGui::GetCursorPos();
 		ImGui::SetNextItemAllowOverlap();
 		ImGui::InvisibleButton( "##ImPlatformCustomTitleBarDragZone", vDragZoneSize );
-		PlatformData.bTitleBarHovered	= ImGui::IsItemHovered();
-		PlatformData.vEndCustomToolBar	= ImGui::GetCursorPos();
+		PlatformData.bTitleBarHovered		= ImGui::IsItemHovered();
+		PlatformData.vEndCustomToolBar		= ImGui::GetCursorPos();
+		PlatformData.fCustomTitleBarHeight	= fHeight;
 		ImGui::SetCursorPos( vPos );
 
 		return bRet;
@@ -1134,6 +1135,8 @@ namespace ImPlatform
 
 		ImGui::SetCursorPos( PlatformData.vEndCustomToolBar );
 		ImGui::End();
+		ImGuiViewport* pViewport = ImGui::GetMainViewport();
+		pViewport->WorkPos.y += PlatformData.fCustomTitleBarHeight;
 	}
 
 #if (IM_CURRENT_PLATFORM == IM_PLATFORM_WIN32)
