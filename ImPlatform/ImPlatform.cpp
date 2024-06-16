@@ -1,4 +1,6 @@
-//#include <ImPlatform.h>
+#ifndef IM_PLATFORM_IMPLEMENTATION
+#include <ImPlatform.h>
+#endif
 
 #include <imgui_internal.h>
 
