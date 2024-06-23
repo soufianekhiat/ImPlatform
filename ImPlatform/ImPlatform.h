@@ -5,6 +5,8 @@
 
 // For Dx12: #define ImTextureID ImU64
 
+#define IM_PLATFORM_ENABLE_CUSTOM_SHADER
+
 #include <imgui.h>
 
 // To override the link of glfw3 do not use, other it ImPlatform will use the lib included on imgui
@@ -314,6 +316,15 @@ namespace ImPlatform
 	// Generic
 	ImTextureID	ImCreateTexture2D	( char* pData, ImU32 const uWidth, ImU32 const uHeight, ImImageDesc const& oImgDesc );
 	void		ImReleaseTexture2D	( ImTextureID id );
+
+	typedef void* ImShaderID;
+	struct ImShader
+	{
+		ImShaderID vs;
+		ImShaderID ps;
+	};
+	ImShader	ImCreateShader( char* source );
+	void		ImReleaseShader( ImShader& shader );
 
 	bool		ImIsMaximized();
 
