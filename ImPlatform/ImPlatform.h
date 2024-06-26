@@ -317,15 +317,19 @@ namespace ImPlatform
 	void		ImReleaseTexture2D	( ImTextureID id );
 
 	typedef void* ImShaderID;
-	struct ImShader
+	typedef void* ImConstantID;
+	struct ImDrawShader
 	{
 		ImShaderID vs;
 		ImShaderID ps;
+		ImConstantID cst;
+		int sizeof_in_bytes_constants;
 	};
-	ImShader	ImCreateShader( char const* source );
-	void		ImReleaseShader( ImShader& shader );
+	ImDrawShader	ImCreateShader( char const* source, char const* ps_params, int sizeof_in_bytes_constants, void* init_data_constant = NULL );
+	void			ImReleaseShader( ImDrawShader& shader );
 
-	void		ImBeginCustomShader( ImDrawList* draw, ImShader& shader );
+	void		ImBeginCustomShader( ImDrawList* draw, ImDrawShader& shader );
+	void		ImUpdateCustomShaderConstant( ImDrawShader& shader, void* ptr_to_constants );
 	void		ImEndCustomShader( ImDrawList* draw );
 #endif
 
