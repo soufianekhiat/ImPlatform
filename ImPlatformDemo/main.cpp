@@ -24,7 +24,6 @@
 //		__DEAR_GFX_VULKAN__
 //		__DEAR_GFX_METAL__
 
-
 //#define IM_SUPPORT_CUSTOM_SHADER // For now only available on dx10 and dx11
 #define IM_PLATFORM_IMPLEMENTATION // It will include ImPlatform.cpp internally
 // // Define target
@@ -58,6 +57,14 @@ static bool g_bSimpleAPI		= true;
 static bool g_bCustomTitleBar	= true;
 //////////////////////////////////////////////////////////////////////////
 
+struct param3
+{
+	ImVec4 col0;
+	ImVec4 col1;
+	ImVec2 uv_start;
+	ImVec2 uv_end;
+};
+
 int main()
 {
 	// Setup for an image
@@ -71,6 +78,7 @@ int main()
 	width = height = 256;
 	channel = 4;
 	unsigned char* data = ( unsigned char* )malloc( width * height * channel );
+	unsigned char* white_data = ( unsigned char* )malloc( width * height * channel );
 	for ( int j = 0; j < height; ++j )
 	{
 		for ( int i = 0; i < width; ++i )
@@ -83,6 +91,10 @@ int main()
 			data[ channel * ( j * height + i ) + 1 ] = val;
 			data[ channel * ( j * height + i ) + 2 ] = val;
 			data[ channel * ( j * height + i ) + 3 ] = 0xFFu;
+			white_data[ channel * ( j * height + i ) + 0 ] = 0xFFu;
+			white_data[ channel * ( j * height + i ) + 1 ] = 0xFFu;
+			white_data[ channel * ( j * height + i ) + 2 ] = 0xFFu;
+			white_data[ channel * ( j * height + i ) + 3 ] = 0xFFu;
 		}
 	}
 #endif
@@ -111,6 +123,35 @@ int main()
 		float r2 = max( abs( x + size / 2.0f ), abs( y ) ) - size / 2;\n\
 		float r3 = max( abs( x - size / 6.0f ) - size / 4.0f, abs( y ) - size / 4.0f );\n\
 		col_out.rgb = ( min( r3, max( .75f * r1, r2 ) ) < 0.0f ).xxx;\n";
+
+	//ImVec2 delta = uv_end - uv_start;
+	//ImVec2 d = ImNormalized( delta );
+	//float l = 1.0f / ImLength( delta );
+	//
+	//	ImVec2 v = shape.vertices[ k ].pos;
+	//	ImVec2 uv;
+	//	uv.x = Normalize01( v.x, shape.bb.Min.x, shape.bb.Max.x );
+	//	uv.y = Normalize01( v.y, shape.bb.Min.y, shape.bb.Max.y );
+	//	ImVec2 c = uv - uv_start;
+	//	float t = ImSaturate( ImDot( d, c ) * l );
+	//	shape.vertices[ k ].col = ImColorBlendsRGB( col0, col1, t );
+	std::string params3 =
+		"float4 col0;\n\
+		float4 col1;\n\
+		float2 uv_start;\n\
+		float2 uv_end;\n";
+	std::string source3 =
+		"float2 delta = uv_end - uv_start;\n\
+		float2 d = normalize( delta );\n\
+		float l = rcp( length( delta ) );\n\
+		float2 c = uv - uv_start;\n\
+		float t = saturate( dot( d, c ) * l );\n\
+		col_out = lerp( col0, col1, t );\n";
+	param3 p3;
+	p3.col0 = ImVec4( 1.0f, 1.0f, 1.0f, 1.0f );
+	p3.col1 = ImVec4( 0.0f, 1.0f, 1.0f, 0.0f );
+	p3.uv_start = ImVec2(0.4f, 0.4f);
+	p3.uv_end = ImVec2(0.45f, 0.45f);
 #endif
 
 	// ImPlatform::SimpleAPI
@@ -154,6 +195,14 @@ int main()
 															ImPlatform::IM_BOUNDARY_CLAMP,
 															ImPlatform::IM_BOUNDARY_CLAMP
 														 } );
+		ImTextureID img_white = ImPlatform::ImCreateTexture2D( ( char* )white_data, width, height,
+														 {
+															ImPlatform::IM_RGBA,
+															ImPlatform::IM_TYPE_UINT8,
+															ImPlatform::IM_FILTERING_LINEAR,
+															ImPlatform::IM_BOUNDARY_CLAMP,
+															ImPlatform::IM_BOUNDARY_CLAMP
+														 } );
 #if IM_HAS_STBI
 		stbi_image_free( data );
 #else
@@ -161,10 +210,12 @@ int main()
 #endif
 
 #ifdef IM_SUPPORT_CUSTOM_SHADER
-		ImPlatform::ImShader shader;
-		shader = ImPlatform::ImCreateShader( source.c_str() );
-		ImPlatform::ImShader shader2;
-		shader2 = ImPlatform::ImCreateShader( source2.c_str() );
+		ImPlatform::ImDrawShader shader;
+		shader = ImPlatform::ImCreateShader( source.c_str(), "", 0 );
+		ImPlatform::ImDrawShader shader2;
+		shader2 = ImPlatform::ImCreateShader( source2.c_str(), "", 0);
+		ImPlatform::ImDrawShader shader3;
+		shader3 = ImPlatform::ImCreateShader( source3.c_str(), params3.c_str(), sizeof( param3 ), &p3 );
 #endif
 
 		ImVec4 clear_color = ImVec4( 0.461f, 0.461f, 0.461f, 1.0f );
@@ -218,13 +269,23 @@ int main()
 				}
 				{
 					ImGui::Begin( "Custom Shader 2" );
-					ImDrawList* draw = ImGui::GetWindowDrawList();
-					ImVec2 cur = ImGui::GetCursorScreenPos();
-					ImPlatform::ImBeginCustomShader( draw, shader2 );
-					ImRect bb( cur, cur + ImGui::GetContentRegionAvail() );
-					draw->PrimReserve( 6, 4 );
-					draw->PrimQuadUV( bb.GetBL(), bb.GetBR(), bb.GetTR(), bb.GetTL(), ImVec2( 0, 0 ), ImVec2( 1, 0 ), ImVec2( 1, 1 ), ImVec2( 0, 1 ), IM_COL32_WHITE );
-					ImPlatform::ImEndCustomShader( draw );
+						ImDrawList* draw = ImGui::GetWindowDrawList();
+						ImVec2 cur = ImGui::GetCursorScreenPos();
+						ImPlatform::ImBeginCustomShader( draw, shader2 );
+						ImRect bb( cur, cur + ImGui::GetContentRegionAvail() );
+						draw->AddImageQuad( img_white, bb.GetBL(), bb.GetBR(), bb.GetTR(), bb.GetTL(), ImVec2( 0, 0 ), ImVec2( 1, 0 ), ImVec2( 1, 1 ), ImVec2( 0, 1 ), IM_COL32( 255, 0, 0, 255 ) );
+						ImPlatform::ImEndCustomShader( draw );
+					ImGui::End();
+				}
+				{
+					ImGui::Begin( "Custom Shader 3" );
+						ImDrawList* draw = ImGui::GetWindowDrawList();
+						ImVec2 cur = ImGui::GetCursorScreenPos();
+						//ImUpdateCustomShaderConstant( shader3, &p3 );
+						ImPlatform::ImBeginCustomShader( draw, shader3 );
+						ImRect bb( cur, cur + ImGui::GetContentRegionAvail() );
+						draw->AddImageQuad( img_white, bb.GetBL(), bb.GetBR(), bb.GetTR(), bb.GetTL(), ImVec2( 0, 0 ), ImVec2( 1, 0 ), ImVec2( 1, 1 ), ImVec2( 0, 1 ), IM_COL32( 255, 255, 255, 255 ) );
+						ImPlatform::ImEndCustomShader( draw );
 					ImGui::End();
 				}
 #endif
@@ -273,10 +334,10 @@ int main()
 		}
 
 #ifdef IM_SUPPORT_CUSTOM_SHADER
-		ImPlatform::ImShader shader;
-		shader = ImPlatform::ImCreateShader( source.c_str() );
-		ImPlatform::ImShader shader2;
-		shader2 = ImPlatform::ImCreateShader( source2.c_str() );
+		ImPlatform::ImDrawShader shader;
+		shader = ImPlatform::ImCreateShader( source.c_str(), "", 0 );
+		ImPlatform::ImDrawShader shader2;
+		shader2 = ImPlatform::ImCreateShader( source2.c_str(), "", 0 );
 #endif
 
 		bGood = ImPlatform::ImShowWindow();
@@ -337,6 +398,14 @@ int main()
 															ImPlatform::IM_BOUNDARY_CLAMP,
 															ImPlatform::IM_BOUNDARY_CLAMP
 														 } );
+		ImTextureID img_white = ImPlatform::ImCreateTexture2D( ( char* )white_data, width, height,
+															   {
+																  ImPlatform::IM_RGBA,
+																  ImPlatform::IM_TYPE_UINT8,
+																  ImPlatform::IM_FILTERING_LINEAR,
+																  ImPlatform::IM_BOUNDARY_CLAMP,
+																  ImPlatform::IM_BOUNDARY_CLAMP
+															   } );
 #if IM_HAS_STBI
 		stbi_image_free( data );
 #else
@@ -389,23 +458,22 @@ int main()
 #ifdef IM_SUPPORT_CUSTOM_SHADER
 			{
 				ImGui::Begin( "Custom Shader" );
-				ImDrawList* draw = ImGui::GetWindowDrawList();
-				ImVec2 cur = ImGui::GetCursorScreenPos();
-				ImPlatform::ImBeginCustomShader( draw, shader );
-				ImRect bb( cur, cur + ImGui::GetContentRegionAvail() );
-				draw->AddImageQuad( img, bb.GetBL(), bb.GetBR(), bb.GetTR(), bb.GetTL(), ImVec2( 0, 0 ), ImVec2( 1, 0 ), ImVec2( 1, 1 ), ImVec2( 0, 1 ), IM_COL32_WHITE );
-				ImPlatform::ImEndCustomShader( draw );
+					ImDrawList* draw = ImGui::GetWindowDrawList();
+					ImVec2 cur = ImGui::GetCursorScreenPos();
+					ImPlatform::ImBeginCustomShader( draw, shader );
+					ImRect bb( cur, cur + ImGui::GetContentRegionAvail() );
+					draw->AddImageQuad( img, bb.GetBL(), bb.GetBR(), bb.GetTR(), bb.GetTL(), ImVec2( 0, 0 ), ImVec2( 1, 0 ), ImVec2( 1, 1 ), ImVec2( 0, 1 ), IM_COL32_WHITE );
+					ImPlatform::ImEndCustomShader( draw );
 				ImGui::End();
 			}
 			{
 				ImGui::Begin( "Custom Shader 2" );
-				ImDrawList* draw = ImGui::GetWindowDrawList();
-				ImVec2 cur = ImGui::GetCursorScreenPos();
-				ImPlatform::ImBeginCustomShader( draw, shader2 );
-				ImRect bb( cur, cur + ImGui::GetContentRegionAvail() );
-				draw->PrimReserve( 6, 4 );
-				draw->PrimQuadUV( bb.GetBL(), bb.GetBR(), bb.GetTR(), bb.GetTL(), ImVec2( 0, 0 ), ImVec2( 1, 0 ), ImVec2( 1, 1 ), ImVec2( 0, 1 ), IM_COL32_WHITE );
-				ImPlatform::ImEndCustomShader( draw );
+					ImDrawList* draw = ImGui::GetWindowDrawList();
+					ImVec2 cur = ImGui::GetCursorScreenPos();
+					ImPlatform::ImBeginCustomShader( draw, shader2 );
+					ImRect bb( cur, cur + ImGui::GetContentRegionAvail() );
+					draw->AddImageQuad( img_white, bb.GetBL(), bb.GetBR(), bb.GetTR(), bb.GetTL(), ImVec2( 0, 0 ), ImVec2( 1, 0 ), ImVec2( 1, 1 ), ImVec2( 0, 1 ), IM_COL32( 255, 0, 0, 255 ) );
+					ImPlatform::ImEndCustomShader( draw );
 				ImGui::End();
 			}
 #endif
