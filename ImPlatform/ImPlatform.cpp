@@ -2354,6 +2354,7 @@ static void Im_Hook_Renderer_SwapBuffers( ImGuiViewport* viewport, void* )
 
 	bool ImGfxAPIRender( ImVec4 const vClearColor )
 	{
+		IM_UNUSED( vClearColor );
 #if (IM_CURRENT_GFX == IM_GFX_OPENGL2)
 		ImGui::Render();
 		ImGui_ImplOpenGL2_RenderDrawData( ImGui::GetDrawData() );
