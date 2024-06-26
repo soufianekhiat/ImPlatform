@@ -1,4 +1,5 @@
 
+#define IMGUI_DEFINE_MATH_OPERATORS
 #include <imgui.h>
 // Available target, not all tested.
 // IM_TARGET_WIN32_DX9
@@ -33,7 +34,7 @@
 #define __DEAR_WIN__
 //#define IM_GLFW3_AUTO_LINK
 //#define __DEAR_GLFW__
-#define __DEAR_GFX_DX10__
+#define __DEAR_GFX_DX11__
 //#define __DEAR_GFX_OGL3__
 //#define IM_CURRENT_TARGET IM_TARGET_GLFW_OPENGL3
 //#define IM_THE_CHERNO_GLFW3
@@ -54,6 +55,14 @@
 static bool g_bSimpleAPI		= true;
 static bool g_bCustomTitleBar	= true;
 //////////////////////////////////////////////////////////////////////////
+
+void DrawCustomShaderQuad( const ImDrawList* parent_list, const ImDrawCmd* cmd )
+{
+	ImPlatform::ImShader* shaders = ( ImPlatform::ImShader* )cmd->UserCallbackData;
+	ImGui_ImplDX11_Data* bd = ImGui_ImplDX11_GetBackendData();
+	ID3D11DeviceContext* ctx = bd->pd3dDeviceContext;
+	ctx->PSSetShader( ( ID3D11PixelShader* )( shaders->ps ), nullptr, 0 );
+}
 
 int main()
 {
@@ -134,6 +143,10 @@ int main()
 		free( data );
 #endif
 
+		ImPlatform::ImShader shader;
+		std::string source = "col_out.rgb = float3(uv, 0.0f);";
+		shader = ImPlatform::ImCreateShader( source.c_str() );
+
 		ImVec4 clear_color = ImVec4( 0.461f, 0.461f, 0.461f, 1.0f );
 		while ( ImPlatform::ImPlatformContinue() )
 		{
@@ -171,6 +184,17 @@ int main()
 				// ImGui Code
 				bool show = true;
 				ImGui::ShowDemoWindow( &show );
+
+				{
+					ImGui::Begin( "Custom Shader" );
+						ImDrawList* draw = ImGui::GetWindowDrawList();
+						ImVec2 cur = ImGui::GetCursorScreenPos();
+						ImPlatform::ImBeginCustomShader( draw, shader );
+						ImRect bb( cur, cur + ImGui::GetContentRegionAvail() );
+						draw->AddImageQuad( img, bb.GetBL(), bb.GetBR(), bb.GetTR(), bb.GetTL(), ImVec2( 0, 0 ), ImVec2( 1, 0 ), ImVec2( 1, 1 ), ImVec2( 0, 1 ), IM_COL32_WHITE );
+						ImPlatform::ImEndCustomShader( draw );
+					ImGui::End();
+				}
 
 				if ( ImGui::Begin( "Image" ) )
 				{
@@ -214,6 +238,10 @@ int main()
 			fprintf( stderr, "ImPlatform: Cannot initialize the Graphics API." );
 			return false;
 		}
+
+		ImPlatform::ImShader shader;
+		std::string source = "col_out.rgb = float3(uv, 0.0f);";
+		shader = ImPlatform::ImCreateShader( source.c_str() );
 
 		bGood = ImPlatform::ImShowWindow();
 		if ( !bGood )
@@ -321,6 +349,16 @@ int main()
 			// ImGui Code
 			bool show = true;
 			ImGui::ShowDemoWindow( &show );
+			{
+				ImGui::Begin( "Custom Shader" );
+				ImDrawList* draw = ImGui::GetWindowDrawList();
+				ImVec2 cur = ImGui::GetCursorScreenPos();
+				ImPlatform::ImBeginCustomShader( draw, shader );
+				ImRect bb( cur, cur + ImGui::GetContentRegionAvail() );
+				draw->AddImageQuad( img, bb.GetBL(), bb.GetBR(), bb.GetTR(), bb.GetTL(), ImVec2( 0, 0 ), ImVec2( 1, 0 ), ImVec2( 1, 1 ), ImVec2( 0, 1 ), IM_COL32_WHITE );
+				ImPlatform::ImEndCustomShader( draw );
+				ImGui::End();
+			}
 			if ( ImGui::Begin( "Image" ) )
 			{
 				ImGui::Image( img, ImGui::GetContentRegionAvail() );
