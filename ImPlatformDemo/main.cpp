@@ -123,18 +123,6 @@ int main()
 		float r2 = max( abs( x + size / 2.0f ), abs( y ) ) - size / 2;\n\
 		float r3 = max( abs( x - size / 6.0f ) - size / 4.0f, abs( y ) - size / 4.0f );\n\
 		col_out.rgb = ( min( r3, max( .75f * r1, r2 ) ) < 0.0f ).xxx;\n";
-
-	//ImVec2 delta = uv_end - uv_start;
-	//ImVec2 d = ImNormalized( delta );
-	//float l = 1.0f / ImLength( delta );
-	//
-	//	ImVec2 v = shape.vertices[ k ].pos;
-	//	ImVec2 uv;
-	//	uv.x = Normalize01( v.x, shape.bb.Min.x, shape.bb.Max.x );
-	//	uv.y = Normalize01( v.y, shape.bb.Min.y, shape.bb.Max.y );
-	//	ImVec2 c = uv - uv_start;
-	//	float t = ImSaturate( ImDot( d, c ) * l );
-	//	shape.vertices[ k ].col = ImColorBlendsRGB( col0, col1, t );
 	std::string params3 =
 		"float4 col0;\n\
 		float4 col1;\n\
