@@ -311,6 +311,7 @@ namespace ImPlatform
 		ImTextureBoundary	eBoundaryV;
 	};
 
+#ifdef IM_SUPPORT_CUSTOM_SHADER
 	// Generic
 	ImTextureID	ImCreateTexture2D	( char* pData, ImU32 const uWidth, ImU32 const uHeight, ImImageDesc const& oImgDesc );
 	void		ImReleaseTexture2D	( ImTextureID id );
@@ -326,6 +327,7 @@ namespace ImPlatform
 
 	void		ImBeginCustomShader( ImDrawList* draw, ImShader& shader );
 	void		ImEndCustomShader( ImDrawList* draw );
+#endif
 
 	bool		ImIsMaximized();
 
