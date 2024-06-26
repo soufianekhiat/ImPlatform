@@ -997,6 +997,7 @@ namespace ImPlatform
 #endif
 	}
 
+#ifdef IM_SUPPORT_CUSTOM_SHADER
 	void ReplaceAll( std::string& sStr, std::string const& sToFind, std::string const& sReplaceBy )
 	{
 		size_t	uStart = 0;
@@ -1097,7 +1098,7 @@ PS_INPUT main(VS_INPUT input)\n\
 {\n\
 	float4 pos : SV_POSITION;\n\
 	float4 col : COLOR0;\n\
-float2 uv  : TEXCOORD0;\n\
+	float2 uv  : TEXCOORD0;\n\
 };\n\
 sampler sampler0;\n\
 Texture2D texture0;\n\
@@ -1260,6 +1261,7 @@ float4 main(PS_INPUT input) : SV_Target\n\
 	{
 		draw->AddCallback( ImDrawCallback_ResetRenderState, NULL );
 	}
+#endif
 
 	bool		ImIsMaximized()
 	{
