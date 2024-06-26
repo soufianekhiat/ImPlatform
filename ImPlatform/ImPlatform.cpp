@@ -2,7 +2,7 @@
 #include <ImPlatform.h>
 #endif
 
-//#include <string>
+#include <string>
 
 #include <imgui_internal.h>
 
@@ -997,187 +997,269 @@ namespace ImPlatform
 #endif
 	}
 
-//	void ReplaceAll( std::string& sStr, std::string const& sToFind, std::string const& sReplaceBy )
-//	{
-//		size_t	uStart = 0;
-//		while ( ( uStart = sStr.find( sToFind, uStart ) ) != std::string::npos )
-//		{
-//			sStr.replace( uStart, sToFind.length(), sReplaceBy );
-//			uStart += sReplaceBy.length();
-//		}
-//	}
-//
-//
-//	ImShader	ImCreateShader( char* source )
-//	{
-//		static const char* pShaderBase =
-//"#ifndef __IM_SHADER_H__\
-//#define __IM_SHADER_H__\
-//\
-//#if defined(IM_SHADER_HLSL)\
-//#define IMS_IN        in\
-//#define IMS_OUT       out\
-//#define IMS_INOUT     inout\
-//#define IMS_UNIFORM   uniform\
-//#elif defined(IMS_GLSL)\
-//#define IMS_IN        in\
-//#define IMS_OUT       out\
-//#define IMS_INOUT     inout\
-//#define IMS_UNIFORM   const\
-//#endif\
-//\
-//#if defined(IM_SHADER_HLSL)\
-//\
-//#define Mat44f matrix<float, 4, 4>\
-//#define Mat33f matrix<float, 3, 3>\
-//\
-//typedef bool        Bool;\
-//#define f32         float\
-//typedef uint        u32;\
-//typedef int         i32;\
-//\
-//#endif\
-//\
-//#if defined(IMS_GLSL)\
-//\
-//#define Mat44f   mat4\
-//#define Mat33f   mat3\
-//\
-//#define Bool     bool\
-//#define f32      float\
-//#define float2   vec2\
-//#define float3   vec3\
-//#define float4   vec4\
-//#define u32      uint\
-//#define uint2    uvec2\
-//#define uint3    uvec3\
-//#define uint4    uvec4\
-//#define i32      int\
-//#define int2     ivec2\
-//#define int3     ivec3\
-//#define int4     ivec4\
-//\
-//#define float4x4 mat4\
-//#define float3x3 mat3\
-//#define float2x2 mat2\
-//\
-//#endif";
-//
-//		static const char* pVertexShaderDefault =
-//"cbuffer vertexBuffer : register(b0) \
-//{\
-//	float4x4 ProjectionMatrix; \
-//};\
-//struct VS_INPUT\
-//{\
-//	float2 pos : POSITION;\
-//	float4 col : COLOR0;\
-//	float2 uv  : TEXCOORD0;\
-//};\
-//\
-//struct PS_INPUT\
-//{\
-//	float4 pos : SV_POSITION;\
-//	float4 col : COLOR0;\
-//	float2 uv  : TEXCOORD0;\
-//};\
-//\
-//PS_INPUT main(VS_INPUT input)\
-//{\
-//	PS_INPUT output;\
-//	output.pos = mul( ProjectionMatrix, float4(input.pos.xy, 0.f, 1.f));\
-//	output.col = input.col;\
-//	output.uv  = input.uv;\
-//	return output;\
-//}";
-//
-//		static const char* pPixelShaderTemplate =
-//"struct PS_INPUT\
-//{\
-//	float4 pos : SV_POSITION;\
-//	float4 col : COLOR0;\
-//float2 uv  : TEXCOORD0;\
-//};\
-//sampler sampler0;\
-//Texture2D texture0;\
-//\
-//float4 main(PS_INPUT input) : SV_Target\
-//{\
-//	float4 out_col;\
-//	%IM_PLATFORM_WRITE_OUT_COL%\
-//	out_col *= input.col * texture0.Sample(sampler0, input.uv); \
-//	return out_col; \
-//}";
-//
-//		std::string sVS = pShaderBase;
-//		sVS += pVertexShaderDefault;
-//		std::string sPS = pShaderBase;
-//
-//		std::string sFunc = pPixelShaderTemplate;
-//		ReplaceAll( sFunc, "%IM_PLATFORM_WRITE_OUT_COL%", source );
-//		sPS += sFunc;
-//
-//#if (IM_CURRENT_GFX == IM_GFX_OPENGL2) || (IM_CURRENT_GFX == IM_GFX_OPENGL3)
-//
-//#elif (IM_CURRENT_GFX == IM_GFX_DIRECTX9)
-//
-//#elif (IM_CURRENT_GFX == IM_GFX_DIRECTX10)
-//
-//		ImGui_ImplDX10_Data* bd = ImGui_ImplDX10_GetBackendData();
-//
-//		ID3D10VertexShader* pVertexShader = NULL;
-//		ID3D10PixelShader* pPixelShader = NULL;
-//
-//		ID3DBlob* vertexShaderBlob;
-//		if ( FAILED( D3DCompile( sVS.c_str(), sVS.size(), nullptr, nullptr, nullptr, "main", "vs_4_0", 0, 0, &vertexShaderBlob, nullptr ) ) )
-//			return { NULL, NULL };; // NB: Pass ID3DBlob* pErrorBlob to D3DCompile() to get error showing in (const char*)pErrorBlob->GetBufferPointer(). Make sure to Release() the blob!
-//		if ( bd->pd3dDevice->CreateVertexShader( vertexShaderBlob->GetBufferPointer(), vertexShaderBlob->GetBufferSize(), &pVertexShader ) != S_OK )
-//		{
-//			vertexShaderBlob->Release();
-//			return { NULL, NULL };
-//		}
-//
-//		ID3DBlob* pixelShaderBlob;
-//		if ( FAILED( D3DCompile( sPS.c_str(), sPS.size(), nullptr, nullptr, nullptr, "main", "ps_4_0", 0, 0, &pixelShaderBlob, nullptr ) ) )
-//			return { NULL, NULL }; // NB: Pass ID3DBlob* pErrorBlob to D3DCompile() to get error showing in (const char*)pErrorBlob->GetBufferPointer(). Make sure to Release() the blob!
-//		if ( bd->pd3dDevice->CreatePixelShader( pixelShaderBlob->GetBufferPointer(), pixelShaderBlob->GetBufferSize(), &pPixelShader ) != S_OK )
-//		{
-//			pixelShaderBlob->Release();
-//			return { NULL, NULL };
-//		}
-//		pixelShaderBlob->Release();
-//
-//		return { pVertexShader, pPixelShader };
-//
-//#elif (IM_CURRENT_GFX == IM_GFX_DIRECTX11)
-//
-//#elif (IM_CURRENT_GFX == IM_GFX_DIRECTX12)
-//
-//#endif
-//
-//		return { NULL, NULL };
-//	}
-//
-//	void		ImReleaseShader( ImShader& shader )
-//	{
-//#if (IM_CURRENT_GFX == IM_GFX_OPENGL2) || (IM_CURRENT_GFX == IM_GFX_OPENGL3)
-//
-//#elif (IM_CURRENT_GFX == IM_GFX_DIRECTX9)
-//
-//#elif (IM_CURRENT_GFX == IM_GFX_DIRECTX10)
-//
-//		ID3D10VertexShader* pVertexShader = ( ID3D10VertexShader* )shader.vs;
-//		ID3D10PixelShader* pPixelShader = ( ID3D10PixelShader* )shader.ps;
-//
-//		pVertexShader->Release();
-//		pPixelShader->Release();
-//
-//#elif (IM_CURRENT_GFX == IM_GFX_DIRECTX11)
-//
-//#elif (IM_CURRENT_GFX == IM_GFX_DIRECTX12)
-//
-//#endif
-//	}
+	void ReplaceAll( std::string& sStr, std::string const& sToFind, std::string const& sReplaceBy )
+	{
+		size_t	uStart = 0;
+		while ( ( uStart = sStr.find( sToFind, uStart ) ) != std::string::npos )
+		{
+			sStr.replace( uStart, sToFind.length(), sReplaceBy );
+			uStart += sReplaceBy.length();
+		}
+	}
+
+
+	ImShader	ImCreateShader( char const* source )
+	{
+		static const char* pShaderBase =
+			"#ifndef __IM_SHADER_H__\n\
+#define __IM_SHADER_H__\n\
+\n\
+#if defined(IM_SHADER_HLSL)\n\
+#define IMS_IN        in\n\
+#define IMS_OUT       out\n\
+#define IMS_INOUT     inout\n\
+#define IMS_UNIFORM   uniform\n\
+#elif defined(IMS_GLSL)\n\
+#define IMS_IN        in\n\
+#define IMS_OUT       out\n\
+#define IMS_INOUT     inout\n\
+#define IMS_UNIFORM   const\n\
+#endif\n\
+\n\
+#if defined(IM_SHADER_HLSL)\n\
+\n\
+#define Mat44f matrix<float, 4, 4>\n\
+#define Mat33f matrix<float, 3, 3>\n\
+\n\
+typedef bool        Bool;\n\
+#define f32         float\n\
+typedef uint        u32;\n\
+typedef int         i32;\n\
+\n\
+#endif\n\
+\n\
+#if defined(IMS_GLSL)\n\
+\n\
+#define Mat44f   mat4\n\
+#define Mat33f   mat3\n\
+\n\
+#define Bool     bool\n\
+#define f32      float\n\
+#define float2   vec2\n\
+#define float3   vec3\n\
+#define float4   vec4\n\
+#define u32      uint\n\
+#define uint2    uvec2\n\
+#define uint3    uvec3\n\
+#define uint4    uvec4\n\
+#define i32      int\n\
+#define int2     ivec2\n\
+#define int3     ivec3\n\
+#define int4     ivec4\n\
+\n\
+#define float4x4 mat4\n\
+#define float3x3 mat3\n\
+#define float2x2 mat2\n\
+\n\
+#endif\n\
+#endif\n";
+
+		static const char* pVertexShaderDefault =
+"cbuffer vertexBuffer : register(b0)\n\
+{\n\
+	float4x4 ProjectionMatrix;\n\
+};\n\
+struct VS_INPUT\n\
+{\n\
+	float2 pos : POSITION;\n\
+	float4 col : COLOR0;\n\
+	float2 uv  : TEXCOORD0;\n\
+};\n\
+\n\
+struct PS_INPUT\n\
+{\n\
+	float4 pos : SV_POSITION;\n\
+	float4 col : COLOR0;\n\
+	float2 uv  : TEXCOORD0;\n\
+};\n\
+\n\
+PS_INPUT main(VS_INPUT input)\n\
+{\n\
+	PS_INPUT output;\n\
+	output.pos = mul( ProjectionMatrix, float4(input.pos.xy, 0.f, 1.f));\n\
+	output.col = input.col;\n\
+	output.uv  = input.uv;\n\
+	return output;\n\
+}\n";
+
+		static const char* pPixelShaderTemplate =
+"struct PS_INPUT\n\
+{\n\
+	float4 pos : SV_POSITION;\n\
+	float4 col : COLOR0;\n\
+float2 uv  : TEXCOORD0;\n\
+};\n\
+sampler sampler0;\n\
+Texture2D texture0;\n\
+\n\
+float4 main(PS_INPUT input) : SV_Target\n\
+{\n\
+	float2 uv = input.uv;\n\
+	float4 col_in = input.col;\n\
+	float4 col_out = float4(1.0f, 1.0f, 1.0f, 1.0f);\n\
+	%IM_PLATFORM_WRITE_OUT_COL%\n\
+	col_out *= col_in * texture0.Sample(sampler0, input.uv);\n\
+	return col_out;\n\
+}\n";
+
+		std::string sVS = pShaderBase;
+		sVS += pVertexShaderDefault;
+		std::string sPS = pShaderBase;
+
+		std::string sFunc = pPixelShaderTemplate;
+		ReplaceAll( sFunc, "%IM_PLATFORM_WRITE_OUT_COL%", source );
+		sPS += sFunc;
+
+#if (IM_CURRENT_GFX == IM_GFX_OPENGL2) || (IM_CURRENT_GFX == IM_GFX_OPENGL3)
+
+#elif (IM_CURRENT_GFX == IM_GFX_DIRECTX9)
+
+#elif (IM_CURRENT_GFX == IM_GFX_DIRECTX10)
+
+		ImGui_ImplDX10_Data* bd = ImGui_ImplDX10_GetBackendData();
+
+		ID3D10VertexShader* pVertexShader = NULL;
+		ID3D10PixelShader* pPixelShader = NULL;
+
+		D3D_SHADER_MACRO macros[] = { "IM_SHADER_HLSL", "", NULL, NULL };
+
+		ID3DBlob* vertexShaderBlob;
+		if ( FAILED( D3DCompile( sVS.c_str(), sVS.size(), nullptr, nullptr, nullptr, "main", "vs_4_0", 0, 0, &vertexShaderBlob, nullptr ) ) )
+			return { NULL, NULL };; // NB: Pass ID3DBlob* pErrorBlob to D3DCompile() to get error showing in (const char*)pErrorBlob->GetBufferPointer(). Make sure to Release() the blob!
+		if ( bd->pd3dDevice->CreateVertexShader( vertexShaderBlob->GetBufferPointer(), vertexShaderBlob->GetBufferSize(), &pVertexShader ) != S_OK )
+		{
+			vertexShaderBlob->Release();
+			return { NULL, NULL };
+		}
+
+		ID3DBlob* pixelShaderBlob;
+		if ( FAILED( D3DCompile( sPS.c_str(), sPS.size(), nullptr, nullptr, nullptr, "main", "ps_4_0", 0, 0, &pixelShaderBlob, nullptr ) ) )
+			return { NULL, NULL }; // NB: Pass ID3DBlob* pErrorBlob to D3DCompile() to get error showing in (const char*)pErrorBlob->GetBufferPointer(). Make sure to Release() the blob!
+		if ( bd->pd3dDevice->CreatePixelShader( pixelShaderBlob->GetBufferPointer(), pixelShaderBlob->GetBufferSize(), &pPixelShader ) != S_OK )
+		{
+			pixelShaderBlob->Release();
+			return { NULL, NULL };
+		}
+		pixelShaderBlob->Release();
+
+		return { pVertexShader, pPixelShader };
+
+#elif (IM_CURRENT_GFX == IM_GFX_DIRECTX11)
+
+		ImGui_ImplDX11_Data* bd = ImGui_ImplDX11_GetBackendData();
+
+		ID3D11VertexShader* pVertexShader = NULL;
+		ID3D11PixelShader* pPixelShader = NULL;
+
+		D3D_SHADER_MACRO macros[] = { "IM_SHADER_HLSL", "", NULL, NULL };
+
+		ID3DBlob* vertexShaderBlob;
+
+		ID3DBlob* pErrorBlob;
+		if ( FAILED( D3DCompile( sVS.c_str(), sVS.size(), nullptr, &macros[ 0 ], nullptr, "main", "vs_4_0", 0, 0, &vertexShaderBlob, &pErrorBlob)) )
+		{
+			int error_count = int( pErrorBlob->GetBufferSize() );
+			printf( "%*s\n", error_count, ( char* )pErrorBlob->GetBufferPointer() );
+			fflush( stdout );
+			vertexShaderBlob->Release();
+			return { NULL, NULL };
+		}
+		if ( bd->pd3dDevice->CreateVertexShader( vertexShaderBlob->GetBufferPointer(), vertexShaderBlob->GetBufferSize(), nullptr, &pVertexShader ) != S_OK )
+		{
+			vertexShaderBlob->Release();
+			return { NULL, NULL };
+		}
+
+		ID3DBlob* pixelShaderBlob;
+		if ( FAILED( D3DCompile( sPS.c_str(), sPS.size(), nullptr, &macros[ 0 ], nullptr, "main", "ps_4_0", 0, 0, &pixelShaderBlob, &pErrorBlob ) ) )
+		{
+			int error_count = int( pErrorBlob->GetBufferSize() );
+			printf( "%*s\n", error_count, ( char* )pErrorBlob->GetBufferPointer() );
+			fflush( stdout );
+			pixelShaderBlob->Release();
+			return { NULL, NULL };
+		}
+		if ( bd->pd3dDevice->CreatePixelShader( pixelShaderBlob->GetBufferPointer(), pixelShaderBlob->GetBufferSize(), nullptr, &pPixelShader ) != S_OK )
+		{
+			return { NULL, NULL };
+		}
+		pixelShaderBlob->Release();
+
+		return { pVertexShader, pPixelShader };
+
+#elif (IM_CURRENT_GFX == IM_GFX_DIRECTX12)
+
+#endif
+
+		return { NULL, NULL };
+	}
+
+	void		ImReleaseShader( ImShader& shader )
+	{
+#if (IM_CURRENT_GFX == IM_GFX_OPENGL2) || (IM_CURRENT_GFX == IM_GFX_OPENGL3)
+
+#elif (IM_CURRENT_GFX == IM_GFX_DIRECTX9)
+
+#elif (IM_CURRENT_GFX == IM_GFX_DIRECTX10)
+
+		ID3D10VertexShader* pVertexShader = ( ID3D10VertexShader* )shader.vs;
+		ID3D10PixelShader* pPixelShader = ( ID3D10PixelShader* )shader.ps;
+
+		pVertexShader->Release();
+		pPixelShader->Release();
+
+#elif (IM_CURRENT_GFX == IM_GFX_DIRECTX11)
+
+#elif (IM_CURRENT_GFX == IM_GFX_DIRECTX12)
+
+#endif
+	}
+
+	void ImSetCustomShader( const ImDrawList* parent_list, const ImDrawCmd* cmd )
+	{
+#if (IM_CURRENT_GFX == IM_GFX_OPENGL2) || (IM_CURRENT_GFX == IM_GFX_OPENGL3)
+
+#elif (IM_CURRENT_GFX == IM_GFX_DIRECTX9)
+
+#elif (IM_CURRENT_GFX == IM_GFX_DIRECTX10)
+
+		ImPlatform::ImShader* shaders = ( ImPlatform::ImShader* )cmd->UserCallbackData;
+		ImGui_ImplDX10_Data* bd = ImGui_ImplDX11_GetBackendData();
+		ID3D10Device* ctx = bd->pd3dDeviceContext;
+		ctx->VSSetShader( ( ID3D11VertexShader* )( shaders->vs ), nullptr, 0 );
+		ctx->PSSetShader( ( ID3D11PixelShader* )( shaders->ps ), nullptr, 0 );
+
+#elif (IM_CURRENT_GFX == IM_GFX_DIRECTX11)
+
+		ImPlatform::ImShader* shaders = ( ImPlatform::ImShader* )cmd->UserCallbackData;
+		ImGui_ImplDX11_Data* bd = ImGui_ImplDX11_GetBackendData();
+		ID3D11DeviceContext* ctx = bd->pd3dDeviceContext;
+		ctx->VSSetShader( ( ID3D11VertexShader* )( shaders->vs ), nullptr, 0 );
+		ctx->PSSetShader( ( ID3D11PixelShader* )( shaders->ps ), nullptr, 0 );
+
+#elif (IM_CURRENT_GFX == IM_GFX_DIRECTX12)
+
+#endif
+	}
+
+	void		ImBeginCustomShader( ImDrawList* draw, ImShader& shader )
+	{
+		draw->AddCallback( &ImSetCustomShader, &shader );
+	}
+	void		ImEndCustomShader( ImDrawList* draw )
+	{
+		draw->AddCallback( ImDrawCallback_ResetRenderState, NULL );
+	}
 
 	bool		ImIsMaximized()
 	{
@@ -1939,7 +2021,7 @@ static void Im_Hook_Renderer_SwapBuffers( ImGuiViewport* viewport, void* )
 	{
 #if (IM_CURRENT_PLATFORM == IM_PLATFORM_WIN32)
 
-		ImGui_ImplWin32_EnableDpiAwareness();
+		//ImGui_ImplWin32_EnableDpiAwareness();
 
 #ifdef UNICODE
 		const size_t WCHARBUF = 4096;
@@ -2354,7 +2436,6 @@ static void Im_Hook_Renderer_SwapBuffers( ImGuiViewport* viewport, void* )
 
 	bool ImGfxAPIRender( ImVec4 const vClearColor )
 	{
-		IM_UNUSED( vClearColor );
 #if (IM_CURRENT_GFX == IM_GFX_OPENGL2)
 		ImGui::Render();
 		ImGui_ImplOpenGL2_RenderDrawData( ImGui::GetDrawData() );

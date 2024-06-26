@@ -315,14 +315,17 @@ namespace ImPlatform
 	ImTextureID	ImCreateTexture2D	( char* pData, ImU32 const uWidth, ImU32 const uHeight, ImImageDesc const& oImgDesc );
 	void		ImReleaseTexture2D	( ImTextureID id );
 
-	//typedef void* ImShaderID;
-	//struct ImShader
-	//{
-	//	ImShaderID vs;
-	//	ImShaderID ps;
-	//};
-	//ImShader	ImCreateShader( char* source );
-	//void		ImReleaseShader( ImShader& shader );
+	typedef void* ImShaderID;
+	struct ImShader
+	{
+		ImShaderID vs;
+		ImShaderID ps;
+	};
+	ImShader	ImCreateShader( char const* source );
+	void		ImReleaseShader( ImShader& shader );
+
+	void		ImBeginCustomShader( ImDrawList* draw, ImShader& shader );
+	void		ImEndCustomShader( ImDrawList* draw );
 
 	bool		ImIsMaximized();
 
