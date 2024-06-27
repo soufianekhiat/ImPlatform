@@ -24,7 +24,6 @@
 //		__DEAR_GFX_VULKAN__
 //		__DEAR_GFX_METAL__
 
-//#define IM_SUPPORT_CUSTOM_SHADER // For now only available on dx10 and dx11
 #define IM_PLATFORM_IMPLEMENTATION // It will include ImPlatform.cpp internally
 // // Define target
 //#define IM_CURRENT_TARGET IM_TARGET_WIN32_DX11
@@ -35,7 +34,10 @@
 #define __DEAR_WIN__
 //#define IM_GLFW3_AUTO_LINK
 //#define __DEAR_GLFW__
-#define __DEAR_GFX_DX11__
+//#define __DEAR_GFX_DX9__
+//#define __DEAR_GFX_DX10__
+//#define __DEAR_GFX_DX11__
+#define __DEAR_GFX_DX12__
 //#define __DEAR_GFX_OGL3__
 //#define IM_CURRENT_TARGET IM_TARGET_GLFW_OPENGL3
 //#define IM_THE_CHERNO_GLFW3
