@@ -1032,11 +1032,6 @@ namespace ImPlatform
 #define Mat44f matrix<float, 4, 4>\n\
 #define Mat33f matrix<float, 3, 3>\n\
 \n\
-typedef bool        Bool;\n\
-#define f32         float\n\
-typedef uint        u32;\n\
-typedef int         i32;\n\
-\n\
 #endif\n\
 \n\
 #if defined(IMS_GLSL)\n\
@@ -1044,16 +1039,12 @@ typedef int         i32;\n\
 #define Mat44f   mat4\n\
 #define Mat33f   mat3\n\
 \n\
-#define Bool     bool\n\
-#define f32      float\n\
 #define float2   vec2\n\
 #define float3   vec3\n\
 #define float4   vec4\n\
-#define u32      uint\n\
 #define uint2    uvec2\n\
 #define uint3    uvec3\n\
 #define uint4    uvec4\n\
-#define i32      int\n\
 #define int2     ivec2\n\
 #define int3     ivec3\n\
 #define int4     ivec4\n\
@@ -1094,7 +1085,7 @@ PS_INPUT main(VS_INPUT input)\n\
 }\n";
 
 		static const char* pPixelShaderTemplate =
-			"struct PS_INPUT\n\
+"struct PS_INPUT\n\
 {\n\
 	float4 pos : SV_POSITION;\n\
 	float4 col : COLOR0;\n\
@@ -1139,28 +1130,49 @@ float4 main(PS_INPUT input) : SV_Target\n\
 		ID3D10VertexShader* pVertexShader = NULL;
 		ID3D10PixelShader* pPixelShader = NULL;
 
+		ID3D10Buffer* constant_buffer = NULL;
+		if ( sizeof_in_bytes_constants > 0 )
+		{
+			D3D10_BUFFER_DESC desc;
+			desc.ByteWidth = sizeof_in_bytes_constants;
+			desc.Usage = D3D10_USAGE_DYNAMIC;
+			desc.BindFlags = D3D10_BIND_CONSTANT_BUFFER;
+			desc.CPUAccessFlags = D3D10_CPU_ACCESS_WRITE;
+			desc.MiscFlags = 0;
+			if ( init_data_constant != NULL )
+			{
+				D3D10_SUBRESOURCE_DATA init = D3D10_SUBRESOURCE_DATA{ 0 };
+				init.pSysMem = init_data_constant;
+				bd->pd3dDevice->CreateBuffer( &desc, &init, &constant_buffer );
+			}
+			else
+			{
+				bd->pd3dDevice->CreateBuffer( &desc, NULL, &constant_buffer );
+			}
+		}
+
 		D3D_SHADER_MACRO macros[] = { "IM_SHADER_HLSL", "", NULL, NULL };
 
 		ID3DBlob* vertexShaderBlob;
 		if ( FAILED( D3DCompile( sVS.c_str(), sVS.size(), nullptr, nullptr, nullptr, "main", "vs_4_0", 0, 0, &vertexShaderBlob, nullptr ) ) )
-			return { NULL, NULL };; // NB: Pass ID3DBlob* pErrorBlob to D3DCompile() to get error showing in (const char*)pErrorBlob->GetBufferPointer(). Make sure to Release() the blob!
+			return { NULL, NULL, NULL, 0 };
 		if ( bd->pd3dDevice->CreateVertexShader( vertexShaderBlob->GetBufferPointer(), vertexShaderBlob->GetBufferSize(), &pVertexShader ) != S_OK )
 		{
 			vertexShaderBlob->Release();
-			return { NULL, NULL };
+			return { NULL, NULL, NULL, 0 };
 		}
 
 		ID3DBlob* pixelShaderBlob;
 		if ( FAILED( D3DCompile( sPS.c_str(), sPS.size(), nullptr, nullptr, nullptr, "main", "ps_4_0", 0, 0, &pixelShaderBlob, nullptr ) ) )
-			return { NULL, NULL }; // NB: Pass ID3DBlob* pErrorBlob to D3DCompile() to get error showing in (const char*)pErrorBlob->GetBufferPointer(). Make sure to Release() the blob!
+			return { NULL, NULL, NULL, 0 };
 		if ( bd->pd3dDevice->CreatePixelShader( pixelShaderBlob->GetBufferPointer(), pixelShaderBlob->GetBufferSize(), &pPixelShader ) != S_OK )
 		{
 			pixelShaderBlob->Release();
-			return { NULL, NULL };
+			return { NULL, NULL, NULL, 0 };
 		}
 		pixelShaderBlob->Release();
 
-		return { pVertexShader, pPixelShader };
+		return { pVertexShader, pPixelShader, constant_buffer, sizeof_in_bytes_constants };
 
 #elif (IM_CURRENT_GFX == IM_GFX_DIRECTX11)
 
@@ -1195,7 +1207,7 @@ float4 main(PS_INPUT input) : SV_Target\n\
 		ID3DBlob* vertexShaderBlob;
 
 		ID3DBlob* pErrorBlob;
-		if ( FAILED( D3DCompile( sVS.c_str(), sVS.size(), nullptr, &macros[ 0 ], nullptr, "main", "vs_4_0", 0, 0, &vertexShaderBlob, &pErrorBlob)) )
+		if ( FAILED( D3DCompile( sVS.c_str(), sVS.size(), nullptr, &macros[ 0 ], nullptr, "main", "vs_5_0", 0, 0, &vertexShaderBlob, &pErrorBlob)) )
 		{
 			int error_count = int( pErrorBlob->GetBufferSize() );
 			printf( "%*s\n", error_count, ( char* )pErrorBlob->GetBufferPointer() );
@@ -1211,7 +1223,7 @@ float4 main(PS_INPUT input) : SV_Target\n\
 		vertexShaderBlob->Release();
 
 		ID3DBlob* pixelShaderBlob;
-		if ( FAILED( D3DCompile( sPS.c_str(), sPS.size(), nullptr, &macros[ 0 ], nullptr, "main", "ps_4_0", 0, 0, &pixelShaderBlob, &pErrorBlob ) ) )
+		if ( FAILED( D3DCompile( sPS.c_str(), sPS.size(), nullptr, &macros[ 0 ], nullptr, "main", "ps_5_0", 0, 0, &pixelShaderBlob, &pErrorBlob ) ) )
 		{
 			int error_count = int( pErrorBlob->GetBufferSize() );
 			printf( "%*s\n", error_count, ( char* )pErrorBlob->GetBufferPointer() );
@@ -1264,11 +1276,12 @@ float4 main(PS_INPUT input) : SV_Target\n\
 
 #elif (IM_CURRENT_GFX == IM_GFX_DIRECTX10)
 
-		ImPlatform::ImShader* shaders = ( ImPlatform::ImShader* )cmd->UserCallbackData;
-		ImGui_ImplDX10_Data* bd = ImGui_ImplDX11_GetBackendData();
-		ID3D10Device* ctx = bd->pd3dDeviceContext;
-		ctx->VSSetShader( ( ID3D11VertexShader* )( shaders->vs ), nullptr, 0 );
-		ctx->PSSetShader( ( ID3D11PixelShader* )( shaders->ps ), nullptr, 0 );
+		ImPlatform::ImDrawShader* shaders = ( ImPlatform::ImDrawShader* )cmd->UserCallbackData;
+		ImGui_ImplDX10_Data* bd = ImGui_ImplDX10_GetBackendData();
+		ID3D10Device* ctx = bd->pd3dDevice;
+		ctx->VSSetShader( ( ID3D10VertexShader* )( shaders->vs ) );
+		ctx->PSSetShader( ( ID3D10PixelShader* )( shaders->ps ) );
+		ctx->PSSetConstantBuffers( 0, 1, ( ID3D10Buffer* const* )( &( shaders->cst ) ) );
 
 #elif (IM_CURRENT_GFX == IM_GFX_DIRECTX11)
 
@@ -1291,6 +1304,18 @@ float4 main(PS_INPUT input) : SV_Target\n\
 #elif (IM_CURRENT_GFX == IM_GFX_DIRECTX9)
 
 #elif (IM_CURRENT_GFX == IM_GFX_DIRECTX10)
+
+		if ( shader.cst != NULL && ptr_to_constants != NULL && shader.sizeof_in_bytes_constants > 0 )
+		{
+			ImGui_ImplDX10_Data* bd = ImGui_ImplDX10_GetBackendData();
+			ID3D10Device* ctx = bd->pd3dDevice;
+
+			void* mapped_resource;
+			if ( ( ( ID3D10Buffer* )shader.cst )->Map( D3D10_MAP_WRITE_DISCARD, 0, &mapped_resource ) != S_OK )
+				return;
+			memcpy( &mapped_resource, ptr_to_constants, shader.sizeof_in_bytes_constants );
+			( ( ID3D10Buffer* )shader.cst )->Unmap();
+		}
 
 #elif (IM_CURRENT_GFX == IM_GFX_DIRECTX11)
 
