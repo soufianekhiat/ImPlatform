@@ -148,9 +148,11 @@ extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg
 #include <backends/imgui_impl_dx10.h>
 #include <d3d10_1.h>
 #include <d3d10.h>
+#define IM_SUPPORT_CUSTOM_SHADER
 #elif (IM_CURRENT_GFX == IM_GFX_DIRECTX11)
 #include <backends/imgui_impl_dx11.h>
 #include <d3d11.h>
+#define IM_SUPPORT_CUSTOM_SHADER
 #elif (IM_CURRENT_GFX == IM_GFX_DIRECTX12)
 #include <backends/imgui_impl_dx12.h>
 #include <d3d12.h>

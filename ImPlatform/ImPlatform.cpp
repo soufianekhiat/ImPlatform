@@ -1542,17 +1542,12 @@ float4 main(PS_INPUT input) : SV_Target\n\
 
 	void	ImCleanupRenderTarget()
 	{
-#if (IM_CURRENT_GFX == IM_GFX_DIRECTX10)
+#if (IM_CURRENT_GFX == IM_GFX_DIRECTX10) || (IM_CURRENT_GFX == IM_GFX_DIRECTX11)
 		if (PlatformData.pMainRenderTargetView)
 		{
 			PlatformData.pMainRenderTargetView->Release();
 			PlatformData.pMainRenderTargetView = nullptr;
 		}
-#elif (IM_CURRENT_GFX == IM_GFX_DIRECTX11)
-		ID3D11Texture2D* pBackBuffer;
-		PlatformData.pSwapChain->GetBuffer(0, IID_PPV_ARGS(&pBackBuffer));
-		PlatformData.pD3DDevice->CreateRenderTargetView(pBackBuffer, nullptr, &PlatformData.pMainRenderTargetView);
-		pBackBuffer->Release();
 #elif (IM_CURRENT_GFX == IM_GFX_DIRECTX12)
 
 		ImWaitForLastSubmittedFrame();
@@ -1644,7 +1639,12 @@ float4 main(PS_INPUT input) : SV_Target\n\
 		//createDeviceFlags |= D3D11_CREATE_DEVICE_DEBUG;
 		D3D_FEATURE_LEVEL featureLevel;
 		const D3D_FEATURE_LEVEL featureLevelArray[2] = { D3D_FEATURE_LEVEL_11_0, D3D_FEATURE_LEVEL_10_0, };
-		if ( D3D11CreateDeviceAndSwapChain( nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, uCreateDeviceFlags, featureLevelArray, 2, D3D11_SDK_VERSION, &oSwapDesc, &PlatformData.pSwapChain, &PlatformData.pD3DDevice, &featureLevel, &PlatformData.pD3DDeviceContext ) != S_OK )
+		/*if ( D3D11CreateDeviceAndSwapChain( nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, uCreateDeviceFlags, featureLevelArray, 2, D3D11_SDK_VERSION, &oSwapDesc, &PlatformData.pSwapChain, &PlatformData.pD3DDevice, &featureLevel, &PlatformData.pD3DDeviceContext ) != S_OK )
+			return false;*/
+		HRESULT res = D3D11CreateDeviceAndSwapChain( nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, uCreateDeviceFlags, featureLevelArray, 2, D3D11_SDK_VERSION, &oSwapDesc, &PlatformData.pSwapChain, &PlatformData.pD3DDevice, &featureLevel, &PlatformData.pD3DDeviceContext );
+		if ( res == DXGI_ERROR_UNSUPPORTED ) // Try high-performance WARP software driver if hardware is not available.
+			res = D3D11CreateDeviceAndSwapChain( nullptr, D3D_DRIVER_TYPE_WARP, nullptr, uCreateDeviceFlags, featureLevelArray, 2, D3D11_SDK_VERSION, &oSwapDesc, &PlatformData.pSwapChain, &PlatformData.pD3DDevice, &featureLevel, &PlatformData.pD3DDeviceContext );
+		if ( res != S_OK )
 			return false;
 
 		ImCreateRenderTarget();
