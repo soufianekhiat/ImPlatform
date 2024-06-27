@@ -15,8 +15,8 @@
 // - [ O ] WIN32_OPENGL3
 // - [ O ] WIN32_DIRECTX9
 // - [ O ] WIN32_DIRECTX10
-// - [ X ] WIN32_DIRECTX11 // Buggy resize windows
-// - [ X ] WIN32_DIRECTX12 // Buggy resize windows
+// - [ O ] WIN32_DIRECTX11
+// - [ O ] WIN32_DIRECTX12 // Issue with images
 // - [ X ] GLFW_OPENGL2 // Produce clear_color frame
 // - [ O ] GLFW_OPENGL3 // Do not work well with high DPI
 // - [   ] GLFW_VULKAN
