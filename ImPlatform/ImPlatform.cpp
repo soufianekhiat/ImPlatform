@@ -1263,6 +1263,12 @@ float4 main(PS_INPUT input) : SV_Target\n\
 
 #elif (IM_CURRENT_GFX == IM_GFX_DIRECTX11)
 
+		ID3D11VertexShader* pVertexShader = ( ID3D11VertexShader* )shader.vs;
+		ID3D11PixelShader* pPixelShader = ( ID3D11PixelShader* )shader.ps;
+
+		pVertexShader->Release();
+		pPixelShader->Release();
+
 #elif (IM_CURRENT_GFX == IM_GFX_DIRECTX12)
 
 #endif
@@ -2211,7 +2217,12 @@ static void Im_Hook_Renderer_SwapBuffers( ImGuiViewport* viewport, void* )
 		{
 			ImCleanupDeviceWGL( PlatformData.pHandle, &PlatformData.oMainWindow );
 			::DestroyWindow( PlatformData.pHandle );
+
+#ifdef UNICODE
 			::UnregisterClassW( PlatformData.oWinStruct.lpszClassName, PlatformData.oWinStruct.hInstance );
+#else
+			::UnregisterClassA( PlatformData.oWinStruct.lpszClassName, PlatformData.oWinStruct.hInstance );
+#endif
 			return false;
 		}
 		wglMakeCurrent( PlatformData.oMainWindow.hDC, PlatformData.pRC );
