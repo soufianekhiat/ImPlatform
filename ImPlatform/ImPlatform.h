@@ -165,6 +165,7 @@ extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg
 #include <backends/imgui_impl_opengl2.h>
 #elif (IM_CURRENT_GFX == IM_GFX_OPENGL3)
 #include <backends/imgui_impl_opengl3.h>
+#define IM_SUPPORT_CUSTOM_SHADER
 #elif (IM_CURRENT_GFX == IM_GFX_WGPU)
 #include <backends/imgui_impl_wgpu.h>
 #endif
@@ -327,7 +328,7 @@ namespace ImPlatform
 		ImConstantID cst;
 		int sizeof_in_bytes_constants;
 	};
-	ImDrawShader	ImCreateShader( char const* source, char const* ps_params, int sizeof_in_bytes_constants, void* init_data_constant = NULL );
+	ImDrawShader	ImCreateShader( char const* source, char const* ps_params, char const* ps_pre_functions, int sizeof_in_bytes_constants, void* init_data_constant = NULL, bool multiply_with_texture = true );
 	void			ImReleaseShader( ImDrawShader& shader );
 
 	void		ImBeginCustomShader( ImDrawList* draw, ImDrawShader& shader );
