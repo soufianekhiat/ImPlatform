@@ -3,6 +3,7 @@
 #endif
 
 #include <string>
+#include <fstream>
 
 #include <imgui_internal.h>
 
@@ -1009,10 +1010,10 @@ namespace ImPlatform
 	}
 
 
-	ImDrawShader	ImCreateShader( char const* source, char const* ps_params, int sizeof_in_bytes_constants, void* init_data_constant )
+	ImDrawShader	ImCreateShader( char const* source, char const* ps_params, char const* ps_pre_functions, int sizeof_in_bytes_constants, void* init_data_constant, bool multiply_with_texture )
 	{
 		static const char* pShaderBase =
-			"#ifndef __IM_SHADER_H__\n\
+"#ifndef __IM_SHADER_H__\n\
 #define __IM_SHADER_H__\n\
 \n\
 #if defined(IM_SHADER_HLSL)\n\
@@ -1020,11 +1021,13 @@ namespace ImPlatform
 #define IMS_OUT       out\n\
 #define IMS_INOUT     inout\n\
 #define IMS_UNIFORM   uniform\n\
-#elif defined(IMS_GLSL)\n\
+#define IMS_CBUFFER   cbuffer\n\
+#elif defined(IM_SHADER_GLSL)\n\
 #define IMS_IN        in\n\
 #define IMS_OUT       out\n\
 #define IMS_INOUT     inout\n\
 #define IMS_UNIFORM   const\n\
+#define IMS_CBUFFER   uniform\n\
 #endif\n\
 \n\
 #if defined(IM_SHADER_HLSL)\n\
@@ -1034,7 +1037,7 @@ namespace ImPlatform
 \n\
 #endif\n\
 \n\
-#if defined(IMS_GLSL)\n\
+#if defined(IM_SHADER_GLSL)\n\
 \n\
 #define Mat44f   mat4\n\
 #define Mat33f   mat3\n\
@@ -1057,7 +1060,9 @@ namespace ImPlatform
 #endif\n";
 
 		static const char* pVertexShaderDefault =
-"cbuffer vertexBuffer : register(b0)\n\
+//"cbuffer vertexBuffer : register(b0)\n\
+
+"IMS_CBUFFER vertexBuffer\n\
 {\n\
 	float4x4 ProjectionMatrix;\n\
 };\n\
@@ -1092,10 +1097,12 @@ PS_INPUT main(VS_INPUT input)\n\
 	float2 uv  : TEXCOORD0;\n\
 };\n\
 \n\
-cbuffer PS_CONSTANT_BUFFER : register( b0 )\n\
+IMS_CBUFFER PS_CONSTANT_BUFFER\n\
 {\n\
 %PS_PARAMS%\n\
 };\n\
+\n\
+%PS_PRE_FUNCS%\
 \n\
 sampler sampler0;\n\
 Texture2D texture0;\n\
@@ -1106,7 +1113,7 @@ float4 main(PS_INPUT input) : SV_Target\n\
 	float4 col_in = input.col;\n\
 	float4 col_out = float4(1.0f, 1.0f, 1.0f, 1.0f);\n\
 	%IM_PLATFORM_WRITE_OUT_COL%\n\
-	col_out *= col_in * texture0.Sample(sampler0, input.uv);\n\
+	%IM_MUL_WITH_TEX%\n\
 	return col_out;\n\
 }\n";
 
@@ -1117,9 +1124,62 @@ float4 main(PS_INPUT input) : SV_Target\n\
 		std::string sFunc = pPixelShaderTemplate;
 		ReplaceAll( sFunc, "%IM_PLATFORM_WRITE_OUT_COL%", source );
 		ReplaceAll( sFunc, "%PS_PARAMS%", ps_params );
+		ReplaceAll( sFunc, "%PS_PRE_FUNCS%", ps_pre_functions );
+		if ( multiply_with_texture )
+		{
+			ReplaceAll( sFunc, "%IM_MUL_WITH_TEX%", "col_out *= col_in * texture0.Sample( sampler0, input.uv );" );
+		}
+		else
+		{
+			ReplaceAll( sFunc, "%IM_MUL_WITH_TEX%", "" );
+		}
 		sPS += sFunc;
 
-#if (IM_CURRENT_GFX == IM_GFX_OPENGL2) || (IM_CURRENT_GFX == IM_GFX_OPENGL3)
+#if (IM_CURRENT_GFX == IM_GFX_OPENGL2)
+#elif (IM_CURRENT_GFX == IM_GFX_OPENGL3)
+
+		std::string glsl_version = std::string( "#version 130" );
+
+		sVS = glsl_version + "\n" + "#define IM_SHADER_GLSL\n" + sVS;
+		sPS = glsl_version + "\n" + "#define IM_SHADER_GLSL\n" + sPS;
+
+#if 0
+		{
+			std::ofstream oFile( "shader_vs.hlsl" );
+			oFile << sVS << std::endl;
+			oFile.close();
+		}
+		{
+			std::ofstream oFile( "shader_ps.hlsl" );
+			oFile << sPS << std::endl;
+			oFile.close();
+		}
+#endif
+
+		ImGui_ImplOpenGL3_Data* bd = ImGui_ImplOpenGL3_GetBackendData();
+
+		const GLchar* vertex_shader_with_version[ 2 ] = { bd->GlslVersionString, sVS.c_str() };
+		GLuint vert_handle = glCreateShader( GL_VERTEX_SHADER );
+		glShaderSource( vert_handle, 2, vertex_shader_with_version, nullptr );
+		glCompileShader( vert_handle );
+		CheckShader( vert_handle, "vertex shader" );
+
+		const GLchar* fragment_shader_with_version[ 2 ] = { bd->GlslVersionString, sPS.c_str() };
+		GLuint frag_handle = glCreateShader( GL_FRAGMENT_SHADER );
+		glShaderSource( frag_handle, 2, fragment_shader_with_version, nullptr );
+		glCompileShader( frag_handle );
+		CheckShader( frag_handle, "fragment shader" );
+
+		bd->ShaderHandle = glCreateProgram();
+		glAttachShader( bd->ShaderHandle, vert_handle );
+		glAttachShader( bd->ShaderHandle, frag_handle );
+		glLinkProgram( bd->ShaderHandle );
+		CheckProgram( bd->ShaderHandle, "shader program" );
+
+		glDetachShader( bd->ShaderHandle, vert_handle );
+		glDetachShader( bd->ShaderHandle, frag_handle );
+		glDeleteShader( vert_handle );
+		glDeleteShader( frag_handle );
 
 #elif (IM_CURRENT_GFX == IM_GFX_DIRECTX9)
 
@@ -1149,6 +1209,17 @@ float4 main(PS_INPUT input) : SV_Target\n\
 			{
 				bd->pd3dDevice->CreateBuffer( &desc, NULL, &constant_buffer );
 			}
+		}
+
+		{
+			std::ofstream oFile( "shader_vs.hlsl" );
+			oFile << sVS << std::endl;
+			oFile.close();
+		}
+		{
+			std::ofstream oFile( "shader_ps.hlsl" );
+			oFile << sPS << std::endl;
+			oFile.close();
 		}
 
 		D3D_SHADER_MACRO macros[] = { "IM_SHADER_HLSL", "", NULL, NULL };
@@ -1200,6 +1271,17 @@ float4 main(PS_INPUT input) : SV_Target\n\
 			{
 				bd->pd3dDevice->CreateBuffer( &desc, NULL, &constant_buffer );
 			}
+		}
+
+		{
+			std::ofstream oFile( "shader_vs.hlsl" );
+			oFile << sVS << std::endl;
+			oFile.close();
+		}
+		{
+			std::ofstream oFile( "shader_ps.hlsl" );
+			oFile << sPS << std::endl;
+			oFile.close();
 		}
 
 		D3D_SHADER_MACRO macros[] = { "IM_SHADER_HLSL", "", NULL, NULL };
@@ -1303,6 +1385,7 @@ float4 main(PS_INPUT input) : SV_Target\n\
 #endif
 	}
 
+#pragma optimize( "", off )
 	void		ImUpdateCustomShaderConstant( ImDrawShader& shader, void* ptr_to_constants )
 	{
 #if (IM_CURRENT_GFX == IM_GFX_OPENGL2) || (IM_CURRENT_GFX == IM_GFX_OPENGL3)
@@ -1319,7 +1402,7 @@ float4 main(PS_INPUT input) : SV_Target\n\
 			void* mapped_resource;
 			if ( ( ( ID3D10Buffer* )shader.cst )->Map( D3D10_MAP_WRITE_DISCARD, 0, &mapped_resource ) != S_OK )
 				return;
-			memcpy( &mapped_resource, ptr_to_constants, shader.sizeof_in_bytes_constants );
+			memcpy( mapped_resource, ptr_to_constants, shader.sizeof_in_bytes_constants );
 			( ( ID3D10Buffer* )shader.cst )->Unmap();
 		}
 
@@ -1333,7 +1416,7 @@ float4 main(PS_INPUT input) : SV_Target\n\
 			D3D11_MAPPED_SUBRESOURCE mapped_resource;
 			if ( ctx->Map( ( ID3D11Buffer* )shader.cst, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped_resource ) != S_OK )
 				return;
-			memcpy( &mapped_resource.pData, ptr_to_constants, shader.sizeof_in_bytes_constants );
+			memcpy( mapped_resource.pData, ptr_to_constants, shader.sizeof_in_bytes_constants );
 			ctx->Unmap( ( ID3D11Buffer* )shader.cst, 0 );
 		}
 
