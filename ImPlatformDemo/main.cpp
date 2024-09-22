@@ -35,8 +35,8 @@
 //#define IM_GLFW3_AUTO_LINK
 //#define __DEAR_GLFW__
 //#define __DEAR_GFX_DX9__
-#define __DEAR_GFX_DX10__
-//#define __DEAR_GFX_DX11__
+//#define __DEAR_GFX_DX10__
+#define __DEAR_GFX_DX11__
 //#define __DEAR_GFX_DX12__
 //#define __DEAR_GFX_OGL3__
 //#define IM_CURRENT_TARGET IM_TARGET_GLFW_OPENGL3
@@ -201,13 +201,14 @@ int main()
 
 #ifdef IM_SUPPORT_CUSTOM_SHADER
 		ImPlatform::ImDrawShader shader;
-		shader = ImPlatform::ImCreateShader( source.c_str(), "", 0 );
+		shader = ImPlatform::ImCreateShader( source.c_str(), "", "", 0 );
 		ImPlatform::ImDrawShader shader2;
-		shader2 = ImPlatform::ImCreateShader( source2.c_str(), "", 0);
+		shader2 = ImPlatform::ImCreateShader( source2.c_str(), "", "", 0);
 		ImPlatform::ImDrawShader shader3;
-		shader3 = ImPlatform::ImCreateShader( source3.c_str(), params3.c_str(), sizeof( param3 ), &p3 );
+		shader3 = ImPlatform::ImCreateShader( source3.c_str(), params3.c_str(), "", sizeof( param3 ), &p3 );
 #endif
 
+		float t = 0.0f;
 		ImVec4 clear_color = ImVec4( 0.461f, 0.461f, 0.461f, 1.0f );
 		while ( ImPlatform::ImPlatformContinue() )
 		{
@@ -271,7 +272,9 @@ int main()
 					ImGui::Begin( "Custom Shader 3" );
 						ImDrawList* draw = ImGui::GetWindowDrawList();
 						ImVec2 cur = ImGui::GetCursorScreenPos();
-						//ImUpdateCustomShaderConstant( shader3, &p3 );
+						p3.uv_start = ImVec2( 0.0f, ImSin( t ) * ImSin( t ) );
+						p3.uv_end = ImVec2( 0.0f, 1.0f );
+						ImUpdateCustomShaderConstant( shader3, &p3 );
 						ImPlatform::ImBeginCustomShader( draw, shader3 );
 						ImRect bb( cur, cur + ImGui::GetContentRegionAvail() );
 						draw->AddImageQuad( img_white, bb.GetBL(), bb.GetBR(), bb.GetTR(), bb.GetTL(), ImVec2( 0, 0 ), ImVec2( 1, 0 ), ImVec2( 1, 1 ), ImVec2( 0, 1 ), IM_COL32( 255, 255, 255, 255 ) );
@@ -300,6 +303,8 @@ int main()
 			}
 
 			ImPlatform::ImSimpleEnd( clear_color, io.ConfigFlags & ImGuiConfigFlags_ViewportsEnable );
+
+			t += ImGui::GetIO().DeltaTime;
 		}
 
 		ImPlatform::ImSimpleFinish();
@@ -325,9 +330,9 @@ int main()
 
 #ifdef IM_SUPPORT_CUSTOM_SHADER
 		ImPlatform::ImDrawShader shader;
-		shader = ImPlatform::ImCreateShader( source.c_str(), "", 0 );
+		shader = ImPlatform::ImCreateShader( source.c_str(), "", "", 0 );
 		ImPlatform::ImDrawShader shader2;
-		shader2 = ImPlatform::ImCreateShader( source2.c_str(), "", 0 );
+		shader2 = ImPlatform::ImCreateShader( source2.c_str(), "", "", 0 );
 #endif
 
 		bGood = ImPlatform::ImShowWindow();
