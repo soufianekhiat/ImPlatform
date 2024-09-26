@@ -37,6 +37,7 @@ extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler( HWND hWnd, UINT ms
 #pragma comment( lib, "d3d11.lib" )
 #pragma comment( lib, "d3dcompiler.lib" )
 #pragma comment( lib, "dxgi.lib" )
+#include <comdef.h>
 #elif (IM_CURRENT_GFX == IM_GFX_DIRECTX12)
 #include <backends/imgui_impl_dx12.cpp>
 #pragma comment( lib, "d3d12.lib" )
@@ -1243,7 +1244,14 @@ float4 main(PS_INPUT input) : SV_Target\n\
 		}
 		pixelShaderBlob->Release();
 
-		return { pVertexShader, pPixelShader, constant_buffer, sizeof_in_bytes_constants };
+		void* cpu_data = NULL;
+		if ( init_data_constant != NULL )
+		{
+			cpu_data = IM_ALLOC( sizeof_in_bytes_constants );
+			memcpy( cpu_data, init_data_constant, sizeof_in_bytes_constants );
+		}
+
+		return { pVertexShader, pPixelShader, constant_buffer, cpu_data, sizeof_in_bytes_constants };
 
 #elif (IM_CURRENT_GFX == IM_GFX_DIRECTX11)
 
@@ -1265,7 +1273,15 @@ float4 main(PS_INPUT input) : SV_Target\n\
 			{
 				D3D11_SUBRESOURCE_DATA init = D3D11_SUBRESOURCE_DATA{ 0 };
 				init.pSysMem = init_data_constant;
-				bd->pd3dDevice->CreateBuffer( &desc, &init, &constant_buffer);
+				HRESULT hr = bd->pd3dDevice->CreateBuffer( &desc, &init, &constant_buffer );
+#if 1
+				if ( hr != S_OK )
+				{
+					_com_error err( hr );
+					LPCTSTR errMsg = err.ErrorMessage();
+					OutputDebugStringA( errMsg );
+				}
+#endif
 			}
 			else
 			{
@@ -1320,7 +1336,14 @@ float4 main(PS_INPUT input) : SV_Target\n\
 		}
 		pixelShaderBlob->Release();
 
-		return { pVertexShader, pPixelShader, constant_buffer, sizeof_in_bytes_constants };
+		void* cpu_data = NULL;
+		if ( init_data_constant != NULL )
+		{
+			cpu_data = IM_ALLOC( sizeof_in_bytes_constants );
+			memcpy( cpu_data, init_data_constant, sizeof_in_bytes_constants );
+		}
+
+		return { pVertexShader, pPixelShader, constant_buffer, cpu_data, sizeof_in_bytes_constants };
 
 #elif (IM_CURRENT_GFX == IM_GFX_DIRECTX12)
 
@@ -1364,21 +1387,58 @@ float4 main(PS_INPUT input) : SV_Target\n\
 
 #elif (IM_CURRENT_GFX == IM_GFX_DIRECTX10)
 
-		ImPlatform::ImDrawShader* shaders = ( ImPlatform::ImDrawShader* )cmd->UserCallbackData;
+		ImPlatform::ImDrawShader* shader = ( ImPlatform::ImDrawShader* )cmd->UserCallbackData;
 		ImGui_ImplDX10_Data* bd = ImGui_ImplDX10_GetBackendData();
 		ID3D10Device* ctx = bd->pd3dDevice;
-		ctx->VSSetShader( ( ID3D10VertexShader* )( shaders->vs ) );
-		ctx->PSSetShader( ( ID3D10PixelShader* )( shaders->ps ) );
-		ctx->PSSetConstantBuffers( 0, 1, ( ID3D10Buffer* const* )( &( shaders->cst ) ) );
+		ctx->VSSetShader( ( ID3D10VertexShader* )( shader->vs ) );
+		ctx->PSSetShader( ( ID3D10PixelShader* )( shader->ps ) );
+		if ( shader->cst != NULL &&
+			 shader->sizeof_in_bytes_constants > 0 &&
+			 shader->cpu_data != NULL )
+		{
+			void* mapped_resource;
+			if ( ( ( ID3D10Buffer* )shader.cst )->Map( D3D10_MAP_WRITE_DISCARD, 0, &mapped_resource ) != S_OK )
+				return;
+			memcpy( mapped_resource, ptr_to_constants, shader.sizeof_in_bytes_constants );
+			( ( ID3D10Buffer* )shader.cst )->Unmap();
+
+			//D3D11_MAPPED_SUBRESOURCE mapped_resource;
+			//if ( ctx->Map( ( ID3D11Buffer* )shader->cst, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped_resource ) == S_OK )
+			//{
+			//	IM_ASSERT( mapped_resource.RowPitch == shader.sizeof_in_bytes_constants );
+			//	memcpy( mapped_resource.pData, shader->cpu_data, shader->sizeof_in_bytes_constants );
+			//	ctx->Unmap( ( ID3D11Buffer* )shader->cst, 0 );
+			//}
+		}
+		ctx->PSSetConstantBuffers( 0, 1, ( ID3D10Buffer* const* )( &( shader->cst ) ) );
 
 #elif (IM_CURRENT_GFX == IM_GFX_DIRECTX11)
 
-		ImPlatform::ImDrawShader* shaders = ( ImPlatform::ImDrawShader* )cmd->UserCallbackData;
+		ImPlatform::ImDrawShader* shader = ( ImPlatform::ImDrawShader* )cmd->UserCallbackData;
 		ImGui_ImplDX11_Data* bd = ImGui_ImplDX11_GetBackendData();
 		ID3D11DeviceContext* ctx = bd->pd3dDeviceContext;
-		ctx->VSSetShader( ( ID3D11VertexShader* )( shaders->vs ), nullptr, 0 );
-		ctx->PSSetShader( ( ID3D11PixelShader* )( shaders->ps ), nullptr, 0 );
-		ctx->PSSetConstantBuffers( 0, 1, ( ID3D11Buffer* const* )( &( shaders->cst ) ) );
+		ctx->VSSetShader( ( ID3D11VertexShader* )( shader->vs ), nullptr, 0 );
+		ctx->PSSetShader( ( ID3D11PixelShader* )( shader->ps ), nullptr, 0 );
+		if ( shader->cst != NULL &&
+			 shader->sizeof_in_bytes_constants > 0 &&
+			 shader->cpu_data != NULL )
+		{
+			D3D11_MAPPED_SUBRESOURCE mapped_resource;
+			if ( ctx->Map( ( ID3D11Buffer* )shader->cst, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped_resource ) == S_OK )
+			{
+				IM_ASSERT( mapped_resource.RowPitch == shader.sizeof_in_bytes_constants );
+				memcpy( mapped_resource.pData, shader->cpu_data, shader->sizeof_in_bytes_constants );
+				ctx->Unmap( ( ID3D11Buffer* )shader->cst, 0 );
+			}
+		}
+		ctx->PSSetConstantBuffers( 0, 1, ( ID3D11Buffer* const* )( &( shader->cst ) ) );
+		// Bind texture, Draw
+		//const bool push_texture_id = user_texture_id != parent_list._CmdHeader.TextureId;
+		//if ( push_texture_id )
+		//{
+		//	ID3D11ShaderResourceView* texture_srv = ( ID3D11ShaderResourceView* )cmd->GetTexID();
+		//	ctx->PSSetShaderResources( 0, 1, &texture_srv );
+		//}
 
 #elif (IM_CURRENT_GFX == IM_GFX_DIRECTX12)
 
@@ -1388,6 +1448,20 @@ float4 main(PS_INPUT input) : SV_Target\n\
 #pragma optimize( "", off )
 	void		ImUpdateCustomShaderConstant( ImDrawShader& shader, void* ptr_to_constants )
 	{
+		if ( shader.sizeof_in_bytes_constants <= 0 ||
+			 ptr_to_constants == NULL )
+			return;
+
+		if ( shader.cpu_data == NULL )
+		{
+			shader.cpu_data = IM_ALLOC( shader.sizeof_in_bytes_constants );
+		}
+		if ( ptr_to_constants != NULL )
+		{
+			memcpy( shader.cpu_data, ptr_to_constants, shader.sizeof_in_bytes_constants );
+		}
+		return;
+
 #if (IM_CURRENT_GFX == IM_GFX_OPENGL2) || (IM_CURRENT_GFX == IM_GFX_OPENGL3)
 
 #elif (IM_CURRENT_GFX == IM_GFX_DIRECTX9)
@@ -1416,6 +1490,7 @@ float4 main(PS_INPUT input) : SV_Target\n\
 			D3D11_MAPPED_SUBRESOURCE mapped_resource;
 			if ( ctx->Map( ( ID3D11Buffer* )shader.cst, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped_resource ) != S_OK )
 				return;
+			IM_ASSERT( mapped_resource.RowPitch == shader.sizeof_in_bytes_constants );
 			memcpy( mapped_resource.pData, ptr_to_constants, shader.sizeof_in_bytes_constants );
 			ctx->Unmap( ( ID3D11Buffer* )shader.cst, 0 );
 		}

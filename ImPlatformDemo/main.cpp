@@ -272,7 +272,8 @@ int main()
 					ImGui::Begin( "Custom Shader 3" );
 						ImDrawList* draw = ImGui::GetWindowDrawList();
 						ImVec2 cur = ImGui::GetCursorScreenPos();
-						p3.uv_start = ImVec2( 0.0f, ImSin( t ) * ImSin( t ) );
+						float sin0 = ImSin( t );
+						p3.uv_start = ImVec2( 0.0f, sin0 * sin0 );
 						p3.uv_end = ImVec2( 0.0f, 1.0f );
 						ImUpdateCustomShaderConstant( shader3, &p3 );
 						ImPlatform::ImBeginCustomShader( draw, shader3 );
