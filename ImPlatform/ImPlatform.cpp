@@ -1251,8 +1251,6 @@ float4 main(PS_INPUT input) : SV_Target\n\
 			memcpy( cpu_data, init_data_constant, sizeof_in_bytes_constants );
 		}
 
-		return { pVertexShader, pPixelShader, constant_buffer, cpu_data, sizeof_in_bytes_constants };
-
 #elif (IM_CURRENT_GFX == IM_GFX_DIRECTX11)
 
 		ImGui_ImplDX11_Data* bd = ImGui_ImplDX11_GetBackendData();
@@ -1274,6 +1272,7 @@ float4 main(PS_INPUT input) : SV_Target\n\
 				D3D11_SUBRESOURCE_DATA init = D3D11_SUBRESOURCE_DATA{ 0 };
 				init.pSysMem = init_data_constant;
 				HRESULT hr = bd->pd3dDevice->CreateBuffer( &desc, &init, &constant_buffer );
+				
 #if 1
 				if ( hr != S_OK )
 				{
@@ -1289,16 +1288,16 @@ float4 main(PS_INPUT input) : SV_Target\n\
 			}
 		}
 
-		{
-			std::ofstream oFile( "shader_vs.hlsl" );
-			oFile << sVS << std::endl;
-			oFile.close();
-		}
-		{
-			std::ofstream oFile( "shader_ps.hlsl" );
-			oFile << sPS << std::endl;
-			oFile.close();
-		}
+		//{
+		//	std::ofstream oFile( "shader_vs.hlsl" );
+		//	oFile << sVS << std::endl;
+		//	oFile.close();
+		//}
+		//{
+		//	std::ofstream oFile( "shader_ps.hlsl" );
+		//	oFile << sPS << std::endl;
+		//	oFile.close();
+		//}
 
 		D3D_SHADER_MACRO macros[] = { "IM_SHADER_HLSL", "", NULL, NULL };
 
@@ -1343,13 +1342,11 @@ float4 main(PS_INPUT input) : SV_Target\n\
 			memcpy( cpu_data, init_data_constant, sizeof_in_bytes_constants );
 		}
 
-		return { pVertexShader, pPixelShader, constant_buffer, cpu_data, sizeof_in_bytes_constants };
-
 #elif (IM_CURRENT_GFX == IM_GFX_DIRECTX12)
 
 #endif
 
-		return { NULL, NULL, NULL, 0 };
+		return { pVertexShader, pPixelShader, constant_buffer, cpu_data, sizeof_in_bytes_constants, false };
 	}
 
 	void		ImReleaseShader( ImDrawShader& shader )
@@ -1421,7 +1418,8 @@ float4 main(PS_INPUT input) : SV_Target\n\
 		ctx->PSSetShader( ( ID3D11PixelShader* )( shader->ps ), nullptr, 0 );
 		if ( shader->cst != NULL &&
 			 shader->sizeof_in_bytes_constants > 0 &&
-			 shader->cpu_data != NULL )
+			 shader->cpu_data != NULL &&
+			 shader->is_cpu_data_dirty )
 		{
 			D3D11_MAPPED_SUBRESOURCE mapped_resource;
 			if ( ctx->Map( ( ID3D11Buffer* )shader->cst, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped_resource ) == S_OK )
@@ -1429,6 +1427,7 @@ float4 main(PS_INPUT input) : SV_Target\n\
 				IM_ASSERT( mapped_resource.RowPitch == shader.sizeof_in_bytes_constants );
 				memcpy( mapped_resource.pData, shader->cpu_data, shader->sizeof_in_bytes_constants );
 				ctx->Unmap( ( ID3D11Buffer* )shader->cst, 0 );
+				shader->is_cpu_data_dirty = false;
 			}
 		}
 		ctx->PSSetConstantBuffers( 0, 1, ( ID3D11Buffer* const* )( &( shader->cst ) ) );
@@ -1459,45 +1458,8 @@ float4 main(PS_INPUT input) : SV_Target\n\
 		if ( ptr_to_constants != NULL )
 		{
 			memcpy( shader.cpu_data, ptr_to_constants, shader.sizeof_in_bytes_constants );
+			shader.is_cpu_data_dirty = true;
 		}
-		return;
-
-#if (IM_CURRENT_GFX == IM_GFX_OPENGL2) || (IM_CURRENT_GFX == IM_GFX_OPENGL3)
-
-#elif (IM_CURRENT_GFX == IM_GFX_DIRECTX9)
-
-#elif (IM_CURRENT_GFX == IM_GFX_DIRECTX10)
-
-		if ( shader.cst != NULL && ptr_to_constants != NULL && shader.sizeof_in_bytes_constants > 0 )
-		{
-			ImGui_ImplDX10_Data* bd = ImGui_ImplDX10_GetBackendData();
-			ID3D10Device* ctx = bd->pd3dDevice;
-
-			void* mapped_resource;
-			if ( ( ( ID3D10Buffer* )shader.cst )->Map( D3D10_MAP_WRITE_DISCARD, 0, &mapped_resource ) != S_OK )
-				return;
-			memcpy( mapped_resource, ptr_to_constants, shader.sizeof_in_bytes_constants );
-			( ( ID3D10Buffer* )shader.cst )->Unmap();
-		}
-
-#elif (IM_CURRENT_GFX == IM_GFX_DIRECTX11)
-
-		if ( shader.cst != NULL && ptr_to_constants != NULL && shader.sizeof_in_bytes_constants > 0 )
-		{
-			ImGui_ImplDX11_Data* bd = ImGui_ImplDX11_GetBackendData();
-			ID3D11DeviceContext* ctx = bd->pd3dDeviceContext;
-
-			D3D11_MAPPED_SUBRESOURCE mapped_resource;
-			if ( ctx->Map( ( ID3D11Buffer* )shader.cst, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped_resource ) != S_OK )
-				return;
-			IM_ASSERT( mapped_resource.RowPitch == shader.sizeof_in_bytes_constants );
-			memcpy( mapped_resource.pData, ptr_to_constants, shader.sizeof_in_bytes_constants );
-			ctx->Unmap( ( ID3D11Buffer* )shader.cst, 0 );
-		}
-
-#elif (IM_CURRENT_GFX == IM_GFX_DIRECTX12)
-
-#endif
 	}
 	void		ImBeginCustomShader( ImDrawList* draw, ImDrawShader& shader )
 	{

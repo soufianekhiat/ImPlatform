@@ -328,6 +328,7 @@ namespace ImPlatform
 		ImConstantID cst;
 		void* cpu_data;
 		int sizeof_in_bytes_constants;
+		bool is_cpu_data_dirty;
 	};
 	ImDrawShader	ImCreateShader( char const* source, char const* ps_params, char const* ps_pre_functions, int sizeof_in_bytes_constants, void* init_data_constant = NULL, bool multiply_with_texture = true );
 	void			ImReleaseShader( ImDrawShader& shader );
