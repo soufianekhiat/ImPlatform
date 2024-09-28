@@ -102,7 +102,7 @@ int main()
 #endif
 
 	if ( g_bCustomTitleBar )
-		ImPlatform::ImEnableCustomTitleBar();
+		ImPlatform::EnableCustomTitleBar();
 
 #ifdef IM_SUPPORT_CUSTOM_SHADER
 	std::string source =
@@ -149,7 +149,7 @@ int main()
 	{
 		bool bGood;
 
-		bGood = ImPlatform::ImSimpleStart( "ImPlatform Simple Demo", ImVec2( 100, 100 ), 1024, 764 );
+		bGood = ImPlatform::SimpleStart( "ImPlatform Simple Demo", ImVec2( 100, 100 ), 1024, 764 );
 		if ( !bGood )
 		{
 			fprintf( stderr, "ImPlatform: Cannot Simple Start." );
@@ -171,27 +171,27 @@ int main()
 		// When viewports are enabled we tweak WindowRounding/WindowBg so platform windows can look identical to regular ones.
 		ImGuiStyle& style = ImGui::GetStyle();
 
-		bGood = ImPlatform::ImSimpleInitialize( io.ConfigFlags & ImGuiConfigFlags_ViewportsEnable );
+		bGood = ImPlatform::SimpleInitialize( io.ConfigFlags & ImGuiConfigFlags_ViewportsEnable );
 		if ( !bGood )
 		{
 			fprintf( stderr, "ImPlatform : Cannot Initialize." );
 			return false;
 		}
-		ImTextureID img = ImPlatform::ImCreateTexture2D( ( char* )data, width, height,
+		ImTextureID img = ImPlatform::CreateTexture2D( ( char* )data, width, height,
 														 {
-															ImPlatform::IM_RGBA,
-															ImPlatform::IM_TYPE_UINT8,
-															ImPlatform::IM_FILTERING_LINEAR,
-															ImPlatform::IM_BOUNDARY_CLAMP,
-															ImPlatform::IM_BOUNDARY_CLAMP
+															ImPixelChannel_RGBA,
+															ImPixelType_UInt8,
+															ImTextureFiltering_Linear,
+															ImTextureBoundary_Clamp,
+															ImTextureBoundary_Clamp
 														 } );
-		ImTextureID img_white = ImPlatform::ImCreateTexture2D( ( char* )white_data, width, height,
+		ImTextureID img_white = ImPlatform::CreateTexture2D( ( char* )white_data, width, height,
 														 {
-															ImPlatform::IM_RGBA,
-															ImPlatform::IM_TYPE_UINT8,
-															ImPlatform::IM_FILTERING_LINEAR,
-															ImPlatform::IM_BOUNDARY_CLAMP,
-															ImPlatform::IM_BOUNDARY_CLAMP
+															ImPixelChannel_RGBA,
+															ImPixelType_UInt8,
+															ImTextureFiltering_Linear,
+															ImTextureBoundary_Clamp,
+															ImTextureBoundary_Clamp
 														 } );
 #if IM_HAS_STBI
 		stbi_image_free( data );
@@ -200,48 +200,48 @@ int main()
 #endif
 
 #ifdef IM_SUPPORT_CUSTOM_SHADER
-		ImPlatform::ImDrawShader shader;
-		shader = ImPlatform::ImCreateShader( source.c_str(), "", "", 0 );
-		ImPlatform::ImDrawShader shader2;
-		shader2 = ImPlatform::ImCreateShader( source2.c_str(), "", "", 0);
-		ImPlatform::ImDrawShader shader3;
-		shader3 = ImPlatform::ImCreateShader( source3.c_str(), params3.c_str(), "", sizeof( param3 ), &p3 );
+		ImDrawShader shader;
+		shader = ImPlatform::CreateShader( source.c_str(), "", "", 0 );
+		ImDrawShader shader2;
+		shader2 = ImPlatform::CreateShader( source2.c_str(), "", "", 0);
+		ImDrawShader shader3;
+		shader3 = ImPlatform::CreateShader( source3.c_str(), params3.c_str(), "", sizeof( param3 ), &p3 );
 #endif
 
 		float t = 0.0f;
 		ImVec4 clear_color = ImVec4( 0.461f, 0.461f, 0.461f, 1.0f );
-		while ( ImPlatform::ImPlatformContinue() )
+		while ( ImPlatform::PlatformContinue() )
 		{
-			bool quit = ImPlatform::ImPlatformEvents();
+			bool quit = ImPlatform::PlatformEvents();
 			if ( quit )
 				break;
 
-			if ( !ImPlatform::ImGfxCheck() )
+			if ( !ImPlatform::GfxCheck() )
 			{
 				continue;
 			}
 
-			ImPlatform::ImSimpleBegin();
+			ImPlatform::SimpleBegin();
 
-			if ( ImPlatform::ImCustomTitleBarEnabled() )
+			if ( ImPlatform::CustomTitleBarEnabled() )
 			{
-				if ( ImPlatform::ImBeginCustomTitleBar( 32.0f ) )
+				if ( ImPlatform::BeginCustomTitleBar( 32.0f ) )
 				{
 					ImGui::Text( "ImPlatform with Custom Title Bar" );
 					ImGui::SameLine();
 
 					if ( ImGui::Button( "Minimize" ) )
-						ImPlatform::ImMinimizeApp();
+						ImPlatform::MinimizeApp();
 					ImGui::SameLine();
 
 					if ( ImGui::Button( "Maximize" ) )
-						ImPlatform::ImMaximizeApp();
+						ImPlatform::MaximizeApp();
 					ImGui::SameLine();
 
 					if ( ImGui::Button( "Close" ) )
-						ImPlatform::ImCloseApp();
+						ImPlatform::CloseApp();
 				}
-				ImPlatform::ImEndCustomTitleBar();
+				ImPlatform::EndCustomTitleBar();
 
 				// ImGui Code
 				bool show = true;
@@ -252,20 +252,20 @@ int main()
 					ImGui::Begin( "Custom Shader" );
 						ImDrawList* draw = ImGui::GetWindowDrawList();
 						ImVec2 cur = ImGui::GetCursorScreenPos();
-						ImPlatform::ImBeginCustomShader( draw, shader );
+						ImPlatform::BeginCustomShader( draw, shader );
 						ImRect bb( cur, cur + ImGui::GetContentRegionAvail() );
 						draw->AddImageQuad( img, bb.GetBL(), bb.GetBR(), bb.GetTR(), bb.GetTL(), ImVec2( 0, 0 ), ImVec2( 1, 0 ), ImVec2( 1, 1 ), ImVec2( 0, 1 ), IM_COL32_WHITE );
-						ImPlatform::ImEndCustomShader( draw );
+						ImPlatform::EndCustomShader( draw );
 					ImGui::End();
 				}
 				{
 					ImGui::Begin( "Custom Shader 2" );
 						ImDrawList* draw = ImGui::GetWindowDrawList();
 						ImVec2 cur = ImGui::GetCursorScreenPos();
-						ImPlatform::ImBeginCustomShader( draw, shader2 );
+						ImPlatform::BeginCustomShader( draw, shader2 );
 						ImRect bb( cur, cur + ImGui::GetContentRegionAvail() );
 						draw->AddImageQuad( img_white, bb.GetBL(), bb.GetBR(), bb.GetTR(), bb.GetTL(), ImVec2( 0, 0 ), ImVec2( 1, 0 ), ImVec2( 1, 1 ), ImVec2( 0, 1 ), IM_COL32( 255, 0, 0, 255 ) );
-						ImPlatform::ImEndCustomShader( draw );
+						ImPlatform::EndCustomShader( draw );
 					ImGui::End();
 				}
 				{
@@ -275,11 +275,11 @@ int main()
 						float sin0 = ImSin( t );
 						p3.uv_start = ImVec2( 0.0f, sin0 * sin0 );
 						p3.uv_end = ImVec2( 0.0f, 1.0f );
-						ImUpdateCustomShaderConstant( shader3, &p3 );
-						ImPlatform::ImBeginCustomShader( draw, shader3 );
+						ImPlatform::UpdateCustomShaderConstant( shader3, &p3 );
+						ImPlatform::BeginCustomShader( draw, shader3 );
 						ImRect bb( cur, cur + ImGui::GetContentRegionAvail() );
 						draw->AddImageQuad( img_white, bb.GetBL(), bb.GetBR(), bb.GetTR(), bb.GetTL(), ImVec2( 0, 0 ), ImVec2( 1, 0 ), ImVec2( 1, 1 ), ImVec2( 0, 1 ), IM_COL32( 255, 255, 255, 255 ) );
-						ImPlatform::ImEndCustomShader( draw );
+						ImPlatform::EndCustomShader( draw );
 					ImGui::End();
 				}
 #endif
@@ -303,26 +303,26 @@ int main()
 				ImGui::End();
 			}
 
-			ImPlatform::ImSimpleEnd( clear_color, io.ConfigFlags & ImGuiConfigFlags_ViewportsEnable );
+			ImPlatform::SimpleEnd( clear_color, io.ConfigFlags & ImGuiConfigFlags_ViewportsEnable );
 
 			t += ImGui::GetIO().DeltaTime;
 		}
 
-		ImPlatform::ImSimpleFinish();
+		ImPlatform::SimpleFinish();
 	}
 	else
 	{
 		// ImPlatform::ExplicitAPI
 		bool bGood;
 
-		bGood = ImPlatform::ImCreateWindow( "ImPlatform Demo", ImVec2( 100, 100 ), 1024, 764 );
+		bGood = ImPlatform::CreateWindow( "ImPlatform Demo", ImVec2( 100, 100 ), 1024, 764 );
 		if ( !bGood )
 		{
 			fprintf( stderr, "ImPlatform: Cannot create window." );
 			return false;
 		}
 
-		bGood = ImPlatform::ImInitGfxAPI();
+		bGood = ImPlatform::InitGfxAPI();
 		if ( !bGood )
 		{
 			fprintf( stderr, "ImPlatform: Cannot initialize the Graphics API." );
@@ -330,13 +330,13 @@ int main()
 		}
 
 #ifdef IM_SUPPORT_CUSTOM_SHADER
-		ImPlatform::ImDrawShader shader;
-		shader = ImPlatform::ImCreateShader( source.c_str(), "", "", 0 );
-		ImPlatform::ImDrawShader shader2;
-		shader2 = ImPlatform::ImCreateShader( source2.c_str(), "", "", 0 );
+		ImDrawShader shader;
+		shader = ImPlatform::CreateShader( source.c_str(), "", "", 0 );
+		ImDrawShader shader2;
+		shader2 = ImPlatform::CreateShader( source2.c_str(), "", "", 0 );
 #endif
 
-		bGood = ImPlatform::ImShowWindow();
+		bGood = ImPlatform::ShowWindow();
 		if ( !bGood )
 		{
 			fprintf( stderr, "ImPlatform: Cannot show the window." );
@@ -374,33 +374,33 @@ int main()
 			style.Colors[ ImGuiCol_WindowBg ].w = 1.0f;
 		}
 
-		bGood = ImPlatform::ImInitPlatform();
+		bGood = ImPlatform::InitPlatform();
 		if ( !bGood )
 		{
 			fprintf( stderr, "ImPlatform: Cannot initialize platform." );
 			return false;
 		}
-		bGood = ImPlatform::ImInitGfx();
+		bGood = ImPlatform::InitGfx();
 		if ( !bGood )
 		{
 			fprintf( stderr, "ImPlatform: Cannot initialize graphics." );
 			return false;
 		}
-		ImTextureID img = ImPlatform::ImCreateTexture2D( ( char* )data, width, height,
+		ImTextureID img = ImPlatform::CreateTexture2D( ( char* )data, width, height,
 														 {
-															ImPlatform::IM_RGBA,
-															ImPlatform::IM_TYPE_UINT8,
-															ImPlatform::IM_FILTERING_LINEAR,
-															ImPlatform::IM_BOUNDARY_CLAMP,
-															ImPlatform::IM_BOUNDARY_CLAMP
+															ImPixelChannel_RGBA,
+															ImPixelType_UInt8,
+															ImTextureFiltering_Linear,
+															ImTextureBoundary_Clamp,
+															ImTextureBoundary_Clamp
 														 } );
-		ImTextureID img_white = ImPlatform::ImCreateTexture2D( ( char* )white_data, width, height,
+		ImTextureID img_white = ImPlatform::CreateTexture2D( ( char* )white_data, width, height,
 															   {
-																  ImPlatform::IM_RGBA,
-																  ImPlatform::IM_TYPE_UINT8,
-																  ImPlatform::IM_FILTERING_LINEAR,
-																  ImPlatform::IM_BOUNDARY_CLAMP,
-																  ImPlatform::IM_BOUNDARY_CLAMP
+																  ImPixelChannel_RGBA,
+																  ImPixelType_UInt8,
+																  ImTextureFiltering_Linear,
+																  ImTextureBoundary_Clamp,
+																  ImTextureBoundary_Clamp
 															   } );
 #if IM_HAS_STBI
 		stbi_image_free( data );
@@ -409,42 +409,42 @@ int main()
 #endif
 
 		ImVec4 clear_color = ImVec4( 0.461f, 0.461f, 0.461f, 1.0f );
-		while ( ImPlatform::ImPlatformContinue() )
+		while ( ImPlatform::PlatformContinue() )
 		{
-			bool quit = ImPlatform::ImPlatformEvents();
+			bool quit = ImPlatform::PlatformEvents();
 			if ( quit )
 				break;
 
-			if ( !ImPlatform::ImGfxCheck() )
+			if ( !ImPlatform::GfxCheck() )
 			{
 				continue;
 			}
 
-			ImPlatform::ImGfxAPINewFrame();
-			ImPlatform::ImPlatformNewFrame();
+			ImPlatform::GfxAPINewFrame();
+			ImPlatform::PlatformNewFrame();
 
 			ImGui::NewFrame();
 
-			if ( ImPlatform::ImCustomTitleBarEnabled() )
+			if ( ImPlatform::CustomTitleBarEnabled() )
 			{
-				if ( ImPlatform::ImBeginCustomTitleBar( 64.0f ) )
+				if ( ImPlatform::BeginCustomTitleBar( 64.0f ) )
 				{
 					ImGui::Text( "ImPlatform with Custom Title Bar" );
 					ImGui::SameLine();
 
 					if ( ImGui::Button( "Minimize" ) )
-						ImPlatform::ImMinimizeApp();
+						ImPlatform::MinimizeApp();
 					ImGui::SameLine();
 
 					if ( ImGui::Button( "Maximize" ) )
-						ImPlatform::ImMaximizeApp();
+						ImPlatform::MaximizeApp();
 					ImGui::SameLine();
 
 					if ( ImGui::Button( "Close" ) )
-						ImPlatform::ImCloseApp();
+						ImPlatform::CloseApp();
 					ImGui::SameLine();
 				}
-				ImPlatform::ImEndCustomTitleBar();
+				ImPlatform::EndCustomTitleBar();
 			}
 
 			// ImGui Code
@@ -456,20 +456,20 @@ int main()
 				ImGui::Begin( "Custom Shader" );
 					ImDrawList* draw = ImGui::GetWindowDrawList();
 					ImVec2 cur = ImGui::GetCursorScreenPos();
-					ImPlatform::ImBeginCustomShader( draw, shader );
+					ImPlatform::BeginCustomShader( draw, shader );
 					ImRect bb( cur, cur + ImGui::GetContentRegionAvail() );
 					draw->AddImageQuad( img, bb.GetBL(), bb.GetBR(), bb.GetTR(), bb.GetTL(), ImVec2( 0, 0 ), ImVec2( 1, 0 ), ImVec2( 1, 1 ), ImVec2( 0, 1 ), IM_COL32_WHITE );
-					ImPlatform::ImEndCustomShader( draw );
+					ImPlatform::EndCustomShader( draw );
 				ImGui::End();
 			}
 			{
 				ImGui::Begin( "Custom Shader 2" );
 					ImDrawList* draw = ImGui::GetWindowDrawList();
 					ImVec2 cur = ImGui::GetCursorScreenPos();
-					ImPlatform::ImBeginCustomShader( draw, shader2 );
+					ImPlatform::BeginCustomShader( draw, shader2 );
 					ImRect bb( cur, cur + ImGui::GetContentRegionAvail() );
 					draw->AddImageQuad( img_white, bb.GetBL(), bb.GetBR(), bb.GetTR(), bb.GetTL(), ImVec2( 0, 0 ), ImVec2( 1, 0 ), ImVec2( 1, 1 ), ImVec2( 0, 1 ), IM_COL32( 255, 0, 0, 255 ) );
-					ImPlatform::ImEndCustomShader( draw );
+					ImPlatform::EndCustomShader( draw );
 				ImGui::End();
 			}
 #endif
@@ -480,31 +480,31 @@ int main()
 			}
 			ImGui::End();
 
-			ImPlatform::ImGfxAPIClear( clear_color );
-			ImPlatform::ImGfxAPIRender( clear_color );
+			ImPlatform::GfxAPIClear( clear_color );
+			ImPlatform::GfxAPIRender( clear_color );
 
 			// Update and Render additional Platform Windows
 			if ( io.ConfigFlags & ImGuiConfigFlags_ViewportsEnable )
 			{
-				ImPlatform::ImGfxViewportPre();
+				ImPlatform::GfxViewportPre();
 
 				ImGui::UpdatePlatformWindows();
 				ImGui::RenderPlatformWindowsDefault();
 
-				ImPlatform::ImGfxViewportPost();
+				ImPlatform::GfxViewportPost();
 			}
 
-			ImPlatform::ImGfxAPISwapBuffer();
+			ImPlatform::GfxAPISwapBuffer();
 		}
 
-		ImPlatform::ImShutdownGfxAPI();
-		ImPlatform::ImShutdownWindow();
+		ImPlatform::ShutdownGfxAPI();
+		ImPlatform::ShutdownWindow();
 
 		ImGui::DestroyContext();
 
-		ImPlatform::ImShutdownPostGfxAPI();
+		ImPlatform::ShutdownPostGfxAPI();
 
-		ImPlatform::ImDestroyWindow();
+		ImPlatform::DestroyWindow();
 	}
 
 	return 0;

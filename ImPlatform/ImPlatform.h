@@ -172,6 +172,15 @@ extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg
 
 #include <stdio.h>
 
+enum ImPlatformFeatures_
+{
+	ImPlatformFeatures_None,
+	ImPlatformFeatures_CustomShader,
+
+	ImPlatformFeatures_COUNT
+};
+typedef int ImPlatformFeatures;
+
 struct PlatformDataImpl
 {
 #if (IM_CURRENT_PLATFORM == IM_PLATFORM_WIN32)
@@ -261,134 +270,146 @@ struct PlatformDataImpl
 
 	ImVec2	vEndCustomToolBar		= ImVec2( 0.0f, 0.0f );
 	float	fCustomTitleBarHeight	= 32.0f;
+	ImPlatformFeatures	features	= ImPlatformFeatures_None;
 	bool	bCustomTitleBar			= false;
 	bool	bTitleBarHovered		= false;
 };
 
 extern PlatformDataImpl PlatformData;
 
+enum ImPixelType
+{
+	ImPixelType_UInt8,
+	ImPixelType_UInt16,
+	ImPixelType_UInt32,
+	ImPixelType_UInt64,
+	ImPixelType_Int8,
+	ImPixelType_Int16,
+	ImPixelType_Int32,
+	ImPixelType_Int64,
+	ImPixelType_Float16,
+	ImPixelType_Float32,
+	ImPixelType_Float64
+};
+
+enum ImPixelChannel
+{
+	ImPixelChannel_R = 1,
+	ImPixelChannel_RG,
+	ImPixelChannel_RGB,
+	ImPixelChannel_RGBA
+};
+
+enum ImTextureFiltering
+{
+	ImTextureFiltering_Nearest,
+	ImTextureFiltering_Linear
+};
+
+enum ImTextureBoundary
+{
+	ImTextureBoundary_Clamp,
+	ImTextureBoundary_Repeat,
+	ImTextureBoundary_Mirror
+};
+
+struct ImImageDesc
+{
+	ImPixelChannel		eChannel;
+	ImPixelType			eType;
+	ImTextureFiltering	eFiltering;
+	ImTextureBoundary	eBoundaryU;
+	ImTextureBoundary	eBoundaryV;
+};
+
+typedef void* ImShaderID;
+typedef void* ImConstantID;
+struct ImDrawShader
+{
+	ImShaderID vs;
+	ImShaderID ps;
+	ImConstantID cst;
+	void* cpu_data;
+	int sizeof_in_bytes_constants;
+	bool is_cpu_data_dirty;
+};
+
+struct ImGeometryDraw
+{
+
+};
+
 namespace ImPlatform
 {
-	enum ImPixelType
-	{
-		IM_TYPE_UINT8,
-		IM_TYPE_UINT16,
-		IM_TYPE_UINT32,
-		IM_TYPE_UINT64,
-		IM_TYPE_INT8,
-		IM_TYPE_INT16,
-		IM_TYPE_INT32,
-		IM_TYPE_INT64,
-		IM_TYPE_FLOAT16,
-		IM_TYPE_FLOAT32,
-		IM_TYPE_FLOAT64
-	};
-
-	enum ImPixelChannel
-	{
-		IM_R = 1,
-		IM_RG,
-		IM_RGB,
-		IM_RGBA
-	};
-
-	enum ImTextureFilter
-	{
-		IM_FILTERING_POINT,
-		IM_FILTERING_LINEAR
-	};
-
-	enum ImTextureBoundary
-	{
-		IM_BOUNDARY_CLAMP,
-		IM_BOUNDARY_REPEAT,
-		IM_BOUNDARY_MIRROR
-	};
-
-	struct ImImageDesc
-	{
-		ImPixelChannel		eChannel;
-		ImPixelType			eType;
-		ImTextureFilter		eFiltering;
-		ImTextureBoundary	eBoundaryU;
-		ImTextureBoundary	eBoundaryV;
-	};
-
-#ifdef IM_SUPPORT_CUSTOM_SHADER
 	// Generic
-	ImTextureID	ImCreateTexture2D	( char* pData, ImU32 const uWidth, ImU32 const uHeight, ImImageDesc const& oImgDesc );
-	void		ImReleaseTexture2D	( ImTextureID id );
+	ImTextureID	CreateTexture2D	( char* pData, ImU32 const uWidth, ImU32 const uHeight, ImImageDesc const& oImgDesc );
+	void		ReleaseTexture2D( ImTextureID id );
 
-	typedef void* ImShaderID;
-	typedef void* ImConstantID;
-	struct ImDrawShader
-	{
-		ImShaderID vs;
-		ImShaderID ps;
-		ImConstantID cst;
-		void* cpu_data;
-		int sizeof_in_bytes_constants;
-		bool is_cpu_data_dirty;
-	};
-	ImDrawShader	ImCreateShader( char const* source, char const* ps_params, char const* ps_pre_functions, int sizeof_in_bytes_constants, void* init_data_constant = NULL, bool multiply_with_texture = true );
-	void			ImReleaseShader( ImDrawShader& shader );
+	ImDrawShader	CreateShader( char const* source, char const* ps_params, char const* ps_pre_functions, int sizeof_in_bytes_constants, void* init_data_constant = NULL, bool multiply_with_texture = true );
+	void			ReleaseShader( ImDrawShader& shader );
 
-	void		ImBeginCustomShader( ImDrawList* draw, ImDrawShader& shader );
-	void		ImUpdateCustomShaderConstant( ImDrawShader& shader, void* ptr_to_constants );
-	void		ImEndCustomShader( ImDrawList* draw );
-#endif
+	void		BeginCustomShader( ImDrawList* draw, ImDrawShader& shader );
+	void		UpdateCustomShaderConstant( ImDrawShader& shader, void* ptr_to_constants );
+	void		EndCustomShader( ImDrawList* draw );
 
 	bool		ImIsMaximized();
 
 	// Custom Title Bar
-	bool		ImCustomTitleBarEnabled();
-	void		ImEnableCustomTitleBar();
-	void		ImDisableCustomTitleBar();
+	bool		CustomTitleBarEnabled();
+	void		EnableCustomTitleBar();
+	void		DisableCustomTitleBar();
 
-	void		ImDrawCustomMenuBarDefault();
+	void		DrawCustomMenuBarDefault();
 
-	void		ImMinimizeApp();
-	void		ImMaximizeApp();
-	void		ImCloseApp();
+	void		MinimizeApp();
+	void		MaximizeApp();
+	void		CloseApp();
 
-	bool		ImBeginCustomTitleBar( float fHeight );
-	void		ImEndCustomTitleBar();
+	bool		BeginCustomTitleBar( float fHeight );
+	void		EndCustomTitleBar();
+
+	// Inits
+	void SetFeatures( ImPlatformFeatures features );
+	bool ValidateFeatures();
 
 	// SimpleAPI:
-	bool ImSimpleStart( char const* pWindowsName, ImVec2 const vPos, ImU32 const uWidth, ImU32 const uHeight );
-	bool ImSimpleInitialize( bool hasViewport );
-	void ImSimpleFinish();
+	bool SimpleStart( char const* pWindowsName, ImVec2 const vPos, ImU32 const uWidth, ImU32 const uHeight );
+	bool SimpleInitialize( bool hasViewport );
+	void SimpleFinish();
 
-	void ImSimpleBegin();
-	void ImSimpleEnd( ImVec4 const vClearColor, bool hasViewport );
+	void SimpleBegin();
+	void SimpleEnd( ImVec4 const vClearColor, bool hasViewport );
 
 	// ExplicitAPI:
-	bool ImCreateWindow( char const* pWindowsName, ImVec2 const vPos, ImU32 const uWidth, ImU32 const uHeight );
-	bool ImInitGfxAPI();
-	bool ImShowWindow();
-	bool ImInitPlatform();
-	bool ImInitGfx();
-	bool ImPlatformContinue();
-	bool ImPlatformEvents();
-	bool ImGfxCheck();
-	void ImGfxAPINewFrame();
-	void ImPlatformNewFrame();
-	bool ImGfxAPIClear( ImVec4 const vClearColor );
+#ifdef CreateWindow
+#undef CreateWindow // Windows API :(
+#endif
+	bool CreateWindow( char const* pWindowsName, ImVec2 const vPos, ImU32 const uWidth, ImU32 const uHeight );
+	bool InitGfxAPI();
+	bool ShowWindow();
+	bool InitPlatform();
+	bool InitGfx();
+	bool PlatformContinue();
+	bool PlatformEvents();
+	bool GfxCheck();
+	void GfxAPINewFrame();
+	void PlatformNewFrame();
+	bool GfxAPIClear( ImVec4 const vClearColor );
 	// Need to pass the clear color to support dx12
-	bool ImGfxAPIRender( ImVec4 const vClearColor );
-	void ImGfxViewportPre();
-	void ImGfxViewportPost();
-	bool ImGfxAPISwapBuffer();
-	void ImShutdownGfxAPI();
-	void ImShutdownWindow();
-	void ImShutdownPostGfxAPI();
-	void ImDestroyWindow();
+	bool GfxAPIRender( ImVec4 const vClearColor );
+	void GfxViewportPre();
+	void GfxViewportPost();
+	bool GfxAPISwapBuffer();
+	void ShutdownGfxAPI();
+	void ShutdownWindow();
+	void ShutdownPostGfxAPI();
+	void DestroyWindow();
 
 	// Internal API:
 	namespace Internal
 	{
 		// Resize is not handle in the same way depending on the GfxAPI, do not call by yourself
-		bool ImWindowResize();
+		bool WindowResize();
 	}
 }
 
