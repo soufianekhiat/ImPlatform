@@ -87,16 +87,16 @@ namespace ImPlatform
 #if (IM_CURRENT_GFX == IM_GFX_OPENGL2)
 		switch ( eChannel )
 		{
-		case IM_R:
+		case ImPixelChannel_R:
 			*internalformat = *format = GL_LUMINANCE;
 			break;
-		case IM_RG:
+		case ImPixelChannel_RG:
 			*internalformat = *format = GL_LUMINANCE_ALPHA;
 			break;
-		case IM_RGB:
+		case ImPixelChannel_RGB:
 			*internalformat = *format = GL_RGB;
 			break;
-		case IM_RGBA:
+		case ImPixelChannel_RGBA:
 			*internalformat = *format = GL_RGBA;
 			break;
 		default:
@@ -107,7 +107,7 @@ namespace ImPlatform
 #if 1
 		switch ( eChannel )
 		{
-		case IM_RGBA:
+		case ImPixelChannel_RGBA:
 			*internalFormat = *format = GL_RGBA;
 			break;
 		default:
@@ -117,32 +117,32 @@ namespace ImPlatform
 #else
 		switch ( eChannel )
 		{
-		case IM_R:
+		case ImPixelChannel_R:
 			*format = GL_RED;
 			switch ( eType )
 			{
-			case IM_TYPE_UINT8:
+			case ImPixelType_UInt8:
 				*internalformat = GL_R8UI;
 				break;
-			case IM_TYPE_UINT16:
+			case ImPixelType_UInt16:
 				*internalformat = GL_R16UI;
 				break;
-			case IM_TYPE_UINT32:
+			case ImPixelType_UInt32:
 				*internalformat = GL_R32UI;
 				break;
-			case IM_TYPE_INT8:
+			case ImPixelType_Int8:
 				*internalformat = GL_R8I;
 				break;
-			case IM_TYPE_INT16:
+			case ImPixelType_Int16:
 				*internalformat = GL_R16I;
 				break;
-			case IM_TYPE_INT32:
+			case ImPixelType_Int32:
 				*internalformat = GL_R32I;
 				break;
-			case IM_TYPE_FLOAT16:
+			case ImPixelType_Float16:
 				*internalformat = GL_R16F;
 				break;
-			case IM_TYPE_FLOAT32:
+			case ImPixelType_Float32:
 				*internalformat = GL_R32F;
 				break;
 			default:
@@ -150,32 +150,32 @@ namespace ImPlatform
 				break;
 			}
 			break;
-		case IM_RG:
+		case ImPixelChannel_RG:
 			*format = GL_RG;
 			switch ( eType )
 			{
-			case IM_TYPE_UINT8:
+			case ImPixelType_UInt8:
 				*internalformat = GL_RG8UI;
 				break;
-			case IM_TYPE_UINT16:
+			case ImPixelType_UInt16:
 				*internalformat = GL_RG16UI;
 				break;
-			case IM_TYPE_UINT32:
+			case ImPixelType_UInt32:
 				*internalformat = GL_RG32UI;
 				break;
-			case IM_TYPE_INT8:
+			case ImPixelType_Int8:
 				*internalformat = GL_RG8I;
 				break;
-			case IM_TYPE_INT16:
+			case ImPixelType_Int16:
 				*internalformat = GL_RG16I;
 				break;
-			case IM_TYPE_INT32:
+			case ImPixelType_Int32:
 				*internalformat = GL_RG32I;
 				break;
-			case IM_TYPE_FLOAT16:
+			case ImPixelType_Float16:
 				*internalformat = GL_RG16F;
 				break;
-			case IM_TYPE_FLOAT32:
+			case ImPixelType_Float32:
 				*internalformat = GL_RG32F;
 				break;
 			default:
@@ -183,32 +183,32 @@ namespace ImPlatform
 				break;
 			}
 			break;
-		case IM_RGB:
+		case ImPixelChannel_RGB:
 			*format = GL_RGB;
 			switch ( eType )
 			{
-			case IM_TYPE_UINT8:
+			case ImPixelType_UInt8:
 				*internalformat = GL_RGB8UI;
 				break;
-			case IM_TYPE_UINT16:
+			case ImPixelType_UInt16:
 				*internalformat = GL_RGB16UI;
 				break;
-			case IM_TYPE_UINT32:
+			case ImPixelType_UInt32:
 				*internalformat = GL_RGB32UI;
 				break;
-			case IM_TYPE_INT8:
+			case ImPixelType_Int8:
 				*internalformat = GL_RGB8I;
 				break;
-			case IM_TYPE_INT16:
+			case ImPixelType_Int16:
 				*internalformat = GL_RGB16I;
 				break;
-			case IM_TYPE_INT32:
+			case ImPixelType_Int32:
 				*internalformat = GL_RGB32I;
 				break;
-			case IM_TYPE_FLOAT16:
+			case ImPixelType_Float16:
 				*internalformat = GL_RGB16F;
 				break;
-			case IM_TYPE_FLOAT32:
+			case ImPixelType_Float32:
 				*internalformat = GL_RGB32F;
 				break;
 			default:
@@ -216,32 +216,32 @@ namespace ImPlatform
 				break;
 			}
 			break;
-		case IM_RGBA:
+		case ImPixelChannel_RGBA:
 			*format = GL_RGBA;
 			switch ( eType )
 			{
-			case IM_TYPE_UINT8:
+			case ImPixelType_UInt8:
 				*internalformat = GL_RGBA8UI;
 				break;
-			case IM_TYPE_UINT16:
+			case ImPixelType_UInt16:
 				*internalformat = GL_RGBA16UI;
 				break;
-			case IM_TYPE_UINT32:
+			case ImPixelType_UInt32:
 				*internalformat = GL_RGBA32UI;
 				break;
-			case IM_TYPE_INT8:
+			case ImPixelType_Int8:
 				*internalformat = GL_RGBA8I;
 				break;
-			case IM_TYPE_INT16:
+			case ImPixelType_Int16:
 				*internalformat = GL_RGBA16I;
 				break;
-			case IM_TYPE_INT32:
+			case ImPixelType_Int32:
 				*internalformat = GL_RGBA32I;
 				break;
-			case IM_TYPE_FLOAT16:
+			case ImPixelType_Float16:
 				*internalformat = GL_RGBA16F;
 				break;
-			case IM_TYPE_FLOAT32:
+			case ImPixelType_Float32:
 				*internalformat = GL_RGBA32F;
 				break;
 			default:
@@ -262,16 +262,16 @@ namespace ImPlatform
 #if (IM_CURRENT_GFX == IM_GFX_OPENGL2)
 		switch ( eType )
 		{
-		case IM_TYPE_UINT8:
+		case ImPixelType_UInt8:
 			*type = GL_UNSIGNED_BYTE;
 			break;
-		case IM_TYPE_UINT16:
+		case ImPixelType_UInt16:
 			*type = GL_UNSIGNED_SHORT;
 			break;
-		case IM_TYPE_UINT32:
+		case ImPixelType_UInt32:
 			*type = GL_UNSIGNED_INT;
 			break;
-		case IM_TYPE_FLOAT32:
+		case ImPixelType_Float32:
 			*type = GL_FLOAT;
 			break;
 		default:
@@ -282,16 +282,16 @@ namespace ImPlatform
 #if 1
 		switch ( eType )
 		{
-		case IM_TYPE_UINT8:
+		case ImPixelType_UInt8:
 			*type = GL_UNSIGNED_BYTE;
 			break;
-		case IM_TYPE_UINT16:
+		case ImPixelType_UInt16:
 			*type = GL_UNSIGNED_SHORT;
 			break;
-		case IM_TYPE_UINT32:
+		case ImPixelType_UInt32:
 			*type = GL_UNSIGNED_INT;
 			break;
-		case IM_TYPE_FLOAT32:
+		case ImPixelType_Float32:
 			*type = GL_FLOAT;
 			break;
 		default:
@@ -301,28 +301,28 @@ namespace ImPlatform
 #else
 		switch ( eType )
 		{
-		case IM_TYPE_UINT8:
+		case ImPixelType_UInt8:
 			*type = GL_UNSIGNED_BYTE;
 			break;
-		case IM_TYPE_UINT16:
+		case ImPixelType_UInt16:
 			*type = GL_UNSIGNED_SHORT;
 			break;
-		case IM_TYPE_UINT32:
+		case ImPixelType_UInt32:
 			*type = GL_UNSIGNED_INT;
 			break;
-		case IM_TYPE_INT8:
+		case ImPixelType_Int8:
 			*type = GL_BYTE;
 			break;
-		case IM_TYPE_INT16:
+		case ImPixelType_Int16:
 			*type = GL_SHORT;
 			break;
-		case IM_TYPE_INT32:
+		case ImPixelType_Int32:
 			*type = GL_INT;
 			break;
-		case IM_TYPE_FLOAT16:
+		case ImPixelType_Float16:
 			*type = GL_HALF_FLOAT;
 			break;
-		case IM_TYPE_FLOAT32:
+		case ImPixelType_Float32:
 			*type = GL_FLOAT;
 			break;
 		default:
@@ -357,24 +357,24 @@ namespace ImPlatform
 		int sizeofChannel = -1;
 		switch ( eChannel )
 		{
-		case IM_R:
+		case ImPixelChannel_R:
 			switch ( eType )
 			{
-			case IM_TYPE_UINT8:
-			case IM_TYPE_INT8:
+			case ImPixelType_UInt8:
+			case ImPixelType_Int8:
 				sizeofChannel = 1;
 				*internalformat = D3DFMT_L8;
 				break;
-			case IM_TYPE_UINT16:
-			case IM_TYPE_INT16:
+			case ImPixelType_UInt16:
+			case ImPixelType_Int16:
 				sizeofChannel = 2;
 				*internalformat = D3DFMT_L16;
 				break;
-			case IM_TYPE_FLOAT16:
+			case ImPixelType_Float16:
 				sizeofChannel = 2;
 				*internalformat = D3DFMT_R16F;
 				break;
-			case IM_TYPE_FLOAT32:
+			case ImPixelType_Float32:
 				sizeofChannel = 4;
 				*internalformat = D3DFMT_R32F;
 				break;
@@ -383,29 +383,29 @@ namespace ImPlatform
 				break;
 			}
 			break;
-		case IM_RG:
+		case ImPixelChannel_RG:
 			switch ( eType )
 			{
-			case IM_TYPE_UINT8:
-			case IM_TYPE_INT8:
+			case ImPixelType_UInt8:
+			case ImPixelType_Int8:
 				sizeofChannel = 1;
 				*internalformat = D3DFMT_A8L8;
 				break;
-			case IM_TYPE_UINT16:
-			case IM_TYPE_INT16:
+			case ImPixelType_UInt16:
+			case ImPixelType_Int16:
 				sizeofChannel = 2;
 				*internalformat = D3DFMT_G16R16;
 				break;
-			case IM_TYPE_UINT32:
-			case IM_TYPE_INT32:
+			case ImPixelType_UInt32:
+			case ImPixelType_Int32:
 				sizeofChannel = 4;
 				*internalformat = D3DFMT_R3G3B2;
 				break;
-			case IM_TYPE_FLOAT16:
+			case ImPixelType_Float16:
 				sizeofChannel = 2;
 				*internalformat = D3DFMT_G16R16F;
 				break;
-			case IM_TYPE_FLOAT32:
+			case ImPixelType_Float32:
 				sizeofChannel = 4;
 				*internalformat = D3DFMT_G32R32F;
 				break;
@@ -414,11 +414,11 @@ namespace ImPlatform
 				break;
 			}
 			break;
-		case IM_RGB:
+		case ImPixelChannel_RGB:
 			switch ( eType )
 			{
-			case IM_TYPE_UINT8:
-			case IM_TYPE_INT8:
+			case ImPixelType_UInt8:
+			case ImPixelType_Int8:
 				sizeofChannel = 1;
 				*internalformat = D3DFMT_R8G8B8;
 				break;
@@ -427,24 +427,24 @@ namespace ImPlatform
 				break;
 			}
 			break;
-		case IM_RGBA:
+		case ImPixelChannel_RGBA:
 			switch ( eType )
 			{
-			case IM_TYPE_UINT8:
-			case IM_TYPE_INT8:
+			case ImPixelType_UInt8:
+			case ImPixelType_Int8:
 				sizeofChannel = 1;
 				*internalformat = D3DFMT_A8B8G8R8;
 				break;
-			case IM_TYPE_UINT16:
-			case IM_TYPE_INT16:
+			case ImPixelType_UInt16:
+			case ImPixelType_Int16:
 				sizeofChannel = 2;
 				*internalformat = D3DFMT_A16B16G16R16;
 				break;
-			case IM_TYPE_FLOAT16:
+			case ImPixelType_Float16:
 				sizeofChannel = 2;
 				*internalformat = D3DFMT_A16B16G16R16F;
 				break;
-			case IM_TYPE_FLOAT32:
+			case ImPixelType_Float32:
 				sizeofChannel = 4;
 				*internalformat = D3DFMT_A32B32G32R32F;
 				break;
@@ -465,11 +465,11 @@ namespace ImPlatform
 	{
 		switch ( eBoundary )
 		{
-		case IM_BOUNDARY_CLAMP:
+		case ImTextureBoundary_Clamp:
 			return D3DTADDRESS_CLAMP;
-		case IM_BOUNDARY_REPEAT:
+		case ImTextureBoundary_Repeat:
 			return D3DTADDRESS_WRAP;
-		case IM_BOUNDARY_MIRROR:
+		case ImTextureBoundary_Mirror:
 			return D3DTADDRESS_MIRROR;
 		default:
 			fprintf( stderr, "ImTextureBoundaryToDX9 eBoundary unsupported on Dx9 {IM_CLAMP, IM_REPEAT, IM_MIRROR_REPEAT}\n" );
@@ -483,30 +483,30 @@ namespace ImPlatform
 		int sizeofChannel = -1;
 		switch ( eChannel )
 		{
-		case IM_R:
+		case ImPixelChannel_R:
 			switch ( eType )
 			{
-			case IM_TYPE_UINT8:
+			case ImPixelType_UInt8:
 				sizeofChannel = 1;
 				*internalformat = DXGI_FORMAT_R8_UINT;
 				break;
-			case IM_TYPE_INT8:
+			case ImPixelType_Int8:
 				sizeofChannel = 1;
 				*internalformat = DXGI_FORMAT_R8_SINT;
 				break;
-			case IM_TYPE_UINT16:
+			case ImPixelType_UInt16:
 				sizeofChannel = 2;
 				*internalformat = DXGI_FORMAT_R16_UINT;
 				break;
-			case IM_TYPE_INT16:
+			case ImPixelType_Int16:
 				sizeofChannel = 2;
 				*internalformat = DXGI_FORMAT_R16_SINT;
 				break;
-			case IM_TYPE_FLOAT16:
+			case ImPixelType_Float16:
 				sizeofChannel = 2;
 				*internalformat = DXGI_FORMAT_R16_FLOAT;
 				break;
-			case IM_TYPE_FLOAT32:
+			case ImPixelType_Float32:
 				sizeofChannel = 4;
 				*internalformat = DXGI_FORMAT_R32_FLOAT;
 				break;
@@ -515,38 +515,38 @@ namespace ImPlatform
 				break;
 			}
 			break;
-		case IM_RG:
+		case ImPixelChannel_RG:
 			switch ( eType )
 			{
-			case IM_TYPE_UINT8:
+			case ImPixelType_UInt8:
 				sizeofChannel = 1;
 				*internalformat = DXGI_FORMAT_R8G8_UINT;
 				break;
-			case IM_TYPE_INT8:
+			case ImPixelType_Int8:
 				sizeofChannel = 1;
 				*internalformat = DXGI_FORMAT_R8G8_SINT;
 				break;
-			case IM_TYPE_UINT16:
+			case ImPixelType_UInt16:
 				sizeofChannel = 2;
 				*internalformat = DXGI_FORMAT_R16G16_UINT;
 				break;
-			case IM_TYPE_INT16:
+			case ImPixelType_Int16:
 				sizeofChannel = 2;
 				*internalformat = DXGI_FORMAT_R16G16_SINT;
 				break;
-			case IM_TYPE_UINT32:
+			case ImPixelType_UInt32:
 				sizeofChannel = 4;
 				*internalformat = DXGI_FORMAT_R32G32_UINT;
 				break;
-			case IM_TYPE_INT32:
+			case ImPixelType_Int32:
 				sizeofChannel = 4;
 				*internalformat = DXGI_FORMAT_R32G32_SINT;
 				break;
-			case IM_TYPE_FLOAT16:
+			case ImPixelType_Float16:
 				sizeofChannel = 2;
 				*internalformat = DXGI_FORMAT_R16G16_FLOAT;
 				break;
-			case IM_TYPE_FLOAT32:
+			case ImPixelType_Float32:
 				sizeofChannel = 4;
 				*internalformat = DXGI_FORMAT_R32G32_FLOAT;
 				break;
@@ -555,18 +555,18 @@ namespace ImPlatform
 				break;
 			}
 			break;
-		case IM_RGB:
+		case ImPixelChannel_RGB:
 			switch ( eType )
 			{
-			case IM_TYPE_UINT32:
+			case ImPixelType_UInt32:
 				sizeofChannel = 4;
 				*internalformat = DXGI_FORMAT_R32G32B32_UINT;
 				break;
-			case IM_TYPE_INT32:
+			case ImPixelType_Int32:
 				sizeofChannel = 4;
 				*internalformat = DXGI_FORMAT_R32G32B32_SINT;
 				break;
-			case IM_TYPE_FLOAT32:
+			case ImPixelType_Float32:
 				sizeofChannel = 4;
 				*internalformat = DXGI_FORMAT_R32G32B32_FLOAT;
 				break;
@@ -575,38 +575,38 @@ namespace ImPlatform
 				break;
 			}
 			break;
-		case IM_RGBA:
+		case ImPixelChannel_RGBA:
 			switch ( eType )
 			{
-			case IM_TYPE_UINT8:
+			case ImPixelType_UInt8:
 				sizeofChannel = 1;
 				*internalformat = DXGI_FORMAT_R8G8B8A8_UNORM;
 				break;
-			case IM_TYPE_INT8:
+			case ImPixelType_Int8:
 				sizeofChannel = 1;
 				*internalformat = DXGI_FORMAT_R8G8B8A8_SINT;
 				break;
-			case IM_TYPE_UINT16:
+			case ImPixelType_UInt16:
 				sizeofChannel = 2;
 				*internalformat = DXGI_FORMAT_R16G16B16A16_UINT;
 				break;
-			case IM_TYPE_INT16:
+			case ImPixelType_Int16:
 				sizeofChannel = 2;
 				*internalformat = DXGI_FORMAT_R16G16B16A16_SINT;
 				break;
-			case IM_TYPE_UINT32:
+			case ImPixelType_UInt32:
 				sizeofChannel = 4;
 				*internalformat = DXGI_FORMAT_R32G32B32A32_UINT;
 				break;
-			case IM_TYPE_INT32:
+			case ImPixelType_Int32:
 				sizeofChannel = 4;
 				*internalformat = DXGI_FORMAT_R32G32B32A32_SINT;
 				break;
-			case IM_TYPE_FLOAT16:
+			case ImPixelType_Float16:
 				sizeofChannel = 2;
 				*internalformat = DXGI_FORMAT_R16G16B16A16_FLOAT;
 				break;
-			case IM_TYPE_FLOAT32:
+			case ImPixelType_Float32:
 				sizeofChannel = 4;
 				*internalformat = DXGI_FORMAT_R32G32B32A32_FLOAT;
 				break;
@@ -624,7 +624,7 @@ namespace ImPlatform
 	}
 #endif
 
-	ImTextureID	ImCreateTexture2D( char* pData, ImU32 const uWidth, ImU32 const uHeight, ImImageDesc const& oImgDesc )
+	ImTextureID	CreateTexture2D( char* pData, ImU32 const uWidth, ImU32 const uHeight, ImImageDesc const& oImgDesc )
 	{
 #if (IM_CURRENT_GFX == IM_GFX_OPENGL2) || (IM_CURRENT_GFX == IM_GFX_OPENGL3)
 
@@ -646,7 +646,7 @@ namespace ImPlatform
 		//case IM_FILTERING_POINT:
 		//	minMag = magMag = GL_NEAREST;
 		//	break;
-		case IM_FILTERING_LINEAR:
+		case ImTextureFiltering_Linear:
 			minMag = magMag = GL_LINEAR;
 			break;
 		default:
@@ -700,10 +700,10 @@ namespace ImPlatform
 		D3DTEXTUREFILTERTYPE eFiltering;
 		switch ( oImgDesc.eFiltering )
 		{
-		case IM_FILTERING_POINT:
+		case ImTextureFiltering_Nearest:
 			eFiltering = D3DTEXF_POINT;
 			break;
-		case IM_FILTERING_LINEAR:
+		case ImTextureFiltering_Linear:
 			eFiltering = D3DTEXF_LINEAR;
 			break;
 		default:
@@ -972,7 +972,7 @@ namespace ImPlatform
 #endif
 	}
 
-	void		ImReleaseTexture2D( ImTextureID id )
+	void		ReleaseTexture2D( ImTextureID id )
 	{
 #if (IM_CURRENT_GFX == IM_GFX_OPENGL2) || (IM_CURRENT_GFX == IM_GFX_OPENGL3)
 
@@ -999,7 +999,6 @@ namespace ImPlatform
 #endif
 	}
 
-#ifdef IM_SUPPORT_CUSTOM_SHADER
 	void ReplaceAll( std::string& sStr, std::string const& sToFind, std::string const& sReplaceBy )
 	{
 		size_t	uStart = 0;
@@ -1011,7 +1010,7 @@ namespace ImPlatform
 	}
 
 
-	ImDrawShader	ImCreateShader( char const* source, char const* ps_params, char const* ps_pre_functions, int sizeof_in_bytes_constants, void* init_data_constant, bool multiply_with_texture )
+	ImDrawShader	CreateShader( char const* source, char const* ps_params, char const* ps_pre_functions, int sizeof_in_bytes_constants, void* init_data_constant, bool multiply_with_texture )
 	{
 		static const char* pShaderBase =
 "#ifndef __IM_SHADER_H__\n\
@@ -1272,8 +1271,8 @@ float4 main(PS_INPUT input) : SV_Target\n\
 				D3D11_SUBRESOURCE_DATA init = D3D11_SUBRESOURCE_DATA{ 0 };
 				init.pSysMem = init_data_constant;
 				HRESULT hr = bd->pd3dDevice->CreateBuffer( &desc, &init, &constant_buffer );
-				
-#if 1
+
+#if 0
 				if ( hr != S_OK )
 				{
 					_com_error err( hr );
@@ -1349,7 +1348,7 @@ float4 main(PS_INPUT input) : SV_Target\n\
 		return { pVertexShader, pPixelShader, constant_buffer, cpu_data, sizeof_in_bytes_constants, false };
 	}
 
-	void		ImReleaseShader( ImDrawShader& shader )
+	void		ReleaseShader( ImDrawShader& shader )
 	{
 #if (IM_CURRENT_GFX == IM_GFX_OPENGL2) || (IM_CURRENT_GFX == IM_GFX_OPENGL3)
 
@@ -1384,7 +1383,7 @@ float4 main(PS_INPUT input) : SV_Target\n\
 
 #elif (IM_CURRENT_GFX == IM_GFX_DIRECTX10)
 
-		ImPlatform::ImDrawShader* shader = ( ImPlatform::ImDrawShader* )cmd->UserCallbackData;
+		ImDrawShader* shader = ( ImDrawShader* )cmd->UserCallbackData;
 		ImGui_ImplDX10_Data* bd = ImGui_ImplDX10_GetBackendData();
 		ID3D10Device* ctx = bd->pd3dDevice;
 		ctx->VSSetShader( ( ID3D10VertexShader* )( shader->vs ) );
@@ -1411,7 +1410,7 @@ float4 main(PS_INPUT input) : SV_Target\n\
 
 #elif (IM_CURRENT_GFX == IM_GFX_DIRECTX11)
 
-		ImPlatform::ImDrawShader* shader = ( ImPlatform::ImDrawShader* )cmd->UserCallbackData;
+		ImDrawShader* shader = ( ImDrawShader* )cmd->UserCallbackData;
 		ImGui_ImplDX11_Data* bd = ImGui_ImplDX11_GetBackendData();
 		ID3D11DeviceContext* ctx = bd->pd3dDeviceContext;
 		ctx->VSSetShader( ( ID3D11VertexShader* )( shader->vs ), nullptr, 0 );
@@ -1424,7 +1423,7 @@ float4 main(PS_INPUT input) : SV_Target\n\
 			D3D11_MAPPED_SUBRESOURCE mapped_resource;
 			if ( ctx->Map( ( ID3D11Buffer* )shader->cst, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped_resource ) == S_OK )
 			{
-				IM_ASSERT( mapped_resource.RowPitch == shader.sizeof_in_bytes_constants );
+				IM_ASSERT( mapped_resource.RowPitch == shader->sizeof_in_bytes_constants );
 				memcpy( mapped_resource.pData, shader->cpu_data, shader->sizeof_in_bytes_constants );
 				ctx->Unmap( ( ID3D11Buffer* )shader->cst, 0 );
 				shader->is_cpu_data_dirty = false;
@@ -1445,7 +1444,7 @@ float4 main(PS_INPUT input) : SV_Target\n\
 	}
 
 #pragma optimize( "", off )
-	void		ImUpdateCustomShaderConstant( ImDrawShader& shader, void* ptr_to_constants )
+	void		UpdateCustomShaderConstant( ImDrawShader& shader, void* ptr_to_constants )
 	{
 		if ( shader.sizeof_in_bytes_constants <= 0 ||
 			 ptr_to_constants == NULL )
@@ -1461,15 +1460,14 @@ float4 main(PS_INPUT input) : SV_Target\n\
 			shader.is_cpu_data_dirty = true;
 		}
 	}
-	void		ImBeginCustomShader( ImDrawList* draw, ImDrawShader& shader )
+	void		BeginCustomShader( ImDrawList* draw, ImDrawShader& shader )
 	{
 		draw->AddCallback( &ImSetCustomShader, &shader );
 	}
-	void		ImEndCustomShader( ImDrawList* draw )
+	void		EndCustomShader( ImDrawList* draw )
 	{
 		draw->AddCallback( ImDrawCallback_ResetRenderState, NULL );
 	}
-#endif
 
 	bool		ImIsMaximized()
 	{
@@ -1486,12 +1484,12 @@ float4 main(PS_INPUT input) : SV_Target\n\
 #endif
 	}
 
-	bool		ImCustomTitleBarEnabled()
+	bool		CustomTitleBarEnabled()
 	{
 		return PlatformData.bCustomTitleBar;
 	}
 
-	void		ImEnableCustomTitleBar()
+	void		EnableCustomTitleBar()
 	{
 		PlatformData.bCustomTitleBar = true;
 #if (IM_CURRENT_PLATFORM == IM_PLATFORM_GLFW)
@@ -1501,30 +1499,30 @@ float4 main(PS_INPUT input) : SV_Target\n\
 #endif
 	}
 
-	void		ImDisableCustomTitleBar()
+	void		DisableCustomTitleBar()
 	{
 		PlatformData.bCustomTitleBar = false;
 	}
 
-	void		ImDrawCustomMenuBarDefault()
+	void		DrawCustomMenuBarDefault()
 	{
 		ImGui::Text( "ImPlatform with Custom Title Bar" );
 		ImGui::SameLine();
 
 		if ( ImGui::Button( "Minimize" ) )
-			ImPlatform::ImMinimizeApp();
+			ImPlatform::MinimizeApp();
 		ImGui::SameLine();
 
 		if ( ImGui::Button( "Maximize" ) )
-			ImPlatform::ImMaximizeApp();
+			ImPlatform::MaximizeApp();
 		ImGui::SameLine();
 
 		if ( ImGui::Button( "Close" ) )
-			ImPlatform::ImCloseApp();
+			ImPlatform::CloseApp();
 		ImGui::SameLine();
 	}
 
-	void		ImMinimizeApp()
+	void		MinimizeApp()
 	{
 #if (IM_CURRENT_PLATFORM == IM_PLATFORM_WIN32)
 
@@ -1541,7 +1539,7 @@ float4 main(PS_INPUT input) : SV_Target\n\
 #endif
 	}
 
-	void		ImMaximizeApp()
+	void		MaximizeApp()
 	{
 #if (IM_CURRENT_PLATFORM == IM_PLATFORM_WIN32)
 
@@ -1564,7 +1562,7 @@ float4 main(PS_INPUT input) : SV_Target\n\
 #endif
 	}
 
-	void		ImCloseApp()
+	void		CloseApp()
 	{
 #if (IM_CURRENT_PLATFORM == IM_PLATFORM_WIN32)
 
@@ -1581,9 +1579,9 @@ float4 main(PS_INPUT input) : SV_Target\n\
 #endif
 	}
 
-	bool		ImBeginCustomTitleBar( float fHeight )
+	bool		BeginCustomTitleBar( float fHeight )
 	{
-		IM_ASSERT( ImPlatform::ImCustomTitleBarEnabled() );
+		IM_ASSERT( ImPlatform::CustomTitleBarEnabled() );
 
 		ImGuiViewport* pViewport = ImGui::GetMainViewport();
 		ImVec2 vDragZoneSize = ImVec2( pViewport->Size.x, fHeight );
@@ -1609,9 +1607,9 @@ float4 main(PS_INPUT input) : SV_Target\n\
 		return bRet;
 	}
 
-	void		ImEndCustomTitleBar()
+	void		EndCustomTitleBar()
 	{
-		IM_ASSERT( ImPlatform::ImCustomTitleBarEnabled() );
+		IM_ASSERT( ImPlatform::CustomTitleBarEnabled() );
 
 		ImGui::SetCursorPos( PlatformData.vEndCustomToolBar );
 		ImGui::End();
@@ -2146,7 +2144,7 @@ static void Im_Hook_Renderer_SwapBuffers( ImGuiViewport* viewport, void* )
 			::PostQuitMessage( 0 );
 			return 0;
 		case WM_NCCALCSIZE:
-			if ( ImCustomTitleBarEnabled() && lParam )
+			if ( CustomTitleBarEnabled() && lParam )
 			{
 				NCCALCSIZE_PARAMS* sz = ( NCCALCSIZE_PARAMS* )lParam;
 				sz->rgrc[ 0 ].left += border_thickness.left;
@@ -2157,7 +2155,7 @@ static void Im_Hook_Renderer_SwapBuffers( ImGuiViewport* viewport, void* )
 			break;
 		case WM_NCHITTEST:
 		{
-			if ( !ImCustomTitleBarEnabled() )
+			if ( !CustomTitleBarEnabled() )
 				break;
 
 			if ( !ImIsMaximized() )
@@ -2197,7 +2195,7 @@ static void Im_Hook_Renderer_SwapBuffers( ImGuiViewport* viewport, void* )
 					if ( hit & bottom )					return HTBOTTOM;
 				}
 			}
-			if ( ImCustomTitleBarEnabled() && PlatformData.bTitleBarHovered )
+			if ( CustomTitleBarEnabled() && PlatformData.bTitleBarHovered )
 			{
 				return HTCAPTION;
 			}
@@ -2227,7 +2225,10 @@ static void Im_Hook_Renderer_SwapBuffers( ImGuiViewport* viewport, void* )
 #endif
 
 	// TODO: Add support for maximize/minimize/...
-	bool ImCreateWindow( char const* pWindowsName, ImVec2 const vPos, ImU32 const uWidth, ImU32 const uHeight )
+#ifdef CreateWindow
+#undef CreateWindow // Windows API :(
+#endif
+	bool CreateWindow( char const* pWindowsName, ImVec2 const vPos, ImU32 const uWidth, ImU32 const uHeight )
 	{
 #if (IM_CURRENT_PLATFORM == IM_PLATFORM_WIN32)
 
@@ -2328,8 +2329,10 @@ static void Im_Hook_Renderer_SwapBuffers( ImGuiViewport* viewport, void* )
 		return true;
 	}
 
-	bool ImInitGfxAPI()
+	bool InitGfxAPI()
 	{
+		IM_ASSERT( ValidateFeatures() );
+
 #if (IM_CURRENT_GFX == IM_GFX_OPENGL2) || (IM_CURRENT_GFX == IM_GFX_OPENGL3)
 
 #if (IM_CURRENT_PLATFORM == IM_PLATFORM_WIN32)
@@ -2368,7 +2371,7 @@ static void Im_Hook_Renderer_SwapBuffers( ImGuiViewport* viewport, void* )
 		return true;
 	}
 
-	bool ImShowWindow()
+	bool ShowWindow()
 	{
 #if (IM_CURRENT_PLATFORM == IM_PLATFORM_WIN32)
 		::ShowWindow( PlatformData.pHandle, SW_SHOWDEFAULT );
@@ -2385,7 +2388,7 @@ static void Im_Hook_Renderer_SwapBuffers( ImGuiViewport* viewport, void* )
 		return true;
 	}
 
-	bool ImInitPlatform()
+	bool InitPlatform()
 	{
 		bool bGood;
 
@@ -2423,7 +2426,7 @@ static void Im_Hook_Renderer_SwapBuffers( ImGuiViewport* viewport, void* )
 		return bGood;
 	}
 
-	bool ImInitGfx()
+	bool InitGfx()
 	{
 #if (IM_CURRENT_GFX == IM_GFX_OPENGL2)
 		return ImGui_ImplOpenGL2_Init();
@@ -2450,7 +2453,7 @@ static void Im_Hook_Renderer_SwapBuffers( ImGuiViewport* viewport, void* )
 #endif
 	}
 
-	void ImDestroyWindow()
+	void DestroyWindow()
 	{
 #if (IM_CURRENT_PLATFORM == IM_PLATFORM_WIN32)
 		::DestroyWindow( PlatformData.pHandle );
@@ -2462,7 +2465,7 @@ static void Im_Hook_Renderer_SwapBuffers( ImGuiViewport* viewport, void* )
 #endif
 	}
 
-	bool ImGfxCheck()
+	bool GfxCheck()
 	{
 #if (IM_CURRENT_GFX == IM_GFX_DIRECTX9)
 		// Handle lost D3D9 device
@@ -2492,21 +2495,21 @@ static void Im_Hook_Renderer_SwapBuffers( ImGuiViewport* viewport, void* )
 		// Handle window resize (we don't resize directly in the WM_SIZE handler)
 		if ( PlatformData.uResizeWidth != 0 && PlatformData.uResizeHeight != 0 )
 		{
-			Internal::ImWindowResize();
+			Internal::WindowResize();
 		}
 #endif
 
 		return true;
 	}
 
-	void ImGfxViewportPre()
+	void GfxViewportPre()
 	{
 #if IM_CURRENT_PLATFORM == IM_PLATFORM_GLFW
 		PlatformData.pBackupContext = glfwGetCurrentContext();
 #endif
 	}
 
-	void ImGfxViewportPost()
+	void GfxViewportPost()
 	{
 #if IM_CURRENT_PLATFORM == IM_PLATFORM_WIN32
 #if IM_CURRENT_GFX == IM_GFX_OPENGL2 || IM_CURRENT_GFX == IM_GFX_OPENGL3
@@ -2520,7 +2523,7 @@ static void Im_Hook_Renderer_SwapBuffers( ImGuiViewport* viewport, void* )
 
 	//////////////////////////////////////////////////////////////////////////
 
-	bool ImPlatformContinue()
+	bool PlatformContinue()
 	{
 #if (IM_CURRENT_PLATFORM == IM_PLATFORM_WIN32)
 		return PlatformData.oMessage.message != WM_QUIT;
@@ -2530,7 +2533,7 @@ static void Im_Hook_Renderer_SwapBuffers( ImGuiViewport* viewport, void* )
 #endif
 	}
 
-	bool ImPlatformEvents()
+	bool PlatformEvents()
 	{
 #if (IM_CURRENT_PLATFORM == IM_PLATFORM_WIN32)
 		while ( ::PeekMessage( &PlatformData.oMessage, nullptr, 0U, 0U, PM_REMOVE ) )
@@ -2550,7 +2553,7 @@ static void Im_Hook_Renderer_SwapBuffers( ImGuiViewport* viewport, void* )
 #endif
 	}
 
-	void ImGfxAPINewFrame()
+	void GfxAPINewFrame()
 	{
 #if (IM_CURRENT_GFX == IM_GFX_OPENGL2)
 		ImGui_ImplOpenGL2_NewFrame();
@@ -2575,7 +2578,7 @@ static void Im_Hook_Renderer_SwapBuffers( ImGuiViewport* viewport, void* )
 #endif
 	}
 
-	void ImPlatformNewFrame()
+	void PlatformNewFrame()
 	{
 #if (IM_CURRENT_PLATFORM == IM_PLATFORM_WIN32)
 		ImGui_ImplWin32_NewFrame();
@@ -2585,7 +2588,7 @@ static void Im_Hook_Renderer_SwapBuffers( ImGuiViewport* viewport, void* )
 #endif
 	}
 
-	bool ImGfxAPIClear( ImVec4 const vClearColor )
+	bool GfxAPIClear( ImVec4 const vClearColor )
 	{
 #if (IM_CURRENT_GFX != IM_GFX_DIRECTX12)
 		ImGui::EndFrame();
@@ -2649,7 +2652,7 @@ static void Im_Hook_Renderer_SwapBuffers( ImGuiViewport* viewport, void* )
 		return true;
 	}
 
-	bool ImGfxAPIRender( ImVec4 const vClearColor )
+	bool GfxAPIRender( ImVec4 const vClearColor )
 	{
 #if (IM_CURRENT_GFX == IM_GFX_OPENGL2)
 		ImGui::Render();
@@ -2716,7 +2719,7 @@ static void Im_Hook_Renderer_SwapBuffers( ImGuiViewport* viewport, void* )
 		return true;
 	}
 
-	bool ImGfxAPISwapBuffer()
+	bool GfxAPISwapBuffer()
 	{
 #if (IM_CURRENT_GFX == IM_GFX_OPENGL2) || (IM_CURRENT_GFX == IM_GFX_OPENGL3)
 
@@ -2764,7 +2767,7 @@ static void Im_Hook_Renderer_SwapBuffers( ImGuiViewport* viewport, void* )
 		return true;
 	}
 
-	void ImShutdownGfxAPI()
+	void ShutdownGfxAPI()
 	{
 #if (IM_CURRENT_GFX == IM_GFX_OPENGL2)
 		ImGui_ImplOpenGL2_Shutdown();
@@ -2787,7 +2790,7 @@ static void Im_Hook_Renderer_SwapBuffers( ImGuiViewport* viewport, void* )
 #endif
 	}
 
-	void ImShutdownPostGfxAPI()
+	void ShutdownPostGfxAPI()
 	{
 #if (IM_CURRENT_GFX == IM_GFX_OPENGL2) || (IM_CURRENT_GFX == IM_GFX_OPENGL3)
 
@@ -2807,7 +2810,7 @@ static void Im_Hook_Renderer_SwapBuffers( ImGuiViewport* viewport, void* )
 #endif
 	}
 
-	void ImShutdownWindow()
+	void ShutdownWindow()
 	{
 #if (IM_CURRENT_PLATFORM == IM_PLATFORM_WIN32)
 		ImGui_ImplWin32_Shutdown();
@@ -2819,20 +2822,37 @@ static void Im_Hook_Renderer_SwapBuffers( ImGuiViewport* viewport, void* )
 	}
 
 	//////////////////////////////////////////////////////////////////////////
-	bool ImSimpleStart( char const* pWindowsName, ImVec2 const vPos, ImU32 const uWidth, ImU32 const uHeight )
+	void SetFeatures( ImPlatformFeatures features )
 	{
+		PlatformData.features = features;
+	}
+
+	bool ValidateFeatures()
+	{
+#ifdef IM_SUPPORT_CUSTOM_SHADER
+		return true;
+#else
+		return ( PlatformData.features & ImPlatformFeatures_CustomShader ) == 0;
+#endif
+	}
+
+	//////////////////////////////////////////////////////////////////////////
+	bool SimpleStart( char const* pWindowsName, ImVec2 const vPos, ImU32 const uWidth, ImU32 const uHeight )
+	{
+		IM_ASSERT( ImPlatform::ValidateFeatures() );
+
 		bool bGood = true;
 
-		bGood &= ImPlatform::ImCreateWindow( pWindowsName, vPos, uWidth, uHeight );
-		bGood &= ImPlatform::ImInitGfxAPI();
-		bGood &= ImPlatform::ImShowWindow();
+		bGood &= ImPlatform::CreateWindow( pWindowsName, vPos, uWidth, uHeight );
+		bGood &= ImPlatform::InitGfxAPI();
+		bGood &= ImPlatform::ShowWindow();
 		IMGUI_CHECKVERSION();
 		bGood &= ImGui::CreateContext() != nullptr;
 
 		return bGood;
 	}
 
-	bool ImSimpleInitialize( bool hasViewport )
+	bool SimpleInitialize( bool hasViewport )
 	{
 		bool bGood = true;
 
@@ -2843,55 +2863,55 @@ static void Im_Hook_Renderer_SwapBuffers( ImGuiViewport* viewport, void* )
 			style.Colors[ ImGuiCol_WindowBg ].w = 1.0f;
 		}
 
-		bGood &= ImPlatform::ImInitPlatform();
-		bGood &= ImPlatform::ImInitGfx();
+		bGood &= ImPlatform::InitPlatform();
+		bGood &= ImPlatform::InitGfx();
 
 		return bGood;
 	}
 
-	void ImSimpleFinish()
+	void SimpleFinish()
 	{
-		ImPlatform::ImShutdownGfxAPI();
-		ImPlatform::ImShutdownWindow();
+		ImPlatform::ShutdownGfxAPI();
+		ImPlatform::ShutdownWindow();
 
 		ImGui::DestroyContext();
 
-		ImPlatform::ImShutdownPostGfxAPI();
+		ImPlatform::ShutdownPostGfxAPI();
 
-		ImPlatform::ImDestroyWindow();
+		ImPlatform::DestroyWindow();
 	}
 
-	void ImSimpleBegin()
+	void SimpleBegin()
 	{
-		ImPlatform::ImGfxAPINewFrame();
-		ImPlatform::ImPlatformNewFrame();
+		ImPlatform::GfxAPINewFrame();
+		ImPlatform::PlatformNewFrame();
 
 		ImGui::NewFrame();
 	}
 
-	void ImSimpleEnd( ImVec4 const vClearColor, bool hasViewport )
+	void SimpleEnd( ImVec4 const vClearColor, bool hasViewport )
 	{
-		ImPlatform::ImGfxAPIClear( vClearColor );
-		ImPlatform::ImGfxAPIRender( vClearColor );
+		ImPlatform::GfxAPIClear( vClearColor );
+		ImPlatform::GfxAPIRender( vClearColor );
 
 		if ( hasViewport )
 		{
-			ImPlatform::ImGfxViewportPre();
+			ImPlatform::GfxViewportPre();
 
 #ifdef IMGUI_HAS_VIEWPORT
 			ImGui::UpdatePlatformWindows();
 			ImGui::RenderPlatformWindowsDefault();
 #endif
 
-			ImPlatform::ImGfxViewportPost();
+			ImPlatform::GfxViewportPost();
 		}
 
-		ImPlatform::ImGfxAPISwapBuffer();
+		ImPlatform::GfxAPISwapBuffer();
 	}
 
 	namespace Internal
 	{
-		bool ImWindowResize()
+		bool WindowResize()
 		{
 #if (IM_CURRENT_GFX == IM_GFX_DIRECTX9)
 			PlatformData.oD3Dpp.BackBufferWidth = PlatformData.uResizeWidth;
