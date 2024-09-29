@@ -1578,7 +1578,7 @@ float2 uv  : TEXCOORD0;\n",
 		{
 			_com_error err( hr );
 			LPCTSTR errMsg = err.ErrorMessage();
-			OutputDebugStringW( errMsg );
+			OutputDebugString( errMsg );
 		}
 
 #elif (IM_CURRENT_GFX == IM_GFX_DIRECTX12)
@@ -1710,7 +1710,7 @@ float2 uv  : TEXCOORD0;\n",
 		{
 			_com_error err( hr );
 			LPCTSTR errMsg = err.ErrorMessage();
-			OutputDebugStringW( errMsg );
+			OutputDebugString( errMsg );
 		}
 
 #elif (IM_CURRENT_GFX == IM_GFX_DIRECTX12)
