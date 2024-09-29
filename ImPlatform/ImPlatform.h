@@ -381,18 +381,12 @@ namespace ImPlatform
 								  char const* vs_to_ps_desc,
 								  bool multiply_with_texture = true );
 
-	ImDrawShader	CreateShader( char const* vs_pre_functions,
-								  char const* vs_params,
-								  char const* vs_source,
-								  char const* ps_pre_functions,
-								  char const* ps_params,
+	ImDrawShader	CreateShader( char const* vs_source,
 								  char const* ps_source,
-								  char const* vb_desc,
-								  char const* vs_to_ps_desc,
-								  int sizeof_in_bytes_vs_constants = 0,
-								  void* init_vs_data_constant = NULL,
-								  int sizeof_in_bytes_ps_constants = 0,
-								  void* init_ps_data_constant = NULL );
+								  int sizeof_in_bytes_vs_constants,
+								  void* init_vs_data_constant,
+								  int sizeof_in_bytes_ps_constants,
+								  void* init_ps_data_constant );
 	void			ReleaseShader( ImDrawShader& shader );
 
 	void	CreateVertexBuffer( ImVertexBuffer*& buffer, int sizeof_vertex_buffer, int vertices_count );
