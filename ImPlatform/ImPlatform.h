@@ -275,8 +275,6 @@ struct PlatformDataImpl
 	bool	bTitleBarHovered		= false;
 };
 
-extern PlatformDataImpl PlatformData;
-
 enum ImPixelType
 {
 	ImPixelType_UInt8,
@@ -328,28 +326,87 @@ struct ImDrawShader
 {
 	ImShaderID vs;
 	ImShaderID ps;
-	ImConstantID cst;
-	void* cpu_data;
-	int sizeof_in_bytes_constants;
-	bool is_cpu_data_dirty;
+	ImConstantID vs_cst;
+	ImConstantID ps_cst;
+	void* cpu_vs_data;
+	void* cpu_ps_data;
+	int sizeof_in_bytes_vs_constants;
+	int sizeof_in_bytes_ps_constants;
+	bool is_cpu_vs_data_dirty;
+	bool is_cpu_ps_data_dirty;
 };
 
-struct ImGeometryDraw
+// Store a vertex buffer for a given and a *fixed* struct of B
+typedef void* ImVertexBufferID;
+typedef void* ImIndexBufferID;
+struct ImVertexBuffer
 {
-
+	ImVertexBufferID gpu_buffer;
+	int vertices_count;
+	int sizeof_each_struct_in_bytes;
+};
+struct ImIndexBuffer
+{
+	ImIndexBufferID gpu_buffer;
+	int indices_count;
+	ImU8 sizeof_each_index;
 };
 
 namespace ImPlatform
 {
+	extern PlatformDataImpl PlatformData;
+
 	// Generic
 	ImTextureID	CreateTexture2D	( char* pData, ImU32 const uWidth, ImU32 const uHeight, ImImageDesc const& oImgDesc );
 	void		ReleaseTexture2D( ImTextureID id );
 
-	ImDrawShader	CreateShader( char const* source, char const* ps_params, char const* ps_pre_functions, int sizeof_in_bytes_constants, void* init_data_constant = NULL, bool multiply_with_texture = true );
+	// Default Vertex Buffer used by Dear ImGui { float2 pos; float4 col; float2 uv; } => { float4 pos; float4 cocl; float2 uv; }
+	void	CreateDefaultPixelShaderSource
+								( char** out_vs_source,
+								  char** out_ps_source,
+								  char const* ps_pre_functions,
+								  char const* ps_params,
+								  char const* ps_source,
+								  bool multiply_with_texture = true );
+	// 
+	void	CreateShaderSource	( char** out_vs_source,
+								  char** out_ps_source,
+								  char const* vs_pre_functions,
+								  char const* vs_params,
+								  char const* vs_source,
+								  char const* ps_pre_functions,
+								  char const* ps_params,
+								  char const* ps_source,
+								  char const* vb_desc,
+								  char const* vs_to_ps_desc,
+								  bool multiply_with_texture = true );
+
+	ImDrawShader	CreateShader( char const* vs_pre_functions,
+								  char const* vs_params,
+								  char const* vs_source,
+								  char const* ps_pre_functions,
+								  char const* ps_params,
+								  char const* ps_source,
+								  char const* vb_desc,
+								  char const* vs_to_ps_desc,
+								  int sizeof_in_bytes_vs_constants = 0,
+								  void* init_vs_data_constant = NULL,
+								  int sizeof_in_bytes_ps_constants = 0,
+								  void* init_ps_data_constant = NULL );
 	void			ReleaseShader( ImDrawShader& shader );
 
+	void	CreateVertexBuffer( ImVertexBuffer*& buffer, int sizeof_vertex_buffer, int vertices_count );
+	void	CreateVertexBufferAndGrow( ImVertexBuffer** buffer, int sizeof_vertex_buffer, int vertices_count, int growth_size );
+	void	UpdateVertexBuffer( ImVertexBuffer** buffer, int sizeof_vertex_buffer, int vertices_count, void* cpu_data );
+	void	ReleaseVertexBuffer( ImVertexBuffer** buffer );
+	void	CreateIndexBuffer( ImIndexBuffer*& buffer, int indices_count );
+	void	CreateIndexBufferAndGrow( ImIndexBuffer** buffer, int indices_count, int growth_size );
+	void	UpdateIndexBuffer( ImIndexBuffer** buffer, int indices_count, void* cpu_data );
+	void	ReleaseIndexBuffer( ImIndexBuffer** buffer );
+
 	void		BeginCustomShader( ImDrawList* draw, ImDrawShader& shader );
-	void		UpdateCustomShaderConstant( ImDrawShader& shader, void* ptr_to_constants );
+	void		UpdateCustomPixelShaderConstants( ImDrawShader& shader, void* ptr_to_constants );
+	void		UpdateCustomVertexShaderConstants( ImDrawShader& shader, void* ptr_to_constants );
 	void		EndCustomShader( ImDrawList* draw );
 
 	bool		ImIsMaximized();

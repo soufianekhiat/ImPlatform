@@ -105,7 +105,7 @@ int main()
 		ImPlatform::EnableCustomTitleBar();
 
 #ifdef IM_SUPPORT_CUSTOM_SHADER
-	std::string source =
+	char const* source =
 		"float2 P = uv - 0.5f;\n\
 		P.y = -P.y;\n\
 		float size = 1.0f;\n\
@@ -115,7 +115,7 @@ int main()
 		float r2 = length( P - sqrt( 2.0f ) / 2.0f * float2( +1.0f, -1.0f ) * size / 3.5f ) - size / 3.5f;\n\
 		float r3 = length( P - sqrt( 2.0f ) / 2.0f * float2( -1.0f, -1.0f ) * size / 3.5f ) - size / 3.5f;\n\
 		col_out.rgb = ( min( min( r1, r2 ), r3 ) < 0.0f ).xxx;\n";
-	std::string source2 =
+	char const* source2 =
 		"float2 P = uv - 0.5f;\n\
 		P.y = -P.y;\n\
 		float size = 1.0f;\n\
@@ -125,12 +125,12 @@ int main()
 		float r2 = max( abs( x + size / 2.0f ), abs( y ) ) - size / 2;\n\
 		float r3 = max( abs( x - size / 6.0f ) - size / 4.0f, abs( y ) - size / 4.0f );\n\
 		col_out.rgb = ( min( r3, max( .75f * r1, r2 ) ) < 0.0f ).xxx;\n";
-	std::string params3 =
+	char const* params3 =
 		"float4 col0;\n\
 		float4 col1;\n\
 		float2 uv_start;\n\
 		float2 uv_end;\n";
-	std::string source3 =
+	char const* source3 =
 		"float2 delta = uv_end - uv_start;\n\
 		float2 d = normalize( delta );\n\
 		float l = rcp( length( delta ) );\n\
@@ -200,12 +200,29 @@ int main()
 #endif
 
 #ifdef IM_SUPPORT_CUSTOM_SHADER
+		char* vs_source;
+		char* ps_source;
+
+		ImPlatform::CreateDefaultPixelShaderSource( &vs_source,
+													&ps_source, "", "", source, false );
 		ImDrawShader shader;
-		shader = ImPlatform::CreateShader( source.c_str(), "", "", 0 );
+		shader = ImPlatform::CreateShader( vs_source, ps_source, 0, NULL, 0, NULL );
+		IM_FREE( vs_source );
+		IM_FREE( ps_source );
+
+		ImPlatform::CreateDefaultPixelShaderSource( &vs_source,
+													&ps_source, "", "", source2, false );
 		ImDrawShader shader2;
-		shader2 = ImPlatform::CreateShader( source2.c_str(), "", "", 0);
+		shader2 = ImPlatform::CreateShader( vs_source, ps_source, 0, NULL, 0, NULL );
+		IM_FREE( vs_source );
+		IM_FREE( ps_source );
+
+		ImPlatform::CreateDefaultPixelShaderSource( &vs_source,
+													&ps_source, "", params3, source3, false );
 		ImDrawShader shader3;
-		shader3 = ImPlatform::CreateShader( source3.c_str(), params3.c_str(), "", sizeof( param3 ), &p3 );
+		shader3 = ImPlatform::CreateShader( vs_source, ps_source, 0, NULL, sizeof( param3 ), &p3 );
+		IM_FREE( vs_source );
+		IM_FREE( ps_source );
 #endif
 
 		float t = 0.0f;
@@ -275,7 +292,7 @@ int main()
 						float sin0 = ImSin( t );
 						p3.uv_start = ImVec2( 0.0f, sin0 * sin0 );
 						p3.uv_end = ImVec2( 0.0f, 1.0f );
-						ImPlatform::UpdateCustomShaderConstant( shader3, &p3 );
+						ImPlatform::UpdateCustomPixelShaderConstants( shader3, &p3 );
 						ImPlatform::BeginCustomShader( draw, shader3 );
 						ImRect bb( cur, cur + ImGui::GetContentRegionAvail() );
 						draw->AddImageQuad( img_white, bb.GetBL(), bb.GetBR(), bb.GetTR(), bb.GetTL(), ImVec2( 0, 0 ), ImVec2( 1, 0 ), ImVec2( 1, 1 ), ImVec2( 0, 1 ), IM_COL32( 255, 255, 255, 255 ) );
@@ -330,10 +347,22 @@ int main()
 		}
 
 #ifdef IM_SUPPORT_CUSTOM_SHADER
+		char* vs_source;
+		char* ps_source;
+
+		ImPlatform::CreateDefaultPixelShaderSource( &vs_source,
+													&ps_source, "", "", source, false );
 		ImDrawShader shader;
-		shader = ImPlatform::CreateShader( source.c_str(), "", "", 0 );
+		shader = ImPlatform::CreateShader( vs_source, ps_source, 0, NULL, 0, NULL );
+		IM_FREE( vs_source );
+		IM_FREE( ps_source );
+
+		ImPlatform::CreateDefaultPixelShaderSource( &vs_source,
+													&ps_source, "", "", source2, false );
 		ImDrawShader shader2;
-		shader2 = ImPlatform::CreateShader( source2.c_str(), "", "", 0 );
+		shader2 = ImPlatform::CreateShader( vs_source, ps_source, 0, NULL, 0, NULL );
+		IM_FREE( vs_source );
+		IM_FREE( ps_source );
 #endif
 
 		bGood = ImPlatform::ShowWindow();
