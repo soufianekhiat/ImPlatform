@@ -3196,7 +3196,7 @@ static void Im_Hook_Renderer_SwapBuffers( ImGuiViewport* viewport, void* )
 
 #elif (IM_CURRENT_GFX == IM_GFX_DIRECTX10) || (IM_CURRENT_GFX == IM_GFX_DIRECTX11)
 
-		HRESULT uResult = PlatformData.pSwapChain->Present( 0, 0 ); // Present without vsync
+		HRESULT uResult = PlatformData.pSwapChain->Present( 1, 0 ); // Present without vsync
 		PlatformData.bSwapChainOccluded = ( uResult == DXGI_STATUS_OCCLUDED );
 
 #elif (IM_CURRENT_GFX == IM_GFX_DIRECTX12)
