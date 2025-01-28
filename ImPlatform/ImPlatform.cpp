@@ -822,7 +822,7 @@ namespace ImPlatform
 		//desc.MaxLOD = 0.f;
 		//PlatformData.pD3DDevice->CreateSamplerState( &desc, &Sampler );
 
-		return out_srv;
+		return ( ImTextureID )( out_srv );
 
 #elif (IM_CURRENT_GFX == IM_GFX_DIRECTX12)
 

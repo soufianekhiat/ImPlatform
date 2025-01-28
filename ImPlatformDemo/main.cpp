@@ -303,7 +303,7 @@ int main()
 
 				if ( ImGui::Begin( "Image" ) )
 				{
-					ImGui::Image( img, ImGui::GetContentRegionAvail() );
+					 ImGui::Image( img, ImGui::GetContentRegionAvail() );
 				}
 				ImGui::End();
 			}
