@@ -30,3 +30,13 @@
 *.exe
 *.out
 *.app
+*.tlog
+*.pdb
+*.idb
+*.log
+*.recipe
+*.ilk
+ImPlatformDemo/x64/Debug/ImPlatformDemo.vcxproj.FileListAbsolute.txt
+*.vsidx
+ImPlatformDemo/.vs/ImPlatformDemo/v17
+*.config
