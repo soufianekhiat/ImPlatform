@@ -336,4 +336,4 @@ IM_TARGET_GLFW_METAL    // Not Implememted Yet
 ```
 
 ## Future
-The author (me: @SoufianeKHIAT) don't have large number device. So I will only support the Windows specific target, the laptop I have. I'll add glfw support, etc. But for the other targets PRs are open to add for isntance MacOS specific code.
+The author (me: @SoufianeKHIAT) don't own a large number devices. So I will only support the Windows specific target, the laptop I have. I'll add glfw support, etc. But for the other targets PRs are open to add for isntance MacOS specific code.
