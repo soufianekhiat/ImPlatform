@@ -144,30 +144,39 @@ extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg
 #if (IM_CURRENT_GFX == IM_GFX_DIRECTX9)
 #include <backends/imgui_impl_dx9.h>
 #include <d3d9.h>
+#define IM_GFX_HLSL
 #elif (IM_CURRENT_GFX == IM_GFX_DIRECTX10)
 #include <backends/imgui_impl_dx10.h>
 #include <d3d10_1.h>
 #include <d3d10.h>
 #define IM_SUPPORT_CUSTOM_SHADER
+#define IM_GFX_HLSL
 #elif (IM_CURRENT_GFX == IM_GFX_DIRECTX11)
 #include <backends/imgui_impl_dx11.h>
 #include <d3d11.h>
 #define IM_SUPPORT_CUSTOM_SHADER
+#define IM_GFX_HLSL
 #elif (IM_CURRENT_GFX == IM_GFX_DIRECTX12)
 #include <backends/imgui_impl_dx12.h>
 #include <d3d12.h>
 #include <dxgi1_4.h>
+#define IM_GFX_HLSL
 #elif (IM_CURRENT_GFX == IM_GFX_VULKAN)
 #include <backends/imgui_impl_vulkan.h>
+#define IM_GFX_GLSL
 #elif (IM_CURRENT_GFX == IM_GFX_METAL)
 #include <backends/imgui_impl_metal.h>
+#define IM_GFX_MSL
 #elif (IM_CURRENT_GFX == IM_GFX_OPENGL2)
 #include <backends/imgui_impl_opengl2.h>
+#define IM_GFX_GLSL
 #elif (IM_CURRENT_GFX == IM_GFX_OPENGL3)
 #include <backends/imgui_impl_opengl3.h>
 #define IM_SUPPORT_CUSTOM_SHADER
+#define IM_GFX_GLSL
 #elif (IM_CURRENT_GFX == IM_GFX_WGPU)
 #include <backends/imgui_impl_wgpu.h>
+#define IM_GFX_WGPU
 #endif
 
 #include <stdio.h>
@@ -360,6 +369,7 @@ namespace ImPlatform
 	ImTextureID	CreateTexture2D	( char* pData, ImU32 const uWidth, ImU32 const uHeight, ImImageDesc const& oImgDesc );
 	void		ReleaseTexture2D( ImTextureID id );
 
+	// [Deprecated]
 	// Default Vertex Buffer used by Dear ImGui { float2 pos; float4 col; float2 uv; } => { float4 pos; float4 cocl; float2 uv; }
 	void	CreateDefaultPixelShaderSource
 								( char** out_vs_source,
@@ -368,7 +378,8 @@ namespace ImPlatform
 								  char const* ps_params,
 								  char const* ps_source,
 								  bool multiply_with_texture = true );
-	// 
+
+	// [Deprecated]
 	void	CreateShaderSource	( char** out_vs_source,
 								  char** out_ps_source,
 								  char const* vs_pre_functions,
