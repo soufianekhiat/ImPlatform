@@ -1159,7 +1159,7 @@ IMS_CBUFFER VS_CONSTANT_BUFFER\n\
 \n\
 %VS_PRE_FUNCS%\n\
 \n\
-PS_INPUT main(VS_INPUT input)\n\
+PS_INPUT main_vs(VS_INPUT input)\n\
 {\n\
 	PS_INPUT output;\n\
 	//output.pos = mul( ProjectionMatrix, float4(input.pos.xy, 0.f, 1.f));\n\
@@ -1190,7 +1190,7 @@ IMS_CBUFFER PS_CONSTANT_BUFFER\n\
 sampler sampler0;\n\
 Texture2D texture0;\n\
 \n\
-float4 main(PS_INPUT input) : SV_Target\n\
+float4 main_ps(PS_INPUT input) : SV_Target\n\
 {\n\
 	float2 uv = input.uv.xy;\n\
 	float4 col_in = input.col;\n\
