@@ -718,7 +718,7 @@ namespace ImPlatform
 		PlatformData.pD3DDevice->SetSamplerState( 0, D3DSAMP_MINFILTER, eFiltering );
 		PlatformData.pD3DDevice->SetSamplerState( 0, D3DSAMP_MAGFILTER, eFiltering );
 
-		return pTexture;
+		return ( ImTextureID )pTexture;
 
 #elif (IM_CURRENT_GFX == IM_GFX_DIRECTX10)
 
@@ -770,7 +770,7 @@ namespace ImPlatform
 		//desc.MaxLOD = 0.f;
 		//PlatformData.pD3DDevice->CreateSamplerState( &desc, &Sampler );
 
-		return out_srv;
+		return ( ImTextureID )out_srv;
 
 #elif (IM_CURRENT_GFX == IM_GFX_DIRECTX11)
 
@@ -968,7 +968,7 @@ namespace ImPlatform
 
 		PlatformData.pD3DDevice->CreateShaderResourceView( pTexture, &srvDesc, my_texture_srv_cpu_handle );
 
-		return reinterpret_cast< ImTextureID >( pTexture );
+		return ( ImTextureID )pTexture;
 #endif
 	}
 
