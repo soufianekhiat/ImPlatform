@@ -36,8 +36,8 @@
 *.log
 *.recipe
 *.ilk
-ImPlatformDemo/x64/Debug/ImPlatformDemo.vcxproj.FileListAbsolute.txt
 *.vsidx
-ImPlatformDemo/.vs/ImPlatformDemo/v17
-*.config
+*.confi
 ImPlatformDemo/.vs
+ImPlatformDemo/ImPlatformDemo/x64
+ImPlatformDemo/x64
