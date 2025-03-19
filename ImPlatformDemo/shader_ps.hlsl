@@ -52,11 +52,10 @@ struct PS_INPUT
 
 IMS_CBUFFER PS_CONSTANT_BUFFER
 {
-float4 col0;
-		float4 col1;
-		float2 uv_start;
-		float2 uv_end;
-
+	float4 col0;
+	float4 col1;
+	float2 uv_start;
+	float2 uv_end;
 };
 
 

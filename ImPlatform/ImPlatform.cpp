@@ -1025,6 +1025,8 @@ namespace ImPlatform
 				init.pSysMem = init_data_constant;
 				HRESULT hr = bd->pd3dDevice->CreateBuffer( &desc, &init, &constant_buffer );
 
+				IM_UNUSED( hr );
+
 #if 0
 				if ( hr != S_OK )
 				{
@@ -1049,6 +1051,7 @@ namespace ImPlatform
 #pragma optimize( "", off )
 	char* ReplaceFirst_return_allocated_buffer_free_after_use( char const* src, char const* src_end, char const* token, char const* token_end, char const* new_str, char const* new_str_end )
 	{
+		IM_UNUSED( new_str_end );
 		char const* pos = ImStristr( src, src_end, token, token_end );
 
 		int dx0 = pos - src;
@@ -1289,10 +1292,10 @@ float2 uv  : TEXCOORD0;\n",
 #if (IM_CURRENT_GFX == IM_GFX_OPENGL2)
 #elif (IM_CURRENT_GFX == IM_GFX_OPENGL3)
 
-		std::string glsl_version = std::string( "#version 130" );
+		//std::string glsl_version = std::string( "#version 130" );
 
-		sVS = glsl_version + "\n" + "#define IM_SHADER_GLSL\n" + sVS;
-		sPS = glsl_version + "\n" + "#define IM_SHADER_GLSL\n" + sPS;
+		//sVS = glsl_version + "\n" + "#define IM_SHADER_GLSL\n" + sVS;
+		//sPS = glsl_version + "\n" + "#define IM_SHADER_GLSL\n" + sPS;
 
 #if 0
 		{
@@ -1376,7 +1379,7 @@ float2 uv  : TEXCOORD0;\n",
 		D3D_SHADER_MACRO macros[] = { "IM_SHADER_HLSL", "", NULL, NULL };
 
 		ID3DBlob* vertexShaderBlob;
-		if ( FAILED( D3DCompile( sVS.c_str(), sVS.size(), nullptr, nullptr, nullptr, "main", "vs_4_0", 0, 0, &vertexShaderBlob, nullptr ) ) )
+		if ( FAILED( D3DCompile( sVS.c_str(), sVS.size(), nullptr, nullptr, nullptr, "main_vs", "vs_4_0", 0, 0, &vertexShaderBlob, nullptr ) ) )
 			return { NULL, NULL, NULL, 0 };
 		if ( bd->pd3dDevice->CreateVertexShader( vertexShaderBlob->GetBufferPointer(), vertexShaderBlob->GetBufferSize(), &pVertexShader ) != S_OK )
 		{
@@ -1385,7 +1388,7 @@ float2 uv  : TEXCOORD0;\n",
 		}
 
 		ID3DBlob* pixelShaderBlob;
-		if ( FAILED( D3DCompile( sPS.c_str(), sPS.size(), nullptr, nullptr, nullptr, "main", "ps_4_0", 0, 0, &pixelShaderBlob, nullptr ) ) )
+		if ( FAILED( D3DCompile( sPS.c_str(), sPS.size(), nullptr, nullptr, nullptr, "main_ps", "ps_4_0", 0, 0, &pixelShaderBlob, nullptr ) ) )
 			return { NULL, NULL, NULL, 0 };
 		if ( bd->pd3dDevice->CreatePixelShader( pixelShaderBlob->GetBufferPointer(), pixelShaderBlob->GetBufferSize(), &pPixelShader ) != S_OK )
 		{
@@ -1424,7 +1427,7 @@ float2 uv  : TEXCOORD0;\n",
 		ID3DBlob* vertexShaderBlob;
 
 		ID3DBlob* pErrorBlob;
-		if ( FAILED( D3DCompile( vs_source, strlen( vs_source ), nullptr, &macros[0], nullptr, "main", "vs_5_0", 0, 0, &vertexShaderBlob, &pErrorBlob)) )
+		if ( FAILED( D3DCompile( vs_source, strlen( vs_source ), nullptr, &macros[0], nullptr, "main_vs", "vs_5_0", 0, 0, &vertexShaderBlob, &pErrorBlob)) )
 		{
 			int error_count = int( pErrorBlob->GetBufferSize() );
 			printf( "%*s\n", error_count, ( char* )pErrorBlob->GetBufferPointer() );
@@ -1440,7 +1443,7 @@ float2 uv  : TEXCOORD0;\n",
 		vertexShaderBlob->Release();
 
 		ID3DBlob* pixelShaderBlob;
-		if ( FAILED( D3DCompile( ps_source, strlen( ps_source ), nullptr, &macros[ 0 ], nullptr, "main", "ps_5_0", 0, 0, &pixelShaderBlob, &pErrorBlob ) ) )
+		if ( FAILED( D3DCompile( ps_source, strlen( ps_source ), nullptr, &macros[ 0 ], nullptr, "main_ps", "ps_5_0", 0, 0, &pixelShaderBlob, &pErrorBlob ) ) )
 		{
 			int error_count = int( pErrorBlob->GetBufferSize() );
 			printf( "%*s\n", error_count, ( char* )pErrorBlob->GetBufferPointer() );
@@ -1800,9 +1803,39 @@ float2 uv  : TEXCOORD0;\n",
 		if ( buffer && *buffer )
 		{
 			ImIndexBuffer* ib = *buffer;
+
+#if (IM_CURRENT_GFX == IM_GFX_OPENGL2)
+
+			// NOPE!
+
+#elif (IM_CURRENT_GFX == IM_GFX_OPENGL3)
+
+			// TODO
+
+#elif (IM_CURRENT_GFX == IM_GFX_DIRECTX9)
+
+			// TODO
+
+#elif (IM_CURRENT_GFX == IM_GFX_DIRECTX10)
+
+			ID3D10Buffer* d3d10Buffer = ( ID3D10Buffer* )ib->gpu_buffer;
+			d3d10Buffer->Release();
+			d3d10Buffer = nullptr;
+
+#elif (IM_CURRENT_GFX == IM_GFX_DIRECTX11)
+
 			ID3D11Buffer* d3d11Buffer = ( ID3D11Buffer* )ib->gpu_buffer;
 			d3d11Buffer->Release();
 			d3d11Buffer = nullptr;
+
+#elif (IM_CURRENT_GFX == IM_GFX_DIRECTX12)
+
+			ID3D12Buffer* d3d12Buffer = ( ID3D12Buffer* )ib->gpu_buffer;
+			d3d12Buffer->Release();
+			d3d12Buffer = nullptr;
+
+#endif
+
 			IM_FREE( ib );
 			ib = NULL;
 		}
