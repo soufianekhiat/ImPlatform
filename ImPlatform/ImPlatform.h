@@ -398,6 +398,7 @@ namespace ImPlatform
 								  void* init_vs_data_constant,
 								  int sizeof_in_bytes_ps_constants,
 								  void* init_ps_data_constant );
+
 	void			ReleaseShader( ImDrawShader& shader );
 
 	void	CreateVertexBuffer( ImVertexBuffer*& buffer, int sizeof_vertex_buffer, int vertices_count );
