@@ -12,7 +12,7 @@
 // Use https://github.com/TheCherno/glfw/tree/dev to have CustomTitleBar Available
 //#define IM_THE_CHERNO_GLFW3
 
-// - [ O ] WIN32_OPENGL3
+// - [ X ] WIN32_OPENGL3 // TBD
 // - [ O ] WIN32_DIRECTX9
 // - [ O ] WIN32_DIRECTX10
 // - [ O ] WIN32_DIRECTX11
@@ -160,6 +160,7 @@ extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg
 #include <backends/imgui_impl_dx12.h>
 #include <d3d12.h>
 #include <dxgi1_4.h>
+//#define IM_SUPPORT_CUSTOM_SHADER
 #define IM_GFX_HLSL
 #elif (IM_CURRENT_GFX == IM_GFX_VULKAN)
 #include <backends/imgui_impl_vulkan.h>
