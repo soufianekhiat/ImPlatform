@@ -670,7 +670,7 @@ namespace ImPlatform
 #endif
 		glTexImage2D( GL_TEXTURE_2D, 0, internalformat, ( GLsizei )uWidth, ( GLsizei )uHeight, 0, format, type, pData );
 
-		return ( void* )( intptr_t )image_texture;
+		return ( ImTextureID )( intptr_t )image_texture;
 
 #elif (IM_CURRENT_GFX == IM_GFX_DIRECTX9)
 
@@ -993,19 +993,61 @@ namespace ImPlatform
 
 #elif (IM_CURRENT_GFX == IM_GFX_DIRECTX12)
 
-		( *reinterpret_cast< ID3D12Resource** >( &id ) )->Release();
-		( *reinterpret_cast< ID3D12Resource** >( &id ) ) = NULL;
+		//( *reinterpret_cast< ID3D12Resource** >( &id ) )->Release();
+		//( *reinterpret_cast< ID3D12Resource** >( &id ) ) = NULL;
 
 #endif
 	}
 
+#ifdef IM_SUPPORT_CUSTOM_SHADER
 	void*	InternalCreateDynamicConstantBuffer( int sizeof_in_bytes_constants,
 										  void* init_data_constant )
 	{
 #if (IM_CURRENT_GFX == IM_GFX_OPENGL2)
 #elif (IM_CURRENT_GFX == IM_GFX_OPENGL3)
+
+		return NULL;
+
 #elif (IM_CURRENT_GFX == IM_GFX_DIRECTX9)
 #elif (IM_CURRENT_GFX == IM_GFX_DIRECTX10)
+
+		ImGui_ImplDX10_Data *bd = ImGui_ImplDX10_GetBackendData();
+
+		ID3D10Buffer *constant_buffer = NULL;
+		if ( sizeof_in_bytes_constants > 0 )
+		{
+			D3D10_BUFFER_DESC desc;
+			desc.ByteWidth = sizeof_in_bytes_constants;
+			desc.Usage = D3D10_USAGE_DYNAMIC;
+			desc.BindFlags = D3D10_BIND_CONSTANT_BUFFER;
+			desc.CPUAccessFlags = D3D10_CPU_ACCESS_WRITE;
+			desc.MiscFlags = 0;
+			if ( init_data_constant != NULL )
+			{
+				D3D10_SUBRESOURCE_DATA init = D3D10_SUBRESOURCE_DATA{ 0 };
+				init.pSysMem = init_data_constant;
+				HRESULT hr = bd->pd3dDevice->CreateBuffer( &desc, &init, &constant_buffer );
+
+				IM_UNUSED( hr );
+
+#if 0
+				if ( hr != S_OK )
+				{
+					_com_error err( hr );
+					LPCTSTR errMsg = err.ErrorMessage();
+					OutputDebugStringA( errMsg );
+				}
+#endif
+			}
+			else
+			{
+				bd->pd3dDevice->CreateBuffer( &desc, NULL, &constant_buffer );
+			}
+		}
+
+		return ( void * )constant_buffer;
+
+
 #elif (IM_CURRENT_GFX == IM_GFX_DIRECTX11)
 
 		ImGui_ImplDX11_Data* bd = ImGui_ImplDX11_GetBackendData();
@@ -1045,10 +1087,10 @@ namespace ImPlatform
 		return ( void* )constant_buffer;
 
 #elif (IM_CURRENT_GFX == IM_GFX_DIRECTX12)
+
 #endif
 	}
 
-#pragma optimize( "", off )
 	char* ReplaceFirst_return_allocated_buffer_free_after_use( char const* src, char const* src_end, char const* token, char const* token_end, char const* new_str, char const* new_str_end )
 	{
 		IM_UNUSED( new_str_end );
@@ -1290,12 +1332,19 @@ float2 uv  : TEXCOORD0;\n",
 		void* ps_const = NULL;
 
 #if (IM_CURRENT_GFX == IM_GFX_OPENGL2)
+
+
+
 #elif (IM_CURRENT_GFX == IM_GFX_OPENGL3)
 
 		//std::string glsl_version = std::string( "#version 130" );
 
 		//sVS = glsl_version + "\n" + "#define IM_SHADER_GLSL\n" + sVS;
 		//sPS = glsl_version + "\n" + "#define IM_SHADER_GLSL\n" + sPS;
+		char const *tmp_vertex_src;
+		char const *tmp_pixel_src;
+		ImFormatStringToTempBuffer( &tmp_vertex_src, NULL, "#version 130\n#define IM_SHADER_GLSL\n%s\n", vs_source );
+		ImFormatStringToTempBuffer( &tmp_pixel_src,  NULL, "#version 130\n#define IM_SHADER_GLSL\n%s\n", ps_source );
 
 #if 0
 		{
@@ -1312,13 +1361,13 @@ float2 uv  : TEXCOORD0;\n",
 
 		ImGui_ImplOpenGL3_Data* bd = ImGui_ImplOpenGL3_GetBackendData();
 
-		const GLchar* vertex_shader_with_version[ 2 ] = { bd->GlslVersionString, sVS.c_str() };
+		const GLchar* vertex_shader_with_version[ 2 ] = { bd->GlslVersionString, tmp_vertex_src };
 		GLuint vert_handle = glCreateShader( GL_VERTEX_SHADER );
 		glShaderSource( vert_handle, 2, vertex_shader_with_version, nullptr );
 		glCompileShader( vert_handle );
 		CheckShader( vert_handle, "vertex shader" );
 
-		const GLchar* fragment_shader_with_version[ 2 ] = { bd->GlslVersionString, sPS.c_str() };
+		const GLchar* fragment_shader_with_version[ 2 ] = { bd->GlslVersionString, tmp_pixel_src };
 		GLuint frag_handle = glCreateShader( GL_FRAGMENT_SHADER );
 		glShaderSource( frag_handle, 2, fragment_shader_with_version, nullptr );
 		glCompileShader( frag_handle );
@@ -1335,74 +1384,67 @@ float2 uv  : TEXCOORD0;\n",
 		glDeleteShader( vert_handle );
 		glDeleteShader( frag_handle );
 
+		void* pVertexShader = (void*)(intptr_t)(vert_handle);
+		void* pPixelShader = (void*)(intptr_t)( frag_handle );
+
 #elif (IM_CURRENT_GFX == IM_GFX_DIRECTX9)
 
 #elif (IM_CURRENT_GFX == IM_GFX_DIRECTX10)
 
-		ImGui_ImplDX10_Data* bd = ImGui_ImplDX10_GetBackendData();
+		ImGui_ImplDX10_Data *bd = ImGui_ImplDX10_GetBackendData();
 
-		ID3D10VertexShader* pVertexShader = NULL;
-		ID3D10PixelShader* pPixelShader = NULL;
+		ID3D10VertexShader *pVertexShader = NULL;
+		ID3D10PixelShader *pPixelShader = NULL;
 
-		ID3D10Buffer* constant_buffer = NULL;
-		if ( sizeof_in_bytes_constants > 0 )
-		{
-			D3D10_BUFFER_DESC desc;
-			desc.ByteWidth = sizeof_in_bytes_constants;
-			desc.Usage = D3D10_USAGE_DYNAMIC;
-			desc.BindFlags = D3D10_BIND_CONSTANT_BUFFER;
-			desc.CPUAccessFlags = D3D10_CPU_ACCESS_WRITE;
-			desc.MiscFlags = 0;
-			if ( init_data_constant != NULL )
-			{
-				D3D10_SUBRESOURCE_DATA init = D3D10_SUBRESOURCE_DATA{ 0 };
-				init.pSysMem = init_data_constant;
-				bd->pd3dDevice->CreateBuffer( &desc, &init, &constant_buffer );
-			}
-			else
-			{
-				bd->pd3dDevice->CreateBuffer( &desc, NULL, &constant_buffer );
-			}
-		}
-
-		{
-			std::ofstream oFile( "shader_vs.hlsl" );
-			oFile << sVS << std::endl;
-			oFile.close();
-		}
-		{
-			std::ofstream oFile( "shader_ps.hlsl" );
-			oFile << sPS << std::endl;
-			oFile.close();
-		}
+		//{
+		//	std::ofstream oFile( "shader_vs.hlsl" );
+		//	oFile << sVS << std::endl;
+		//	oFile.close();
+		//}
+		//{
+		//	std::ofstream oFile( "shader_ps.hlsl" );
+		//	oFile << sPS << std::endl;
+		//	oFile.close();
+		//}
 
 		D3D_SHADER_MACRO macros[] = { "IM_SHADER_HLSL", "", NULL, NULL };
 
-		ID3DBlob* vertexShaderBlob;
-		if ( FAILED( D3DCompile( sVS.c_str(), sVS.size(), nullptr, nullptr, nullptr, "main_vs", "vs_4_0", 0, 0, &vertexShaderBlob, nullptr ) ) )
+		ID3DBlob *vertexShaderBlob;
+
+		ID3DBlob *pErrorBlob;
+		if ( FAILED( D3DCompile( vs_source, strlen( vs_source ), nullptr, &macros[ 0 ], nullptr, "main_vs", "vs_4_0", 0, 0, &vertexShaderBlob, &pErrorBlob ) ) )
+		{
+			int error_count = int( pErrorBlob->GetBufferSize() );
+			printf( "%*s\n", error_count, ( char * )pErrorBlob->GetBufferPointer() );
+			fflush( stdout );
+			vertexShaderBlob->Release();
 			return { NULL, NULL, NULL, 0 };
+		}
 		if ( bd->pd3dDevice->CreateVertexShader( vertexShaderBlob->GetBufferPointer(), vertexShaderBlob->GetBufferSize(), &pVertexShader ) != S_OK )
 		{
 			vertexShaderBlob->Release();
 			return { NULL, NULL, NULL, 0 };
 		}
+		vertexShaderBlob->Release();
 
-		ID3DBlob* pixelShaderBlob;
-		if ( FAILED( D3DCompile( sPS.c_str(), sPS.size(), nullptr, nullptr, nullptr, "main_ps", "ps_4_0", 0, 0, &pixelShaderBlob, nullptr ) ) )
-			return { NULL, NULL, NULL, 0 };
+		ID3DBlob *pixelShaderBlob;
+		if ( FAILED( D3DCompile( ps_source, strlen( ps_source ), nullptr, &macros[ 0 ], nullptr, "main_ps", "ps_4_0", 0, 0, &pixelShaderBlob, &pErrorBlob ) ) )
+		{
+			int error_count = int( pErrorBlob->GetBufferSize() );
+			printf( "%*s\n", error_count, ( char * )pErrorBlob->GetBufferPointer() );
+			fflush( stdout );
+			pixelShaderBlob->Release();
+			return { NULL, NULL, NULL };
+		}
 		if ( bd->pd3dDevice->CreatePixelShader( pixelShaderBlob->GetBufferPointer(), pixelShaderBlob->GetBufferSize(), &pPixelShader ) != S_OK )
 		{
-			pixelShaderBlob->Release();
+			vertexShaderBlob->Release();
 			return { NULL, NULL, NULL, 0 };
 		}
 		pixelShaderBlob->Release();
 
-		void* cpu_data = NULL;
-		if ( init_data_constant != NULL )
-		{
-			cpu_data = IM_ALLOC( sizeof_in_bytes_constants );
-			memcpy( cpu_data, init_data_constant, sizeof_in_bytes_constants );
-		}
+		vs_const = InternalCreateDynamicConstantBuffer( sizeof_in_bytes_vs_constants, init_vs_data_constant );
+		ps_const = InternalCreateDynamicConstantBuffer( sizeof_in_bytes_ps_constants, init_ps_data_constant );
 
 #elif (IM_CURRENT_GFX == IM_GFX_DIRECTX11)
 
@@ -1462,6 +1504,14 @@ float2 uv  : TEXCOORD0;\n",
 		ps_const = InternalCreateDynamicConstantBuffer( sizeof_in_bytes_ps_constants, init_ps_data_constant );
 
 #elif (IM_CURRENT_GFX == IM_GFX_DIRECTX12)
+
+		//ImGui_ImplDX12_Data *bd = ImGui_ImplDX12_GetBackendData();
+		//
+		//void *pVertexShader = NULL;
+		//void *pPixelShader = NULL;
+		//
+		//vs_const = InternalCreateDynamicConstantBuffer( sizeof_in_bytes_vs_constants, init_vs_data_constant );
+		//ps_const = InternalCreateDynamicConstantBuffer( sizeof_in_bytes_ps_constants, init_ps_data_constant );
 
 #endif
 
@@ -1547,6 +1597,7 @@ float2 uv  : TEXCOORD0;\n",
 		}
 
 	}
+#endif 
 
 	void	CreateVertexBuffer( ImVertexBuffer*& vb, int sizeof_vertex_buffer, int vertices_count )
 	{
@@ -1668,15 +1719,39 @@ float2 uv  : TEXCOORD0;\n",
 
 	void	ReleaseVertexBuffer( ImVertexBuffer** buffer )
 	{
+		ImVertexBuffer *vb = *buffer;
+
+#if (IM_CURRENT_GFX == IM_GFX_OPENGL2) || (IM_CURRENT_GFX == IM_GFX_OPENGL3)
+
+#elif (IM_CURRENT_GFX == IM_GFX_DIRECTX9)
+
+		if ( vb != NULL && vb->gpu_buffer != NULL )
+		{
+			ImVertexBuffer *vb = *buffer;
+			LPDIRECT3DVERTEXBUFFER9 d3d9Buffer = ( LPDIRECT3DVERTEXBUFFER9 )vb->gpu_buffer;
+			d3d9Buffer->Release();
+			d3d9Buffer = nullptr;
+			IM_FREE( vb );
+			vb = NULL;
+		}
+
+#elif (IM_CURRENT_GFX == IM_GFX_DIRECTX10)
+
+#elif (IM_CURRENT_GFX == IM_GFX_DIRECTX11)
+
 		if ( buffer && *buffer )
 		{
-			ImVertexBuffer* vb = *buffer;
-			ID3D11Buffer* d3d11Buffer = ( ID3D11Buffer* )vb->gpu_buffer;
+			ImVertexBuffer *vb = *buffer;
+			ID3D11Buffer *d3d11Buffer = ( ID3D11Buffer * )vb->gpu_buffer;
 			d3d11Buffer->Release();
 			d3d11Buffer = nullptr;
 			IM_FREE( vb );
 			vb = NULL;
 		}
+
+#elif (IM_CURRENT_GFX == IM_GFX_DIRECTX12)
+
+#endif
 	}
 
 	void	CreateIndexBuffer( ImIndexBuffer*& ib, int indices_count )
@@ -1684,6 +1759,15 @@ float2 uv  : TEXCOORD0;\n",
 #if (IM_CURRENT_GFX == IM_GFX_OPENGL2) || (IM_CURRENT_GFX == IM_GFX_OPENGL3)
 
 #elif (IM_CURRENT_GFX == IM_GFX_DIRECTX9)
+
+		if ( ib != NULL && ib->gpu_buffer != NULL )
+		{
+			LPDIRECT3DINDEXBUFFER9 d3d9Buffer = ( LPDIRECT3DINDEXBUFFER9 )ib->gpu_buffer;
+			d3d9Buffer->Release();
+			d3d9Buffer = nullptr;
+			IM_FREE( ib );
+			ib = NULL;
+		}
 
 #elif (IM_CURRENT_GFX == IM_GFX_DIRECTX10)
 
@@ -1830,7 +1914,7 @@ float2 uv  : TEXCOORD0;\n",
 
 #elif (IM_CURRENT_GFX == IM_GFX_DIRECTX12)
 
-			ID3D12Buffer* d3d12Buffer = ( ID3D12Buffer* )ib->gpu_buffer;
+			ID3D12Resource* d3d12Buffer = ( ID3D12Resource* )ib->gpu_buffer;
 			d3d12Buffer->Release();
 			d3d12Buffer = nullptr;
 
@@ -1853,26 +1937,33 @@ float2 uv  : TEXCOORD0;\n",
 		ImGui_ImplDX10_Data* bd = ImGui_ImplDX10_GetBackendData();
 		ID3D10Device* ctx = bd->pd3dDevice;
 		ctx->VSSetShader( ( ID3D10VertexShader* )( shader->vs ) );
-		ctx->PSSetShader( ( ID3D10PixelShader* )( shader->ps ) );
-		if ( shader->ps_cst != NULL &&
-			 shader->sizeof_in_bytes_ps_constants > 0 &&
-			 shader->cpu_ps_data != NULL )
+		ctx->PSSetShader( ( ID3D10PixelShader * )( shader->ps ) );
+		if ( shader->vs_cst != NULL &&
+			 shader->sizeof_in_bytes_vs_constants > 0 &&
+			 shader->cpu_vs_data != NULL &&
+			 shader->is_cpu_vs_data_dirty )
 		{
 			void* mapped_resource;
-			if ( ( ( ID3D10Buffer* )shader.ps_cst )->Map( D3D10_MAP_WRITE_DISCARD, 0, &mapped_resource ) != S_OK )
+			if ( ( ( ID3D10Buffer* )shader->vs_cst )->Map( D3D10_MAP_WRITE_DISCARD, 0, &mapped_resource ) != S_OK )
 				return;
-			memcpy( mapped_resource, ptr_to_constants, shader.sizeof_in_bytes_ps_constants );
-			( ( ID3D10Buffer* )shader.ps_cst )->Unmap();
-
-			//D3D11_MAPPED_SUBRESOURCE mapped_resource;
-			//if ( ctx->Map( ( ID3D11Buffer* )shader->cst, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped_resource ) == S_OK )
-			//{
-			//	IM_ASSERT( mapped_resource.RowPitch == shader.sizeof_in_bytes_constants );
-			//	memcpy( mapped_resource.pData, shader->cpu_data, shader->sizeof_in_bytes_constants );
-			//	ctx->Unmap( ( ID3D11Buffer* )shader->cst, 0 );
-			//}
+			memcpy( mapped_resource, shader->cpu_vs_data, shader->sizeof_in_bytes_vs_constants );
+			( ( ID3D10Buffer* )shader->vs_cst )->Unmap();
 		}
-		ctx->PSSetConstantBuffers( 0, 1, ( ID3D10Buffer* const* )( &( shader->ps_cst ) ) );
+		if ( shader->vs_cst )
+			ctx->VSSetConstantBuffers( 0, 1, ( ID3D10Buffer *const * )( &( shader->vs_cst ) ) );
+		if ( shader->ps_cst != NULL &&
+			 shader->sizeof_in_bytes_ps_constants > 0 &&
+			 shader->cpu_ps_data != NULL &&
+			 shader->is_cpu_ps_data_dirty )
+		{
+			void* mapped_resource;
+			if ( ( ( ID3D10Buffer* )shader->ps_cst )->Map( D3D10_MAP_WRITE_DISCARD, 0, &mapped_resource ) != S_OK )
+				return;
+			memcpy( mapped_resource, shader->cpu_ps_data, shader->sizeof_in_bytes_ps_constants );
+			( ( ID3D10Buffer* )shader->ps_cst )->Unmap();
+		}
+		if ( shader->ps_cst )
+			ctx->PSSetConstantBuffers( 0, 1, ( ID3D10Buffer *const * )( &( shader->ps_cst ) ) );
 
 #elif (IM_CURRENT_GFX == IM_GFX_DIRECTX11)
 
@@ -1919,7 +2010,7 @@ float2 uv  : TEXCOORD0;\n",
 #endif
 	}
 
-	void		InternalUpdateCustomPixelShaderConstants( int sizeof_in_bytes_constants, void* ptr_to_constants, void* cpu_data, bool& is_cpu_data_dirty )
+	void		InternalUpdateCustomCPUShaderConstants( int sizeof_in_bytes_constants, void* ptr_to_constants, void* cpu_data, bool& is_cpu_data_dirty )
 	{
 		if ( sizeof_in_bytes_constants <= 0 ||
 			 ptr_to_constants == NULL )
@@ -1935,19 +2026,19 @@ float2 uv  : TEXCOORD0;\n",
 			is_cpu_data_dirty = true;
 		}
 	}
-	void		UpdateCustomPixelShaderConstants( ImDrawShader& shader, void* ptr_to_constants )
+	void		UpdateCustomPixelShaderConstants( ImDrawShader &shader, void *ptr_to_constants )
 	{
-		InternalUpdateCustomPixelShaderConstants( shader.sizeof_in_bytes_ps_constants,
-												  ptr_to_constants,
-												  shader.cpu_ps_data,
-												  shader.is_cpu_ps_data_dirty );
+		InternalUpdateCustomCPUShaderConstants( shader.sizeof_in_bytes_ps_constants,
+												ptr_to_constants,
+												shader.cpu_ps_data,
+												shader.is_cpu_ps_data_dirty );
 	}
-	void		UpdateCustomVertexShaderConstants( ImDrawShader& shader, void* ptr_to_constants )
+	void		UpdateCustomVertexShaderConstants( ImDrawShader &shader, void *ptr_to_constants )
 	{
-		InternalUpdateCustomPixelShaderConstants( shader.sizeof_in_bytes_vs_constants,
-												  ptr_to_constants,
-												  shader.cpu_vs_data,
-												  shader.is_cpu_vs_data_dirty );
+		InternalUpdateCustomCPUShaderConstants( shader.sizeof_in_bytes_vs_constants,
+												ptr_to_constants,
+												shader.cpu_vs_data,
+												shader.is_cpu_vs_data_dirty );
 	}
 	void		BeginCustomShader( ImDrawList* draw, ImDrawShader& shader )
 	{
@@ -2956,7 +3047,15 @@ static void Im_Hook_Renderer_SwapBuffers( ImGuiViewport* viewport, void* )
 
 	bool GfxCheck()
 	{
-#if (IM_CURRENT_GFX == IM_GFX_DIRECTX9)
+#if (IM_CURRENT_GFX == IM_GFX_OPENGL3)
+
+		if ( ::IsIconic( PlatformData.pHandle ) )
+		{
+			::Sleep( 10 );
+			return false;
+		}
+
+#elif (IM_CURRENT_GFX == IM_GFX_DIRECTX9)
 		// Handle lost D3D9 device
 		if ( PlatformData.bDeviceLost )
 		{

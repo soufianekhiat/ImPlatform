@@ -11,13 +11,13 @@ Window with Custom Title Bar:
 ![ImPlatformDemo_U66gRkAD7S](https://github.com/soufianekhiat/ImPlatform/assets/4236325/78c72221-209a-4640-90c2-77abff0983c2)
 
 // TODO:
-- [ O ] WIN32_OPENGL3
-- [ O ] WIN32_DIRECTX9
+- [   ] WIN32_OPENGL3
+- [ O ] WIN32_DIRECTX9 // Without Custom Shader feature
 - [ O ] WIN32_DIRECTX10
-- [ X ] WIN32_DIRECTX11 // Buggy resize windows
-- [ X ] WIN32_DIRECTX12 // Buggy resize windows
-- [ X ] GLFW_OPENGL2 // Produce clear_color frame
-- [ O ] GLFW_OPENGL3 // Do not work well with high DPI
+- [ O ] WIN32_DIRECTX11
+- [   ] WIN32_DIRECTX12
+- [   ] GLFW_OPENGL2
+- [   ] GLFW_OPENGL3
 - [   ] GLFW_VULKAN
 - [   ] GLFW_EMSCRIPTEM_OPENGL3
 - [   ] SDL2_DIRECTX11
