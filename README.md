@@ -304,17 +304,17 @@ int main()
 ```cpp
 // GPU Targets
 IM_GFX_OPENGL2      // Not Implememted Yet
-IM_GFX_OPENGL3      // Tested with Win32
+IM_GFX_OPENGL3      // Not Implememted Yet
 IM_GFX_DIRECTX9     // Tested with Win32
 IM_GFX_DIRECTX10    // Tested with Win32
 IM_GFX_DIRECTX11    // Tested with Win32
-IM_GFX_DIRECTX12    // Tested with Win32
+IM_GFX_DIRECTX12    // Not Implememted Yet
 IM_GFX_VULKAN       // Not Implememted Yet
 IM_GFX_METAL        // Not Implememted Yet
 IM_GFX_WGPU         // Not Implememted Yet
 
 // Window Target
-IM_PLATFORM_WIN32   // Tested with {Dx{9, 10, 11, 12}, OGL3}
+IM_PLATFORM_WIN32   // Tested with {Dx{9, 10, 11}}
 IM_PLATFORM_GLFW    // Not Implememted Yet
 IM_PLATFORM_APPLE   // Not Implememted Yet
 ```
@@ -326,7 +326,7 @@ IM_TARGET_WIN32_DX9     // Tested
 IM_TARGET_WIN32_DX10    // Tested
 IM_TARGET_WIN32_DX11    // Tested
 IM_TARGET_WIN32_DX12    // Tested
-IM_TARGET_WIN32_OGL3    // Tested
+IM_TARGET_WIN32_OGL3    // Not Implememted Yet
 IM_TARGET_APPLE_METAL   // Not Implememted Yet
 IM_TARGET_APPLE_OPENGL2 // Not Implememted Yet
 IM_TARGET_GLFW_OPENGL2  // Not Implememted Yet
