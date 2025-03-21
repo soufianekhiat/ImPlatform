@@ -2936,12 +2936,14 @@ static void Im_Hook_Renderer_SwapBuffers( ImGuiViewport* viewport, void* )
 #endif
 
 #elif (IM_CURRENT_GFX == IM_GFX_DIRECTX9) || (IM_CURRENT_GFX == IM_GFX_DIRECTX10) || (IM_CURRENT_GFX == IM_GFX_DIRECTX11) || (IM_CURRENT_GFX == IM_GFX_DIRECTX12)
+#if (IM_CURRENT_PLATFORM == IM_PLATFORM_WIN32)
 		if ( !ImCreateDeviceD3D( PlatformData.pHandle ) )
 		{
 			ImCleanupDeviceD3D();
 			::UnregisterClass( PlatformData.oWinStruct.lpszClassName, PlatformData.oWinStruct.hInstance );
 			return false;
 		}
+#endif
 #elif (IM_CURRENT_GFX == IM_GFX_VULKAN)
 #elif (IM_CURRENT_GFX == IM_GFX_METAL)
 #else
@@ -2970,7 +2972,7 @@ static void Im_Hook_Renderer_SwapBuffers( ImGuiViewport* viewport, void* )
 
 	bool InitPlatform()
 	{
-		bool bGood;
+		bool bGood = true;
 
 #if (IM_CURRENT_PLATFORM == IM_PLATFORM_WIN32)
 
@@ -3003,6 +3005,7 @@ static void Im_Hook_Renderer_SwapBuffers( ImGuiViewport* viewport, void* )
 #endif
 
 #endif
+
 		return bGood;
 	}
 
@@ -3047,6 +3050,7 @@ static void Im_Hook_Renderer_SwapBuffers( ImGuiViewport* viewport, void* )
 
 	bool GfxCheck()
 	{
+#if (IM_CURRENT_PLATFORM == IM_PLATFORM_WIN32)
 #if (IM_CURRENT_GFX == IM_GFX_OPENGL3)
 
 		if ( ::IsIconic( PlatformData.pHandle ) )
@@ -3085,6 +3089,7 @@ static void Im_Hook_Renderer_SwapBuffers( ImGuiViewport* viewport, void* )
 		{
 			Internal::WindowResize();
 		}
+#endif
 #endif
 
 		return true;
@@ -3501,6 +3506,7 @@ static void Im_Hook_Renderer_SwapBuffers( ImGuiViewport* viewport, void* )
 	{
 		bool WindowResize()
 		{
+#if (IM_CURRENT_PLATFORM == IM_PLATFORM_WIN32)
 #if (IM_CURRENT_GFX == IM_GFX_DIRECTX9)
 			PlatformData.oD3Dpp.BackBufferWidth = PlatformData.uResizeWidth;
 			PlatformData.oD3Dpp.BackBufferHeight = PlatformData.uResizeHeight;
@@ -3511,6 +3517,7 @@ static void Im_Hook_Renderer_SwapBuffers( ImGuiViewport* viewport, void* )
 			PlatformData.pSwapChain->ResizeBuffers( 0, PlatformData.uResizeWidth, PlatformData.uResizeHeight, DXGI_FORMAT_UNKNOWN, 0 );
 			PlatformData.uResizeWidth = PlatformData.uResizeHeight = 0;
 			ImCreateRenderTarget();
+#endif
 #endif
 
 			return true;

@@ -32,7 +32,8 @@
 // Or a permutation, Not all permutation are valid for instance __DEAR_MAC__ + __DEAR_GFX_DX11__
 //#define __DEAR_GLFW__
 #define __DEAR_WIN__
-//#define IM_GLFW3_AUTO_LINK
+//#define IM_GLFW3_AUTO_LINK)
+
 //#define __DEAR_GLFW__
 //#define __DEAR_GFX_DX9__
 //#define __DEAR_GFX_DX10__
