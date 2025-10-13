@@ -12,19 +12,11 @@ Window with Custom Title Bar:
 
 // TODO:
 - [   ] WIN32_OPENGL3
-- [ O ] WIN32_DIRECTX9 // Without Custom Shader feature
-- [ O ] WIN32_DIRECTX10
-- [ O ] WIN32_DIRECTX11
+- [X] WIN32_DIRECTX11
 - [   ] WIN32_DIRECTX12
-- [   ] GLFW_OPENGL2
 - [   ] GLFW_OPENGL3
 - [   ] GLFW_VULKAN
 - [   ] GLFW_EMSCRIPTEM_OPENGL3
-- [   ] SDL2_DIRECTX11
-- [   ] SDL2_OPENGL2
-- [   ] SDL2_OPENGL3
-- [   ] SDL2_SDLRENDERER2
-- [   ] SDL2_VULKAN
 
 ### Incentivise development:
 
@@ -303,36 +295,28 @@ int main()
 ## Defined Platforms
 ```cpp
 // GPU Targets
-IM_GFX_OPENGL2      // Not Implememted Yet
-IM_GFX_OPENGL3      // Not Implememted Yet
-IM_GFX_DIRECTX9     // Tested with Win32
-IM_GFX_DIRECTX10    // Tested with Win32
-IM_GFX_DIRECTX11    // Tested with Win32
-IM_GFX_DIRECTX12    // Not Implememted Yet
+IM_GFX_OPENGL3      // Implemented
+IM_GFX_DIRECTX11    // Implemented
+IM_GFX_DIRECTX12    // Implemented
 IM_GFX_VULKAN       // Not Implememted Yet
 IM_GFX_METAL        // Not Implememted Yet
 IM_GFX_WGPU         // Not Implememted Yet
 
 // Window Target
-IM_PLATFORM_WIN32   // Tested with {Dx{9, 10, 11}}
-IM_PLATFORM_GLFW    // Not Implememted Yet
+IM_PLATFORM_WIN32   // Implemented
+IM_PLATFORM_GLFW    // Implemented
 IM_PLATFORM_APPLE   // Not Implememted Yet
 ```
 
-For the future:
+Supported Permutations:
 ```cpp
 // Possible Permutation
-IM_TARGET_WIN32_DX9     // Tested
-IM_TARGET_WIN32_DX10    // Tested
-IM_TARGET_WIN32_DX11    // Tested
-IM_TARGET_WIN32_DX12    // Tested
-IM_TARGET_WIN32_OGL3    // Not Implememted Yet
-IM_TARGET_APPLE_METAL   // Not Implememted Yet
-IM_TARGET_APPLE_OPENGL2 // Not Implememted Yet
-IM_TARGET_GLFW_OPENGL2  // Not Implememted Yet
-IM_TARGET_GLFW_OPENGL3  // Not Implememted Yet
-IM_TARGET_GLFW_VULKAN   // Not Implememted Yet
-IM_TARGET_GLFW_METAL    // Not Implememted Yet
+IM_TARGET_WIN32_DX11    // Implemented
+IM_TARGET_WIN32_DX12    // Implemented
+IM_TARGET_WIN32_OPENGL3 // Implemented
+IM_TARGET_GLFW_OPENGL3  // Implemented
+IM_TARGET_GLFW_VULKAN   // Implemented
+IM_TARGET_APPLE_METAL   // Not Implemented Yet
 ```
 
 ## Future

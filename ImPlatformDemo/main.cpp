@@ -15,11 +15,8 @@
 //		__DEAR_LINUX__
 //		__DEAR_MAC__
 //	Gfx API:
-//		__DEAR_GFX_DX9__
-//		__DEAR_GFX_DX10__
 //		__DEAR_GFX_DX11__
 //		__DEAR_GFX_DX12__
-//		__DEAR_GFX_OGL2__
 //		__DEAR_GFX_OGL3__
 //		__DEAR_GFX_VULKAN__
 //		__DEAR_GFX_METAL__
@@ -30,16 +27,15 @@
 // Or
 //#define IM_CURRENT_TARGET (IM_PLATFORM_WIN32 | IM_GFX_OPENGL3)
 // Or a permutation, Not all permutation are valid for instance __DEAR_MAC__ + __DEAR_GFX_DX11__
+#define IM_GLFW3_AUTO_LINK
 //#define __DEAR_GLFW__
 #define __DEAR_WIN__
 //#define IM_GLFW3_AUTO_LINK)
 
-//#define __DEAR_GLFW__
-//#define __DEAR_GFX_DX9__
-//#define __DEAR_GFX_DX10__
 #define __DEAR_GFX_DX11__
 //#define __DEAR_GFX_DX12__
 //#define __DEAR_GFX_OGL3__
+//#define __DEAR_GFX_VULKAN__
 //#define IM_CURRENT_TARGET IM_TARGET_GLFW_OPENGL3
 //#define IM_THE_CHERNO_GLFW3
 #include <ImPlatform.h>
@@ -56,9 +52,10 @@
 
 //////////////////////////////////////////////////////////////////////////
 // Global Options
-static bool g_bSimpleAPI		= true;
-static bool g_bCustomTitleBar	= true;
+static bool g_bSimpleAPI		= false;
 //////////////////////////////////////////////////////////////////////////
+
+//#undef IM_SUPPORT_CUSTOM_SHADER
 
 #ifdef IM_SUPPORT_CUSTOM_SHADER
 struct param2
@@ -208,8 +205,14 @@ int main()
 	}
 #endif
 
-	if ( g_bCustomTitleBar )
+	ImPlatform::SetFeatures( ImPlatformFeatures_CustomShader );
+
+	assert( ImPlatform::ValidateFeatures() );
+
+	if ( ImPlatform::CustomTitleBarSupported() )
 		ImPlatform::EnableCustomTitleBar();
+
+	ImPlatform::DisableCustomTitleBar();
 
 	float t = 0.0f;
 	// ImPlatform::SimpleAPI
@@ -245,6 +248,7 @@ int main()
 			fprintf( stderr, "ImPlatform : Cannot Initialize." );
 			return false;
 		}
+
 		ImTextureID img = ImPlatform::CreateTexture2D( ( char* )data, width, height,
 														 {
 															ImPixelChannel_RGBA,
@@ -291,7 +295,8 @@ int main()
 
 			ImPlatform::SimpleBegin();
 
-			if ( ImPlatform::CustomTitleBarEnabled() )
+			if ( ImPlatform::CustomTitleBarSupported() &&
+				 ImPlatform::CustomTitleBarEnabled() )
 			{
 				if ( ImPlatform::BeginCustomTitleBar( 32.0f ) )
 				{
@@ -456,7 +461,8 @@ int main()
 
 			ImGui::NewFrame();
 
-			if ( ImPlatform::CustomTitleBarEnabled() )
+			if ( ImPlatform::CustomTitleBarSupported() &&
+				 ImPlatform::CustomTitleBarEnabled() )
 			{
 				if ( ImPlatform::BeginCustomTitleBar( 64.0f ) )
 				{

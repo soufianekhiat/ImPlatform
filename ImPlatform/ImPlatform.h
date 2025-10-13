@@ -12,28 +12,17 @@
 // Use https://github.com/TheCherno/glfw/tree/dev to have CustomTitleBar Available
 //#define IM_THE_CHERNO_GLFW3
 
-// - [ X ] WIN32_OPENGL3 // TBD
-// - [ O ] WIN32_DIRECTX9
-// - [ O ] WIN32_DIRECTX10
+// - [   ] WIN32_OPENGL3 // TBD
 // - [ O ] WIN32_DIRECTX11
-// - [ O ] WIN32_DIRECTX12 // Issue with images
-// - [ X ] GLFW_OPENGL2 // Produce clear_color frame
-// - [ O ] GLFW_OPENGL3 // Do not work well with high DPI
-// - [   ] GLFW_VULKAN
+// - [   ] WIN32_DIRECTX12 // Issue with images
+// - [   ] GLFW_OPENGL3 // Do not work well with high DPI
+// - [ O ] GLFW_VULKAN
 // - [   ] GLFW_EMSCRIPTEM_OPENGL3
-// - [   ] SDL2_DIRECTX11
-// - [   ] SDL2_OPENGL2
-// - [   ] SDL2_OPENGL3
-// - [   ] SDL2_SDLRENDERER2
-// - [   ] SDL2_VULKAN
 
 // INTERNAL_MACRO
-#define IM_GFX_OPENGL2		( 1u << 0u )
-#define IM_GFX_OPENGL3		( 1u << 1u )
-#define IM_GFX_DIRECTX9		( 1u << 2u )
-#define IM_GFX_DIRECTX10	( 1u << 3u )
-#define IM_GFX_DIRECTX11	( 1u << 4u )
-#define IM_GFX_DIRECTX12	( 1u << 5u )
+#define IM_GFX_OPENGL3		( 1u << 0u )
+#define IM_GFX_DIRECTX11	( 1u << 1u )
+#define IM_GFX_DIRECTX12	( 1u << 2u )
 #define IM_GFX_VULKAN		( 1u << 6u )
 #define IM_GFX_METAL		( 1u << 7u )
 #define IM_GFX_WGPU			( 1u << 8u )
@@ -61,16 +50,10 @@
 #error __DEAR_{X}__ not specified correctly
 #endif
 
-#ifdef __DEAR_GFX_DX9__
-#define IM_CURRENT_GFX IM_GFX_DIRECTX9
-#elif defined(__DEAR_GFX_DX10__)
-#define IM_CURRENT_GFX IM_GFX_DIRECTX10
-#elif defined(__DEAR_GFX_DX11__)
+#ifdef __DEAR_GFX_DX11__
 #define IM_CURRENT_GFX IM_GFX_DIRECTX11
 #elif defined(__DEAR_GFX_DX12__)
 #define IM_CURRENT_GFX IM_GFX_DIRECTX12
-#elif defined(__DEAR_GFX_OGL2__)
-#define IM_CURRENT_GFX IM_GFX_OPENGL2
 #elif defined(__DEAR_GFX_OGL3__)
 #define IM_CURRENT_GFX IM_GFX_OPENGL3
 #elif defined(__DEAR_GFX_VULKAN__)
@@ -91,25 +74,19 @@
 #endif
 
 // Possible Permutation
-#define IM_TARGET_WIN32_DX9		( IM_PLATFORM_WIN32 | IM_GFX_DIRECTX9 )
-#define IM_TARGET_WIN32_DX10	( IM_PLATFORM_WIN32 | IM_GFX_DIRECTX10 )
 #define IM_TARGET_WIN32_DX11	( IM_PLATFORM_WIN32 | IM_GFX_DIRECTX11 )
 #define IM_TARGET_WIN32_DX12	( IM_PLATFORM_WIN32 | IM_GFX_DIRECTX12 )
 #define IM_TARGET_WIN32_OPENGL3	( IM_PLATFORM_WIN32 | IM_GFX_OPENGL3 )
 
 #define IM_TARGET_APPLE_METAL	( IM_PLATFORM_APPLE | IM_GFX_METAL )
-#define IM_TARGET_APPLE_OPENGL2	( IM_PLATFORM_APPLE | IM_GFX_OPENGL2 )
 
-#define IM_TARGET_GLFW_OPENGL2	( IM_PLATFORM_GLFW | IM_GFX_OPENGL2 )
 #define IM_TARGET_GLFW_OPENGL3	( IM_PLATFORM_GLFW | IM_GFX_OPENGL3 )
 
 #define IM_TARGET_GLFW_VULKAN	( IM_PLATFORM_GLFW | IM_GFX_VULKAN )
 
 #define IM_TARGET_GLFW_METAL	( IM_PLATFORM_GLFW | IM_GFX_METAL )
 
-#if IM_CURRENT_TARGET != IM_TARGET_WIN32_DX9		&&	\
-	IM_CURRENT_TARGET != IM_TARGET_WIN32_DX10		&&	\
-	IM_CURRENT_TARGET != IM_TARGET_WIN32_DX11		&&	\
+#if IM_CURRENT_TARGET != IM_TARGET_WIN32_DX11		&&	\
 	IM_CURRENT_TARGET != IM_TARGET_WIN32_DX12		&&	\
 	IM_CURRENT_TARGET != IM_TARGET_WIN32_OPENGL3	&&	\
 	IM_CURRENT_TARGET != IM_TARGET_GLFW_OPENGL3			
@@ -139,19 +116,7 @@ extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg
 #error IM_CURRENT_TARGET not specified correctly
 #endif
 
-
-
-#if (IM_CURRENT_GFX == IM_GFX_DIRECTX9)
-#include <backends/imgui_impl_dx9.h>
-#include <d3d9.h>
-#define IM_GFX_HLSL
-#elif (IM_CURRENT_GFX == IM_GFX_DIRECTX10)
-#include <backends/imgui_impl_dx10.h>
-#include <d3d10_1.h>
-#include <d3d10.h>
-#define IM_SUPPORT_CUSTOM_SHADER
-#define IM_GFX_HLSL
-#elif (IM_CURRENT_GFX == IM_GFX_DIRECTX11)
+#if (IM_CURRENT_GFX == IM_GFX_DIRECTX11)
 #include <backends/imgui_impl_dx11.h>
 #include <d3d11.h>
 #define IM_SUPPORT_CUSTOM_SHADER
@@ -160,7 +125,7 @@ extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg
 #include <backends/imgui_impl_dx12.h>
 #include <d3d12.h>
 #include <dxgi1_4.h>
-//#define IM_SUPPORT_CUSTOM_SHADER
+#define IM_SUPPORT_CUSTOM_SHADER
 #define IM_GFX_HLSL
 #elif (IM_CURRENT_GFX == IM_GFX_VULKAN)
 #include <backends/imgui_impl_vulkan.h>
@@ -168,10 +133,9 @@ extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg
 #elif (IM_CURRENT_GFX == IM_GFX_METAL)
 #include <backends/imgui_impl_metal.h>
 #define IM_GFX_MSL
-#elif (IM_CURRENT_GFX == IM_GFX_OPENGL2)
-#include <backends/imgui_impl_opengl2.h>
-#define IM_GFX_GLSL
 #elif (IM_CURRENT_GFX == IM_GFX_OPENGL3)
+// The backend cpp (imgui_impl_opengl3.cpp) is compiled separately
+// and uses Dear ImGui's integrated OpenGL loader
 #include <backends/imgui_impl_opengl3.h>
 #define IM_SUPPORT_CUSTOM_SHADER
 #define IM_GFX_GLSL
@@ -203,7 +167,7 @@ struct PlatformDataImpl
 	MSG			oMessage;
 
 	// Dx12 Backend uses WM_SIZE to resize buffers
-#if (IM_CURRENT_GFX != IM_GFX_DIRECTX12) && (IM_CURRENT_GFX != IM_GFX_OPENGL3) && (IM_CURRENT_GFX != IM_GFX_OPENGL2)
+#if (IM_CURRENT_GFX != IM_GFX_DIRECTX12) && (IM_CURRENT_GFX != IM_GFX_OPENGL3)
 	UINT		uResizeWidth	= 0;
 	UINT		uResizeHeight	= 0;
 #endif
@@ -216,9 +180,7 @@ struct PlatformDataImpl
 #error IM_CURRENT_TARGET not specified correctly
 #endif
 
-#if (IM_CURRENT_GFX == IM_GFX_OPENGL2)
-	char const* pGLSLVersion						= "#version 100";
-#elif (IM_CURRENT_GFX == IM_GFX_OPENGL3)
+#if (IM_CURRENT_GFX == IM_GFX_OPENGL3)
 
 #if (IM_CURRENT_PLATFORM == IM_PLATFORM_WIN32)
 	struct WGL_WindowData
@@ -231,17 +193,7 @@ struct PlatformDataImpl
 	int					iHeight;
 #endif
 
-	char const*				pGLSLVersion			= "#version 130";
-#elif (IM_CURRENT_GFX == IM_GFX_DIRECTX9)
-	LPDIRECT3D9				pD3D					= nullptr;
-	LPDIRECT3DDEVICE9		pD3DDevice				= nullptr;
-	D3DPRESENT_PARAMETERS	oD3Dpp					= {};
-	bool					bDeviceLost				= false;
-#elif (IM_CURRENT_GFX == IM_GFX_DIRECTX10)
-	ID3D10Device*			pD3DDevice				= nullptr;
-	IDXGISwapChain*			pSwapChain				= nullptr;
-	ID3D10RenderTargetView* pMainRenderTargetView	= nullptr;
-	bool					bSwapChainOccluded		= false;
+	char const*				pGLSLVersion			= nullptr;  // Will be auto-detected if not specified
 #elif (IM_CURRENT_GFX == IM_GFX_DIRECTX11)
 	ID3D11Device*			pD3DDevice				= nullptr;
 	ID3D11DeviceContext*	pD3DDeviceContext		= nullptr;
@@ -276,6 +228,26 @@ struct PlatformDataImpl
 	D3D12_CPU_DESCRIPTOR_HANDLE	pMainRenderTargetDescriptor[ NUM_BACK_BUFFERS ]
 															= {};
 	bool							bSwapChainOccluded		= false;
+
+	static int const			NUM_SRV_DESCRIPTORS			= 128;
+	UINT						uNextSRVDescriptor			= 1;
+	ID3D12Resource*				pSRVResources[ NUM_SRV_DESCRIPTORS ] = {};
+#elif (IM_CURRENT_GFX == IM_GFX_VULKAN)
+	VkAllocationCallbacks*		pAllocator					= nullptr;
+	VkInstance					pInstance					= VK_NULL_HANDLE;
+	VkPhysicalDevice			pPhysicalDevice				= VK_NULL_HANDLE;
+	VkDevice					pDevice						= VK_NULL_HANDLE;
+	uint32_t					uQueueFamily				= (uint32_t)-1;
+	VkQueue						pQueue						= VK_NULL_HANDLE;
+	VkPipelineCache				pPipelineCache				= VK_NULL_HANDLE;
+	VkDescriptorPool			pDescriptorPool				= VK_NULL_HANDLE;
+	ImGui_ImplVulkanH_Window	oMainWindowData;
+	uint32_t					uMinImageCount				= 2;
+	bool						bSwapChainRebuild			= false;
+	VkImageUsageFlags			uSwapChainImageUsage		= VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+#ifdef _DEBUG
+	VkDebugReportCallbackEXT	pDebugReport				= VK_NULL_HANDLE;
+#endif
 #endif
 
 	ImVec2	vEndCustomToolBar		= ImVec2( 0.0f, 0.0f );
@@ -419,6 +391,7 @@ namespace ImPlatform
 	bool		ImIsMaximized();
 
 	// Custom Title Bar
+	bool		CustomTitleBarSupported();
 	bool		CustomTitleBarEnabled();
 	void		EnableCustomTitleBar();
 	void		DisableCustomTitleBar();
@@ -432,9 +405,17 @@ namespace ImPlatform
 	bool		BeginCustomTitleBar( float fHeight );
 	void		EndCustomTitleBar();
 
-	// Inits
+	// Configuration
 	void SetFeatures( ImPlatformFeatures features );
 	bool ValidateFeatures();
+
+	// OpenGL3 specific configuration (call before SimpleStart or CreateWindow)
+	void SetGLSLVersion( char const* glsl_version );
+
+	// DX12 specific configuration (call before SimpleStart or CreateWindow)
+	void SetDX12FramesInFlight( int frames_in_flight );
+	void SetDX12RTVFormat( int rtv_format );  // DXGI_FORMAT
+	void SetDX12DSVFormat( int dsv_format );  // DXGI_FORMAT
 
 	// SimpleAPI:
 	bool SimpleStart( char const* pWindowsName, ImVec2 const vPos, ImU32 const uWidth, ImU32 const uHeight );
@@ -478,7 +459,82 @@ namespace ImPlatform
 }
 
 #ifdef IM_PLATFORM_IMPLEMENTATION
+
+// Include common implementation code
+#ifndef IM_PLATFORM_IMPLEMENTATION
+#include <ImPlatform.h>
+#endif
+
+#include <string>
+#include <fstream>
+#include <imgui_internal.h>
+
+// Platform-specific includes
+#if (IM_CURRENT_PLATFORM == IM_PLATFORM_WIN32)
+#include <windowsx.h>
+#define DIRECTINPUT_VERSION 0x0800
+extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler( HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam );
+#elif (IM_CURRENT_PLATFORM == IM_PLATFORM_GLFW)
+#ifdef IM_GLFW3_AUTO_LINK
+#pragma comment( lib, "lib-vc2010-64/glfw3.lib" )
+#pragma comment( lib, "legacy_stdio_definitions.lib" )
+#endif
+#elif (IM_CURRENT_PLATFORM) == IM_PLATFORM_APPLE)
+#else
+#error IM_CURRENT_TARGET not specified correctly
+#endif
+
+// Include ImGui platform backend implementations
+#if (IM_CURRENT_PLATFORM == IM_PLATFORM_WIN32)
+#include <backends/imgui_impl_win32.cpp>
+#elif (IM_CURRENT_PLATFORM == IM_PLATFORM_GLFW)
+#include <backends/imgui_impl_glfw.cpp>
+#endif
+
+// Include ImGui graphics backend implementations
+#if (IM_CURRENT_GFX == IM_GFX_DIRECTX11)
+#include <backends/imgui_impl_dx11.cpp>
+#pragma comment( lib, "d3d11.lib" )
+#pragma comment( lib, "d3dcompiler.lib" )
+#pragma comment( lib, "dxgi.lib" )
+#include <comdef.h>
+#elif (IM_CURRENT_GFX == IM_GFX_DIRECTX12)
+#include <backends/imgui_impl_dx12.cpp>
+#pragma comment( lib, "d3d12.lib" )
+#pragma comment( lib, "d3dcompiler.lib" )
+#pragma comment( lib, "dxgi.lib" )
+#elif (IM_CURRENT_GFX == IM_GFX_VULKAN)
+#include <backends/imgui_impl_vulkan.cpp>
+#elif (IM_CURRENT_GFX == IM_GFX_METAL)
+#include <backends/imgui_impl_metal.cpp>
+#elif (IM_CURRENT_GFX == IM_GFX_OPENGL3)
+#include <backends/imgui_impl_opengl3.cpp>
+#pragma comment( lib, "opengl32.lib" )
+#elif (IM_CURRENT_GFX == IM_GFX_WGPU)
+#include <backends/imgui_impl_wgpu.cpp>
+#endif
+
+// Include ImPlatform graphics backend implementations
+#if (IM_CURRENT_GFX == IM_GFX_DIRECTX11)
+#include "implatform_impl_dx11.cpp"
+#elif (IM_CURRENT_GFX == IM_GFX_DIRECTX12)
+#include "implatform_impl_dx12.cpp"
+#elif (IM_CURRENT_GFX == IM_GFX_VULKAN)
+#include "implatform_impl_vulkan.cpp"
+#elif (IM_CURRENT_GFX == IM_GFX_OPENGL3)
+#include "implatform_impl_opengl3.cpp"
+#endif
+
+// Include ImPlatform platform backend implementations
+#if (IM_CURRENT_PLATFORM == IM_PLATFORM_WIN32)
+#include "implatform_impl_win32.cpp"
+#elif (IM_CURRENT_PLATFORM == IM_PLATFORM_GLFW)
+#include "implatform_impl_glfw.cpp"
+#endif
+
+// Include common implementation code (non-backend-specific)
 #include <ImPlatform.cpp>
+
 #endif
 
 #endif

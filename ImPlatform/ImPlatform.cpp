@@ -1,1052 +1,28 @@
-#ifndef IM_PLATFORM_IMPLEMENTATION
-#include <ImPlatform.h>
-#endif
-
-//#include <string>
-//#include <fstream>
-
-#include <imgui_internal.h>
-
-#if (IM_CURRENT_PLATFORM == IM_PLATFORM_WIN32)
-#include <backends/imgui_impl_win32.cpp>
-#define DIRECTINPUT_VERSION 0x0800
-extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler( HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam );
-#elif (IM_CURRENT_PLATFORM == IM_PLATFORM_GLFW)
-#if (IM_CURRENT_GFX != IM_GFX_OPENGL2) && (IM_CURRENT_GFX != IM_GFX_OPENGL3)
-#include <backends/imgui_impl_glfw.cpp>
-#endif
-#ifdef IM_GLFW3_AUTO_LINK
-#pragma comment( lib, "lib-vc2010-64/glfw3.lib" )
-#endif
-#elif (IM_CURRENT_PLATFORM) == IM_PLATFORM_APPLE)
-#else
-#error IM_CURRENT_TARGET not specified correctly
-#endif
-
-#if (IM_CURRENT_GFX == IM_GFX_DIRECTX9)
-#include <backends/imgui_impl_dx9.cpp>
-#include <d3d9.h>
-#pragma comment( lib, "d3d9.lib" )
-#elif (IM_CURRENT_GFX == IM_GFX_DIRECTX10)
-#include <backends/imgui_impl_dx10.cpp>
-#pragma comment( lib, "d3d10.lib" )
-#pragma comment( lib, "d3dcompiler.lib" )
-#pragma comment( lib, "dxgi.lib" )
-#elif (IM_CURRENT_GFX == IM_GFX_DIRECTX11)
-#include <backends/imgui_impl_dx11.cpp>
-#pragma comment( lib, "d3d11.lib" )
-#pragma comment( lib, "d3dcompiler.lib" )
-#pragma comment( lib, "dxgi.lib" )
-#include <comdef.h>
-#elif (IM_CURRENT_GFX == IM_GFX_DIRECTX12)
-#include <backends/imgui_impl_dx12.cpp>
-#pragma comment( lib, "d3d12.lib" )
-#pragma comment( lib, "d3dcompiler.lib" )
-#pragma comment( lib, "dxgi.lib" )
-#elif (IM_CURRENT_GFX == IM_GFX_VULKAN)
-#include <backends/imgui_impl_vulkan.cpp>
-#elif (IM_CURRENT_GFX == IM_GFX_METAL)
-#include <backends/imgui_impl_metal.cpp>
-#elif (IM_CURRENT_GFX == IM_GFX_OPENGL2)
-#if (IM_CURRENT_PLATFORM != IM_PLATFORM_GLFW)
-#include <backends/imgui_impl_opengl2.cpp>
-#endif
-#pragma comment( lib, "opengl32.lib" )
-#elif (IM_CURRENT_GFX == IM_GFX_OPENGL3)
-#if (IM_CURRENT_PLATFORM != IM_PLATFORM_GLFW)
-#include <backends/imgui_impl_opengl3.cpp>
-#endif
-#pragma comment( lib, "opengl32.lib" )
-#elif (IM_CURRENT_GFX == IM_GFX_WGPU)
-#include <backends/imgui_impl_wgpu.cpp>
-#endif
-
-#if (IM_CURRENT_GFX == IM_GFX_OPENGL2 || IM_CURRENT_GFX == IM_GFX_OPENGL3) && (IM_CURRENT_PLATFORM == IM_PLATFORM_GLFW)
-#if (IM_CURRENT_GFX == IM_GFX_OPENGL2)
-#include <backends/imgui_impl_opengl2.cpp>
-#elif (IM_CURRENT_GFX == IM_GFX_OPENGL3)
-#include <backends/imgui_impl_opengl3.cpp>
-#endif
-#include <backends/imgui_impl_glfw.cpp>
-#if _MSC_VER
-#pragma comment(linker, "/NODEFAULTLIB:msvcrt.lib")
-#endif
-#if defined(_MSC_VER) && (_MSC_VER >= 1900) && !defined(IMGUI_DISABLE_WIN32_FUNCTIONS)
-#pragma comment(lib, "legacy_stdio_definitions")
-#endif
-#endif
+// Note: This file is included by ImPlatform.h when IM_PLATFORM_IMPLEMENTATION is defined
+// All backend-specific includes are handled in ImPlatform.h
+// This file contains only common implementation code that is not backend-specific
 
 namespace ImPlatform
 {
 	PlatformDataImpl PlatformData;
 
-#if (IM_CURRENT_GFX == IM_GFX_OPENGL2) || (IM_CURRENT_GFX == IM_GFX_OPENGL3)
-
-	void ImPixelTypeChannelToOGL( GLint* internalFormat, GLenum* format, ImPixelType const eType, ImPixelChannel const eChannel )
-	{
-#if (IM_CURRENT_GFX == IM_GFX_OPENGL2)
-		switch ( eChannel )
-		{
-		case ImPixelChannel_R:
-			*internalformat = *format = GL_LUMINANCE;
-			break;
-		case ImPixelChannel_RG:
-			*internalformat = *format = GL_LUMINANCE_ALPHA;
-			break;
-		case ImPixelChannel_RGB:
-			*internalformat = *format = GL_RGB;
-			break;
-		case ImPixelChannel_RGBA:
-			*internalformat = *format = GL_RGBA;
-			break;
-		default:
-			fprintf( stderr, "ImChannelToOGL eChannel unsupported on OpenGL2 {IM_R, IM_RG, IM_RGB, IM_RGBA}\n" );
-			break;
-		}
-#else
-#if 1
-		switch ( eChannel )
-		{
-		case ImPixelChannel_RGBA:
-			*internalFormat = *format = GL_RGBA;
-			break;
-		default:
-			fprintf( stderr, "ImChannelToOGL eChannel unsupported on OpenGL3 {IM_RGBA}\n" );
-			break;
-		}
-#else
-		switch ( eChannel )
-		{
-		case ImPixelChannel_R:
-			*format = GL_RED;
-			switch ( eType )
-			{
-			case ImPixelType_UInt8:
-				*internalformat = GL_R8UI;
-				break;
-			case ImPixelType_UInt16:
-				*internalformat = GL_R16UI;
-				break;
-			case ImPixelType_UInt32:
-				*internalformat = GL_R32UI;
-				break;
-			case ImPixelType_Int8:
-				*internalformat = GL_R8I;
-				break;
-			case ImPixelType_Int16:
-				*internalformat = GL_R16I;
-				break;
-			case ImPixelType_Int32:
-				*internalformat = GL_R32I;
-				break;
-			case ImPixelType_Float16:
-				*internalformat = GL_R16F;
-				break;
-			case ImPixelType_Float32:
-				*internalformat = GL_R32F;
-				break;
-			default:
-				fprintf( stderr, "ImCreateImage ImType unsupported on OpenGL2 {IM_UINT8, IM_UINT16, IM_UINT32, IM_INT8, IM_INT16, IM_INT32, IM_FLOAT16, IM_FLOAT32}\n" );
-				break;
-			}
-			break;
-		case ImPixelChannel_RG:
-			*format = GL_RG;
-			switch ( eType )
-			{
-			case ImPixelType_UInt8:
-				*internalformat = GL_RG8UI;
-				break;
-			case ImPixelType_UInt16:
-				*internalformat = GL_RG16UI;
-				break;
-			case ImPixelType_UInt32:
-				*internalformat = GL_RG32UI;
-				break;
-			case ImPixelType_Int8:
-				*internalformat = GL_RG8I;
-				break;
-			case ImPixelType_Int16:
-				*internalformat = GL_RG16I;
-				break;
-			case ImPixelType_Int32:
-				*internalformat = GL_RG32I;
-				break;
-			case ImPixelType_Float16:
-				*internalformat = GL_RG16F;
-				break;
-			case ImPixelType_Float32:
-				*internalformat = GL_RG32F;
-				break;
-			default:
-				fprintf( stderr, "ImCreateImage ImType unsupported on OpenGL2 {IM_UINT8, IM_UINT16, IM_UINT32, IM_INT8, IM_INT16, IM_INT32, IM_FLOAT16, IM_FLOAT32}\n" );
-				break;
-			}
-			break;
-		case ImPixelChannel_RGB:
-			*format = GL_RGB;
-			switch ( eType )
-			{
-			case ImPixelType_UInt8:
-				*internalformat = GL_RGB8UI;
-				break;
-			case ImPixelType_UInt16:
-				*internalformat = GL_RGB16UI;
-				break;
-			case ImPixelType_UInt32:
-				*internalformat = GL_RGB32UI;
-				break;
-			case ImPixelType_Int8:
-				*internalformat = GL_RGB8I;
-				break;
-			case ImPixelType_Int16:
-				*internalformat = GL_RGB16I;
-				break;
-			case ImPixelType_Int32:
-				*internalformat = GL_RGB32I;
-				break;
-			case ImPixelType_Float16:
-				*internalformat = GL_RGB16F;
-				break;
-			case ImPixelType_Float32:
-				*internalformat = GL_RGB32F;
-				break;
-			default:
-				fprintf( stderr, "ImCreateImage ImType unsupported on OpenGL2 {IM_UINT8, IM_UINT16, IM_UINT32, IM_INT8, IM_INT16, IM_INT32, IM_FLOAT16, IM_FLOAT32}\n" );
-				break;
-			}
-			break;
-		case ImPixelChannel_RGBA:
-			*format = GL_RGBA;
-			switch ( eType )
-			{
-			case ImPixelType_UInt8:
-				*internalformat = GL_RGBA8UI;
-				break;
-			case ImPixelType_UInt16:
-				*internalformat = GL_RGBA16UI;
-				break;
-			case ImPixelType_UInt32:
-				*internalformat = GL_RGBA32UI;
-				break;
-			case ImPixelType_Int8:
-				*internalformat = GL_RGBA8I;
-				break;
-			case ImPixelType_Int16:
-				*internalformat = GL_RGBA16I;
-				break;
-			case ImPixelType_Int32:
-				*internalformat = GL_RGBA32I;
-				break;
-			case ImPixelType_Float16:
-				*internalformat = GL_RGBA16F;
-				break;
-			case ImPixelType_Float32:
-				*internalformat = GL_RGBA32F;
-				break;
-			default:
-				fprintf( stderr, "ImCreateImage ImType unsupported on OpenGL2 {IM_UINT8, IM_UINT16, IM_UINT32, IM_INT8, IM_INT16, IM_INT32, IM_FLOAT16, IM_FLOAT32}\n" );
-				break;
-			}
-			break;
-		default:
-			fprintf( stderr, "ImCreateImage eChannel unsupported on OpenGL3 {IM_R, IM_RG, IM_RGB, IM_RGBA}\n" );
-			break;
-		}
-#endif
-#endif
-	}
-
-	void ImPixelTypeToOGL( GLenum* type, ImPixelType const eType )
-	{
-#if (IM_CURRENT_GFX == IM_GFX_OPENGL2)
-		switch ( eType )
-		{
-		case ImPixelType_UInt8:
-			*type = GL_UNSIGNED_BYTE;
-			break;
-		case ImPixelType_UInt16:
-			*type = GL_UNSIGNED_SHORT;
-			break;
-		case ImPixelType_UInt32:
-			*type = GL_UNSIGNED_INT;
-			break;
-		case ImPixelType_Float32:
-			*type = GL_FLOAT;
-			break;
-		default:
-			fprintf( stderr, "ImCreateImage ImType unsupported on OpenGL2 {IM_UINT8, IM_UINT16, IM_UINT32, IM_FLOAT32}\n" );
-			break;
-		}
-#else
-#if 1
-		switch ( eType )
-		{
-		case ImPixelType_UInt8:
-			*type = GL_UNSIGNED_BYTE;
-			break;
-		case ImPixelType_UInt16:
-			*type = GL_UNSIGNED_SHORT;
-			break;
-		case ImPixelType_UInt32:
-			*type = GL_UNSIGNED_INT;
-			break;
-		case ImPixelType_Float32:
-			*type = GL_FLOAT;
-			break;
-		default:
-			fprintf( stderr, "ImCreateImage ImType unsupported on OpenGL3 {IM_UINT8, IM_UINT16, IM_UINT32, IM_FLOAT32}\n" );
-			break;
-		}
-#else
-		switch ( eType )
-		{
-		case ImPixelType_UInt8:
-			*type = GL_UNSIGNED_BYTE;
-			break;
-		case ImPixelType_UInt16:
-			*type = GL_UNSIGNED_SHORT;
-			break;
-		case ImPixelType_UInt32:
-			*type = GL_UNSIGNED_INT;
-			break;
-		case ImPixelType_Int8:
-			*type = GL_BYTE;
-			break;
-		case ImPixelType_Int16:
-			*type = GL_SHORT;
-			break;
-		case ImPixelType_Int32:
-			*type = GL_INT;
-			break;
-		case ImPixelType_Float16:
-			*type = GL_HALF_FLOAT;
-			break;
-		case ImPixelType_Float32:
-			*type = GL_FLOAT;
-			break;
-		default:
-			fprintf( stderr, "ImCreateImage ImType unsupported on OpenGL2 {IM_UINT8, IM_UINT16, IM_UINT32, IM_INT8, IM_INT16, IM_INT32, IM_FLOAT32}\n" );
-			break;
-		}
-#endif
-#endif
-	}
-
-	//void ImBoundaryToOGL( GLint* wrap, ImTextureBoundary const eBoundary )
-	//{
-	//	switch ( eBoundary )
-	//	{
-	//	case IM_BOUNDARY_CLAMP:
-	//		*wrap = GL_CLAMP_TO_EDGE;
-	//		break;
-	//	case IM_BOUNDARY_REPEAT:
-	//		*wrap = GL_REPEAT;
-	//		break;
-	//	case IM_BOUNDARY_MIRROR:
-	//		*wrapS = GL_MIRRORED_REPEAT;
-	//	default:
-	//		fprintf( stderr, "ImCreateImage eBoundaryU unsupported on OpenGL {IM_CLAMP, IM_REPEAT, IM_MIRROR_REPEAT}\n" );
-	//		break;
-	//	}
-	//}
-
-#elif (IM_CURRENT_GFX == IM_GFX_DIRECTX9)
-	ImS32 ImPixelTypeChannelToDx9( D3DFORMAT* internalformat, ImPixelType const eType, ImPixelChannel const eChannel )
-	{
-		int sizeofChannel = -1;
-		switch ( eChannel )
-		{
-		case ImPixelChannel_R:
-			switch ( eType )
-			{
-			case ImPixelType_UInt8:
-			case ImPixelType_Int8:
-				sizeofChannel = 1;
-				*internalformat = D3DFMT_L8;
-				break;
-			case ImPixelType_UInt16:
-			case ImPixelType_Int16:
-				sizeofChannel = 2;
-				*internalformat = D3DFMT_L16;
-				break;
-			case ImPixelType_Float16:
-				sizeofChannel = 2;
-				*internalformat = D3DFMT_R16F;
-				break;
-			case ImPixelType_Float32:
-				sizeofChannel = 4;
-				*internalformat = D3DFMT_R32F;
-				break;
-			default:
-				fprintf( stderr, "ImPixelTypeChannelToDx9 ImType unsupported on Dx9 for Single channel image.\n" );
-				break;
-			}
-			break;
-		case ImPixelChannel_RG:
-			switch ( eType )
-			{
-			case ImPixelType_UInt8:
-			case ImPixelType_Int8:
-				sizeofChannel = 1;
-				*internalformat = D3DFMT_A8L8;
-				break;
-			case ImPixelType_UInt16:
-			case ImPixelType_Int16:
-				sizeofChannel = 2;
-				*internalformat = D3DFMT_G16R16;
-				break;
-			case ImPixelType_UInt32:
-			case ImPixelType_Int32:
-				sizeofChannel = 4;
-				*internalformat = D3DFMT_R3G3B2;
-				break;
-			case ImPixelType_Float16:
-				sizeofChannel = 2;
-				*internalformat = D3DFMT_G16R16F;
-				break;
-			case ImPixelType_Float32:
-				sizeofChannel = 4;
-				*internalformat = D3DFMT_G32R32F;
-				break;
-			default:
-				fprintf( stderr, "ImPixelTypeChannelToDx9 ImType unsupported on Dx9 for RG channel image.\n" );
-				break;
-			}
-			break;
-		case ImPixelChannel_RGB:
-			switch ( eType )
-			{
-			case ImPixelType_UInt8:
-			case ImPixelType_Int8:
-				sizeofChannel = 1;
-				*internalformat = D3DFMT_R8G8B8;
-				break;
-			default:
-				fprintf( stderr, "ImPixelTypeChannelToDx9 ImType unsupported on Dx9 for RGB channel image.\n" );
-				break;
-			}
-			break;
-		case ImPixelChannel_RGBA:
-			switch ( eType )
-			{
-			case ImPixelType_UInt8:
-			case ImPixelType_Int8:
-				sizeofChannel = 1;
-				*internalformat = D3DFMT_A8B8G8R8;
-				break;
-			case ImPixelType_UInt16:
-			case ImPixelType_Int16:
-				sizeofChannel = 2;
-				*internalformat = D3DFMT_A16B16G16R16;
-				break;
-			case ImPixelType_Float16:
-				sizeofChannel = 2;
-				*internalformat = D3DFMT_A16B16G16R16F;
-				break;
-			case ImPixelType_Float32:
-				sizeofChannel = 4;
-				*internalformat = D3DFMT_A32B32G32R32F;
-				break;
-			default:
-				fprintf( stderr, "ImPixelTypeChannelToDx9 ImType unsupported on Dx9 for RGBA channel image.\n" );
-				break;
-			}
-			break;
-		default:
-			fprintf( stderr, "ImPixelTypeChannelToDx9 eChannel unsupported on Dx9 {IM_R, IM_RG, IM_RGB, IM_RGBA}\n" );
-			break;
-		}
-
-		return sizeofChannel;
-	}
-
-	D3DTEXTUREADDRESS ImTextureBoundaryToDX9( ImTextureBoundary const eBoundary )
-	{
-		switch ( eBoundary )
-		{
-		case ImTextureBoundary_Clamp:
-			return D3DTADDRESS_CLAMP;
-		case ImTextureBoundary_Repeat:
-			return D3DTADDRESS_WRAP;
-		case ImTextureBoundary_Mirror:
-			return D3DTADDRESS_MIRROR;
-		default:
-			fprintf( stderr, "ImTextureBoundaryToDX9 eBoundary unsupported on Dx9 {IM_CLAMP, IM_REPEAT, IM_MIRROR_REPEAT}\n" );
-			return D3DTADDRESS_FORCE_DWORD;
-		}
-	}
-
-#elif (IM_CURRENT_GFX == IM_GFX_DIRECTX10) || (IM_CURRENT_GFX == IM_GFX_DIRECTX11) || (IM_CURRENT_GFX == IM_GFX_DIRECTX12)
-	ImS32 ImPixelTypeChannelToDx10_11_12( DXGI_FORMAT* internalformat, ImPixelType const eType, ImPixelChannel const eChannel )
-	{
-		int sizeofChannel = -1;
-		switch ( eChannel )
-		{
-		case ImPixelChannel_R:
-			switch ( eType )
-			{
-			case ImPixelType_UInt8:
-				sizeofChannel = 1;
-				*internalformat = DXGI_FORMAT_R8_UINT;
-				break;
-			case ImPixelType_Int8:
-				sizeofChannel = 1;
-				*internalformat = DXGI_FORMAT_R8_SINT;
-				break;
-			case ImPixelType_UInt16:
-				sizeofChannel = 2;
-				*internalformat = DXGI_FORMAT_R16_UINT;
-				break;
-			case ImPixelType_Int16:
-				sizeofChannel = 2;
-				*internalformat = DXGI_FORMAT_R16_SINT;
-				break;
-			case ImPixelType_Float16:
-				sizeofChannel = 2;
-				*internalformat = DXGI_FORMAT_R16_FLOAT;
-				break;
-			case ImPixelType_Float32:
-				sizeofChannel = 4;
-				*internalformat = DXGI_FORMAT_R32_FLOAT;
-				break;
-			default:
-				fprintf( stderr, "ImPixelTypeChannelToDx10_11 ImType unsupported on Dx for Single channel image.\n" );
-				break;
-			}
-			break;
-		case ImPixelChannel_RG:
-			switch ( eType )
-			{
-			case ImPixelType_UInt8:
-				sizeofChannel = 1;
-				*internalformat = DXGI_FORMAT_R8G8_UINT;
-				break;
-			case ImPixelType_Int8:
-				sizeofChannel = 1;
-				*internalformat = DXGI_FORMAT_R8G8_SINT;
-				break;
-			case ImPixelType_UInt16:
-				sizeofChannel = 2;
-				*internalformat = DXGI_FORMAT_R16G16_UINT;
-				break;
-			case ImPixelType_Int16:
-				sizeofChannel = 2;
-				*internalformat = DXGI_FORMAT_R16G16_SINT;
-				break;
-			case ImPixelType_UInt32:
-				sizeofChannel = 4;
-				*internalformat = DXGI_FORMAT_R32G32_UINT;
-				break;
-			case ImPixelType_Int32:
-				sizeofChannel = 4;
-				*internalformat = DXGI_FORMAT_R32G32_SINT;
-				break;
-			case ImPixelType_Float16:
-				sizeofChannel = 2;
-				*internalformat = DXGI_FORMAT_R16G16_FLOAT;
-				break;
-			case ImPixelType_Float32:
-				sizeofChannel = 4;
-				*internalformat = DXGI_FORMAT_R32G32_FLOAT;
-				break;
-			default:
-				fprintf( stderr, "ImPixelTypeChannelToDx10_11 ImType unsupported on Dx for RG channel image.\n" );
-				break;
-			}
-			break;
-		case ImPixelChannel_RGB:
-			switch ( eType )
-			{
-			case ImPixelType_UInt32:
-				sizeofChannel = 4;
-				*internalformat = DXGI_FORMAT_R32G32B32_UINT;
-				break;
-			case ImPixelType_Int32:
-				sizeofChannel = 4;
-				*internalformat = DXGI_FORMAT_R32G32B32_SINT;
-				break;
-			case ImPixelType_Float32:
-				sizeofChannel = 4;
-				*internalformat = DXGI_FORMAT_R32G32B32_FLOAT;
-				break;
-			default:
-				fprintf( stderr, "ImPixelTypeChannelToDx10_11 ImType unsupported on Dx for RGB channel image.\n" );
-				break;
-			}
-			break;
-		case ImPixelChannel_RGBA:
-			switch ( eType )
-			{
-			case ImPixelType_UInt8:
-				sizeofChannel = 1;
-				*internalformat = DXGI_FORMAT_R8G8B8A8_UNORM;
-				break;
-			case ImPixelType_Int8:
-				sizeofChannel = 1;
-				*internalformat = DXGI_FORMAT_R8G8B8A8_SINT;
-				break;
-			case ImPixelType_UInt16:
-				sizeofChannel = 2;
-				*internalformat = DXGI_FORMAT_R16G16B16A16_UINT;
-				break;
-			case ImPixelType_Int16:
-				sizeofChannel = 2;
-				*internalformat = DXGI_FORMAT_R16G16B16A16_SINT;
-				break;
-			case ImPixelType_UInt32:
-				sizeofChannel = 4;
-				*internalformat = DXGI_FORMAT_R32G32B32A32_UINT;
-				break;
-			case ImPixelType_Int32:
-				sizeofChannel = 4;
-				*internalformat = DXGI_FORMAT_R32G32B32A32_SINT;
-				break;
-			case ImPixelType_Float16:
-				sizeofChannel = 2;
-				*internalformat = DXGI_FORMAT_R16G16B16A16_FLOAT;
-				break;
-			case ImPixelType_Float32:
-				sizeofChannel = 4;
-				*internalformat = DXGI_FORMAT_R32G32B32A32_FLOAT;
-				break;
-			default:
-				fprintf( stderr, "ImPixelTypeChannelToDx10_11 ImType unsupported on Dx for RGBA channel image.\n" );
-				break;
-			}
-			break;
-		default:
-			fprintf( stderr, "ImPixelTypeChannelToDx9 eChannel unsupported on Dx9 {IM_R, IM_RG, IM_RGB, IM_RGBA}\n" );
-			break;
-			}
-
-		return sizeofChannel;
-	}
-#endif
-
 	ImTextureID	CreateTexture2D( char* pData, ImU32 const uWidth, ImU32 const uHeight, ImImageDesc const& oImgDesc )
 	{
-#if (IM_CURRENT_GFX == IM_GFX_OPENGL2) || (IM_CURRENT_GFX == IM_GFX_OPENGL3)
-
-		GLint internalformat;
-		GLenum format;
-		ImPixelTypeChannelToOGL( &internalformat, &format, oImgDesc.eType, oImgDesc.eChannel );
-
-		GLenum type;
-		ImPixelTypeToOGL( &type, oImgDesc.eType );
-
-		GLuint image_texture;
-		glGenTextures( 1, &image_texture );
-		glBindTexture( GL_TEXTURE_2D, image_texture );
-
-		GLint minMag;
-		GLint magMag;
-		switch ( oImgDesc.eFiltering )
-		{
-		//case IM_FILTERING_POINT:
-		//	minMag = magMag = GL_NEAREST;
-		//	break;
-		case ImTextureFiltering_Linear:
-			minMag = magMag = GL_LINEAR;
-			break;
-		default:
-			fprintf( stderr, "ImCreateImage eSampler unsupported on OpenGL {IM_LINEAR}\n" );
-			//fprintf( stderr, "ImCreateImage eSampler unsupported on OpenGL {IM_NEAREST, IM_LINEAR}\n" );
-			break;
-		}
-
-		//GLint wrapS;
-		//GLint wrapT;
-		//ImBoundaryToOGL( &wrapS, oImgDesc.eBoundaryU );
-		//ImBoundaryToOGL( &wrapT, oImgDesc.eBoundaryV );
-
-		glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, minMag );
-		glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, magMag );
-		//glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, wrapS );
-		//glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, wrapT );
-
-#if defined(GL_UNPACK_ROW_LENGTH) && !defined(__EMSCRIPTEN__)
-		glPixelStorei( GL_UNPACK_ROW_LENGTH, 0 );
-#endif
-		glTexImage2D( GL_TEXTURE_2D, 0, internalformat, ( GLsizei )uWidth, ( GLsizei )uHeight, 0, format, type, pData );
-
-		return ( ImTextureID )( intptr_t )image_texture;
-
-#elif (IM_CURRENT_GFX == IM_GFX_DIRECTX9)
-
-		D3DFORMAT internalformat;
-		int iSizeOf = ImPixelTypeChannelToDx9( &internalformat, oImgDesc.eType, oImgDesc.eChannel );
-
-		LPDIRECT3DTEXTURE9 pTexture;
-		PlatformData.pD3DDevice->CreateTexture( uWidth, uHeight, 1, 0,
-												internalformat, D3DPOOL_MANAGED, &pTexture, 0 );
-		if ( !pTexture )
-		{
-			fprintf( stderr, "ImCreateImage wasn't able to create the texture on Dx9\n" );
-		}
-
-		D3DLOCKED_RECT rect;
-		pTexture->LockRect( 0, &rect, 0, D3DLOCK_DISCARD );
-		unsigned char* dest = static_cast< unsigned char* >( rect.pBits );
-		memcpy( dest, &pData[ 0 ], iSizeOf * uWidth * uHeight * int( oImgDesc.eChannel ) );
-		pTexture->UnlockRect( 0 );
-
-		HRESULT hr = PlatformData.pD3DDevice->SetTexture( 0, pTexture );
-		if ( hr != D3D_OK )
-		{
-			//handle error
-		}
-
-		D3DTEXTUREFILTERTYPE eFiltering;
-		switch ( oImgDesc.eFiltering )
-		{
-		case ImTextureFiltering_Nearest:
-			eFiltering = D3DTEXF_POINT;
-			break;
-		case ImTextureFiltering_Linear:
-			eFiltering = D3DTEXF_LINEAR;
-			break;
-		default:
-			fprintf( stderr, "ImCreateImage eSampler unsupported on Dx9 {IM_NEAREST, IM_LINEAR}\n" );
-			break;
-		}
-
-		D3DTEXTUREADDRESS eBoundaryU = ImTextureBoundaryToDX9( oImgDesc.eBoundaryU );
-		D3DTEXTUREADDRESS eBoundaryV = ImTextureBoundaryToDX9( oImgDesc.eBoundaryV );
-		PlatformData.pD3DDevice->SetSamplerState( 0, D3DSAMP_ADDRESSU, eBoundaryU );
-		PlatformData.pD3DDevice->SetSamplerState( 0, D3DSAMP_ADDRESSV, eBoundaryV );
-		PlatformData.pD3DDevice->SetSamplerState( 0, D3DSAMP_MINFILTER, eFiltering );
-		PlatformData.pD3DDevice->SetSamplerState( 0, D3DSAMP_MAGFILTER, eFiltering );
-
-		return ( ImTextureID )pTexture;
-
-#elif (IM_CURRENT_GFX == IM_GFX_DIRECTX10)
-
-		ID3D10ShaderResourceView* out_srv = NULL;
-
-		DXGI_FORMAT internalformat;
-		int iSizeOf = ImPixelTypeChannelToDx10_11_12( &internalformat, oImgDesc.eType, oImgDesc.eChannel );
-
-		// Create texture
-		D3D10_TEXTURE2D_DESC desc;
-		ZeroMemory( &desc, sizeof( desc ) );
-		desc.Width = uWidth;
-		desc.Height = uHeight;
-		desc.MipLevels = 1;
-		desc.ArraySize = 1;
-		desc.Format = internalformat;
-		desc.SampleDesc.Count = 1;
-		desc.Usage = D3D10_USAGE_DEFAULT;
-		desc.BindFlags = D3D10_BIND_SHADER_RESOURCE;
-		desc.CPUAccessFlags = 0;
-
-		ID3D10Texture2D* pTexture = NULL;
-		D3D10_SUBRESOURCE_DATA subResource;
-		subResource.pSysMem = pData;
-		subResource.SysMemPitch = desc.Width * int( oImgDesc.eChannel ) * iSizeOf;
-		subResource.SysMemSlicePitch = 0;
-		PlatformData.pD3DDevice->CreateTexture2D( &desc, &subResource, &pTexture );
-
-		// Create texture view
-		D3D10_SHADER_RESOURCE_VIEW_DESC srvDesc;
-		ZeroMemory( &srvDesc, sizeof( srvDesc ) );
-		srvDesc.Format = internalformat;
-		srvDesc.ViewDimension = D3D10_SRV_DIMENSION_TEXTURE2D;
-		srvDesc.Texture2D.MipLevels = desc.MipLevels;
-		srvDesc.Texture2D.MostDetailedMip = 0;
-		PlatformData.pD3DDevice->CreateShaderResourceView( pTexture, &srvDesc, &out_srv );
-		pTexture->Release();
-
-		// TODO add sampler
-		//D3D10_SAMPLER_DESC desc;
-		//ZeroMemory( &desc, sizeof( desc ) );
-		//desc.Filter = D3D10_FILTER_MIN_MAG_MIP_LINEAR;
-		//desc.AddressU = D3D10_TEXTURE_ADDRESS_WRAP;
-		//desc.AddressV = D3D10_TEXTURE_ADDRESS_WRAP;
-		//desc.AddressW = D3D10_TEXTURE_ADDRESS_WRAP;
-		//desc.MipLODBias = 0.f;
-		//desc.ComparisonFunc = D3D10_COMPARISON_ALWAYS;
-		//desc.MinLOD = 0.f;
-		//desc.MaxLOD = 0.f;
-		//PlatformData.pD3DDevice->CreateSamplerState( &desc, &Sampler );
-
-		return ( ImTextureID )out_srv;
-
-#elif (IM_CURRENT_GFX == IM_GFX_DIRECTX11)
-
-		ID3D11ShaderResourceView* out_srv = NULL;
-
-		DXGI_FORMAT internalformat;
-		int iSizeOf = ImPixelTypeChannelToDx10_11_12( &internalformat, oImgDesc.eType, oImgDesc.eChannel );
-
-		// Create texture
-		D3D11_TEXTURE2D_DESC desc;
-		ZeroMemory( &desc, sizeof( desc ) );
-		desc.Width = uWidth;
-		desc.Height = uHeight;
-		desc.MipLevels = 1;
-		desc.ArraySize = 1;
-		desc.Format = internalformat;
-		desc.SampleDesc.Count = 1;
-		desc.Usage = D3D11_USAGE_DEFAULT;
-		desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
-		desc.CPUAccessFlags = 0;
-
-		ID3D11Texture2D* pTexture = NULL;
-		D3D11_SUBRESOURCE_DATA subResource;
-		subResource.pSysMem = pData;
-		subResource.SysMemPitch = desc.Width * int( oImgDesc.eChannel ) * iSizeOf;
-		subResource.SysMemSlicePitch = 0;
-		PlatformData.pD3DDevice->CreateTexture2D( &desc, &subResource, &pTexture );
-
-		// Create texture view
-		D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc;
-		ZeroMemory( &srvDesc, sizeof( srvDesc ) );
-		srvDesc.Format = internalformat;
-		srvDesc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
-		srvDesc.Texture2D.MipLevels = desc.MipLevels;
-		srvDesc.Texture2D.MostDetailedMip = 0;
-		PlatformData.pD3DDevice->CreateShaderResourceView( pTexture, &srvDesc, &out_srv );
-		pTexture->Release();
-
-		// TODO Sampler
-		//D3D11_SAMPLER_DESC desc;
-		//ZeroMemory( &desc, sizeof( desc ) );
-		//desc.Filter = D3D11_FILTER_MIN_MAG_MIP_LINEAR;
-		//desc.AddressU = D3D11_TEXTURE_ADDRESS_WRAP;
-		//desc.AddressV = D3D11_TEXTURE_ADDRESS_WRAP;
-		//desc.AddressW = D3D11_TEXTURE_ADDRESS_WRAP;
-		//desc.MipLODBias = 0.f;
-		//desc.ComparisonFunc = D3D11_COMPARISON_ALWAYS;
-		//desc.MinLOD = 0.f;
-		//desc.MaxLOD = 0.f;
-		//PlatformData.pD3DDevice->CreateSamplerState( &desc, &Sampler );
-
-		return ( ImTextureID )( out_srv );
-
-#elif (IM_CURRENT_GFX == IM_GFX_DIRECTX12)
-
-		DXGI_FORMAT internalformat;
-		int iSizeOf = ImPixelTypeChannelToDx10_11_12( &internalformat, oImgDesc.eType, oImgDesc.eChannel );
-
-		D3D12_HEAP_PROPERTIES props;
-		memset( &props, 0, sizeof( D3D12_HEAP_PROPERTIES ) );
-		props.Type = D3D12_HEAP_TYPE_DEFAULT;
-		props.CPUPageProperty = D3D12_CPU_PAGE_PROPERTY_UNKNOWN;
-		props.MemoryPoolPreference = D3D12_MEMORY_POOL_UNKNOWN;
-
-		D3D12_RESOURCE_DESC desc;
-		ZeroMemory( &desc, sizeof( desc ) );
-		desc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
-		desc.Alignment = 0;
-		desc.Width = uWidth;
-		desc.Height = uHeight;
-		desc.DepthOrArraySize = 1;
-		desc.MipLevels = 1;
-		desc.Format = internalformat;
-		desc.SampleDesc.Count = 1;
-		desc.SampleDesc.Quality = 0;
-		desc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
-		desc.Flags = D3D12_RESOURCE_FLAG_NONE;
-
-		ID3D12Resource* pTexture = nullptr;
-		PlatformData.pD3DDevice->CreateCommittedResource( &props, D3D12_HEAP_FLAG_NONE, &desc,
-												 D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS( &pTexture ) );
-
-		UINT uploadPitch = ( uWidth * ((int)oImgDesc.eChannel ) + D3D12_TEXTURE_DATA_PITCH_ALIGNMENT - 1u ) & ~( D3D12_TEXTURE_DATA_PITCH_ALIGNMENT - 1u );
-		UINT uploadSize = uHeight * uploadPitch;
-		desc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
-		desc.Alignment = 0;
-		desc.Width = uploadSize;
-		desc.Height = 1;
-		desc.DepthOrArraySize = 1;
-		desc.MipLevels = 1;
-		desc.Format = DXGI_FORMAT_UNKNOWN;
-		desc.SampleDesc.Count = 1;
-		desc.SampleDesc.Quality = 0;
-		desc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
-		desc.Flags = D3D12_RESOURCE_FLAG_NONE;
-
-		props.Type = D3D12_HEAP_TYPE_UPLOAD;
-		props.CPUPageProperty = D3D12_CPU_PAGE_PROPERTY_UNKNOWN;
-		props.MemoryPoolPreference = D3D12_MEMORY_POOL_UNKNOWN;
-
-		ID3D12Resource* uploadBuffer = nullptr;
-		HRESULT hr = PlatformData.pD3DDevice->CreateCommittedResource( &props, D3D12_HEAP_FLAG_NONE, &desc,
-															  D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS( &uploadBuffer ) );
-		IM_ASSERT( SUCCEEDED( hr ) );
-
-		void* mapped = nullptr;
-		D3D12_RANGE range = { 0, uploadSize };
-		hr = uploadBuffer->Map( 0, &range, &mapped );
-		IM_ASSERT( SUCCEEDED( hr ) );
-		for ( int y = 0; y < (int)uHeight; y++ )
-			memcpy( ( void* )( ( uintptr_t )mapped + y * uploadPitch ), pData + y * uHeight * ((int)oImgDesc.eFiltering ), uWidth * ((int)oImgDesc.eChannel));
-		uploadBuffer->Unmap( 0, &range );
-
-		D3D12_TEXTURE_COPY_LOCATION srcLocation = {};
-		srcLocation.pResource = uploadBuffer;
-		srcLocation.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
-		srcLocation.PlacedFootprint.Footprint.Format = internalformat;
-		srcLocation.PlacedFootprint.Footprint.Width = uWidth;
-		srcLocation.PlacedFootprint.Footprint.Height = uHeight;
-		srcLocation.PlacedFootprint.Footprint.Depth = 1;
-		srcLocation.PlacedFootprint.Footprint.RowPitch = uploadPitch;
-
-		D3D12_TEXTURE_COPY_LOCATION dstLocation = {};
-		dstLocation.pResource = pTexture;
-		dstLocation.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
-		dstLocation.SubresourceIndex = 0;
-
-		D3D12_RESOURCE_BARRIER barrier = {};
-		barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-		barrier.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
-		barrier.Transition.pResource = pTexture;
-		barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-		barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
-		barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
-
-		ID3D12Fence* fence = nullptr;
-		hr = PlatformData.pD3DDevice->CreateFence( 0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS( &fence ) );
-		IM_ASSERT( SUCCEEDED( hr ) );
-
-		HANDLE event = CreateEvent( 0, 0, 0, 0 );
-		IM_ASSERT( event != nullptr );
-
-		D3D12_COMMAND_QUEUE_DESC queueDesc = {};
-		queueDesc.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
-		queueDesc.Flags = D3D12_COMMAND_QUEUE_FLAG_NONE;
-		queueDesc.NodeMask = 1;
-
-		ID3D12CommandQueue* cmdQueue = nullptr;
-		hr = PlatformData.pD3DDevice->CreateCommandQueue( &queueDesc, IID_PPV_ARGS( &cmdQueue ) );
-		IM_ASSERT( SUCCEEDED( hr ) );
-
-		ID3D12CommandAllocator* cmdAlloc = nullptr;
-		hr = PlatformData.pD3DDevice->CreateCommandAllocator( D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS( &cmdAlloc ) );
-		IM_ASSERT( SUCCEEDED( hr ) );
-
-		ID3D12GraphicsCommandList* cmdList = nullptr;
-		hr = PlatformData.pD3DDevice->CreateCommandList( 0, D3D12_COMMAND_LIST_TYPE_DIRECT, cmdAlloc, nullptr, IID_PPV_ARGS( &cmdList ) );
-		IM_ASSERT( SUCCEEDED( hr ) );
-
-		cmdList->CopyTextureRegion( &dstLocation, 0, 0, 0, &srcLocation, nullptr );
-		cmdList->ResourceBarrier( 1, &barrier );
-
-		hr = cmdList->Close();
-		IM_ASSERT( SUCCEEDED( hr ) );
-
-		cmdQueue->ExecuteCommandLists( 1, ( ID3D12CommandList* const* )&cmdList );
-		hr = cmdQueue->Signal( fence, 1 );
-		IM_ASSERT( SUCCEEDED( hr ) );
-
-		fence->SetEventOnCompletion( 1, event );
-		WaitForSingleObject( event, INFINITE );
-
-		cmdList->Release();
-		cmdAlloc->Release();
-		cmdQueue->Release();
-		CloseHandle( event );
-		fence->Release();
-		uploadBuffer->Release();
-
-		// Create texture view
-		D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc;
-		ZeroMemory( &srvDesc, sizeof( srvDesc ) );
-		srvDesc.Format = internalformat;
-		srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
-		srvDesc.Texture2D.MipLevels = desc.MipLevels;
-		srvDesc.Texture2D.MostDetailedMip = 0;
-		srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-
-		UINT handle_increment = PlatformData.pD3DDevice->GetDescriptorHandleIncrementSize( D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV );
-		int descriptor_index = 1; // The descriptor table index to use (not normally a hard-coded constant, but in this case we'll assume we have slot 1 reserved for us)
-		D3D12_CPU_DESCRIPTOR_HANDLE my_texture_srv_cpu_handle = PlatformData.pD3DSRVDescHeap->GetCPUDescriptorHandleForHeapStart();
-		my_texture_srv_cpu_handle.ptr += ( handle_increment * descriptor_index );
-		D3D12_GPU_DESCRIPTOR_HANDLE my_texture_srv_gpu_handle = PlatformData.pD3DSRVDescHeap->GetGPUDescriptorHandleForHeapStart();
-		my_texture_srv_gpu_handle.ptr += ( handle_increment * descriptor_index );
-
-		PlatformData.pD3DDevice->CreateShaderResourceView( pTexture, &srvDesc, my_texture_srv_cpu_handle );
-
-		return ( ImTextureID )pTexture;
-#endif
+		return Backend::CreateTexture2D( pData, uWidth, uHeight, oImgDesc );
 	}
 
 	void		ReleaseTexture2D( ImTextureID id )
 	{
-#if (IM_CURRENT_GFX == IM_GFX_OPENGL2) || (IM_CURRENT_GFX == IM_GFX_OPENGL3)
-
-		GLuint tex = ( GLuint )( intptr_t )id;
-		glDeleteTextures( 1, &tex );
-
-#elif (IM_CURRENT_GFX == IM_GFX_DIRECTX9)
-
-		( ( LPDIRECT3DTEXTURE9 )id )->Release();
-
-#elif (IM_CURRENT_GFX == IM_GFX_DIRECTX10)
-
-		( ( ID3D10ShaderResourceView* )id )->Release();
-
-#elif (IM_CURRENT_GFX == IM_GFX_DIRECTX11)
-
-		( ( ID3D11ShaderResourceView* )id )->Release();
-
-#elif (IM_CURRENT_GFX == IM_GFX_DIRECTX12)
-
-		//( *reinterpret_cast< ID3D12Resource** >( &id ) )->Release();
-		//( *reinterpret_cast< ID3D12Resource** >( &id ) ) = NULL;
-
-#endif
+		Backend::ReleaseTexture2D( id );
 	}
 
 #ifdef IM_SUPPORT_CUSTOM_SHADER
 	void*	InternalCreateDynamicConstantBuffer( int sizeof_in_bytes_constants,
 										  void* init_data_constant )
 	{
-#if (IM_CURRENT_GFX == IM_GFX_OPENGL2)
-#elif (IM_CURRENT_GFX == IM_GFX_OPENGL3)
+#if (IM_CURRENT_GFX == IM_GFX_OPENGL3)
 
 		return NULL;
-
-#elif (IM_CURRENT_GFX == IM_GFX_DIRECTX9)
-#elif (IM_CURRENT_GFX == IM_GFX_DIRECTX10)
-
-		ImGui_ImplDX10_Data *bd = ImGui_ImplDX10_GetBackendData();
-
-		ID3D10Buffer *constant_buffer = NULL;
-		if ( sizeof_in_bytes_constants > 0 )
-		{
-			D3D10_BUFFER_DESC desc;
-			desc.ByteWidth = sizeof_in_bytes_constants;
-			desc.Usage = D3D10_USAGE_DYNAMIC;
-			desc.BindFlags = D3D10_BIND_CONSTANT_BUFFER;
-			desc.CPUAccessFlags = D3D10_CPU_ACCESS_WRITE;
-			desc.MiscFlags = 0;
-			if ( init_data_constant != NULL )
-			{
-				D3D10_SUBRESOURCE_DATA init = D3D10_SUBRESOURCE_DATA{ 0 };
-				init.pSysMem = init_data_constant;
-				HRESULT hr = bd->pd3dDevice->CreateBuffer( &desc, &init, &constant_buffer );
-
-				IM_UNUSED( hr );
-
-#if 0
-				if ( hr != S_OK )
-				{
-					_com_error err( hr );
-					LPCTSTR errMsg = err.ErrorMessage();
-					OutputDebugStringA( errMsg );
-				}
-#endif
-			}
-			else
-			{
-				bd->pd3dDevice->CreateBuffer( &desc, NULL, &constant_buffer );
-			}
-		}
-
-		return ( void * )constant_buffer;
-
 
 #elif (IM_CURRENT_GFX == IM_GFX_DIRECTX11)
 
@@ -1087,6 +63,56 @@ namespace ImPlatform
 		return ( void* )constant_buffer;
 
 #elif (IM_CURRENT_GFX == IM_GFX_DIRECTX12)
+
+		ID3D12Resource* constant_buffer = NULL;
+		if ( sizeof_in_bytes_constants > 0 )
+		{
+			// Align to 256 bytes (D3D12 constant buffer requirement)
+			UINT aligned_size = ( sizeof_in_bytes_constants + 255 ) & ~255;
+
+			D3D12_HEAP_PROPERTIES heap_props = {};
+			heap_props.Type = D3D12_HEAP_TYPE_UPLOAD;
+			heap_props.CPUPageProperty = D3D12_CPU_PAGE_PROPERTY_UNKNOWN;
+			heap_props.MemoryPoolPreference = D3D12_MEMORY_POOL_UNKNOWN;
+
+			D3D12_RESOURCE_DESC resource_desc = {};
+			resource_desc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+			resource_desc.Alignment = 0;
+			resource_desc.Width = aligned_size;
+			resource_desc.Height = 1;
+			resource_desc.DepthOrArraySize = 1;
+			resource_desc.MipLevels = 1;
+			resource_desc.Format = DXGI_FORMAT_UNKNOWN;
+			resource_desc.SampleDesc.Count = 1;
+			resource_desc.SampleDesc.Quality = 0;
+			resource_desc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+			resource_desc.Flags = D3D12_RESOURCE_FLAG_NONE;
+
+			if ( FAILED( PlatformData.pD3DDevice->CreateCommittedResource(
+				&heap_props,
+				D3D12_HEAP_FLAG_NONE,
+				&resource_desc,
+				D3D12_RESOURCE_STATE_GENERIC_READ,
+				nullptr,
+				IID_PPV_ARGS( &constant_buffer ) ) ) )
+			{
+				return NULL;
+			}
+
+			// Initialize with data if provided
+			if ( init_data_constant != NULL )
+			{
+				void* mapped_data = NULL;
+				D3D12_RANGE read_range = { 0, 0 };
+				if ( SUCCEEDED( constant_buffer->Map( 0, &read_range, &mapped_data ) ) )
+				{
+					memcpy( mapped_data, init_data_constant, sizeof_in_bytes_constants );
+					constant_buffer->Unmap( 0, nullptr );
+				}
+			}
+		}
+
+		return ( void* )constant_buffer;
 
 #endif
 	}
@@ -1294,6 +320,15 @@ float4 main_ps(PS_INPUT input) : SV_Target\n\
 		IM_FREE( replace3 );
 	}
 
+	int get_file_size( ImFileHandle file ) // path to file
+	{
+		fseek( file, 0, SEEK_END );
+		int sz = ftell( file );
+		fseek( file, 0, SEEK_SET );
+
+		return sz;
+	}
+
 	void	CreateDefaultPixelShaderSource
 	( char** out_vs_source,
 	  char** out_ps_source,
@@ -1302,23 +337,48 @@ float4 main_ps(PS_INPUT input) : SV_Target\n\
 	  char const* ps_source,
 	  bool multiply_with_texture )
 	{
-		CreateShaderSource( out_vs_source,
-							out_ps_source,
-							"",
-							"",
-"output.pos = mul( ProjectionMatrix, float4(input.pos.xy, 0.f, 1.f));\n\
-output.col = input.col;\n\
-output.uv  = input.uv;\n",
-							ps_pre_functions,
-							ps_params,
-							ps_source,
-"float2 pos : POSITION;\n\
-float4 col : COLOR0;\n\
-float2 uv  : TEXCOORD0;\n",
-"float4 pos : SV_POSITION;\n\
-float4 col : COLOR0;\n\
-float2 uv  : TEXCOORD0;\n",
-							true );
+		size_t data_size = 0;
+		*out_vs_source = ( char * )ImFileLoadToMemory( "shaders/hlsl_src/default.hlsl", "rb", &data_size, 0 );
+		IM_ASSERT( *out_vs_source );
+		IM_ASSERT( data_size > 0 );
+		*out_ps_source = ( char * )ImFileLoadToMemory( "shaders/hlsl_src/default.hlsl", "rb", &data_size, 0 );
+		IM_ASSERT( *out_ps_source );
+		IM_ASSERT( data_size > 0 );
+
+		ImFileHandle file_vs = ImFileOpen( "shaders/hlsl_src/default.hlsl", "rb" );
+		ImU64 size_vs = ImFileGetSize( file_vs );
+		*out_vs_source = ( char * )IM_ALLOC( size_vs + 1 );
+		ImFileRead( *out_vs_source, 1, size_vs, file_vs );
+		( *out_vs_source )[ size_vs ] = '\0';
+		ImFileClose( file_vs );
+
+
+		ImFileHandle file_ps = ImFileOpen( "shaders/hlsl_src/default.hlsl", "rb" );
+		ImU64 size_ps = ImFileGetSize( file_ps );
+		*out_ps_source = ( char * )IM_ALLOC( size_ps + 1 );
+		ImFileRead( *out_ps_source, 1, size_ps, file_ps );
+		(
+			*out_ps_source )[ size_ps ] = '\0';
+		ImFileClose( file_ps );
+
+
+//		CreateShaderSource( out_vs_source,
+//							out_ps_source,
+//							"",
+//							"",
+//"output.pos = mul( ProjectionMatrix, float4(input.pos.xy, 0.f, 1.f));\n\
+//output.col = input.col;\n\
+//output.uv  = input.uv;\n",
+//							ps_pre_functions,
+//							ps_params,
+//							ps_source,
+//"float2 pos : POSITION;\n\
+//float4 col : COLOR0;\n\
+//float2 uv  : TEXCOORD0;\n",
+//"float4 pos : SV_POSITION;\n\
+//float4 col : COLOR0;\n\
+//float2 uv  : TEXCOORD0;\n",
+//							true );
 	}
 
 	ImDrawShader	CreateShader( char const* vs_source,
@@ -1328,642 +388,63 @@ float2 uv  : TEXCOORD0;\n",
 								  int sizeof_in_bytes_ps_constants,
 								  void* init_ps_data_constant )
 	{
-		void* vs_const = NULL;
-		void* ps_const = NULL;
-
-#if (IM_CURRENT_GFX == IM_GFX_OPENGL2)
-
-
-
-#elif (IM_CURRENT_GFX == IM_GFX_OPENGL3)
-
-		//std::string glsl_version = std::string( "#version 130" );
-
-		//sVS = glsl_version + "\n" + "#define IM_SHADER_GLSL\n" + sVS;
-		//sPS = glsl_version + "\n" + "#define IM_SHADER_GLSL\n" + sPS;
-		char const *tmp_vertex_src;
-		char const *tmp_pixel_src;
-		ImFormatStringToTempBuffer( &tmp_vertex_src, NULL, "#version 130\n#define IM_SHADER_GLSL\n%s\n", vs_source );
-		ImFormatStringToTempBuffer( &tmp_pixel_src,  NULL, "#version 130\n#define IM_SHADER_GLSL\n%s\n", ps_source );
-
-#if 0
-		{
-			std::ofstream oFile( "shader_vs.hlsl" );
-			oFile << sVS << std::endl;
-			oFile.close();
-		}
-		{
-			std::ofstream oFile( "shader_ps.hlsl" );
-			oFile << sPS << std::endl;
-			oFile.close();
-		}
-#endif
-
-		ImGui_ImplOpenGL3_Data* bd = ImGui_ImplOpenGL3_GetBackendData();
-
-		const GLchar* vertex_shader_with_version[ 2 ] = { bd->GlslVersionString, tmp_vertex_src };
-		GLuint vert_handle = glCreateShader( GL_VERTEX_SHADER );
-		glShaderSource( vert_handle, 2, vertex_shader_with_version, nullptr );
-		glCompileShader( vert_handle );
-		CheckShader( vert_handle, "vertex shader" );
-
-		const GLchar* fragment_shader_with_version[ 2 ] = { bd->GlslVersionString, tmp_pixel_src };
-		GLuint frag_handle = glCreateShader( GL_FRAGMENT_SHADER );
-		glShaderSource( frag_handle, 2, fragment_shader_with_version, nullptr );
-		glCompileShader( frag_handle );
-		CheckShader( frag_handle, "fragment shader" );
-
-		bd->ShaderHandle = glCreateProgram();
-		glAttachShader( bd->ShaderHandle, vert_handle );
-		glAttachShader( bd->ShaderHandle, frag_handle );
-		glLinkProgram( bd->ShaderHandle );
-		CheckProgram( bd->ShaderHandle, "shader program" );
-
-		glDetachShader( bd->ShaderHandle, vert_handle );
-		glDetachShader( bd->ShaderHandle, frag_handle );
-		glDeleteShader( vert_handle );
-		glDeleteShader( frag_handle );
-
-		void* pVertexShader = (void*)(intptr_t)(vert_handle);
-		void* pPixelShader = (void*)(intptr_t)( frag_handle );
-
-#elif (IM_CURRENT_GFX == IM_GFX_DIRECTX9)
-
-#elif (IM_CURRENT_GFX == IM_GFX_DIRECTX10)
-
-		ImGui_ImplDX10_Data *bd = ImGui_ImplDX10_GetBackendData();
-
-		ID3D10VertexShader *pVertexShader = NULL;
-		ID3D10PixelShader *pPixelShader = NULL;
-
-		//{
-		//	std::ofstream oFile( "shader_vs.hlsl" );
-		//	oFile << sVS << std::endl;
-		//	oFile.close();
-		//}
-		//{
-		//	std::ofstream oFile( "shader_ps.hlsl" );
-		//	oFile << sPS << std::endl;
-		//	oFile.close();
-		//}
-
-		D3D_SHADER_MACRO macros[] = { "IM_SHADER_HLSL", "", NULL, NULL };
-
-		ID3DBlob *vertexShaderBlob;
-
-		ID3DBlob *pErrorBlob;
-		if ( FAILED( D3DCompile( vs_source, strlen( vs_source ), nullptr, &macros[ 0 ], nullptr, "main_vs", "vs_4_0", 0, 0, &vertexShaderBlob, &pErrorBlob ) ) )
-		{
-			int error_count = int( pErrorBlob->GetBufferSize() );
-			printf( "%*s\n", error_count, ( char * )pErrorBlob->GetBufferPointer() );
-			fflush( stdout );
-			vertexShaderBlob->Release();
-			return { NULL, NULL, NULL, 0 };
-		}
-		if ( bd->pd3dDevice->CreateVertexShader( vertexShaderBlob->GetBufferPointer(), vertexShaderBlob->GetBufferSize(), &pVertexShader ) != S_OK )
-		{
-			vertexShaderBlob->Release();
-			return { NULL, NULL, NULL, 0 };
-		}
-		vertexShaderBlob->Release();
-
-		ID3DBlob *pixelShaderBlob;
-		if ( FAILED( D3DCompile( ps_source, strlen( ps_source ), nullptr, &macros[ 0 ], nullptr, "main_ps", "ps_4_0", 0, 0, &pixelShaderBlob, &pErrorBlob ) ) )
-		{
-			int error_count = int( pErrorBlob->GetBufferSize() );
-			printf( "%*s\n", error_count, ( char * )pErrorBlob->GetBufferPointer() );
-			fflush( stdout );
-			pixelShaderBlob->Release();
-			return { NULL, NULL, NULL };
-		}
-		if ( bd->pd3dDevice->CreatePixelShader( pixelShaderBlob->GetBufferPointer(), pixelShaderBlob->GetBufferSize(), &pPixelShader ) != S_OK )
-		{
-			vertexShaderBlob->Release();
-			return { NULL, NULL, NULL, 0 };
-		}
-		pixelShaderBlob->Release();
-
-		vs_const = InternalCreateDynamicConstantBuffer( sizeof_in_bytes_vs_constants, init_vs_data_constant );
-		ps_const = InternalCreateDynamicConstantBuffer( sizeof_in_bytes_ps_constants, init_ps_data_constant );
-
-#elif (IM_CURRENT_GFX == IM_GFX_DIRECTX11)
-
-		ImGui_ImplDX11_Data* bd = ImGui_ImplDX11_GetBackendData();
-
-		ID3D11VertexShader* pVertexShader = NULL;
-		ID3D11PixelShader* pPixelShader = NULL;
-
-		//{
-		//	std::ofstream oFile( "shader_vs.hlsl" );
-		//	oFile << sVS << std::endl;
-		//	oFile.close();
-		//}
-		//{
-		//	std::ofstream oFile( "shader_ps.hlsl" );
-		//	oFile << sPS << std::endl;
-		//	oFile.close();
-		//}
-
-		D3D_SHADER_MACRO macros[] = { "IM_SHADER_HLSL", "", NULL, NULL };
-
-		ID3DBlob* vertexShaderBlob;
-
-		ID3DBlob* pErrorBlob;
-		if ( FAILED( D3DCompile( vs_source, strlen( vs_source ), nullptr, &macros[0], nullptr, "main_vs", "vs_5_0", 0, 0, &vertexShaderBlob, &pErrorBlob)) )
-		{
-			int error_count = int( pErrorBlob->GetBufferSize() );
-			printf( "%*s\n", error_count, ( char* )pErrorBlob->GetBufferPointer() );
-			fflush( stdout );
-			vertexShaderBlob->Release();
-			return { NULL, NULL, NULL, 0 };
-		}
-		if ( bd->pd3dDevice->CreateVertexShader( vertexShaderBlob->GetBufferPointer(), vertexShaderBlob->GetBufferSize(), nullptr, &pVertexShader ) != S_OK )
-		{
-			vertexShaderBlob->Release();
-			return { NULL, NULL, NULL, 0 };
-		}
-		vertexShaderBlob->Release();
-
-		ID3DBlob* pixelShaderBlob;
-		if ( FAILED( D3DCompile( ps_source, strlen( ps_source ), nullptr, &macros[ 0 ], nullptr, "main_ps", "ps_5_0", 0, 0, &pixelShaderBlob, &pErrorBlob ) ) )
-		{
-			int error_count = int( pErrorBlob->GetBufferSize() );
-			printf( "%*s\n", error_count, ( char* )pErrorBlob->GetBufferPointer() );
-			fflush( stdout );
-			pixelShaderBlob->Release();
-			return { NULL, NULL, NULL };
-		}
-		if ( bd->pd3dDevice->CreatePixelShader( pixelShaderBlob->GetBufferPointer(), pixelShaderBlob->GetBufferSize(), nullptr, &pPixelShader ) != S_OK )
-		{
-			vertexShaderBlob->Release();
-			return { NULL, NULL, NULL, 0 };
-		}
-		pixelShaderBlob->Release();
-
-		vs_const = InternalCreateDynamicConstantBuffer( sizeof_in_bytes_vs_constants, init_vs_data_constant );
-		ps_const = InternalCreateDynamicConstantBuffer( sizeof_in_bytes_ps_constants, init_ps_data_constant );
-
-#elif (IM_CURRENT_GFX == IM_GFX_DIRECTX12)
-
-		//ImGui_ImplDX12_Data *bd = ImGui_ImplDX12_GetBackendData();
-		//
-		//void *pVertexShader = NULL;
-		//void *pPixelShader = NULL;
-		//
-		//vs_const = InternalCreateDynamicConstantBuffer( sizeof_in_bytes_vs_constants, init_vs_data_constant );
-		//ps_const = InternalCreateDynamicConstantBuffer( sizeof_in_bytes_ps_constants, init_ps_data_constant );
-
-#endif
-
-		void* cpu_vs_data = NULL;
-		void* cpu_ps_data = NULL;
-		if ( init_vs_data_constant != NULL )
-		{
-			cpu_vs_data = IM_ALLOC( sizeof_in_bytes_vs_constants );
-			memcpy( cpu_vs_data, init_vs_data_constant, sizeof_in_bytes_vs_constants );
-		}
-		if ( init_ps_data_constant != NULL )
-		{
-			cpu_ps_data = IM_ALLOC( sizeof_in_bytes_ps_constants );
-			memcpy( cpu_ps_data, init_ps_data_constant, sizeof_in_bytes_ps_constants );
-		}
-
-		return
-		{
-			pVertexShader, pPixelShader,
-			vs_const, ps_const,
-			cpu_vs_data, cpu_ps_data,
-			sizeof_in_bytes_vs_constants, sizeof_in_bytes_ps_constants,
-			false, false
-		};
+		return Backend::CreateShader( vs_source, ps_source,
+									  sizeof_in_bytes_vs_constants, init_vs_data_constant,
+									  sizeof_in_bytes_ps_constants, init_ps_data_constant );
 	}
 
 	void		ReleaseShader( ImDrawShader& shader )
 	{
-#if (IM_CURRENT_GFX == IM_GFX_OPENGL2) || (IM_CURRENT_GFX == IM_GFX_OPENGL3)
-
-#elif (IM_CURRENT_GFX == IM_GFX_DIRECTX9)
-
-#elif (IM_CURRENT_GFX == IM_GFX_DIRECTX10)
-
-		ID3D10VertexShader* pVertexShader = ( ID3D10VertexShader* )shader.vs;
-		ID3D10PixelShader* pPixelShader = ( ID3D10PixelShader* )shader.ps;
-
-		if ( pVertexShader )
-			pVertexShader->Release();
-		if ( pPixelShader )
-			pPixelShader->Release();
-
-		pVertexShader->Release();
-		pPixelShader->Release();
-
-		ID3D10Buffer* vs_buffer = ( ID3D10Buffer* )shader.vs_cst;
-		ID3D10Buffer* ps_buffer = ( ID3D10Buffer* )shader.ps_cst;
-		if ( vs_buffer )
-			vs_buffer->Release();
-		if ( ps_buffer )
-			ps_buffer->Release();
-
-#elif (IM_CURRENT_GFX == IM_GFX_DIRECTX11)
-
-		ID3D11VertexShader* pVertexShader = ( ID3D11VertexShader* )shader.vs;
-		ID3D11PixelShader* pPixelShader = ( ID3D11PixelShader* )shader.ps;
-
-		if ( pVertexShader )
-			pVertexShader->Release();
-		if ( pPixelShader )
-			pPixelShader->Release();
-
-		ID3D11Buffer* vs_buffer = (ID3D11Buffer*)shader.vs_cst;
-		ID3D11Buffer* ps_buffer = (ID3D11Buffer*)shader.ps_cst;
-		if ( vs_buffer )
-			vs_buffer->Release();
-		if ( ps_buffer )
-			ps_buffer->Release();
-
-#elif (IM_CURRENT_GFX == IM_GFX_DIRECTX12)
-
-#endif
-
-		if ( shader.cpu_vs_data )
-		{
-			IM_FREE( shader.cpu_vs_data );
-			shader.cpu_vs_data = NULL;
-		}
-		if ( shader.cpu_ps_data )
-		{
-			IM_FREE( shader.cpu_ps_data );
-			shader.cpu_ps_data = NULL;
-		}
-
+		Backend::ReleaseShader( shader );
 	}
 #endif 
 
 	void	CreateVertexBuffer( ImVertexBuffer*& vb, int sizeof_vertex_buffer, int vertices_count )
 	{
-#if (IM_CURRENT_GFX == IM_GFX_OPENGL2) || (IM_CURRENT_GFX == IM_GFX_OPENGL3)
-
-#elif (IM_CURRENT_GFX == IM_GFX_DIRECTX9)
-
-#elif (IM_CURRENT_GFX == IM_GFX_DIRECTX10)
-
-#elif (IM_CURRENT_GFX == IM_GFX_DIRECTX11)
-
-		ImGui_ImplDX11_Data* bd = ImGui_ImplDX11_GetBackendData();
-
-		//ImVertexBuffer* vb = buffer;
-
-		if ( vb == NULL )
-			vb = ( ImVertexBuffer* )IM_ALLOC( sizeof( ImVertexBuffer ) );
-
-		vb->vertices_count = vertices_count;
-		vb->sizeof_each_struct_in_bytes = sizeof_vertex_buffer;
-
-		D3D11_BUFFER_DESC desc;
-		memset( &desc, 0, sizeof( D3D11_BUFFER_DESC ) );
-		desc.Usage = D3D11_USAGE_DYNAMIC;
-		desc.ByteWidth = vertices_count * sizeof_vertex_buffer;
-		desc.BindFlags = D3D11_BIND_VERTEX_BUFFER;
-		desc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
-		desc.MiscFlags = 0;
-		//ID3D11Buffer* d3d11Buffer = ( ID3D11Buffer* )vb->gpu_buffer;
-		HRESULT hr = bd->pd3dDevice->CreateBuffer( &desc, nullptr, ( ID3D11Buffer** )&vb->gpu_buffer );
-		if ( hr != S_OK )
-		{
-			_com_error err( hr );
-			LPCTSTR errMsg = err.ErrorMessage();
-			OutputDebugString( errMsg );
-		}
-
-#elif (IM_CURRENT_GFX == IM_GFX_DIRECTX12)
-
-#endif
+		Backend::CreateVertexBuffer( vb, sizeof_vertex_buffer, vertices_count );
 	}
 
 	void	CreateVertexBufferAndGrow( ImVertexBuffer** buffer, int sizeof_vertex_buffer, int vertices_count, int growth_size )
 	{
-#if (IM_CURRENT_GFX == IM_GFX_OPENGL2) || (IM_CURRENT_GFX == IM_GFX_OPENGL3)
-
-#elif (IM_CURRENT_GFX == IM_GFX_DIRECTX9)
-
-#elif (IM_CURRENT_GFX == IM_GFX_DIRECTX10)
-
-#elif (IM_CURRENT_GFX == IM_GFX_DIRECTX11)
-
-		ImGui_ImplDX11_Data* bd = ImGui_ImplDX11_GetBackendData();
-
-#elif (IM_CURRENT_GFX == IM_GFX_DIRECTX12)
-
-#endif
-
-		ImVertexBuffer* vb = *buffer;
-
-		if ( vb == NULL )
-		{
-			CreateVertexBuffer( *buffer, sizeof_vertex_buffer, vertices_count );
-		}
-		if ( vb->vertices_count < vertices_count )
-		{
-			if ( buffer )
-			{
-#if (IM_CURRENT_GFX == IM_GFX_OPENGL2) || (IM_CURRENT_GFX == IM_GFX_OPENGL3)
-
-#elif (IM_CURRENT_GFX == IM_GFX_DIRECTX9)
-
-#elif (IM_CURRENT_GFX == IM_GFX_DIRECTX10)
-
-#elif (IM_CURRENT_GFX == IM_GFX_DIRECTX11)
-
-				ID3D11Buffer* d3d11Buffer = ( ID3D11Buffer* )vb->gpu_buffer;
-				d3d11Buffer->Release();
-				d3d11Buffer = nullptr;
-
-#elif (IM_CURRENT_GFX == IM_GFX_DIRECTX12)
-
-#endif
-			}
-			CreateVertexBuffer( *buffer, sizeof_vertex_buffer, vertices_count + growth_size );
-		}
+		Backend::CreateVertexBufferAndGrow( buffer, sizeof_vertex_buffer, vertices_count, growth_size );
 	}
 
 	void	UpdateVertexBuffer( ImVertexBuffer** buffer, int sizeof_vertex_buffer, int vertices_count, void* cpu_data )
 	{
-		ImVertexBuffer* vb = *buffer;
-
-#if (IM_CURRENT_GFX == IM_GFX_OPENGL2) || (IM_CURRENT_GFX == IM_GFX_OPENGL3)
-
-#elif (IM_CURRENT_GFX == IM_GFX_DIRECTX9)
-
-#elif (IM_CURRENT_GFX == IM_GFX_DIRECTX10)
-
-#elif (IM_CURRENT_GFX == IM_GFX_DIRECTX11)
-
-		ImGui_ImplDX11_Data* bd = ImGui_ImplDX11_GetBackendData();
-		ID3D11DeviceContext* ctx = bd->pd3dDeviceContext;
-		ID3D11Buffer* d3d11Buffer = ( ID3D11Buffer* )vb->gpu_buffer;
-
-		D3D11_MAPPED_SUBRESOURCE vtx_resource;
-		if ( ctx->Map( d3d11Buffer, 0, D3D11_MAP_WRITE_DISCARD, 0, &vtx_resource ) != S_OK )
-			return;
-
-		//ImDrawVert* vtx_dst = ( ImDrawVert* )vtx_resource.pData;
-
-		memcpy( vtx_resource.pData, cpu_data, vertices_count * sizeof_vertex_buffer );
-
-		ctx->Unmap( d3d11Buffer, 0 );
-
-#elif (IM_CURRENT_GFX == IM_GFX_DIRECTX12)
-
-#endif
+		Backend::UpdateVertexBuffer( buffer, sizeof_vertex_buffer, vertices_count, cpu_data );
 	}
 
 	void	ReleaseVertexBuffer( ImVertexBuffer** buffer )
 	{
-		ImVertexBuffer *vb = *buffer;
-
-#if (IM_CURRENT_GFX == IM_GFX_OPENGL2) || (IM_CURRENT_GFX == IM_GFX_OPENGL3)
-
-#elif (IM_CURRENT_GFX == IM_GFX_DIRECTX9)
-
-		if ( vb != NULL && vb->gpu_buffer != NULL )
-		{
-			ImVertexBuffer *vb = *buffer;
-			LPDIRECT3DVERTEXBUFFER9 d3d9Buffer = ( LPDIRECT3DVERTEXBUFFER9 )vb->gpu_buffer;
-			d3d9Buffer->Release();
-			d3d9Buffer = nullptr;
-			IM_FREE( vb );
-			vb = NULL;
-		}
-
-#elif (IM_CURRENT_GFX == IM_GFX_DIRECTX10)
-
-#elif (IM_CURRENT_GFX == IM_GFX_DIRECTX11)
-
-		if ( buffer && *buffer )
-		{
-			ImVertexBuffer *vb = *buffer;
-			ID3D11Buffer *d3d11Buffer = ( ID3D11Buffer * )vb->gpu_buffer;
-			d3d11Buffer->Release();
-			d3d11Buffer = nullptr;
-			IM_FREE( vb );
-			vb = NULL;
-		}
-
-#elif (IM_CURRENT_GFX == IM_GFX_DIRECTX12)
-
-#endif
+		Backend::ReleaseVertexBuffer( buffer );
 	}
 
 	void	CreateIndexBuffer( ImIndexBuffer*& ib, int indices_count )
 	{
-#if (IM_CURRENT_GFX == IM_GFX_OPENGL2) || (IM_CURRENT_GFX == IM_GFX_OPENGL3)
-
-#elif (IM_CURRENT_GFX == IM_GFX_DIRECTX9)
-
-		if ( ib != NULL && ib->gpu_buffer != NULL )
-		{
-			LPDIRECT3DINDEXBUFFER9 d3d9Buffer = ( LPDIRECT3DINDEXBUFFER9 )ib->gpu_buffer;
-			d3d9Buffer->Release();
-			d3d9Buffer = nullptr;
-			IM_FREE( ib );
-			ib = NULL;
-		}
-
-#elif (IM_CURRENT_GFX == IM_GFX_DIRECTX10)
-
-#elif (IM_CURRENT_GFX == IM_GFX_DIRECTX11)
-
-		ImGui_ImplDX11_Data* bd = ImGui_ImplDX11_GetBackendData();
-
-		if ( ib == NULL )
-			ib = ( ImIndexBuffer* )IM_ALLOC( sizeof( ImIndexBuffer ) );
-
-		ib->indices_count = indices_count;
-		if ( indices_count < ( 1 << 15 ) )
-			ib->sizeof_each_index = sizeof( ImU16 );
-		else
-			ib->sizeof_each_index = sizeof( ImU32 );
-
-		D3D11_BUFFER_DESC desc;
-		memset( &desc, 0, sizeof( D3D11_BUFFER_DESC ) );
-		desc.Usage = D3D11_USAGE_DYNAMIC;
-		desc.ByteWidth = indices_count * ib->sizeof_each_index;
-		desc.BindFlags = D3D11_BIND_INDEX_BUFFER;
-		desc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
-		desc.MiscFlags = 0;
-		//ID3D11Buffer* d3d11Buffer = ( ID3D11Buffer* )ib->gpu_buffer;
-		HRESULT hr = bd->pd3dDevice->CreateBuffer( &desc, nullptr, ( ID3D11Buffer** )&ib->gpu_buffer );
-		if ( hr != S_OK )
-		{
-			_com_error err( hr );
-			LPCTSTR errMsg = err.ErrorMessage();
-			OutputDebugString( errMsg );
-		}
-
-#elif (IM_CURRENT_GFX == IM_GFX_DIRECTX12)
-
-#endif
+		Backend::CreateIndexBuffer( ib, indices_count );
 	}
 
 	void	CreateIndexBufferAndGrow( ImIndexBuffer** buffer, int indices_count, int growth_size )
 	{
-#if (IM_CURRENT_GFX == IM_GFX_OPENGL2) || (IM_CURRENT_GFX == IM_GFX_OPENGL3)
-
-#elif (IM_CURRENT_GFX == IM_GFX_DIRECTX9)
-
-#elif (IM_CURRENT_GFX == IM_GFX_DIRECTX10)
-
-#elif (IM_CURRENT_GFX == IM_GFX_DIRECTX11)
-
-		ImGui_ImplDX11_Data* bd = ImGui_ImplDX11_GetBackendData();
-
-#elif (IM_CURRENT_GFX == IM_GFX_DIRECTX12)
-
-#endif
-
-		ImIndexBuffer* ib = *buffer;
-
-		if ( ib == NULL )
-		{
-			CreateIndexBuffer( *buffer, indices_count );
-		}
-		if ( ib->indices_count < indices_count )
-		{
-			if ( buffer )
-			{
-#if (IM_CURRENT_GFX == IM_GFX_OPENGL2) || (IM_CURRENT_GFX == IM_GFX_OPENGL3)
-
-#elif (IM_CURRENT_GFX == IM_GFX_DIRECTX9)
-
-#elif (IM_CURRENT_GFX == IM_GFX_DIRECTX10)
-
-#elif (IM_CURRENT_GFX == IM_GFX_DIRECTX11)
-
-				ID3D11Buffer* d3d11Buffer = ( ID3D11Buffer* )ib->gpu_buffer;
-				d3d11Buffer->Release();
-				d3d11Buffer = nullptr;
-
-#elif (IM_CURRENT_GFX == IM_GFX_DIRECTX12)
-
-#endif
-			}
-			CreateIndexBuffer( *buffer, indices_count + growth_size );
-		}
+		Backend::CreateIndexBufferAndGrow( buffer, indices_count, growth_size );
 	}
 
 	void	UpdateIndexBuffer( ImIndexBuffer** buffer, int indices_count, void* cpu_data )
 	{
-		ImIndexBuffer* ib = *buffer;
-
-#if (IM_CURRENT_GFX == IM_GFX_OPENGL2) || (IM_CURRENT_GFX == IM_GFX_OPENGL3)
-
-#elif (IM_CURRENT_GFX == IM_GFX_DIRECTX9)
-
-#elif (IM_CURRENT_GFX == IM_GFX_DIRECTX10)
-
-#elif (IM_CURRENT_GFX == IM_GFX_DIRECTX11)
-
-		ImGui_ImplDX11_Data* bd = ImGui_ImplDX11_GetBackendData();
-		ID3D11DeviceContext* ctx = bd->pd3dDeviceContext;
-		ID3D11Buffer* d3d11Buffer = ( ID3D11Buffer* )ib->gpu_buffer;
-
-		D3D11_MAPPED_SUBRESOURCE idx_resource;
-		if ( ctx->Map( d3d11Buffer, 0, D3D11_MAP_WRITE_DISCARD, 0, &idx_resource ) != S_OK )
-			return;
-
-		//ImDrawVert* vtx_dst = ( ImDrawVert* )idx_resource.pData;
-
-		memcpy( idx_resource.pData, cpu_data, indices_count * ib->sizeof_each_index );
-
-		ctx->Unmap( d3d11Buffer, 0 );
-
-#elif (IM_CURRENT_GFX == IM_GFX_DIRECTX12)
-
-#endif
+		Backend::UpdateIndexBuffer( buffer, indices_count, cpu_data );
 	}
 
 	void	ReleaseIndexBuffer( ImIndexBuffer** buffer )
 	{
-		if ( buffer && *buffer )
-		{
-			ImIndexBuffer* ib = *buffer;
-
-#if (IM_CURRENT_GFX == IM_GFX_OPENGL2)
-
-			// NOPE!
-
-#elif (IM_CURRENT_GFX == IM_GFX_OPENGL3)
-
-			// TODO
-
-#elif (IM_CURRENT_GFX == IM_GFX_DIRECTX9)
-
-			// TODO
-
-#elif (IM_CURRENT_GFX == IM_GFX_DIRECTX10)
-
-			ID3D10Buffer* d3d10Buffer = ( ID3D10Buffer* )ib->gpu_buffer;
-			d3d10Buffer->Release();
-			d3d10Buffer = nullptr;
-
-#elif (IM_CURRENT_GFX == IM_GFX_DIRECTX11)
-
-			ID3D11Buffer* d3d11Buffer = ( ID3D11Buffer* )ib->gpu_buffer;
-			d3d11Buffer->Release();
-			d3d11Buffer = nullptr;
-
-#elif (IM_CURRENT_GFX == IM_GFX_DIRECTX12)
-
-			ID3D12Resource* d3d12Buffer = ( ID3D12Resource* )ib->gpu_buffer;
-			d3d12Buffer->Release();
-			d3d12Buffer = nullptr;
-
-#endif
-
-			IM_FREE( ib );
-			ib = NULL;
-		}
+		Backend::ReleaseIndexBuffer( buffer );
 	}
 
 	void ImSetCustomShader( const ImDrawList* parent_list, const ImDrawCmd* cmd )
 	{
-#if (IM_CURRENT_GFX == IM_GFX_OPENGL2) || (IM_CURRENT_GFX == IM_GFX_OPENGL3)
-
-#elif (IM_CURRENT_GFX == IM_GFX_DIRECTX9)
-
-#elif (IM_CURRENT_GFX == IM_GFX_DIRECTX10)
-
-		ImDrawShader* shader = ( ImDrawShader* )cmd->UserCallbackData;
-		ImGui_ImplDX10_Data* bd = ImGui_ImplDX10_GetBackendData();
-		ID3D10Device* ctx = bd->pd3dDevice;
-		ctx->VSSetShader( ( ID3D10VertexShader* )( shader->vs ) );
-		ctx->PSSetShader( ( ID3D10PixelShader * )( shader->ps ) );
-		if ( shader->vs_cst != NULL &&
-			 shader->sizeof_in_bytes_vs_constants > 0 &&
-			 shader->cpu_vs_data != NULL &&
-			 shader->is_cpu_vs_data_dirty )
-		{
-			void* mapped_resource;
-			if ( ( ( ID3D10Buffer* )shader->vs_cst )->Map( D3D10_MAP_WRITE_DISCARD, 0, &mapped_resource ) != S_OK )
-				return;
-			memcpy( mapped_resource, shader->cpu_vs_data, shader->sizeof_in_bytes_vs_constants );
-			( ( ID3D10Buffer* )shader->vs_cst )->Unmap();
-		}
-		if ( shader->vs_cst )
-			ctx->VSSetConstantBuffers( 0, 1, ( ID3D10Buffer *const * )( &( shader->vs_cst ) ) );
-		if ( shader->ps_cst != NULL &&
-			 shader->sizeof_in_bytes_ps_constants > 0 &&
-			 shader->cpu_ps_data != NULL &&
-			 shader->is_cpu_ps_data_dirty )
-		{
-			void* mapped_resource;
-			if ( ( ( ID3D10Buffer* )shader->ps_cst )->Map( D3D10_MAP_WRITE_DISCARD, 0, &mapped_resource ) != S_OK )
-				return;
-			memcpy( mapped_resource, shader->cpu_ps_data, shader->sizeof_in_bytes_ps_constants );
-			( ( ID3D10Buffer* )shader->ps_cst )->Unmap();
-		}
-		if ( shader->ps_cst )
-			ctx->PSSetConstantBuffers( 0, 1, ( ID3D10Buffer *const * )( &( shader->ps_cst ) ) );
+#if (IM_CURRENT_GFX == IM_GFX_OPENGL3)
+		// OpenGL custom shader setting - not implemented yet
+		// Shaders in OpenGL are managed differently than DirectX
+		fprintf(stderr, "ImSetCustomShader not implemented for OpenGL3\n");
 
 #elif (IM_CURRENT_GFX == IM_GFX_DIRECTX11)
 
@@ -2007,10 +488,51 @@ float2 uv  : TEXCOORD0;\n",
 
 #elif (IM_CURRENT_GFX == IM_GFX_DIRECTX12)
 
+		// DX12 custom shaders require pipeline state objects which cannot be easily changed per draw call
+		// For now, we'll just update constant buffers if they exist
+		// Full implementation would require creating PSOs ahead of time
+		ImDrawShader* shader = ( ImDrawShader* )cmd->UserCallbackData;
+
+		if ( shader->vs_cst != NULL &&
+			 shader->sizeof_in_bytes_vs_constants > 0 &&
+			 shader->cpu_vs_data != NULL &&
+			 shader->is_cpu_vs_data_dirty )
+		{
+			ID3D12Resource* vs_buffer = ( ID3D12Resource* )shader->vs_cst;
+			void* mapped_data = NULL;
+			D3D12_RANGE read_range = { 0, 0 };
+			if ( SUCCEEDED( vs_buffer->Map( 0, &read_range, &mapped_data ) ) )
+			{
+				memcpy( mapped_data, shader->cpu_vs_data, shader->sizeof_in_bytes_vs_constants );
+				vs_buffer->Unmap( 0, nullptr );
+				shader->is_cpu_vs_data_dirty = false;
+			}
+		}
+
+		if ( shader->ps_cst != NULL &&
+			 shader->sizeof_in_bytes_ps_constants > 0 &&
+			 shader->cpu_ps_data != NULL &&
+			 shader->is_cpu_ps_data_dirty )
+		{
+			ID3D12Resource* ps_buffer = ( ID3D12Resource* )shader->ps_cst;
+			void* mapped_data = NULL;
+			D3D12_RANGE read_range = { 0, 0 };
+			if ( SUCCEEDED( ps_buffer->Map( 0, &read_range, &mapped_data ) ) )
+			{
+				memcpy( mapped_data, shader->cpu_ps_data, shader->sizeof_in_bytes_ps_constants );
+				ps_buffer->Unmap( 0, nullptr );
+				shader->is_cpu_ps_data_dirty = false;
+			}
+		}
+
+		// Note: Actually applying shaders in DX12 requires PSO management
+		// which is beyond the scope of this simple implementation
+		// The shaders are compiled but not actively used in rendering
+
 #endif
 	}
 
-	void		InternalUpdateCustomCPUShaderConstants( int sizeof_in_bytes_constants, void* ptr_to_constants, void* cpu_data, bool& is_cpu_data_dirty )
+	void		InternalUpdateCustomCPUShaderConstants( int sizeof_in_bytes_constants, void* ptr_to_constants, void*& cpu_data, bool& is_cpu_data_dirty )
 	{
 		if ( sizeof_in_bytes_constants <= 0 ||
 			 ptr_to_constants == NULL )
@@ -2020,11 +542,9 @@ float2 uv  : TEXCOORD0;\n",
 		{
 			cpu_data = IM_ALLOC( sizeof_in_bytes_constants );
 		}
-		if ( ptr_to_constants != NULL )
-		{
-			memcpy( cpu_data, ptr_to_constants, sizeof_in_bytes_constants );
-			is_cpu_data_dirty = true;
-		}
+		// Copy the new constants into the persistent CPU-side buffer and mark dirty
+		memcpy( cpu_data, ptr_to_constants, sizeof_in_bytes_constants );
+		is_cpu_data_dirty = true;
 	}
 	void		UpdateCustomPixelShaderConstants( ImDrawShader &shader, void *ptr_to_constants )
 	{
@@ -2051,17 +571,18 @@ float2 uv  : TEXCOORD0;\n",
 
 	bool		ImIsMaximized()
 	{
-#if (IM_CURRENT_PLATFORM == IM_PLATFORM_WIN32)
+		return Platform::IsMaximized();
+	}
 
-		return ( ( ( ( DWORD )GetWindowLong( PlatformData.pHandle, GWL_STYLE ) ) & ( WS_MAXIMIZE ) ) != 0L );
-
-#elif (IM_CURRENT_PLATFORM == IM_PLATFORM_GLFW)
-
-		return ( bool )glfwGetWindowAttrib( PlatformData.pWindow, GLFW_MAXIMIZED );
-
-#elif (IM_CURRENT_PLATFORM) == IM_PLATFORM_APPLE)
-
-#endif
+	bool		CustomTitleBarSupported()
+	{
+		#if (IM_CURRENT_PLATFORM == IM_PLATFORM_GLFW)
+		return false;
+		#elif (IM_CURRENT_PLATFORM == IM_PLATFORM_WIN32)
+		return true;
+		#else
+		return false;
+		#endif
 	}
 
 	bool		CustomTitleBarEnabled()
@@ -2104,59 +625,17 @@ float2 uv  : TEXCOORD0;\n",
 
 	void		MinimizeApp()
 	{
-#if (IM_CURRENT_PLATFORM == IM_PLATFORM_WIN32)
-
-		ShowWindow( PlatformData.pHandle, SW_MINIMIZE );
-
-#elif (IM_CURRENT_PLATFORM == IM_PLATFORM_GLFW)
-
-		glfwIconifyWindow( PlatformData.pWindow );
-
-#elif (IM_CURRENT_PLATFORM == IM_PLATFORM_APPLE)
-#error Not yet implemented supported
-#else
-#error Not yet implemented supported
-#endif
+		Platform::MinimizeApp();
 	}
 
 	void		MaximizeApp()
 	{
-#if (IM_CURRENT_PLATFORM == IM_PLATFORM_WIN32)
-
-		if ( ImIsMaximized() )
-			ShowWindow( PlatformData.pHandle, SW_RESTORE );
-		else
-			ShowWindow( PlatformData.pHandle, SW_SHOWMAXIMIZED );
-
-#elif (IM_CURRENT_PLATFORM == IM_PLATFORM_GLFW)
-
-		if ( ImIsMaximized() )
-			glfwRestoreWindow( PlatformData.pWindow );
-		else
-			glfwMaximizeWindow( PlatformData.pWindow );
-
-#elif (IM_CURRENT_PLATFORM == IM_PLATFORM_APPLE)
-#error Not yet implemented supported
-#else
-#error Not yet implemented supported
-#endif
+		Platform::MaximizeApp();
 	}
 
 	void		CloseApp()
 	{
-#if (IM_CURRENT_PLATFORM == IM_PLATFORM_WIN32)
-
-		PostQuitMessage( WM_CLOSE );
-
-#elif (IM_CURRENT_PLATFORM == IM_PLATFORM_GLFW)
-
-		glfwSetWindowShouldClose( PlatformData.pWindow, true );
-
-#elif (IM_CURRENT_PLATFORM == IM_PLATFORM_APPLE)
-#error Not yet implemented supported
-#else
-#error Not yet implemented supported
-#endif
+		Platform::CloseApp();
 	}
 
 	bool		BeginCustomTitleBar( float fHeight )
@@ -2201,21 +680,17 @@ float2 uv  : TEXCOORD0;\n",
 	LRESULT WINAPI WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
 #endif
 
-#if (IM_CURRENT_GFX == IM_GFX_DIRECTX9) || (IM_CURRENT_GFX == IM_GFX_DIRECTX10) || (IM_CURRENT_GFX == IM_GFX_DIRECTX11) || (IM_CURRENT_GFX == IM_GFX_DIRECTX12)
-
-#if (IM_CURRENT_GFX == IM_GFX_DIRECTX10) || (IM_CURRENT_GFX == IM_GFX_DIRECTX11) || (IM_CURRENT_GFX == IM_GFX_DIRECTX12)
+#if (IM_CURRENT_GFX == IM_GFX_DIRECTX11) || (IM_CURRENT_GFX == IM_GFX_DIRECTX12)
 	void	ImCreateRenderTarget()
 	{
-#if (IM_CURRENT_GFX == IM_GFX_DIRECTX10)
-		ID3D10Texture2D* pBackBuffer;
-		PlatformData.pSwapChain->GetBuffer(0, IID_PPV_ARGS(&pBackBuffer));
-		PlatformData.pD3DDevice->CreateRenderTargetView(pBackBuffer, NULL, &PlatformData.pMainRenderTargetView);
-		pBackBuffer->Release();
-#elif (IM_CURRENT_GFX == IM_GFX_DIRECTX11)
+#if (IM_CURRENT_GFX == IM_GFX_DIRECTX11)
 		ID3D11Texture2D* pBackBuffer;
-		PlatformData.pSwapChain->GetBuffer( 0, IID_PPV_ARGS( &pBackBuffer ) );
-		PlatformData.pD3DDevice->CreateRenderTargetView( pBackBuffer, NULL, &PlatformData.pMainRenderTargetView );
-		pBackBuffer->Release();
+		HRESULT hr = PlatformData.pSwapChain->GetBuffer( 0, IID_PPV_ARGS( &pBackBuffer ) );
+		if ( SUCCEEDED( hr ) )
+		{
+			hr = PlatformData.pD3DDevice->CreateRenderTargetView( pBackBuffer, NULL, &PlatformData.pMainRenderTargetView );
+			pBackBuffer->Release();
+		}
 #elif (IM_CURRENT_GFX == IM_GFX_DIRECTX12)
 		for ( UINT i = 0; i < PlatformData.NUM_BACK_BUFFERS; i++ )
 		{
@@ -2271,7 +746,7 @@ float2 uv  : TEXCOORD0;\n",
 
 	void	ImCleanupRenderTarget()
 	{
-#if (IM_CURRENT_GFX == IM_GFX_DIRECTX10) || (IM_CURRENT_GFX == IM_GFX_DIRECTX11)
+#if (IM_CURRENT_GFX == IM_GFX_DIRECTX11)
 		if (PlatformData.pMainRenderTargetView)
 		{
 			PlatformData.pMainRenderTargetView->Release();
@@ -2299,53 +774,204 @@ float2 uv  : TEXCOORD0;\n",
 #endif
 	}
 
+#if (IM_CURRENT_GFX == IM_GFX_VULKAN)
+	static void check_vk_result( VkResult err )
+	{
+		if ( err == VK_SUCCESS )
+			return;
+		fprintf( stderr, "[vulkan] Error: VkResult = %d\n", err );
+		if ( err < 0 )
+			abort();
+	}
+
+#ifdef _DEBUG
+	static VKAPI_ATTR VkBool32 VKAPI_CALL debug_report( VkDebugReportFlagsEXT flags, VkDebugReportObjectTypeEXT objectType, uint64_t object, size_t location, int32_t messageCode, const char* pLayerPrefix, const char* pMessage, void* pUserData )
+	{
+		(void)flags; (void)object; (void)location; (void)messageCode; (void)pUserData; (void)pLayerPrefix;
+		fprintf( stderr, "[vulkan] Debug report from ObjectType: %i\nMessage: %s\n\n", objectType, pMessage );
+		return VK_FALSE;
+	}
+#endif
+
+	static bool IsExtensionAvailable( const ImVector<VkExtensionProperties>& properties, const char* extension )
+	{
+		for ( const VkExtensionProperties& p : properties )
+			if ( strcmp( p.extensionName, extension ) == 0 )
+				return true;
+		return false;
+	}
+
+	bool ImSetupVulkan( ImVector<const char*> instance_extensions )
+	{
+		VkResult err;
+
+		// Create Vulkan Instance
+		{
+			VkInstanceCreateInfo create_info = {};
+			create_info.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
+
+			// Enumerate available extensions
+			uint32_t properties_count;
+			ImVector<VkExtensionProperties> properties;
+			vkEnumerateInstanceExtensionProperties( nullptr, &properties_count, nullptr );
+			properties.resize( properties_count );
+			err = vkEnumerateInstanceExtensionProperties( nullptr, &properties_count, properties.Data );
+			check_vk_result( err );
+
+			// Enable required extensions
+			if ( IsExtensionAvailable( properties, VK_KHR_GET_PHYSICAL_DEVICE_PROPERTIES_2_EXTENSION_NAME ) )
+				instance_extensions.push_back( VK_KHR_GET_PHYSICAL_DEVICE_PROPERTIES_2_EXTENSION_NAME );
+#ifdef VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME
+			if ( IsExtensionAvailable( properties, VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME ) )
+			{
+				instance_extensions.push_back( VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME );
+				create_info.flags |= VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR;
+			}
+#endif
+
+			// Enabling validation layers
+#ifdef _DEBUG
+			const char* layers[] = { "VK_LAYER_KHRONOS_validation" };
+			create_info.enabledLayerCount = 1;
+			create_info.ppEnabledLayerNames = layers;
+			instance_extensions.push_back( "VK_EXT_debug_report" );
+#endif
+
+			// Create Vulkan Instance
+			create_info.enabledExtensionCount = (uint32_t)instance_extensions.Size;
+			create_info.ppEnabledExtensionNames = instance_extensions.Data;
+			err = vkCreateInstance( &create_info, PlatformData.pAllocator, &PlatformData.pInstance );
+			check_vk_result( err );
+
+			// Setup the debug report callback
+#ifdef _DEBUG
+			auto f_vkCreateDebugReportCallbackEXT = (PFN_vkCreateDebugReportCallbackEXT)vkGetInstanceProcAddr( PlatformData.pInstance, "vkCreateDebugReportCallbackEXT" );
+			IM_ASSERT( f_vkCreateDebugReportCallbackEXT != nullptr );
+			VkDebugReportCallbackCreateInfoEXT debug_report_ci = {};
+			debug_report_ci.sType = VK_STRUCTURE_TYPE_DEBUG_REPORT_CALLBACK_CREATE_INFO_EXT;
+			debug_report_ci.flags = VK_DEBUG_REPORT_ERROR_BIT_EXT | VK_DEBUG_REPORT_WARNING_BIT_EXT | VK_DEBUG_REPORT_PERFORMANCE_WARNING_BIT_EXT;
+			debug_report_ci.pfnCallback = debug_report;
+			debug_report_ci.pUserData = nullptr;
+			err = f_vkCreateDebugReportCallbackEXT( PlatformData.pInstance, &debug_report_ci, PlatformData.pAllocator, &PlatformData.pDebugReport );
+			check_vk_result( err );
+#endif
+		}
+
+		// Select Physical Device (GPU)
+		PlatformData.pPhysicalDevice = ImGui_ImplVulkanH_SelectPhysicalDevice( PlatformData.pInstance );
+		IM_ASSERT( PlatformData.pPhysicalDevice != VK_NULL_HANDLE );
+
+		// Select graphics queue family
+		PlatformData.uQueueFamily = ImGui_ImplVulkanH_SelectQueueFamilyIndex( PlatformData.pPhysicalDevice );
+		IM_ASSERT( PlatformData.uQueueFamily != (uint32_t)-1 );
+
+		// Create Logical Device (with 1 queue)
+		{
+			ImVector<const char*> device_extensions;
+			device_extensions.push_back( "VK_KHR_swapchain" );
+
+			// Enumerate physical device extension
+			uint32_t properties_count;
+			ImVector<VkExtensionProperties> properties;
+			vkEnumerateDeviceExtensionProperties( PlatformData.pPhysicalDevice, nullptr, &properties_count, nullptr );
+			properties.resize( properties_count );
+			vkEnumerateDeviceExtensionProperties( PlatformData.pPhysicalDevice, nullptr, &properties_count, properties.Data );
+#ifdef VK_KHR_PORTABILITY_SUBSET_EXTENSION_NAME
+			if ( IsExtensionAvailable( properties, VK_KHR_PORTABILITY_SUBSET_EXTENSION_NAME ) )
+				device_extensions.push_back( VK_KHR_PORTABILITY_SUBSET_EXTENSION_NAME );
+#endif
+
+			const float queue_priority[] = { 1.0f };
+			VkDeviceQueueCreateInfo queue_info[1] = {};
+			queue_info[0].sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
+			queue_info[0].queueFamilyIndex = PlatformData.uQueueFamily;
+			queue_info[0].queueCount = 1;
+			queue_info[0].pQueuePriorities = queue_priority;
+			VkDeviceCreateInfo create_info = {};
+			create_info.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
+			create_info.queueCreateInfoCount = sizeof( queue_info ) / sizeof( queue_info[0] );
+			create_info.pQueueCreateInfos = queue_info;
+			create_info.enabledExtensionCount = (uint32_t)device_extensions.Size;
+			create_info.ppEnabledExtensionNames = device_extensions.Data;
+			err = vkCreateDevice( PlatformData.pPhysicalDevice, &create_info, PlatformData.pAllocator, &PlatformData.pDevice );
+			check_vk_result( err );
+			vkGetDeviceQueue( PlatformData.pDevice, PlatformData.uQueueFamily, 0, &PlatformData.pQueue );
+		}
+
+		// Create Descriptor Pool
+		{
+			VkDescriptorPoolSize pool_sizes[] =
+			{
+				{ VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, IMGUI_IMPL_VULKAN_MINIMUM_IMAGE_SAMPLER_POOL_SIZE + 100 }, // +100 for user textures
+			};
+			VkDescriptorPoolCreateInfo pool_info = {};
+			pool_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+			pool_info.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
+			pool_info.maxSets = 0;
+			for ( VkDescriptorPoolSize& pool_size : pool_sizes )
+				pool_info.maxSets += pool_size.descriptorCount;
+			pool_info.poolSizeCount = (uint32_t)IM_ARRAYSIZE( pool_sizes );
+			pool_info.pPoolSizes = pool_sizes;
+			err = vkCreateDescriptorPool( PlatformData.pDevice, &pool_info, PlatformData.pAllocator, &PlatformData.pDescriptorPool );
+			check_vk_result( err );
+		}
+
+		return true;
+	}
+
+	bool ImSetupVulkanWindow( VkSurfaceKHR surface, int width, int height )
+	{
+		ImGui_ImplVulkanH_Window* wd = &PlatformData.oMainWindowData;
+		wd->Surface = surface;
+
+		// Check for WSI support
+		VkBool32 res;
+		vkGetPhysicalDeviceSurfaceSupportKHR( PlatformData.pPhysicalDevice, PlatformData.uQueueFamily, wd->Surface, &res );
+		if ( res != VK_TRUE )
+		{
+			fprintf( stderr, "Error no WSI support on physical device 0\n" );
+			return false;
+		}
+
+		// Select Surface Format
+		const VkFormat requestSurfaceImageFormat[] = { VK_FORMAT_B8G8R8A8_UNORM, VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_B8G8R8_UNORM, VK_FORMAT_R8G8B8_UNORM };
+		const VkColorSpaceKHR requestSurfaceColorSpace = VK_COLORSPACE_SRGB_NONLINEAR_KHR;
+		wd->SurfaceFormat = ImGui_ImplVulkanH_SelectSurfaceFormat( PlatformData.pPhysicalDevice, wd->Surface, requestSurfaceImageFormat, (size_t)IM_ARRAYSIZE( requestSurfaceImageFormat ), requestSurfaceColorSpace );
+
+		// Select Present Mode
+		VkPresentModeKHR present_modes[] = { VK_PRESENT_MODE_FIFO_KHR };
+		wd->PresentMode = ImGui_ImplVulkanH_SelectPresentMode( PlatformData.pPhysicalDevice, wd->Surface, &present_modes[0], IM_ARRAYSIZE( present_modes ) );
+
+		// Create SwapChain, RenderPass, Framebuffer, etc.
+		IM_ASSERT( PlatformData.uMinImageCount >= 2 );
+		ImGui_ImplVulkanH_CreateOrResizeWindow( PlatformData.pInstance, PlatformData.pPhysicalDevice, PlatformData.pDevice, wd, PlatformData.uQueueFamily, PlatformData.pAllocator, width, height, PlatformData.uMinImageCount, PlatformData.uSwapChainImageUsage );
+
+		return true;
+	}
+
+	void ImCleanupVulkan()
+	{
+		vkDestroyDescriptorPool( PlatformData.pDevice, PlatformData.pDescriptorPool, PlatformData.pAllocator );
+
+#ifdef _DEBUG
+		// Remove the debug report callback
+		auto f_vkDestroyDebugReportCallbackEXT = (PFN_vkDestroyDebugReportCallbackEXT)vkGetInstanceProcAddr( PlatformData.pInstance, "vkDestroyDebugReportCallbackEXT" );
+		f_vkDestroyDebugReportCallbackEXT( PlatformData.pInstance, PlatformData.pDebugReport, PlatformData.pAllocator );
+#endif
+
+		vkDestroyDevice( PlatformData.pDevice, PlatformData.pAllocator );
+		vkDestroyInstance( PlatformData.pInstance, PlatformData.pAllocator );
+	}
+
+	void ImCleanupVulkanWindow()
+	{
+		ImGui_ImplVulkanH_DestroyWindow( PlatformData.pInstance, PlatformData.pDevice, &PlatformData.oMainWindowData, PlatformData.pAllocator );
+	}
+#endif
+
 	bool ImCreateDeviceD3D( HWND hWnd )
 	{
-#if (IM_CURRENT_GFX == IM_GFX_DIRECTX9)
-
-		if ( ( PlatformData.pD3D = Direct3DCreate9( D3D_SDK_VERSION ) ) == nullptr )
-			return false;
-
-		// Create the D3DDevice
-		ZeroMemory( &PlatformData.oD3Dpp, sizeof( PlatformData.oD3Dpp ) );
-		PlatformData.oD3Dpp.Windowed				= TRUE;
-		PlatformData.oD3Dpp.SwapEffect				= D3DSWAPEFFECT_DISCARD;
-		PlatformData.oD3Dpp.BackBufferFormat		= D3DFMT_UNKNOWN; // Need to use an explicit format with alpha if needing per-pixel alpha composition.
-		PlatformData.oD3Dpp.EnableAutoDepthStencil	= TRUE;
-		PlatformData.oD3Dpp.AutoDepthStencilFormat	= D3DFMT_D16;
-		//PlatformData.oD3Dpp.PresentationInterval = D3DPRESENT_INTERVAL_ONE;	// Present with vsync
-		PlatformData.oD3Dpp.PresentationInterval	= D3DPRESENT_INTERVAL_IMMEDIATE;		// Present without vsync, maximum unthrottled framerate
-		if ( PlatformData.pD3D->CreateDevice( D3DADAPTER_DEFAULT, D3DDEVTYPE_HAL, hWnd, D3DCREATE_HARDWARE_VERTEXPROCESSING, &PlatformData.oD3Dpp, &PlatformData.pD3DDevice ) < 0 )
-			return false;
-
-#elif (IM_CURRENT_GFX == IM_GFX_DIRECTX10)
-
-		// Setup swap chain
-		DXGI_SWAP_CHAIN_DESC oSwapDesc;
-		ZeroMemory( &oSwapDesc, sizeof( oSwapDesc ) );
-
-		oSwapDesc.BufferCount							= 2;
-		oSwapDesc.BufferDesc.Width						= 0;
-		oSwapDesc.BufferDesc.Height						= 0;
-		oSwapDesc.BufferDesc.Format						= DXGI_FORMAT_R8G8B8A8_UNORM;
-		oSwapDesc.BufferDesc.RefreshRate.Numerator		= 60;
-		oSwapDesc.BufferDesc.RefreshRate.Denominator	= 1;
-		oSwapDesc.Flags									= DXGI_SWAP_CHAIN_FLAG_ALLOW_MODE_SWITCH;
-		oSwapDesc.BufferUsage							= DXGI_USAGE_RENDER_TARGET_OUTPUT;
-		oSwapDesc.OutputWindow							= hWnd;
-		oSwapDesc.SampleDesc.Count						= 1;
-		oSwapDesc.SampleDesc.Quality					= 0;
-		oSwapDesc.Windowed								= TRUE;
-		oSwapDesc.SwapEffect							= DXGI_SWAP_EFFECT_DISCARD;
-
-		UINT uCreateDeviceFlags = 0;
-		//createDeviceFlags |= D3D10_CREATE_DEVICE_DEBUG;
-		if ( D3D10CreateDeviceAndSwapChain( nullptr, D3D10_DRIVER_TYPE_HARDWARE, nullptr, uCreateDeviceFlags, D3D10_SDK_VERSION, &oSwapDesc, &PlatformData.pSwapChain, &PlatformData.pD3DDevice ) != S_OK )
-			return false;
-
-		ImCreateRenderTarget();
-
-#elif (IM_CURRENT_GFX == IM_GFX_DIRECTX11)
+#if (IM_CURRENT_GFX == IM_GFX_DIRECTX11)
 
 		// Setup swap chain
 		DXGI_SWAP_CHAIN_DESC oSwapDesc;
@@ -2365,18 +991,21 @@ float2 uv  : TEXCOORD0;\n",
 		oSwapDesc.SwapEffect							= DXGI_SWAP_EFFECT_DISCARD;
 
 		UINT uCreateDeviceFlags = 0;
-		//createDeviceFlags |= D3D11_CREATE_DEVICE_DEBUG;
+#ifdef _DEBUG
+		// Enable D3D11 debug layer in debug builds
+		uCreateDeviceFlags |= D3D11_CREATE_DEVICE_DEBUG;
+#endif
 		D3D_FEATURE_LEVEL featureLevel;
 		const D3D_FEATURE_LEVEL featureLevelArray[2] = { D3D_FEATURE_LEVEL_11_0, D3D_FEATURE_LEVEL_10_0, };
-		/*if ( D3D11CreateDeviceAndSwapChain( nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, uCreateDeviceFlags, featureLevelArray, 2, D3D11_SDK_VERSION, &oSwapDesc, &PlatformData.pSwapChain, &PlatformData.pD3DDevice, &featureLevel, &PlatformData.pD3DDeviceContext ) != S_OK )
-			return false;*/
+
 		HRESULT res = D3D11CreateDeviceAndSwapChain( nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, uCreateDeviceFlags, featureLevelArray, 2, D3D11_SDK_VERSION, &oSwapDesc, &PlatformData.pSwapChain, &PlatformData.pD3DDevice, &featureLevel, &PlatformData.pD3DDeviceContext );
 		if ( res == DXGI_ERROR_UNSUPPORTED ) // Try high-performance WARP software driver if hardware is not available.
 			res = D3D11CreateDeviceAndSwapChain( nullptr, D3D_DRIVER_TYPE_WARP, nullptr, uCreateDeviceFlags, featureLevelArray, 2, D3D11_SDK_VERSION, &oSwapDesc, &PlatformData.pSwapChain, &PlatformData.pD3DDevice, &featureLevel, &PlatformData.pD3DDeviceContext );
-		if ( res != S_OK )
+		if ( FAILED( res ) )
 			return false;
 
 		ImCreateRenderTarget();
+		return true;
 #elif (IM_CURRENT_GFX == IM_GFX_DIRECTX12)
 
 		// Setup swap chain
@@ -2398,16 +1027,30 @@ float2 uv  : TEXCOORD0;\n",
 		}
 
 		// [DEBUG] Enable debug interface
-#ifdef DX12_ENABLE_DEBUG_LAYER
+#ifdef _DEBUG
 		ID3D12Debug* pdx12Debug = nullptr;
 		if ( SUCCEEDED( D3D12GetDebugInterface( IID_PPV_ARGS( &pdx12Debug ) ) ) )
+		{
 			pdx12Debug->EnableDebugLayer();
+#ifdef DX12_ENABLE_DEBUG_LAYER
+			// Additional debug features if explicitly requested
+			ID3D12Debug1* pdx12Debug1 = nullptr;
+			if ( SUCCEEDED( pdx12Debug->QueryInterface( IID_PPV_ARGS( &pdx12Debug1 ) ) ) )
+			{
+				pdx12Debug1->SetEnableGPUBasedValidation( TRUE );
+				pdx12Debug1->Release();
+			}
+#endif
+		}
 #endif
 
 		// Create device
 		D3D_FEATURE_LEVEL featureLevel = D3D_FEATURE_LEVEL_11_0;
-		if ( D3D12CreateDevice( nullptr, featureLevel, IID_PPV_ARGS( &PlatformData.pD3DDevice ) ) != S_OK )
+		HRESULT hr = D3D12CreateDevice( nullptr, featureLevel, IID_PPV_ARGS( &PlatformData.pD3DDevice ) );
+		if ( FAILED( hr ) )
+		{
 			return false;
+		}
 
 		// [DEBUG] Setup debug interface to break on any warnings/errors
 #ifdef DX12_ENABLE_DEBUG_LAYER
@@ -2444,9 +1087,9 @@ float2 uv  : TEXCOORD0;\n",
 		{
 			D3D12_DESCRIPTOR_HEAP_DESC desc = {};
 			desc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
-			//desc.NumDescriptors = 1;
-			desc.NumDescriptors = 1;
+			desc.NumDescriptors = PlatformDataImpl::NUM_SRV_DESCRIPTORS;
 			desc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
+			desc.NodeMask = 1;
 			if ( PlatformData.pD3DDevice->CreateDescriptorHeap( &desc, IID_PPV_ARGS( &PlatformData.pD3DSRVDescHeap ) ) != S_OK )
 				return false;
 		}
@@ -2491,38 +1134,17 @@ float2 uv  : TEXCOORD0;\n",
 		}
 
 		ImCreateRenderTarget();
-
-#endif
-
 		return true;
+
+#else
+		// Unsupported graphics API
+		return false;
+#endif
 	}
 
 	void ImCleanupDeviceD3D()
 	{
-#if (IM_CURRENT_GFX == IM_GFX_DIRECTX9)
-		if ( PlatformData.pD3DDevice )
-		{
-			PlatformData.pD3DDevice->Release();
-			PlatformData.pD3DDevice = nullptr;
-		}
-		if ( PlatformData.pD3D )
-		{
-			PlatformData.pD3D->Release();
-			PlatformData.pD3D = nullptr;
-		}
-#elif (IM_CURRENT_GFX == IM_GFX_DIRECTX10)
-		ImCleanupRenderTarget();
-		if ( PlatformData.pSwapChain )
-		{
-			PlatformData.pSwapChain->Release();
-			PlatformData.pSwapChain = nullptr;
-		}
-		if ( PlatformData.pD3DDevice )
-		{
-			PlatformData.pD3DDevice->Release();
-			PlatformData.pD3DDevice = nullptr;
-		}
-#elif (IM_CURRENT_GFX == IM_GFX_DIRECTX11)
+#if (IM_CURRENT_GFX == IM_GFX_DIRECTX11)
 		ImCleanupRenderTarget();
 		if ( PlatformData.pSwapChain )
 		{
@@ -2592,56 +1214,17 @@ float2 uv  : TEXCOORD0;\n",
 			PlatformData.pD3DDevice->Release();
 			PlatformData.pD3DDevice = nullptr;
 		}
+#else
+		// Unsupported graphics API - no cleanup needed
 #endif
 	}
 
-#if (IM_CURRENT_GFX == IM_GFX_DIRECTX9)
 	void ImResetDevice()
 	{
-		ImGui_ImplDX9_InvalidateDeviceObjects();
-		HRESULT hr = PlatformData.pD3DDevice->Reset( &PlatformData.oD3Dpp );
-		if ( hr == D3DERR_INVALIDCALL )
-			IM_ASSERT( 0 );
-
-		ImGui_ImplDX9_CreateDeviceObjects();
+		// DirectX 11/12 don't need device reset - this function is now unused
 	}
-#endif
-#elif ((IM_CURRENT_PLATFORM == IM_PLATFORM_WIN32) && (IM_CURRENT_GFX == IM_GFX_OPENGL2 || IM_CURRENT_GFX == IM_GFX_OPENGL3))
 
-bool ImCreateDeviceWGL( HWND hWnd, PlatformDataImpl::WGL_WindowData* data )
-{
-	HDC hDc = ::GetDC( hWnd );
-	PIXELFORMATDESCRIPTOR pfd = { 0 };
-	pfd.nSize		= sizeof( pfd );
-	pfd.nVersion	= 1;
-	pfd.dwFlags		= PFD_DRAW_TO_WINDOW | PFD_SUPPORT_OPENGL | PFD_DOUBLEBUFFER;
-	pfd.iPixelType	= PFD_TYPE_RGBA;
-	pfd.cColorBits	= 32;
-
-	const int pf = ::ChoosePixelFormat( hDc, &pfd );
-	if ( pf == 0 )
-		return false;
-	if ( ::SetPixelFormat( hDc, pf, &pfd ) == FALSE )
-		return false;
-	::ReleaseDC( hWnd, hDc );
-
-	data->hDC = ::GetDC( hWnd );
-	if ( !PlatformData.pRC )
-		PlatformData.pRC = wglCreateContext( data->hDC );
-
-	return true;
-}
-
-void ImCleanupDeviceWGL( HWND hWnd, PlatformDataImpl::WGL_WindowData* data )
-{
-	wglMakeCurrent( nullptr, nullptr );
-	::ReleaseDC( hWnd, data->hDC );
-}
-
-void ImResetDeviceWGL()
-{
-
-}
+#if ((IM_CURRENT_PLATFORM == IM_PLATFORM_WIN32) && (IM_CURRENT_GFX == IM_GFX_OPENGL3))
 
 // Support function for multi-viewports
 // Unlike most other backend combination, we need specific hooks to combine Win32+OpenGL.
@@ -2700,7 +1283,7 @@ static void Im_Hook_Renderer_SwapBuffers( ImGuiViewport* viewport, void* )
 				assert( SUCCEEDED( result ) && "Failed to resize swapchain." );
 				ImCreateRenderTarget();
 			}
-#elif (IM_CURRENT_GFX == IM_GFX_OPENGL2) || (IM_CURRENT_GFX == IM_GFX_OPENGL3)
+#elif (IM_CURRENT_GFX == IM_GFX_OPENGL3)
 			if ( wParam != SIZE_MINIMIZED )
 			{
 				PlatformData.iWidth		= LOWORD( lParam );
@@ -2851,23 +1434,22 @@ static void Im_Hook_Renderer_SwapBuffers( ImGuiViewport* viewport, void* )
 		if ( !glfwInit() )
 			return false;
 
-		// Decide GL+GLSL versions
-#if (IM_CURRENT_GFX == IM_GFX_OPENGL2)
-		// GL ES 2.0 + GLSL 100
-		PlatformData.pGLSLVersion = "#version 100";
-		glfwWindowHint( GLFW_CONTEXT_VERSION_MAJOR, 2 );
-		glfwWindowHint( GLFW_CONTEXT_VERSION_MINOR, 0 );
-		glfwWindowHint( GLFW_CLIENT_API, GLFW_OPENGL_ES_API );
-#elif (IM_CURRENT_PLATFORM == IM_PLATFORM_APPLE)
-		// GL 3.2 + GLSL 150
-		PlatformData.pGLSLVersion = "#version 150";
+		// Decide GL+GLSL versions (following imgui backend approach)
+#if (IM_CURRENT_GFX == IM_GFX_VULKAN)
+		// Vulkan requires no OpenGL context
+		glfwWindowHint( GLFW_CLIENT_API, GLFW_NO_API );
+#elif defined(__APPLE__)
+		// GL 3.2 + GLSL 150 (Required on Mac)
+		if ( PlatformData.pGLSLVersion == nullptr )
+			PlatformData.pGLSLVersion = "#version 150";
 		glfwWindowHint( GLFW_CONTEXT_VERSION_MAJOR, 3 );
 		glfwWindowHint( GLFW_CONTEXT_VERSION_MINOR, 2 );
 		glfwWindowHint( GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE );	// 3.2+ only
 		glfwWindowHint( GLFW_OPENGL_FORWARD_COMPAT, GL_TRUE );				// Required on Mac
 #elif (IM_CURRENT_GFX == IM_GFX_OPENGL3)
-		// GL 3.0 + GLSL 130
-		PlatformData.pGLSLVersion = "#version 130";
+		// GL 3.0 + GLSL 130 (Default for desktop OpenGL3)
+		if ( PlatformData.pGLSLVersion == nullptr )
+			PlatformData.pGLSLVersion = "#version 130";
 		glfwWindowHint( GLFW_CONTEXT_VERSION_MAJOR, 3 );
 		glfwWindowHint( GLFW_CONTEXT_VERSION_MINOR, 0 );
 		//glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);		// 3.2+ only
@@ -2912,45 +1494,7 @@ static void Im_Hook_Renderer_SwapBuffers( ImGuiViewport* viewport, void* )
 	bool InitGfxAPI()
 	{
 		IM_ASSERT( ValidateFeatures() );
-
-#if (IM_CURRENT_GFX == IM_GFX_OPENGL2) || (IM_CURRENT_GFX == IM_GFX_OPENGL3)
-
-#if (IM_CURRENT_PLATFORM == IM_PLATFORM_WIN32)
-		if ( !ImCreateDeviceWGL( PlatformData.pHandle, &PlatformData.oMainWindow ) )
-		{
-			ImCleanupDeviceWGL( PlatformData.pHandle, &PlatformData.oMainWindow );
-			::DestroyWindow( PlatformData.pHandle );
-
-#ifdef UNICODE
-			::UnregisterClassW( PlatformData.oWinStruct.lpszClassName, PlatformData.oWinStruct.hInstance );
-#else
-			::UnregisterClassA( PlatformData.oWinStruct.lpszClassName, PlatformData.oWinStruct.hInstance );
-#endif
-			return false;
-		}
-		wglMakeCurrent( PlatformData.oMainWindow.hDC, PlatformData.pRC );
-#elif (IM_CURRENT_PLATFORM == IM_PLATFORM_GLFW)
-
-		glfwMakeContextCurrent( PlatformData.pWindow );
-
-#endif
-
-#elif (IM_CURRENT_GFX == IM_GFX_DIRECTX9) || (IM_CURRENT_GFX == IM_GFX_DIRECTX10) || (IM_CURRENT_GFX == IM_GFX_DIRECTX11) || (IM_CURRENT_GFX == IM_GFX_DIRECTX12)
-#if (IM_CURRENT_PLATFORM == IM_PLATFORM_WIN32)
-		if ( !ImCreateDeviceD3D( PlatformData.pHandle ) )
-		{
-			ImCleanupDeviceD3D();
-			::UnregisterClass( PlatformData.oWinStruct.lpszClassName, PlatformData.oWinStruct.hInstance );
-			return false;
-		}
-#endif
-#elif (IM_CURRENT_GFX == IM_GFX_VULKAN)
-#elif (IM_CURRENT_GFX == IM_GFX_METAL)
-#else
-#error IM_CURRENT_TARGET not specified correctly
-#endif
-
-		return true;
+		return Backend::InitGfxAPI();
 	}
 
 	bool ShowWindow()
@@ -2976,7 +1520,7 @@ static void Im_Hook_Renderer_SwapBuffers( ImGuiViewport* viewport, void* )
 
 #if (IM_CURRENT_PLATFORM == IM_PLATFORM_WIN32)
 
-#if (IM_CURRENT_GFX == IM_GFX_OPENGL2) || (IM_CURRENT_GFX == IM_GFX_OPENGL3)
+#if (IM_CURRENT_GFX == IM_GFX_OPENGL3)
 		bGood = ImGui_ImplWin32_InitForOpenGL( PlatformData.pHandle );
 		ImGuiIO& io = ImGui::GetIO();
 		if ( io.ConfigFlags & ImGuiConfigFlags_ViewportsEnable )
@@ -2997,11 +1541,13 @@ static void Im_Hook_Renderer_SwapBuffers( ImGuiViewport* viewport, void* )
 #endif
 #elif (IM_CURRENT_PLATFORM == IM_PLATFORM_GLFW)
 
-#if IM_CURRENT_GFX == IM_GFX_OPENGL2 || IM_CURRENT_GFX == IM_GFX_OPENGL3
+#if IM_CURRENT_GFX == IM_GFX_OPENGL3
 		bGood = ImGui_ImplGlfw_InitForOpenGL( PlatformData.pWindow, true );
 #ifdef __EMSCRIPTEN__
 		ImGui_ImplGlfw_InstallEmscriptenCanvasResizeCallback( "#canvas" );
 #endif
+#elif IM_CURRENT_GFX == IM_GFX_VULKAN
+		bGood = ImGui_ImplGlfw_InitForVulkan( PlatformData.pWindow, true );
 #endif
 
 #endif
@@ -3011,23 +1557,43 @@ static void Im_Hook_Renderer_SwapBuffers( ImGuiViewport* viewport, void* )
 
 	bool InitGfx()
 	{
-#if (IM_CURRENT_GFX == IM_GFX_OPENGL2)
-		return ImGui_ImplOpenGL2_Init();
-#elif (IM_CURRENT_GFX == IM_GFX_OPENGL3)
+#if (IM_CURRENT_GFX == IM_GFX_OPENGL3)
 		return ImGui_ImplOpenGL3_Init( PlatformData.pGLSLVersion );
-#elif (IM_CURRENT_GFX == IM_GFX_DIRECTX9)
-		return ImGui_ImplDX9_Init( PlatformData.pD3DDevice );
-#elif (IM_CURRENT_GFX == IM_GFX_DIRECTX10)
-		return ImGui_ImplDX10_Init( PlatformData.pD3DDevice );
 #elif (IM_CURRENT_GFX == IM_GFX_DIRECTX11)
 		return ImGui_ImplDX11_Init( PlatformData.pD3DDevice, PlatformData.pD3DDeviceContext );
 #elif (IM_CURRENT_GFX == IM_GFX_DIRECTX12)
-		return ImGui_ImplDX12_Init( PlatformData.pD3DDevice, PlatformData.NUM_FRAMES_IN_FLIGHT,
-							 DXGI_FORMAT_R8G8B8A8_UNORM, PlatformData.pD3DSRVDescHeap,
-							 PlatformData.pD3DSRVDescHeap->GetCPUDescriptorHandleForHeapStart(),
-							 PlatformData.pD3DSRVDescHeap->GetGPUDescriptorHandleForHeapStart() );
+		// Use the new ImGui_ImplDX12_InitInfo structure for better API compatibility
+		ImGui_ImplDX12_InitInfo init_info = {};
+		init_info.Device = PlatformData.pD3DDevice;
+		init_info.CommandQueue = PlatformData.pD3DCommandQueue;
+		init_info.NumFramesInFlight = PlatformData.NUM_FRAMES_IN_FLIGHT;
+		init_info.RTVFormat = DXGI_FORMAT_R8G8B8A8_UNORM;
+		init_info.DSVFormat = DXGI_FORMAT_D32_FLOAT;  // Standard depth format
+		init_info.SrvDescriptorHeap = PlatformData.pD3DSRVDescHeap;
+
+		// Use legacy single descriptor for backwards compatibility
+		init_info.LegacySingleSrvCpuDescriptor = PlatformData.pD3DSRVDescHeap->GetCPUDescriptorHandleForHeapStart();
+		init_info.LegacySingleSrvGpuDescriptor = PlatformData.pD3DSRVDescHeap->GetGPUDescriptorHandleForHeapStart();
+
+		return ImGui_ImplDX12_Init( &init_info );
 #elif (IM_CURRENT_GFX) == IM_GFX_VULKAN)
-		return ImGui_ImplVulkan_Init(..);
+		// Initialize ImGui Vulkan backend
+		ImGui_ImplVulkan_InitInfo init_info = {};
+		init_info.Instance = PlatformData.pInstance;
+		init_info.PhysicalDevice = PlatformData.pPhysicalDevice;
+		init_info.Device = PlatformData.pDevice;
+		init_info.QueueFamily = PlatformData.uQueueFamily;
+		init_info.Queue = PlatformData.pQueue;
+		init_info.PipelineCache = PlatformData.pPipelineCache;
+		init_info.DescriptorPool = PlatformData.pDescriptorPool;
+		init_info.MinImageCount = PlatformData.uMinImageCount;
+		init_info.ImageCount = PlatformData.oMainWindowData.ImageCount;
+		init_info.Allocator = PlatformData.pAllocator;
+		init_info.PipelineInfoMain.RenderPass = PlatformData.oMainWindowData.RenderPass;
+		init_info.PipelineInfoMain.Subpass = 0;
+		init_info.PipelineInfoMain.MSAASamples = VK_SAMPLE_COUNT_1_BIT;
+		init_info.CheckVkResultFn = check_vk_result;
+		return ImGui_ImplVulkan_Init( &init_info );
 #elif (IM_CURRENT_GFX) == IM_GFX_METAL)
 		return ImGui_ImplMetal_Init(..);
 #else
@@ -3050,374 +1616,123 @@ static void Im_Hook_Renderer_SwapBuffers( ImGuiViewport* viewport, void* )
 
 	bool GfxCheck()
 	{
-#if (IM_CURRENT_PLATFORM == IM_PLATFORM_WIN32)
-#if (IM_CURRENT_GFX == IM_GFX_OPENGL3)
-
-		if ( ::IsIconic( PlatformData.pHandle ) )
-		{
-			::Sleep( 10 );
-			return false;
-		}
-
-#elif (IM_CURRENT_GFX == IM_GFX_DIRECTX9)
-		// Handle lost D3D9 device
-		if ( PlatformData.bDeviceLost )
-		{
-			HRESULT hr = PlatformData.pD3DDevice->TestCooperativeLevel();
-			if ( hr == D3DERR_DEVICELOST )
-			{
-				::Sleep( 10 );
-				return false;
-			}
-			if ( hr == D3DERR_DEVICENOTRESET )
-				ImResetDevice();
-
-			PlatformData.bDeviceLost = false;
-		}
-#elif (IM_CURRENT_GFX == IM_GFX_DIRECTX10) || (IM_CURRENT_GFX == IM_GFX_DIRECTX11) || (IM_CURRENT_GFX == IM_GFX_DIRECTX12)
-		if ( PlatformData.bSwapChainOccluded && PlatformData.pSwapChain->Present( 0, DXGI_PRESENT_TEST ) == DXGI_STATUS_OCCLUDED )
-		{
-			::Sleep( 10 );
-			return false;
-		}
-		PlatformData.bSwapChainOccluded = false;
-#endif
-
-#if (IM_CURRENT_GFX != IM_GFX_DIRECTX12) && (IM_CURRENT_GFX != IM_GFX_OPENGL2) && (IM_CURRENT_GFX != IM_GFX_OPENGL3)
-		// Handle window resize (we don't resize directly in the WM_SIZE handler)
-		if ( PlatformData.uResizeWidth != 0 && PlatformData.uResizeHeight != 0 )
-		{
-			Internal::WindowResize();
-		}
-#endif
-#endif
-
-		return true;
+		return Backend::GfxCheck();
 	}
 
 	void GfxViewportPre()
 	{
-#if IM_CURRENT_PLATFORM == IM_PLATFORM_GLFW
-		PlatformData.pBackupContext = glfwGetCurrentContext();
-#endif
+		Backend::GfxViewportPre();
 	}
 
 	void GfxViewportPost()
 	{
-#if IM_CURRENT_PLATFORM == IM_PLATFORM_WIN32
-#if IM_CURRENT_GFX == IM_GFX_OPENGL2 || IM_CURRENT_GFX == IM_GFX_OPENGL3
-		// Restore the OpenGL rendering context to the main window DC, since platform windows might have changed it.
-		wglMakeCurrent( PlatformData.oMainWindow.hDC, PlatformData.pRC );
-#endif
-#elif IM_CURRENT_PLATFORM == IM_PLATFORM_GLFW
-		glfwMakeContextCurrent( PlatformData.pBackupContext );
-#endif
+		Backend::GfxViewportPost();
 	}
 
 	//////////////////////////////////////////////////////////////////////////
 
 	bool PlatformContinue()
 	{
-#if (IM_CURRENT_PLATFORM == IM_PLATFORM_WIN32)
-		return PlatformData.oMessage.message != WM_QUIT;
-#elif (IM_CURRENT_PLATFORM == IM_PLATFORM_GLFW)
-		return !glfwWindowShouldClose( PlatformData.pWindow );
-#elif (IM_CURRENT_PLATFORM) == IM_PLATFORM_APPLE)
-#endif
+		return Platform::PlatformContinue();
 	}
 
 	bool PlatformEvents()
 	{
-#if (IM_CURRENT_PLATFORM == IM_PLATFORM_WIN32)
-		while ( ::PeekMessage( &PlatformData.oMessage, nullptr, 0U, 0U, PM_REMOVE ) )
-		{
-			::TranslateMessage( &PlatformData.oMessage );
-			::DispatchMessage( &PlatformData.oMessage );
-
-			if ( PlatformData.oMessage.message == WM_QUIT )
-				return true;
-		}
-
-		return false;
-#elif (IM_CURRENT_PLATFORM == IM_PLATFORM_GLFW)
-		glfwPollEvents();
-		return false;
-#elif (IM_CURRENT_PLATFORM) == IM_PLATFORM_APPLE)
-#endif
+		return Platform::PlatformEvents();
 	}
 
 	void GfxAPINewFrame()
 	{
-#if (IM_CURRENT_GFX == IM_GFX_OPENGL2)
-		ImGui_ImplOpenGL2_NewFrame();
-#elif (IM_CURRENT_GFX == IM_GFX_OPENGL3)
-		ImGui_ImplOpenGL3_NewFrame();
-#elif (IM_CURRENT_GFX == IM_GFX_DIRECTX9)
-		ImGui_ImplDX9_NewFrame();
-#elif (IM_CURRENT_GFX == IM_GFX_DIRECTX10)
-		ImGui_ImplDX10_NewFrame();
-#elif (IM_CURRENT_GFX == IM_GFX_DIRECTX11)
-		ImGui_ImplDX11_NewFrame();
-#elif (IM_CURRENT_GFX == IM_GFX_DIRECTX12)
-		ImGui_ImplDX12_NewFrame();
-#elif (IM_CURRENT_GFX) == IM_GFX_VULKAN)
-		ImGui_ImplVulkan_NewFrame();
-#elif (IM_CURRENT_GFX) == IM_GFX_METAL)
-		ImGui_ImplMetal_NewFrame();
-#elif (IM_CURRENT_GFX) == IM_GFX_WGPU)
-		ImGui_ImplWGPU_NewFrame();
-#else
-#error IM_CURRENT_TARGET not specified correctly
-#endif
+		Backend::GfxAPINewFrame();
 	}
 
 	void PlatformNewFrame()
 	{
-#if (IM_CURRENT_PLATFORM == IM_PLATFORM_WIN32)
-		ImGui_ImplWin32_NewFrame();
-#elif (IM_CURRENT_PLATFORM == IM_PLATFORM_GLFW)
-		ImGui_ImplGlfw_NewFrame();
-#elif (IM_CURRENT_PLATFORM) == IM_PLATFORM_APPLE)
-#endif
+		Platform::PlatformNewFrame();
 	}
 
 	bool GfxAPIClear( ImVec4 const vClearColor )
 	{
-#if (IM_CURRENT_GFX != IM_GFX_DIRECTX12)
+#if (IM_CURRENT_GFX != IM_GFX_DIRECTX12) && (IM_CURRENT_GFX != IM_GFX_VULKAN)
 		ImGui::EndFrame();
 #endif
-
-#if IM_CURRENT_GFX == IM_GFX_OPENGL2 || IM_CURRENT_GFX == IM_GFX_OPENGL3
-
-#if (IM_CURRENT_PLATFORM == IM_PLATFORM_WIN32)
-
-		// TODO
-		glViewport( 0, 0, PlatformData.iWidth, PlatformData.iHeight );
-
-#elif (IM_CURRENT_PLATFORM == IM_PLATFORM_GLFW)
-
-		int iWidth, iHeight;
-		glfwGetFramebufferSize( PlatformData.pWindow, &iWidth, &iHeight );
-		glViewport( 0, 0, iWidth, iHeight );
-
-#elif (IM_CURRENT_PLATFORM) == IM_PLATFORM_APPLE)
-#endif
-
-		glClearColor( vClearColor.x, vClearColor.y, vClearColor.z, vClearColor.w );
-		glClear( GL_COLOR_BUFFER_BIT );
-
-#elif (IM_CURRENT_GFX == IM_GFX_DIRECTX9)
-
-		PlatformData.pD3DDevice->SetRenderState(D3DRS_ZENABLE, FALSE);
-		PlatformData.pD3DDevice->SetRenderState(D3DRS_ALPHABLENDENABLE, FALSE);
-		PlatformData.pD3DDevice->SetRenderState(D3DRS_SCISSORTESTENABLE, FALSE);
-		D3DCOLOR clear_col_dx = D3DCOLOR_RGBA((int)(vClearColor.x * vClearColor.w * 255.0f), (int)(vClearColor.y * vClearColor.w * 255.0f), (int)(vClearColor.z * vClearColor.w * 255.0f), (int)(vClearColor.w * 255.0f));
-		PlatformData.pD3DDevice->Clear(0, NULL, D3DCLEAR_TARGET | D3DCLEAR_ZBUFFER, clear_col_dx, 1.0f, 0);
-
-#elif (IM_CURRENT_GFX == IM_GFX_DIRECTX10)
-
-		float const pClearColorWithAlpha[4] = { vClearColor.x * vClearColor.w, vClearColor.y * vClearColor.w, vClearColor.z * vClearColor.w, vClearColor.w };
-		PlatformData.pD3DDevice->OMSetRenderTargets( 1, &PlatformData.pMainRenderTargetView, nullptr );
-		PlatformData.pD3DDevice->ClearRenderTargetView( PlatformData.pMainRenderTargetView, pClearColorWithAlpha );
-
-#elif (IM_CURRENT_GFX == IM_GFX_DIRECTX11)
-
-		float const pClearColorWithAlpha[4] = { vClearColor.x * vClearColor.w, vClearColor.y * vClearColor.w, vClearColor.z * vClearColor.w, vClearColor.w };
-		PlatformData.pD3DDeviceContext->OMSetRenderTargets( 1, &PlatformData.pMainRenderTargetView, nullptr );
-		PlatformData.pD3DDeviceContext->ClearRenderTargetView( PlatformData.pMainRenderTargetView, pClearColorWithAlpha );
-
-#elif (IM_CURRENT_GFX == IM_GFX_DIRECTX12)
-
-#elif (IM_CURRENT_GFX == IM_GFX_VULKAN)
-
-
-
-#elif (IM_CURRENT_GFX == IM_GFX_METAL)
-
-
-
-#else
-
-#error IM_CURRENT_TARGET not specified correctly
-
-#endif
-
-		return true;
+		return Backend::GfxAPIClear( vClearColor );
 	}
 
 	bool GfxAPIRender( ImVec4 const vClearColor )
 	{
-#if (IM_CURRENT_GFX == IM_GFX_OPENGL2)
-		ImGui::Render();
-		ImGui_ImplOpenGL2_RenderDrawData( ImGui::GetDrawData() );
-#elif (IM_CURRENT_GFX == IM_GFX_OPENGL3)
-		ImGui::Render();
-		ImGui_ImplOpenGL3_RenderDrawData( ImGui::GetDrawData() );
-#elif (IM_CURRENT_GFX == IM_GFX_DIRECTX9)
-		if ( PlatformData.pD3DDevice->BeginScene() >= 0 )
-		{
-			ImGui::Render();
-			ImGui_ImplDX9_RenderDrawData( ImGui::GetDrawData() );
-			PlatformData.pD3DDevice->EndScene();
-		}
-#elif (IM_CURRENT_GFX == IM_GFX_DIRECTX10)
-		ImGui::Render();
-		ImGui_ImplDX10_RenderDrawData( ImGui::GetDrawData() );
-#elif (IM_CURRENT_GFX == IM_GFX_DIRECTX11)
-		ImGui::Render();
-		ImGui_ImplDX11_RenderDrawData( ImGui::GetDrawData() );
-#elif (IM_CURRENT_GFX == IM_GFX_DIRECTX12)
-		ImGui::Render();
-
-		PlatformDataImpl::FrameContext* frameCtx = ImWaitForNextFrameResources();
-		UINT backBufferIdx = PlatformData.pSwapChain->GetCurrentBackBufferIndex();
-		frameCtx->CommandAllocator->Reset();
-
-		D3D12_RESOURCE_BARRIER barrier = {};
-		barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-		barrier.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
-		barrier.Transition.pResource = PlatformData.pMainRenderTargetResource[ backBufferIdx ];
-		barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-		barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_PRESENT;
-		barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
-		PlatformData.pD3DCommandList->Reset( frameCtx->CommandAllocator, nullptr );
-		PlatformData.pD3DCommandList->ResourceBarrier( 1, &barrier );
-
-		// Render Dear ImGui graphics
-		const float clear_color_with_alpha[ 4 ] = { vClearColor.x * vClearColor.w, vClearColor.y * vClearColor.w, vClearColor.z * vClearColor.w, vClearColor.w };
-		PlatformData.pD3DCommandList->ClearRenderTargetView( PlatformData.pMainRenderTargetDescriptor[ backBufferIdx ], clear_color_with_alpha, 0, nullptr );
-		PlatformData.pD3DCommandList->OMSetRenderTargets( 1, &PlatformData.pMainRenderTargetDescriptor[ backBufferIdx ], FALSE, nullptr );
-		PlatformData.pD3DCommandList->SetDescriptorHeaps( 1, &PlatformData.pD3DSRVDescHeap );
-		ImGui_ImplDX12_RenderDrawData( ImGui::GetDrawData(), PlatformData.pD3DCommandList );
-		barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
-		barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_PRESENT;
-		PlatformData.pD3DCommandList->ResourceBarrier( 1, &barrier );
-		PlatformData.pD3DCommandList->Close();
-
-		PlatformData.pD3DCommandQueue->ExecuteCommandLists( 1, ( ID3D12CommandList* const* )&PlatformData.pD3DCommandList );
-
-#elif (IM_CURRENT_GFX) == IM_GFX_VULKAN)
-		ImGui::Render();
-		ImGui_ImplVulkan_RenderDrawData( ImGui::GetDrawData(), ... );
-#elif (IM_CURRENT_GFX) == IM_GFX_METAL)
-		ImGui::Render();
-		ImGui_ImplMetal_RenderDrawData( ImGui::GetDrawData(), ... );
-#elif (IM_CURRENT_GFX) == IM_GFX_WGPU)
-		ImGui::Render();
-		ImGui_ImplWGPU_RenderDrawData( ImGui::GetDrawData(), ... );
-#else
-#error IM_CURRENT_TARGET not specified correctly
-#endif
-
-		return true;
+		return Backend::GfxAPIRender( vClearColor );
 	}
 
 	bool GfxAPISwapBuffer()
 	{
-#if (IM_CURRENT_GFX == IM_GFX_OPENGL2) || (IM_CURRENT_GFX == IM_GFX_OPENGL3)
-
-#if (IM_CURRENT_PLATFORM == IM_PLATFORM_WIN32)
-		::SwapBuffers( PlatformData.oMainWindow.hDC );
-
-#elif (IM_CURRENT_PLATFORM == IM_PLATFORM_GLFW)
-
-		glfwSwapBuffers( PlatformData.pWindow );
-#elif (IM_CURRENT_PLATFORM) == IM_PLATFORM_APPLE)
-#endif
-
-#elif (IM_CURRENT_GFX == IM_GFX_DIRECTX9)
-
-		HRESULT uResult = PlatformData.pD3DDevice->Present( nullptr, nullptr, nullptr, nullptr );
-		if ( uResult == D3DERR_DEVICELOST )
-			PlatformData.bDeviceLost = true;
-
-#elif (IM_CURRENT_GFX == IM_GFX_DIRECTX10) || (IM_CURRENT_GFX == IM_GFX_DIRECTX11)
-
-		HRESULT uResult = PlatformData.pSwapChain->Present( 1, 0 ); // Present without vsync
-		PlatformData.bSwapChainOccluded = ( uResult == DXGI_STATUS_OCCLUDED );
-
-#elif (IM_CURRENT_GFX == IM_GFX_DIRECTX12)
-
-		// Present
-		HRESULT hr = PlatformData.pSwapChain->Present( 1, 0 );   // Present with vsync
-		//HRESULT hr = g_pSwapChain->Present(0, 0); // Present without vsync
-		PlatformData.bSwapChainOccluded = ( hr == DXGI_STATUS_OCCLUDED );
-
-		UINT64 fenceValue = PlatformData.uFenceLastSignaledValue + 1;
-		PlatformData.pD3DCommandQueue->Signal( PlatformData.pFence, fenceValue );
-		PlatformData.uFenceLastSignaledValue = fenceValue;
-
-		PlatformDataImpl::FrameContext* frameCtx = &PlatformData.pFrameContext[ PlatformData.uFrameIndex % PlatformData.NUM_FRAMES_IN_FLIGHT ];
-		frameCtx->FenceValue = fenceValue;
-
-#elif (IM_CURRENT_GFX == IM_GFX_VULKAN)
-#elif (IM_CURRENT_GFX == IM_GFX_METAL)
-#elif (IM_CURRENT_GFX == IM_GFX_WGPU)
-#else
-#error IM_CURRENT_TARGET not specified correctly
-#endif
-
-		return true;
+		return Backend::GfxAPISwapBuffer();
 	}
 
 	void ShutdownGfxAPI()
 	{
-#if (IM_CURRENT_GFX == IM_GFX_OPENGL2)
-		ImGui_ImplOpenGL2_Shutdown();
-#elif (IM_CURRENT_GFX == IM_GFX_OPENGL3)
-		ImGui_ImplOpenGL3_Shutdown();
-#elif (IM_CURRENT_GFX == IM_GFX_DIRECTX9)
-		ImGui_ImplDX9_Shutdown();
-#elif (IM_CURRENT_GFX == IM_GFX_DIRECTX10)
-		ImGui_ImplDX10_Shutdown();
-#elif (IM_CURRENT_GFX == IM_GFX_DIRECTX11)
-		ImGui_ImplDX11_Shutdown();
-#elif (IM_CURRENT_GFX == IM_GFX_DIRECTX12)
-		ImGui_ImplDX12_Shutdown();
-#elif (IM_CURRENT_GFX) == IM_GFX_VULKAN)
-		ImGui_ImplVulkan_Shutdown();
-#elif (IM_CURRENT_GFX) == IM_GFX_METAL)
-		ImGui_ImplMetal_Shutdown();
-#else
-#error IM_CURRENT_TARGET not specified correctly
-#endif
+		Backend::ShutdownGfxAPI();
 	}
 
 	void ShutdownPostGfxAPI()
 	{
-#if (IM_CURRENT_GFX == IM_GFX_OPENGL2) || (IM_CURRENT_GFX == IM_GFX_OPENGL3)
-
-#if (IM_CURRENT_PLATFORM == IM_PLATFORM_WIN32)
-		ImCleanupDeviceWGL( PlatformData.pHandle, &PlatformData.oMainWindow );
-		wglDeleteContext( PlatformData.pRC );
-#endif
-
-#elif (IM_CURRENT_GFX == IM_GFX_DIRECTX9) || (IM_CURRENT_GFX == IM_GFX_DIRECTX10)
-		ImCleanupDeviceD3D();
-#elif (IM_CURRENT_GFX == IM_GFX_DIRECTX11)
-#elif (IM_CURRENT_GFX == IM_GFX_DIRECTX12)
-#elif (IM_CURRENT_GFX == IM_GFX_VULKAN)
-#elif (IM_CURRENT_GFX == IM_GFX_METAL)
-#else
-#error IM_CURRENT_TARGET not specified correctly
-#endif
+		Backend::ShutdownPostGfxAPI();
 	}
 
 	void ShutdownWindow()
 	{
-#if (IM_CURRENT_PLATFORM == IM_PLATFORM_WIN32)
-		ImGui_ImplWin32_Shutdown();
-#elif (IM_CURRENT_PLATFORM == IM_PLATFORM_GLFW)
-		ImGui_ImplGlfw_Shutdown();
-#elif (IM_CURRENT_PLATFORM == IM_PLATFORM_APPLE)
-#else
-#endif
+		Platform::ShutdownPlatform();
 	}
 
 	//////////////////////////////////////////////////////////////////////////
 	void SetFeatures( ImPlatformFeatures features )
 	{
 		PlatformData.features = features;
+	}
+
+	void SetGLSLVersion( char const* glsl_version )
+	{
+#if (IM_CURRENT_GFX == IM_GFX_OPENGL3)
+		PlatformData.pGLSLVersion = glsl_version;
+#else
+		(void)glsl_version; // Suppress unused parameter warning for non-OpenGL backends
+#endif
+	}
+
+	void SetDX12FramesInFlight( int frames_in_flight )
+	{
+#if (IM_CURRENT_GFX == IM_GFX_DIRECTX12)
+		// Validate the range (typical values are 2-3)
+		if ( frames_in_flight >= 2 && frames_in_flight <= 8 )
+		{
+			// Note: This would require modifying NUM_FRAMES_IN_FLIGHT to be configurable
+			// For now, we keep it as a compile-time constant but this function is ready for future enhancement
+		}
+#else
+		(void)frames_in_flight; // Suppress unused parameter warning for non-DX12 backends
+#endif
+	}
+
+	void SetDX12RTVFormat( int rtv_format )
+	{
+#if (IM_CURRENT_GFX == IM_GFX_DIRECTX12)
+		// This would be used in the InitInfo structure during initialization
+		// Implementation would store this for use in ImGui_ImplDX12_InitInfo
+		(void)rtv_format; // Placeholder for now
+#else
+		(void)rtv_format; // Suppress unused parameter warning for non-DX12 backends
+#endif
+	}
+
+	void SetDX12DSVFormat( int dsv_format )
+	{
+#if (IM_CURRENT_GFX == IM_GFX_DIRECTX12)
+		// This would be used in the InitInfo structure during initialization
+		// Implementation would store this for use in ImGui_ImplDX12_InitInfo
+		(void)dsv_format; // Placeholder for now
+#else
+		(void)dsv_format; // Suppress unused parameter warning for non-DX12 backends
+#endif
 	}
 
 	bool ValidateFeatures()
@@ -3506,18 +1821,11 @@ static void Im_Hook_Renderer_SwapBuffers( ImGuiViewport* viewport, void* )
 	{
 		bool WindowResize()
 		{
-#if (IM_CURRENT_PLATFORM == IM_PLATFORM_WIN32)
-#if (IM_CURRENT_GFX == IM_GFX_DIRECTX9)
-			PlatformData.oD3Dpp.BackBufferWidth = PlatformData.uResizeWidth;
-			PlatformData.oD3Dpp.BackBufferHeight = PlatformData.uResizeHeight;
-			PlatformData.uResizeWidth = PlatformData.uResizeHeight = 0;
-			ImResetDevice();
-#elif (IM_CURRENT_GFX == IM_GFX_DIRECTX10) || (IM_CURRENT_GFX == IM_GFX_DIRECTX11)
+#if (IM_CURRENT_GFX == IM_GFX_DIRECTX11)
 			ImCleanupRenderTarget();
 			PlatformData.pSwapChain->ResizeBuffers( 0, PlatformData.uResizeWidth, PlatformData.uResizeHeight, DXGI_FORMAT_UNKNOWN, 0 );
 			PlatformData.uResizeWidth = PlatformData.uResizeHeight = 0;
 			ImCreateRenderTarget();
-#endif
 #endif
 
 			return true;
