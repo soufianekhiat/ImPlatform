@@ -1,3 +1,5 @@
+#version 130
+#define IM_SHADER_GLSL
 #ifndef __IM_SHADER_H__
 #define __IM_SHADER_H__
 
@@ -43,26 +45,34 @@
 
 #endif
 #endif
+
+
 struct PS_INPUT
 {
-	float4 pos : SV_POSITION;
-	float4 col : COLOR0;
-	float2 uv  : TEXCOORD0;
+	//float4 pos : SV_POSITION;
+	//float4 col : COLOR0;
+	//float2 uv  : TEXCOORD0;
+float4 pos : SV_POSITION;
+float4 col : COLOR0;
+float2 uv  : TEXCOORD0;
+
 };
 
 IMS_CBUFFER PS_CONSTANT_BUFFER
 {
-	float4 col0;
-	float4 col1;
-	float2 uv_start;
-	float2 uv_end;
+float4 col0;
+		float4 col1;
+		float2 uv_start;
+		float2 uv_end;
+
 };
+
 
 
 sampler sampler0;
 Texture2D texture0;
 
-float4 main(PS_INPUT input) : SV_Target
+float4 main_ps(PS_INPUT input) : SV_Target
 {
 	float2 uv = input.uv.xy;
 	float4 col_in = input.col;
@@ -77,4 +87,5 @@ float4 main(PS_INPUT input) : SV_Target
 	col_out *= col_in * texture0.Sample( sampler0, input.uv );
 	return col_out;
 }
+
 

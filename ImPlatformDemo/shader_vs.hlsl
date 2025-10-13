@@ -1,3 +1,5 @@
+#version 130
+#define IM_SHADER_GLSL
 #ifndef __IM_SHADER_H__
 #define __IM_SHADER_H__
 
@@ -43,30 +45,47 @@
 
 #endif
 #endif
-IMS_CBUFFER vertexBuffer
-{
-	float4x4 ProjectionMatrix;
-};
-struct VS_INPUT
-{
-	float2 pos : POSITION;
-	float4 col : COLOR0;
-	float2 uv  : TEXCOORD0;
-};
+
 
 struct PS_INPUT
 {
-	float4 pos : SV_POSITION;
-	float4 col : COLOR0;
-	float2 uv  : TEXCOORD0;
+	//float4 pos : SV_POSITION;
+	//float4 col : COLOR0;
+	//float2 uv  : TEXCOORD0;
+float4 pos : SV_POSITION;
+float4 col : COLOR0;
+float2 uv  : TEXCOORD0;
+
 };
 
-PS_INPUT main(VS_INPUT input)
+IMS_CBUFFER PS_CONSTANT_BUFFER
 {
-	PS_INPUT output;
-	output.pos = mul( ProjectionMatrix, float4(input.pos.xy, 0.f, 1.f));
-	output.col = input.col;
-	output.uv  = input.uv;
-	return output;
+float4 col0;
+		float4 col1;
+		float2 uv_start;
+		float2 uv_end;
+
+};
+
+
+
+sampler sampler0;
+Texture2D texture0;
+
+float4 main_ps(PS_INPUT input) : SV_Target
+{
+	float2 uv = input.uv.xy;
+	float4 col_in = input.col;
+	float4 col_out = float4(1.0f, 1.0f, 1.0f, 1.0f);
+	float2 delta = uv_end - uv_start;
+		float2 d = normalize( delta );
+		float l = rcp( length( delta ) );
+		float2 c = uv - uv_start;
+		float t = saturate( dot( d, c ) * l );
+		col_out = lerp( col0, col1, t );
+
+	col_out *= col_in * texture0.Sample( sampler0, input.uv );
+	return col_out;
 }
+
 
