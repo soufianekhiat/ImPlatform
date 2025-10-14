@@ -377,10 +377,10 @@ namespace ImPlatform
 			shader.is_cpu_vs_data_dirty = false;
 			shader.is_cpu_ps_data_dirty = false;
 
-			// Compile vertex shader
+			// Compile vertex shader (no macros needed for standalone HLSL shaders)
 			ID3DBlob* vsBlob = nullptr;
 			ID3DBlob* errorBlob = nullptr;
-			HRESULT hr = D3DCompile( vs_source, strlen( vs_source ), nullptr, nullptr, nullptr, "main", "vs_5_0", 0, 0, &vsBlob, &errorBlob );
+			HRESULT hr = D3DCompile( vs_source, strlen( vs_source ), nullptr, nullptr, nullptr, "main_vs", "vs_5_0", 0, 0, &vsBlob, &errorBlob );
 			if ( FAILED( hr ) )
 			{
 				if ( errorBlob )
@@ -397,7 +397,9 @@ namespace ImPlatform
 				return shader;
 
 			// Compile pixel shader
-			hr = D3DCompile( ps_source, strlen( ps_source ), nullptr, nullptr, nullptr, "main", "ps_5_0", 0, 0, &vsBlob, &errorBlob );
+			ID3DBlob* psBlob = nullptr;
+			errorBlob = nullptr;
+			hr = D3DCompile( ps_source, strlen( ps_source ), nullptr, nullptr, nullptr, "main_ps", "ps_5_0", 0, 0, &psBlob, &errorBlob );
 			if ( FAILED( hr ) )
 			{
 				if ( errorBlob )
@@ -405,16 +407,18 @@ namespace ImPlatform
 					fprintf( stderr, "Pixel shader compilation failed: %s\n", ( char* )errorBlob->GetBufferPointer() );
 					errorBlob->Release();
 				}
-				if ( shader.vs ) ( ( ID3D11VertexShader* )shader.vs )->Release();
+				if ( shader.vs )
+					( ( ID3D11VertexShader* )shader.vs )->Release();
 				shader.vs = nullptr;
 				return shader;
 			}
 
-			hr = PlatformData.pD3DDevice->CreatePixelShader( vsBlob->GetBufferPointer(), vsBlob->GetBufferSize(), nullptr, ( ID3D11PixelShader** )&shader.ps );
-			vsBlob->Release();
+			hr = PlatformData.pD3DDevice->CreatePixelShader( psBlob->GetBufferPointer(), psBlob->GetBufferSize(), nullptr, ( ID3D11PixelShader** )&shader.ps );
+			psBlob->Release();
 			if ( FAILED( hr ) )
 			{
-				if ( shader.vs ) ( ( ID3D11VertexShader* )shader.vs )->Release();
+				if ( shader.vs )
+					( ( ID3D11VertexShader* )shader.vs )->Release();
 				shader.vs = nullptr;
 				return shader;
 			}
@@ -438,7 +442,10 @@ namespace ImPlatform
 
 				shader.cpu_vs_data = IM_ALLOC( sizeof_in_bytes_vs_constants );
 				if ( init_vs_data_constant )
+				{
 					memcpy( shader.cpu_vs_data, init_vs_data_constant, sizeof_in_bytes_vs_constants );
+					shader.is_cpu_vs_data_dirty = true;  // Mark dirty so initial data gets uploaded on first use
+				}
 			}
 
 			if ( sizeof_in_bytes_ps_constants > 0 )
@@ -455,13 +462,17 @@ namespace ImPlatform
 					if ( shader.ps ) ( ( ID3D11PixelShader* )shader.ps )->Release();
 					if ( shader.vs_cst ) ( ( ID3D11Buffer* )shader.vs_cst )->Release();
 					shader.vs = shader.ps = shader.vs_cst = nullptr;
-					if ( shader.cpu_vs_data ) IM_FREE( shader.cpu_vs_data );
+					if ( shader.cpu_vs_data )
+						IM_FREE( shader.cpu_vs_data );
 					return shader;
 				}
 
 				shader.cpu_ps_data = IM_ALLOC( sizeof_in_bytes_ps_constants );
 				if ( init_ps_data_constant )
+				{
 					memcpy( shader.cpu_ps_data, init_ps_data_constant, sizeof_in_bytes_ps_constants );
+					shader.is_cpu_ps_data_dirty = true;  // Mark dirty so initial data gets uploaded on first use
+				}
 			}
 
 			return shader;

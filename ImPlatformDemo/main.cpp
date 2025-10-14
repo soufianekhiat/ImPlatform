@@ -27,17 +27,15 @@
 // Or
 //#define IM_CURRENT_TARGET (IM_PLATFORM_WIN32 | IM_GFX_OPENGL3)
 // Or a permutation, Not all permutation are valid for instance __DEAR_MAC__ + __DEAR_GFX_DX11__
-#define IM_GLFW3_AUTO_LINK
+//#define IM_GLFW3_AUTO_LINK
 //#define __DEAR_GLFW__
 #define __DEAR_WIN__
-//#define IM_GLFW3_AUTO_LINK)
 
-#define __DEAR_GFX_DX11__
+//#define __DEAR_GFX_DX11__
 //#define __DEAR_GFX_DX12__
-//#define __DEAR_GFX_OGL3__
+#define __DEAR_GFX_OGL3__
 //#define __DEAR_GFX_VULKAN__
 //#define IM_CURRENT_TARGET IM_TARGET_GLFW_OPENGL3
-//#define IM_THE_CHERNO_GLFW3
 #include <ImPlatform.h>
 
 #include <stdio.h>
@@ -69,61 +67,84 @@ struct param2
 void CreateDearImGuiShaders( ImDrawShader* shader0,
 							 ImDrawShader* shader1,
 							 ImDrawShader* shader2,
-							 param2* p2)
+							 param2* p2 )
 {
-	char const *source0 =
-		"float2 P = uv - 0.5f;\n\
-		P.y = -P.y;\n\
-		float size = 1.0f;\n\
-		float x = sqrt(2.0f) / 2.0f * ( P.x - P.y );\n\
-		float y = sqrt(2.0f) / 2.0f * ( P.x + P.y );\n\
-		float r1 = max( abs( x ), abs( y ) ) - size / 3.5f;\n\
-		float r2 = length( P - sqrt( 2.0f ) / 2.0f * float2( +1.0f, -1.0f ) * size / 3.5f ) - size / 3.5f;\n\
-		float r3 = length( P - sqrt( 2.0f ) / 2.0f * float2( -1.0f, -1.0f ) * size / 3.5f ) - size / 3.5f;\n\
-		col_out.rgb = ( min( min( r1, r2 ), r3 ) < 0.0f ).xxx;\n";
-	char const *source1 =
-		"float2 P = uv - 0.5f;\n\
-		P.y = -P.y;\n\
-		float size = 1.0f;\n\
-		float x = P.x;\n\
-		float y = P.y;\n\
-		float r1 = abs( x ) + abs( y ) - size / 2.0f;\n\
-		float r2 = max( abs( x + size / 2.0f ), abs( y ) ) - size / 2;\n\
-		float r3 = max( abs( x - size / 6.0f ) - size / 4.0f, abs( y ) - size / 4.0f );\n\
-		col_out.rgb = ( min( r3, max( .75f * r1, r2 ) ) < 0.0f ).xxx;\n";
-	char const *params2 =
-		"float4 col0;\n\
-		float4 col1;\n\
-		float2 uv_start;\n\
-		float2 uv_end;\n";
-	char const *source2 =
-		"float2 delta = uv_end - uv_start;\n\
-		float2 d = normalize( delta );\n\
-		float l = rcp( length( delta ) );\n\
-		float2 c = uv - uv_start;\n\
-		float t = saturate( dot( d, c ) * l );\n\
-		col_out = lerp( col0, col1, t );\n";
+	size_t data_size = 0;
 
-	char *vs_source;
-	char *ps_source;
+#if IM_CURRENT_GFX == IM_GFX_DIRECTX11 || \
+	IM_CURRENT_GFX == IM_GFX_DIRECTX12
 
-	ImPlatform::CreateDefaultPixelShaderSource( &vs_source,
-												&ps_source, "", "", source0, false );
-	*shader0 = ImPlatform::CreateShader( vs_source, ps_source, 0, NULL, 0, NULL );
-	IM_FREE( vs_source );
-	IM_FREE( ps_source );
+#define IM_SHADER_ROOT "shaders/hlsl_src/"
+#define IM_SHADER_EXT ".hlsl"
 
-	ImPlatform::CreateDefaultPixelShaderSource( &vs_source,
-												&ps_source, "", "", source1, false );
-	*shader1 = ImPlatform::CreateShader( vs_source, ps_source, 0, NULL, 0, NULL );
-	IM_FREE( vs_source );
-	IM_FREE( ps_source );
+#elif IM_CURRENT_GFX == IM_GFX_OPENGL3
 
-	ImPlatform::CreateDefaultPixelShaderSource( &vs_source,
-												&ps_source, "", params2, source2, false );
-	*shader2 = ImPlatform::CreateShader( vs_source, ps_source, 0, NULL, sizeof( param2 ), p2 );
-	IM_FREE( vs_source );
-	IM_FREE( ps_source );
+#define IM_SHADER_ROOT "shaders/glsl/"
+#define IM_SHADER_VS_EXT "_vs.glsl"
+#define IM_SHADER_PS_EXT "_ps.glsl"
+
+#else
+#error shader not supported
+#endif
+
+#if IM_CURRENT_GFX == IM_GFX_DIRECTX11 || IM_CURRENT_GFX == IM_GFX_DIRECTX12
+	// DirectX: Load combined HLSL shaders
+	// Load rotated_square shader (shader0)
+	// Note: ImFileLoadToMemory adds padding=1 by default which adds a null terminator
+	char* rotated_square_source = ( char * )ImFileLoadToMemory( IM_SHADER_ROOT "rotated_square" IM_SHADER_EXT, "rb", &data_size, 1 );
+	if ( rotated_square_source )
+	{
+		*shader0 = ImPlatform::CreateShader( rotated_square_source, rotated_square_source, 0, NULL, 0, NULL );
+		IM_FREE( rotated_square_source );
+	}
+
+	// Load arrow_shape shader (shader1)
+	char* arrow_shape_source = ( char * )ImFileLoadToMemory( IM_SHADER_ROOT "arrow_shape" IM_SHADER_EXT, "rb", &data_size, 1 );
+	if ( arrow_shape_source )
+	{
+		*shader1 = ImPlatform::CreateShader( arrow_shape_source, arrow_shape_source, 0, NULL, 0, NULL );
+		IM_FREE( arrow_shape_source );
+	}
+
+	// Load linear_gradient shader (shader2) with constant buffer
+	char* linear_gradient_source = ( char * )ImFileLoadToMemory( IM_SHADER_ROOT "linear_gradient" IM_SHADER_EXT, "rb", &data_size, 1 );
+	if ( linear_gradient_source )
+	{
+		*shader2 = ImPlatform::CreateShader( linear_gradient_source, linear_gradient_source, 0, NULL, sizeof( param2 ), p2 );
+		IM_FREE( linear_gradient_source );
+	}
+#elif IM_CURRENT_GFX == IM_GFX_OPENGL3
+	// OpenGL: Load split vertex and fragment shader files
+	// Load rotated_square shader (shader0)
+	char* rotated_square_vs = ( char * )ImFileLoadToMemory( IM_SHADER_ROOT "rotated_square" IM_SHADER_VS_EXT, "rb", &data_size, 1 );
+	char* rotated_square_ps = ( char * )ImFileLoadToMemory( IM_SHADER_ROOT "rotated_square" IM_SHADER_PS_EXT, "rb", &data_size, 1 );
+	if ( rotated_square_vs && rotated_square_ps )
+	{
+		*shader0 = ImPlatform::CreateShader( rotated_square_vs, rotated_square_ps, 0, NULL, 0, NULL );
+	}
+	if ( rotated_square_vs ) IM_FREE( rotated_square_vs );
+	if ( rotated_square_ps ) IM_FREE( rotated_square_ps );
+
+	// Load arrow_shape shader (shader1)
+	char* arrow_shape_vs = ( char * )ImFileLoadToMemory( IM_SHADER_ROOT "arrow_shape" IM_SHADER_VS_EXT, "rb", &data_size, 1 );
+	char* arrow_shape_ps = ( char * )ImFileLoadToMemory( IM_SHADER_ROOT "arrow_shape" IM_SHADER_PS_EXT, "rb", &data_size, 1 );
+	if ( arrow_shape_vs && arrow_shape_ps )
+	{
+		*shader1 = ImPlatform::CreateShader( arrow_shape_vs, arrow_shape_ps, 0, NULL, 0, NULL );
+	}
+	if ( arrow_shape_vs ) IM_FREE( arrow_shape_vs );
+	if ( arrow_shape_ps ) IM_FREE( arrow_shape_ps );
+
+	// Load linear_gradient shader (shader2) with constant buffer
+	char* linear_gradient_vs = ( char * )ImFileLoadToMemory( IM_SHADER_ROOT "linear_gradient" IM_SHADER_VS_EXT, "rb", &data_size, 1 );
+	char* linear_gradient_ps = ( char * )ImFileLoadToMemory( IM_SHADER_ROOT "linear_gradient" IM_SHADER_PS_EXT, "rb", &data_size, 1 );
+	if ( linear_gradient_vs && linear_gradient_ps )
+	{
+		*shader2 = ImPlatform::CreateShader( linear_gradient_vs, linear_gradient_ps, 0, NULL, sizeof( param2 ), p2 );
+	}
+	if ( linear_gradient_vs ) IM_FREE( linear_gradient_vs );
+	if ( linear_gradient_ps ) IM_FREE( linear_gradient_ps );
+#endif
 }
 
 void DemoCustomShaders( ImDrawShader *shader0,
@@ -273,10 +294,10 @@ int main()
 
 #ifdef IM_SUPPORT_CUSTOM_SHADER
 		param2 p2;
-		p2.col0 = ImVec4( 1.0f, 1.0f, 1.0f, 1.0f );
-		p2.col1 = ImVec4( 0.0f, 1.0f, 1.0f, 0.0f );
-		p2.uv_start = ImVec2( 0.4f, 0.4f );
-		p2.uv_end = ImVec2( 0.45f, 0.45f );
+		p2.col0 = ImVec4( 1.0f, 1.0f, 1.0f, 1.0f );  // White with full alpha
+		p2.col1 = ImVec4( 0.0f, 1.0f, 1.0f, 1.0f );  // Cyan with full alpha (fixed from 0.0)
+		p2.uv_start = ImVec2( 0.0f, 0.0f );
+		p2.uv_end = ImVec2( 0.0f, 1.0f );
 		ImDrawShader shader0, shader1, shader2;
 		CreateDearImGuiShaders( &shader0, &shader1, &shader2, &p2 );
 #endif
@@ -436,10 +457,10 @@ int main()
 
 #ifdef IM_SUPPORT_CUSTOM_SHADER
 		param2 p2;
-		p2.col0 = ImVec4( 1.0f, 1.0f, 1.0f, 1.0f );
-		p2.col1 = ImVec4( 0.0f, 1.0f, 1.0f, 0.0f );
-		p2.uv_start = ImVec2( 0.4f, 0.4f );
-		p2.uv_end = ImVec2( 0.45f, 0.45f );
+		p2.col0 = ImVec4( 1.0f, 0.0f, 0.0f, 1.0f );  // White with full alpha
+		p2.col1 = ImVec4( 0.0f, 1.0f, 0.0f, 1.0f );  // Cyan with full alpha (fixed from 0.0)
+		p2.uv_start = ImVec2( 0.0f, 0.0f );
+		p2.uv_end = ImVec2( 0.0f, 1.0f );
 		ImDrawShader shader0, shader1, shader2;
 		CreateDearImGuiShaders( &shader0, &shader1, &shader2, &p2 );
 #endif
@@ -515,6 +536,8 @@ int main()
 
 				ImPlatform::GfxViewportPost();
 			}
+
+			t += ImGui::GetIO().DeltaTime;
 
 			ImPlatform::GfxAPISwapBuffer();
 		}
