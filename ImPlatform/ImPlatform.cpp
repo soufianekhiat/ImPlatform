@@ -337,48 +337,23 @@ float4 main_ps(PS_INPUT input) : SV_Target\n\
 	  char const* ps_source,
 	  bool multiply_with_texture )
 	{
-		size_t data_size = 0;
-		*out_vs_source = ( char * )ImFileLoadToMemory( "shaders/hlsl_src/default.hlsl", "rb", &data_size, 0 );
-		IM_ASSERT( *out_vs_source );
-		IM_ASSERT( data_size > 0 );
-		*out_ps_source = ( char * )ImFileLoadToMemory( "shaders/hlsl_src/default.hlsl", "rb", &data_size, 0 );
-		IM_ASSERT( *out_ps_source );
-		IM_ASSERT( data_size > 0 );
-
-		ImFileHandle file_vs = ImFileOpen( "shaders/hlsl_src/default.hlsl", "rb" );
-		ImU64 size_vs = ImFileGetSize( file_vs );
-		*out_vs_source = ( char * )IM_ALLOC( size_vs + 1 );
-		ImFileRead( *out_vs_source, 1, size_vs, file_vs );
-		( *out_vs_source )[ size_vs ] = '\0';
-		ImFileClose( file_vs );
-
-
-		ImFileHandle file_ps = ImFileOpen( "shaders/hlsl_src/default.hlsl", "rb" );
-		ImU64 size_ps = ImFileGetSize( file_ps );
-		*out_ps_source = ( char * )IM_ALLOC( size_ps + 1 );
-		ImFileRead( *out_ps_source, 1, size_ps, file_ps );
-		(
-			*out_ps_source )[ size_ps ] = '\0';
-		ImFileClose( file_ps );
-
-
-//		CreateShaderSource( out_vs_source,
-//							out_ps_source,
-//							"",
-//							"",
-//"output.pos = mul( ProjectionMatrix, float4(input.pos.xy, 0.f, 1.f));\n\
-//output.col = input.col;\n\
-//output.uv  = input.uv;\n",
-//							ps_pre_functions,
-//							ps_params,
-//							ps_source,
-//"float2 pos : POSITION;\n\
-//float4 col : COLOR0;\n\
-//float2 uv  : TEXCOORD0;\n",
-//"float4 pos : SV_POSITION;\n\
-//float4 col : COLOR0;\n\
-//float2 uv  : TEXCOORD0;\n",
-//							true );
+		CreateShaderSource( out_vs_source,
+							out_ps_source,
+							"",
+							"",
+"output.pos = mul( ProjectionMatrix, float4(input.pos.xy, 0.f, 1.f));\n\
+output.col = input.col;\n\
+output.uv  = input.uv;\n",
+							ps_pre_functions,
+							ps_params,
+							ps_source,
+"float2 pos : POSITION;\n\
+float4 col : COLOR0;\n\
+float2 uv  : TEXCOORD0;\n",
+"float4 pos : SV_POSITION;\n\
+float4 col : COLOR0;\n\
+float2 uv  : TEXCOORD0;\n",
+							multiply_with_texture );
 	}
 
 	ImDrawShader	CreateShader( char const* vs_source,
@@ -397,7 +372,8 @@ float4 main_ps(PS_INPUT input) : SV_Target\n\
 	{
 		Backend::ReleaseShader( shader );
 	}
-#endif 
+
+#endif // IM_SUPPORT_CUSTOM_SHADER
 
 	void	CreateVertexBuffer( ImVertexBuffer*& vb, int sizeof_vertex_buffer, int vertices_count )
 	{
@@ -442,9 +418,96 @@ float4 main_ps(PS_INPUT input) : SV_Target\n\
 	void ImSetCustomShader( const ImDrawList* parent_list, const ImDrawCmd* cmd )
 	{
 #if (IM_CURRENT_GFX == IM_GFX_OPENGL3)
-		// OpenGL custom shader setting - not implemented yet
-		// Shaders in OpenGL are managed differently than DirectX
-		fprintf(stderr, "ImSetCustomShader not implemented for OpenGL3\n");
+
+		// Load OpenGL functions dynamically (not in minimal GL loader)
+		typedef void (APIENTRY *PFNGLBINDBUFFERBASEPROC)(unsigned int target, unsigned int index, unsigned int buffer);
+		typedef void (APIENTRY *PFNGLGENBUFFERSPROC)(int n, unsigned int* buffers);
+		typedef void (APIENTRY *PFNGLBUFFERDATAPROC)(unsigned int target, intptr_t size, const void* data, unsigned int usage);
+
+		static PFNGLBINDBUFFERBASEPROC glBindBufferBase_func = nullptr;
+		static PFNGLGENBUFFERSPROC glGenBuffers_func = nullptr;
+		static PFNGLBUFFERDATAPROC glBufferData_func = nullptr;
+
+		if ( !glBindBufferBase_func )
+		{
+#if defined(_WIN32)
+			glBindBufferBase_func = (PFNGLBINDBUFFERBASEPROC)wglGetProcAddress( "glBindBufferBase" );
+			glGenBuffers_func = (PFNGLGENBUFFERSPROC)wglGetProcAddress( "glGenBuffers" );
+			glBufferData_func = (PFNGLBUFFERDATAPROC)wglGetProcAddress( "glBufferData" );
+#endif
+		}
+
+		ImDrawShader* shader = ( ImDrawShader* )cmd->UserCallbackData;
+		unsigned int program = (unsigned int)(intptr_t)shader->vs;
+
+		// Use the custom shader program
+		glUseProgram( program );
+
+		// Get ImGui's projection matrix from the current draw data
+		// ImGui stores the projection matrix in the ImDrawList's owner viewport
+		ImGuiIO& io = ImGui::GetIO();
+		float L = cmd->ClipRect.x;
+		float R = cmd->ClipRect.z;
+		float T = cmd->ClipRect.y;
+		float B = cmd->ClipRect.w;
+
+		// Use the display size for projection matrix calculation
+		L = 0.0f;
+		R = io.DisplaySize.x;
+		T = 0.0f;
+		B = io.DisplaySize.y;
+
+		// Create orthographic projection matrix (column-major for OpenGL)
+		// This matches ImGui's projection matrix format
+		float ortho_projection[4][4] = {
+			{ 2.0f / (R - L),	  0.0f,			     0.0f,   0.0f },
+			{ 0.0f,				  2.0f / (T - B),    0.0f,   0.0f },
+			{ 0.0f,				  0.0f,			    -1.0f,   0.0f },
+			{ (R + L) / (L - R),  (T + B) / (B - T), 0.0f,   1.0f },
+		};
+
+		// Update and bind vertex shader constants (projection matrix UBO at binding point 0)
+		// Create VS UBO if it doesn't exist yet
+		if ( shader->vs_cst == NULL && glGenBuffers_func && glBufferData_func )
+		{
+			unsigned int ubo;
+			glGenBuffers_func( 1, &ubo );
+			glBindBuffer( 0x8A11 /* GL_UNIFORM_BUFFER */, ubo );
+			glBufferData_func( 0x8A11 /* GL_UNIFORM_BUFFER */, sizeof(ortho_projection), nullptr, 0x88E8 /* GL_DYNAMIC_DRAW */ );
+			shader->vs_cst = (void*)(intptr_t)ubo;
+		}
+
+		// Always update the projection matrix (it may change if window resizes)
+		if ( shader->vs_cst != NULL )
+		{
+			unsigned int ubo = (unsigned int)(intptr_t)shader->vs_cst;
+			glBindBuffer( 0x8A11 /* GL_UNIFORM_BUFFER */, ubo );
+			glBufferSubData( 0x8A11 /* GL_UNIFORM_BUFFER */, 0, sizeof(ortho_projection), ortho_projection );
+
+			if ( glBindBufferBase_func )
+			{
+				glBindBufferBase_func( 0x8A11 /* GL_UNIFORM_BUFFER */, 0, ubo );
+			}
+		}
+
+		// Update and bind fragment shader constants (UBO at binding point 0 for fragment shader)
+		// Note: Both vertex and fragment shaders use layout(binding = 0) in Slang-generated GLSL
+		if ( shader->ps_cst != NULL &&
+			 shader->sizeof_in_bytes_ps_constants > 0 &&
+			 shader->cpu_ps_data != NULL &&
+			 shader->is_cpu_ps_data_dirty )
+		{
+			unsigned int ubo = (unsigned int)(intptr_t)shader->ps_cst;
+			glBindBuffer( 0x8A11 /* GL_UNIFORM_BUFFER */, ubo );
+			glBufferSubData( 0x8A11 /* GL_UNIFORM_BUFFER */, 0, shader->sizeof_in_bytes_ps_constants, shader->cpu_ps_data );
+			glBindBuffer( 0x8A11 /* GL_UNIFORM_BUFFER */, 0 );
+			shader->is_cpu_ps_data_dirty = false;
+		}
+		if ( shader->ps_cst && glBindBufferBase_func )
+		{
+			unsigned int ubo = (unsigned int)(intptr_t)shader->ps_cst;
+			glBindBufferBase_func( 0x8A11 /* GL_UNIFORM_BUFFER */, 0, ubo );
+		}
 
 #elif (IM_CURRENT_GFX == IM_GFX_DIRECTX11)
 

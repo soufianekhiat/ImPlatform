@@ -12,11 +12,10 @@ Window with Custom Title Bar:
 
 // TODO:
 - [   ] WIN32_OPENGL3
-- [X] WIN32_DIRECTX11
+- [ X ] WIN32_DIRECTX11
 - [   ] WIN32_DIRECTX12
 - [   ] GLFW_OPENGL3
 - [   ] GLFW_VULKAN
-- [   ] GLFW_EMSCRIPTEM_OPENGL3
 
 ### Incentivise development:
 

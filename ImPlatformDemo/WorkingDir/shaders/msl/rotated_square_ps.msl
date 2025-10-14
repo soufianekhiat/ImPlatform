@@ -1,0 +1,72 @@
+#include <metal_stdlib>
+#include <metal_math>
+#include <metal_texture>
+using namespace metal;
+
+#line 90 "core"
+struct pixelOutput_0
+{
+    float4 output_0 [[color(0)]];
+};
+
+
+#line 90
+struct pixelInput_0
+{
+    float4 col_0 [[user(COLOR)]];
+    float2 uv_0 [[user(TEXCOORD)]];
+};
+
+
+#line 90
+struct KernelContext_0
+{
+    texture2d<float, access::sample> texture0_0;
+    sampler sampler0_0;
+};
+
+
+#line 36 "C:/git/DearWidgets/extern/ImPlatform/ImPlatformDemo/WorkingDir/shaders/hlsl_src/rotated_square.hlsl"
+[[fragment]] pixelOutput_0 main_ps(pixelInput_0 _S1 [[stage_in]], float4 pos_0 [[position]], texture2d<float, access::sample> texture0_1 [[texture(0)]], sampler sampler0_1 [[sampler(0)]])
+{
+
+#line 36
+    KernelContext_0 kernelContext_0;
+
+#line 36
+    (&kernelContext_0)->texture0_0 = texture0_1;
+
+#line 36
+    (&kernelContext_0)->sampler0_0 = sampler0_1;
+
+
+    thread float4 col_out_0 = float4(1.0, 1.0, 1.0, 1.0);
+
+
+    float2 _S2 = _S1.uv_0 - float2(0.5) ;
+
+#line 42
+    thread float2 P_0 = _S2;
+    P_0.y = - _S2.y;
+
+#line 48
+    float _S3 = sqrt(2.0);
+
+#line 48
+    float2 _S4 = float2(3.5) ;
+
+#line 63
+    col_out_0.xyz = float3(bool3(((min(min(max(abs(_S3 / 2.0 * (P_0.x - P_0.y)), abs(_S3 / 2.0 * (P_0.x + P_0.y))) - 0.28571429848670959, length(P_0 - float2((_S3 / 2.0))  * float2(1.0, -1.0) / _S4) - 0.28571429848670959), length(P_0 - float2((_S3 / 2.0))  * float2(-1.0, -1.0) / _S4) - 0.28571429848670959)) < 0.0)) );
+
+
+    float4 _S5 = col_out_0 * (_S1.col_0 * (((&kernelContext_0)->texture0_0).sample((sampler0_1), (_S1.uv_0))));
+
+#line 66
+    col_out_0 = _S5;
+
+#line 66
+    pixelOutput_0 _S6 = { _S5 };
+
+    return _S6;
+}
+

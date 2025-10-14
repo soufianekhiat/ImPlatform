@@ -1,0 +1,49 @@
+#include <metal_stdlib>
+#include <metal_math>
+#include <metal_texture>
+using namespace metal;
+
+#line 90 "core"
+struct pixelOutput_0
+{
+    float4 output_0 [[color(0)]];
+};
+
+
+#line 90
+struct pixelInput_0
+{
+    float4 col_0 [[user(COLOR)]];
+    float2 uv_0 [[user(TEXCOORD)]];
+};
+
+
+#line 90
+struct KernelContext_0
+{
+    texture2d<float, access::sample> texture0_0;
+    sampler sampler0_0;
+};
+
+
+#line 33 "C:/git/DearWidgets/extern/ImPlatform/ImPlatformDemo/WorkingDir/shaders/hlsl_src/default.hlsl"
+[[fragment]] pixelOutput_0 main_ps(pixelInput_0 _S1 [[stage_in]], float4 pos_0 [[position]], texture2d<float, access::sample> texture0_1 [[texture(0)]], sampler sampler0_1 [[sampler(0)]])
+{
+
+#line 33
+    KernelContext_0 kernelContext_0;
+
+#line 33
+    (&kernelContext_0)->texture0_0 = texture0_1;
+
+#line 33
+    (&kernelContext_0)->sampler0_0 = sampler0_1;
+
+#line 33
+    pixelOutput_0 _S2 = { _S1.col_0 * (((&kernelContext_0)->texture0_0).sample((sampler0_1), (_S1.uv_0))) };
+
+
+
+    return _S2;
+}
+
