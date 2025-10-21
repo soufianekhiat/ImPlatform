@@ -229,11 +229,13 @@ msbuild ImPlatformDemo.sln /p:Configuration=GLFW_OpenGL3 /p:Platform=x64
 ### Requirements
 - Dear ImGui (docking branch recommended for multi-viewport support)
 - Platform-specific dependencies:
-  - **Win32**: Windows SDK
-  - **GLFW**: GLFW library (for GLFW configurations)
+  - **Win32**: Windows SDK (included with Visual Studio)
+  - **GLFW**: GLFW library at `../imgui/examples/libs/glfw/lib-vc2010-64/glfw3.lib` (for GLFW configurations)
   - **Vulkan**: Vulkan SDK (for Vulkan configurations)
   - **SDL2/SDL3**: SDL library
   - **Apple**: Xcode
+
+**Note**: The GLFW library should be available in the Dear ImGui examples folder. The project is configured to use the relative path from the Dear ImGui repository.
 
 ## Project Structure
 
