@@ -60,6 +60,13 @@ static LRESULT WINAPI WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
 // ImPlatform API - CreateWindow
 IMPLATFORM_API bool ImPlatform_CreateWindow(char const* pWindowsName, ImVec2 const vPos, unsigned int uWidth, unsigned int uHeight)
 {
+    // Make process DPI aware and obtain main monitor scale
+    ImGui_ImplWin32_EnableDpiAwareness();
+    float main_scale = ImGui_ImplWin32_GetDpiScaleForMonitor(::MonitorFromPoint({0, 0}, MONITOR_DEFAULTTOPRIMARY));
+
+    // Store scale for later use in ImPlatform_InitPlatform
+    g_AppData.fDpiScale = main_scale;
+
     // Convert name to wide string
     int wchars_num = ::MultiByteToWideChar(CP_UTF8, 0, pWindowsName, -1, NULL, 0);
     wchar_t* wName = new wchar_t[wchars_num];
@@ -80,12 +87,13 @@ IMPLATFORM_API bool ImPlatform_CreateWindow(char const* pWindowsName, ImVec2 con
     g_AppData.wc.hIconSm = NULL;
     ::RegisterClassExW(&g_AppData.wc);
 
+    // Apply DPI scaling to window size
     g_AppData.hWnd = ::CreateWindowW(
         g_AppData.wc.lpszClassName,
         wName,
         WS_OVERLAPPEDWINDOW,
         (int)vPos.x, (int)vPos.y,
-        (int)uWidth, (int)uHeight,
+        (int)(uWidth * main_scale), (int)(uHeight * main_scale),
         NULL, NULL,
         g_AppData.wc.hInstance,
         NULL
@@ -161,6 +169,12 @@ IMPLATFORM_API void ImPlatform_DestroyWindow(void)
 HWND ImPlatform_App_GetHWND(void)
 {
     return g_AppData.hWnd;
+}
+
+// Internal API - Get DPI scale
+float ImPlatform_App_GetDpiScale_Win32(void)
+{
+    return g_AppData.fDpiScale;
 }
 
 // Internal API - Get Win32 app data
