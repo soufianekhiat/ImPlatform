@@ -2,6 +2,10 @@
 // All backend-specific includes are handled in ImPlatform.h
 // This file contains only common implementation code that is not backend-specific
 
+#if (IM_CURRENT_GFX == IM_GFX_OPENGL3)
+extern "C" void (*imgl3wGetProcAddress( const char* proc ))( void );
+#endif
+
 namespace ImPlatform
 {
 	PlatformDataImpl PlatformData;
@@ -419,21 +423,16 @@ float2 uv  : TEXCOORD0;\n",
 	{
 #if (IM_CURRENT_GFX == IM_GFX_OPENGL3)
 
-		// Load OpenGL functions dynamically (not in minimal GL loader)
-		typedef void (APIENTRY *PFNGLBINDBUFFERBASEPROC)(unsigned int target, unsigned int index, unsigned int buffer);
-		typedef void (APIENTRY *PFNGLGENBUFFERSPROC)(int n, unsigned int* buffers);
-		typedef void (APIENTRY *PFNGLBUFFERDATAPROC)(unsigned int target, intptr_t size, const void* data, unsigned int usage);
+		typedef void (APIENTRY* PFNGLBINDBUFFERBASEPROC)(unsigned int target, unsigned int index, unsigned int buffer);
 
-		static PFNGLBINDBUFFERBASEPROC glBindBufferBase_func = nullptr;
-		static PFNGLGENBUFFERSPROC glGenBuffers_func = nullptr;
-		static PFNGLBUFFERDATAPROC glBufferData_func = nullptr;
+		static PFNGLBINDBUFFERBASEPROC glBindBufferBase_ptr = nullptr;
 
-		if ( !glBindBufferBase_func )
+		if ( glBindBufferBase_ptr == nullptr )
 		{
+			glBindBufferBase_ptr = (PFNGLBINDBUFFERBASEPROC)imgl3wGetProcAddress( "glBindBufferBase" );
 #if defined(_WIN32)
-			glBindBufferBase_func = (PFNGLBINDBUFFERBASEPROC)wglGetProcAddress( "glBindBufferBase" );
-			glGenBuffers_func = (PFNGLGENBUFFERSPROC)wglGetProcAddress( "glGenBuffers" );
-			glBufferData_func = (PFNGLBUFFERDATAPROC)wglGetProcAddress( "glBufferData" );
+			if ( glBindBufferBase_ptr == nullptr )
+				glBindBufferBase_ptr = (PFNGLBINDBUFFERBASEPROC)wglGetProcAddress( "glBindBufferBase" );
 #endif
 		}
 
@@ -442,6 +441,20 @@ float2 uv  : TEXCOORD0;\n",
 
 		// Use the custom shader program
 		glUseProgram( program );
+		glActiveTexture( GL_TEXTURE0 );
+		glBindTexture( GL_TEXTURE_2D, ( GLuint )(intptr_t)cmd->GetTexID() );
+		typedef void (APIENTRY* PFNGLBINDSAMPLERPROC)( unsigned int, unsigned int );
+		static PFNGLBINDSAMPLERPROC glBindSampler_ptr = nullptr;
+		if ( glBindSampler_ptr == nullptr )
+		{
+			glBindSampler_ptr = (PFNGLBINDSAMPLERPROC)imgl3wGetProcAddress( "glBindSampler" );
+#if defined(_WIN32)
+		if ( glBindSampler_ptr == nullptr )
+				glBindSampler_ptr = (PFNGLBINDSAMPLERPROC)wglGetProcAddress( "glBindSampler" );
+#endif
+		}
+		if ( glBindSampler_ptr )
+			glBindSampler_ptr( 0, 0 );
 
 		// Get ImGui's projection matrix from the current draw data
 		// ImGui stores the projection matrix in the ImDrawList's owner viewport
@@ -466,15 +479,17 @@ float2 uv  : TEXCOORD0;\n",
 			{ (R + L) / (L - R),  (T + B) / (B - T), 0.0f,   1.0f },
 		};
 
-		// Update and bind vertex shader constants (projection matrix UBO at binding point 0)
+		// Update and bind vertex shader constants using the binding slot stored on creation.
 		// Create VS UBO if it doesn't exist yet
-		if ( shader->vs_cst == NULL && glGenBuffers_func && glBufferData_func )
+		if ( shader->vs_cst == NULL )
 		{
 			unsigned int ubo;
-			glGenBuffers_func( 1, &ubo );
+			glGenBuffers( 1, &ubo );
 			glBindBuffer( 0x8A11 /* GL_UNIFORM_BUFFER */, ubo );
-			glBufferData_func( 0x8A11 /* GL_UNIFORM_BUFFER */, sizeof(ortho_projection), nullptr, 0x88E8 /* GL_DYNAMIC_DRAW */ );
+			glBufferData( 0x8A11 /* GL_UNIFORM_BUFFER */, sizeof(ortho_projection), nullptr, 0x88E8 /* GL_DYNAMIC_DRAW */ );
 			shader->vs_cst = (void*)(intptr_t)ubo;
+			if ( shader->vs_binding_index < 0 )
+				shader->vs_binding_index = 0;
 		}
 
 		// Always update the projection matrix (it may change if window resizes)
@@ -484,14 +499,47 @@ float2 uv  : TEXCOORD0;\n",
 			glBindBuffer( 0x8A11 /* GL_UNIFORM_BUFFER */, ubo );
 			glBufferSubData( 0x8A11 /* GL_UNIFORM_BUFFER */, 0, sizeof(ortho_projection), ortho_projection );
 
-			if ( glBindBufferBase_func )
+			if ( glBindBufferBase_ptr )
 			{
-				glBindBufferBase_func( 0x8A11 /* GL_UNIFORM_BUFFER */, 0, ubo );
+				const unsigned int binding_index = ( shader->vs_binding_index >= 0 )
+					? (unsigned int)shader->vs_binding_index
+					: 0u;
+				glBindBufferBase_ptr( 0x8A11 /* GL_UNIFORM_BUFFER */, binding_index, ubo );
+
+				typedef void (APIENTRY* PFNGLUNIFORMBLOCKBINDINGPROC)( unsigned int, unsigned int, unsigned int );
+				static PFNGLUNIFORMBLOCKBINDINGPROC glUniformBlockBinding_ptr = nullptr;
+				if ( glUniformBlockBinding_ptr == nullptr )
+				{
+					glUniformBlockBinding_ptr = (PFNGLUNIFORMBLOCKBINDINGPROC)imgl3wGetProcAddress( "glUniformBlockBinding" );
+#if defined(_WIN32)
+					if ( glUniformBlockBinding_ptr == nullptr )
+						glUniformBlockBinding_ptr = (PFNGLUNIFORMBLOCKBINDINGPROC)wglGetProcAddress( "glUniformBlockBinding" );
+#endif
+				}
+				if ( glUniformBlockBinding_ptr )
+				{
+					typedef unsigned int (APIENTRY* PFNGLGETUNIFORMBLOCKINDEXPROC)( unsigned int, const char* );
+					static PFNGLGETUNIFORMBLOCKINDEXPROC glGetUniformBlockIndex_ptr = nullptr;
+					if ( glGetUniformBlockIndex_ptr == nullptr )
+					{
+						glGetUniformBlockIndex_ptr = (PFNGLGETUNIFORMBLOCKINDEXPROC)imgl3wGetProcAddress( "glGetUniformBlockIndex" );
+#if defined(_WIN32)
+						if ( glGetUniformBlockIndex_ptr == nullptr )
+							glGetUniformBlockIndex_ptr = (PFNGLGETUNIFORMBLOCKINDEXPROC)wglGetProcAddress( "glGetUniformBlockIndex" );
+#endif
+					}
+					if ( glGetUniformBlockIndex_ptr )
+					{
+						unsigned int block = glGetUniformBlockIndex_ptr( program, "block_SLANG_ParameterGroup_vertexBuffer_std140_0" );
+						if ( block != 0xFFFFFFFFu )
+							glUniformBlockBinding_ptr( program, block, binding_index );
+					}
+				}
 			}
 		}
 
-		// Update and bind fragment shader constants (UBO at binding point 0 for fragment shader)
-		// Note: Both vertex and fragment shaders use layout(binding = 0) in Slang-generated GLSL
+		// Update and bind fragment shader constants using the binding slot stored during shader creation.
+		// Slang-generated GLSL defaults to binding = 0, and we remap pixel constant blocks to avoid conflicts.
 		if ( shader->ps_cst != NULL &&
 			 shader->sizeof_in_bytes_ps_constants > 0 &&
 			 shader->cpu_ps_data != NULL &&
@@ -503,10 +551,43 @@ float2 uv  : TEXCOORD0;\n",
 			glBindBuffer( 0x8A11 /* GL_UNIFORM_BUFFER */, 0 );
 			shader->is_cpu_ps_data_dirty = false;
 		}
-		if ( shader->ps_cst && glBindBufferBase_func )
+		if ( shader->ps_cst && glBindBufferBase_ptr )
 		{
 			unsigned int ubo = (unsigned int)(intptr_t)shader->ps_cst;
-			glBindBufferBase_func( 0x8A11 /* GL_UNIFORM_BUFFER */, 0, ubo );
+			const unsigned int binding_index = ( shader->ps_binding_index >= 0 )
+				? (unsigned int)shader->ps_binding_index
+				: 0u;
+			glBindBufferBase_ptr( 0x8A11 /* GL_UNIFORM_BUFFER */, binding_index, ubo );
+
+			typedef void (APIENTRY* PFNGLUNIFORMBLOCKBINDINGPROC)( unsigned int, unsigned int, unsigned int );
+			static PFNGLUNIFORMBLOCKBINDINGPROC glUniformBlockBinding_ptr = nullptr;
+			if ( glUniformBlockBinding_ptr == nullptr )
+			{
+				glUniformBlockBinding_ptr = (PFNGLUNIFORMBLOCKBINDINGPROC)imgl3wGetProcAddress( "glUniformBlockBinding" );
+#if defined(_WIN32)
+				if ( glUniformBlockBinding_ptr == nullptr )
+					glUniformBlockBinding_ptr = (PFNGLUNIFORMBLOCKBINDINGPROC)wglGetProcAddress( "glUniformBlockBinding" );
+#endif
+			}
+			if ( glUniformBlockBinding_ptr )
+			{
+				typedef unsigned int (APIENTRY* PFNGLGETUNIFORMBLOCKINDEXPROC)( unsigned int, const char* );
+				static PFNGLGETUNIFORMBLOCKINDEXPROC glGetUniformBlockIndex_ptr = nullptr;
+				if ( glGetUniformBlockIndex_ptr == nullptr )
+				{
+					glGetUniformBlockIndex_ptr = (PFNGLGETUNIFORMBLOCKINDEXPROC)imgl3wGetProcAddress( "glGetUniformBlockIndex" );
+#if defined(_WIN32)
+					if ( glGetUniformBlockIndex_ptr == nullptr )
+						glGetUniformBlockIndex_ptr = (PFNGLGETUNIFORMBLOCKINDEXPROC)wglGetProcAddress( "glGetUniformBlockIndex" );
+#endif
+				}
+				if ( glGetUniformBlockIndex_ptr )
+				{
+					unsigned int block = glGetUniformBlockIndex_ptr( program, "block_SLANG_ParameterGroup_PS_CONSTANT_BUFFER_std140_0" );
+					if ( block != 0xFFFFFFFFu )
+						glUniformBlockBinding_ptr( program, block, binding_index );
+				}
+			}
 		}
 
 #elif (IM_CURRENT_GFX == IM_GFX_DIRECTX11)
@@ -1620,8 +1701,9 @@ static void Im_Hook_Renderer_SwapBuffers( ImGuiViewport* viewport, void* )
 
 	bool InitGfx()
 	{
+		return Backend::InitGfx();
 #if (IM_CURRENT_GFX == IM_GFX_OPENGL3)
-		return ImGui_ImplOpenGL3_Init( PlatformData.pGLSLVersion );
+		//return ImGui_ImplOpenGL3_Init( PlatformData.pGLSLVersion );
 #elif (IM_CURRENT_GFX == IM_GFX_DIRECTX11)
 		return ImGui_ImplDX11_Init( PlatformData.pD3DDevice, PlatformData.pD3DDeviceContext );
 #elif (IM_CURRENT_GFX == IM_GFX_DIRECTX12)

@@ -316,6 +316,8 @@ struct ImDrawShader
 	int sizeof_in_bytes_ps_constants;
 	bool is_cpu_vs_data_dirty;
 	bool is_cpu_ps_data_dirty;
+	int vs_binding_index;
+	int ps_binding_index;
 };
 
 // Store a vertex buffer for a given and a *fixed* struct of B
@@ -429,7 +431,7 @@ namespace ImPlatform
 #ifdef CreateWindow
 #undef CreateWindow // Windows API :(
 #endif
-	bool CreateWindow( char const* pWindowsName, ImVec2 const vPos, ImU32 const uWidth, ImU32 const uHeight );
+	bool CreateWindowApp( char const* pWindowsName, ImVec2 const vPos, ImU32 const uWidth, ImU32 const uHeight );
 	bool InitGfxAPI();
 	bool ShowWindow();
 	bool InitPlatform();

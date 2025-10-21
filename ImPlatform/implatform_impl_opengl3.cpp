@@ -1,15 +1,21 @@
-// ImPlatform OpenGL3 Backend Implementation - Pure C Style
+﻿// ImPlatform OpenGL3 Backend Implementation - Pure C Style
 // This file implements ImPlatform::Backend:: namespace functions for OpenGL3
 // The linker resolves these at link-time based on which .cpp is included
+#include <stdio.h>
 
 #include "ImPlatformBackend.h"
 #include "ImPlatform.h"
 #include <imgui.h>
 #include <imgui_internal.h>
+#include <string>
 
 // OpenGL includes
 #include <backends/imgui_impl_opengl3.h>
 #pragma comment( lib, "opengl32.lib" )
+
+
+extern "C" void (*imgl3wGetProcAddress( const char* proc ))( void );
+
 
 namespace ImPlatform
 {
@@ -43,6 +49,10 @@ namespace ImPlatform
 	#define GL_TEXTURE_WRAP_T 0x2803
 	#define GL_UNPACK_ALIGNMENT 0x0CF5
 	#define GL_COLOR_BUFFER_BIT 0x00004000
+	#define GL_VENDOR 0x1F00
+	#define GL_RENDERER 0x1F01
+	#define GL_VERSION 0x1F02
+	#define GL_SHADING_LANGUAGE_VERSION 0x8B8C
 
 	// Shader constants
 	#define GL_VERTEX_SHADER 0x8B31
@@ -240,7 +250,17 @@ namespace ImPlatform
 		bool InitGfx()
 		{
 			const char* glsl_version = PlatformData.pGLSLVersion ? PlatformData.pGLSLVersion : "#version 130";
-			return ImGui_ImplOpenGL3_Init( glsl_version );
+			if ( !ImGui_ImplOpenGL3_Init( glsl_version ) )
+				return false;
+			const char* vendor   = (const char*)glGetString( GL_VENDOR );
+			const char* renderer = (const char*)glGetString( GL_RENDERER );
+			const char* version  = (const char*)glGetString( GL_VERSION );
+			const char* glsl     = (const char*)glGetString( GL_SHADING_LANGUAGE_VERSION );
+			printf( "OpenGL Vendor   : %s\n",   vendor   ? vendor   : "unknown" );
+			printf( "OpenGL Renderer : %s\n",   renderer ? renderer : "unknown" );
+			printf( "OpenGL Version  : %s\n",   version  ? version  : "unknown" );
+			printf( "GLSL Version    : %s\n\n", glsl ? glsl : "unknown" );
+			return true;
 		}
 
 		void ShutdownGfxAPI()
@@ -408,9 +428,10 @@ namespace ImPlatform
 			shader.sizeof_in_bytes_ps_constants = sizeof_in_bytes_ps_constants;
 			shader.is_cpu_vs_data_dirty = false;
 			shader.is_cpu_ps_data_dirty = false;
+			shader.vs_binding_index = ( sizeof_in_bytes_vs_constants > 0 ) ? 0 : -1;
+			shader.ps_binding_index = ( sizeof_in_bytes_ps_constants > 0 ) ? 1 : -1;
 
 			// Prepend required GLSL extensions for separate sampler/texture objects
-			// These extensions are core in OpenGL 4.2+ but some drivers need explicit enable
 			const char* extension_header =
 				"#extension GL_ARB_separate_shader_objects : require\n"
 				"#extension GL_ARB_shading_language_420pack : require\n";
@@ -420,7 +441,6 @@ namespace ImPlatform
 			size_t vs_source_len = strlen(vs_source);
 			char* vs_with_extensions = (char*)IM_ALLOC(vs_header_len + vs_source_len + 1);
 
-			// Find the #version line and insert extensions after it
 			const char* vs_version_end = strstr(vs_source, "\n");
 			if (vs_version_end)
 			{
@@ -432,12 +452,10 @@ namespace ImPlatform
 			}
 			else
 			{
-				// No version line found, just concatenate
 				memcpy(vs_with_extensions, extension_header, vs_header_len);
 				memcpy(vs_with_extensions + vs_header_len, vs_source, vs_source_len + 1);
 			}
 
-			// Compile vertex shader
 			GLuint vs = glCreateShader( GL_VERTEX_SHADER );
 			glShaderSource( vs, 1, &vs_with_extensions, nullptr );
 			glCompileShader( vs );
@@ -454,7 +472,6 @@ namespace ImPlatform
 				return shader;
 			}
 
-			// Build fragment shader source with extensions
 			size_t ps_header_len = strlen(extension_header);
 			size_t ps_source_len = strlen(ps_source);
 			char* ps_with_extensions = (char*)IM_ALLOC(ps_header_len + ps_source_len + 1);
@@ -474,7 +491,67 @@ namespace ImPlatform
 				memcpy(ps_with_extensions + ps_header_len, ps_source, ps_source_len + 1);
 			}
 
-			// Compile fragment shader (pixel shader in OpenGL terms)
+			// Strip binding qualifiers and combined sampler statements for wider compatibility.
+			std::string patched_ps = ps_with_extensions;
+			auto remove_binding_tags = []( std::string& src )
+			{
+				const std::string token = "layout(binding";
+				size_t pos = src.find( token );
+				while ( pos != std::string::npos )
+				{
+					size_t end = src.find( ')', pos );
+					if ( end == std::string::npos )
+						break;
+					src.erase( pos, ( end - pos ) + 1 );
+					pos = src.find( token, pos );
+				}
+			};
+			remove_binding_tags( patched_ps );
+
+			for ( int unit = 0; unit < 4; ++unit )
+			{
+				std::string idx = std::to_string( unit );
+				std::string texture_decl = "uniform texture2D texture" + idx + "_0;";
+				size_t tex_pos = patched_ps.find( texture_decl );
+				if ( tex_pos == std::string::npos )
+					continue;
+
+				patched_ps.replace( tex_pos, texture_decl.size(), "uniform sampler2D texture" + idx + "_0;" );
+
+				std::string sampler_decl = "uniform sampler sampler" + idx + "_0;";
+				size_t sampler_pos = patched_ps.find( sampler_decl );
+				if ( sampler_pos != std::string::npos )
+					patched_ps.erase( sampler_pos, sampler_decl.size() );
+
+				const std::string call_pattern = "texture(sampler2D(";
+				size_t call_pos = patched_ps.find( call_pattern + "texture" + idx + "_0" );
+				while ( call_pos != std::string::npos )
+				{
+					size_t first_arg_start = call_pos + call_pattern.size();
+					size_t first_arg_end = patched_ps.find( ',', first_arg_start );
+					if ( first_arg_end == std::string::npos )
+						break;
+
+					std::string first_arg = patched_ps.substr( first_arg_start, first_arg_end - first_arg_start );
+
+					size_t sampler_close = patched_ps.find( ')', first_arg_end );
+					if ( sampler_close == std::string::npos )
+						break;
+
+					std::string replacement = "texture(" + first_arg;
+					patched_ps.replace( call_pos, sampler_close - call_pos + 1, replacement );
+
+					call_pos = patched_ps.find( call_pattern + "texture" + idx + "_0", call_pos + replacement.size() );
+				}
+			}
+
+			if ( patched_ps != ps_with_extensions )
+			{
+				IM_FREE( ps_with_extensions );
+				ps_with_extensions = (char*)IM_ALLOC( patched_ps.size() + 1 );
+				memcpy( ps_with_extensions, patched_ps.c_str(), patched_ps.size() + 1 );
+			}
+
 			GLuint fs = glCreateShader( GL_FRAGMENT_SHADER );
 			glShaderSource( fs, 1, &ps_with_extensions, nullptr );
 			glCompileShader( fs );
@@ -491,10 +568,25 @@ namespace ImPlatform
 				return shader;
 			}
 
-			// Link shaders into a program
 			GLuint program = glCreateProgram();
 			glAttachShader( program, vs );
 			glAttachShader( program, fs );
+			typedef void (APIENTRY* PFNGLBINDATTRIBLOCATIONPROC)( GLuint, GLuint, const char* );
+			static PFNGLBINDATTRIBLOCATIONPROC glBindAttribLocation_ptr = nullptr;
+			if ( glBindAttribLocation_ptr == nullptr )
+			{
+				glBindAttribLocation_ptr = (PFNGLBINDATTRIBLOCATIONPROC)imgl3wGetProcAddress( "glBindAttribLocation" );
+#if defined(_WIN32)
+				if ( glBindAttribLocation_ptr == nullptr )
+					glBindAttribLocation_ptr = (PFNGLBINDATTRIBLOCATIONPROC)wglGetProcAddress( "glBindAttribLocation" );
+#endif
+			}
+			if ( glBindAttribLocation_ptr )
+			{
+				glBindAttribLocation_ptr( program, 0, "input_pos_0" );
+				glBindAttribLocation_ptr( program, 1, "input_uv_0" );
+				glBindAttribLocation_ptr( program, 2, "input_col_0" );
+			}
 			glLinkProgram( program );
 
 			glGetProgramiv( program, GL_LINK_STATUS, &success );
@@ -509,14 +601,60 @@ namespace ImPlatform
 				return shader;
 			}
 
-			// Clean up individual shaders (they're now linked into the program)
 			glDeleteShader( vs );
 			glDeleteShader( fs );
 
-			shader.vs = (void*)(intptr_t)program;  // Store program ID in vs field
-			shader.ps = nullptr;  // Not used in OpenGL (program contains both shaders)
+			shader.vs = (void*)(intptr_t)program;
+			shader.ps = nullptr;
 
-			// Create uniform buffers (UBOs) if constants are needed
+			glUseProgram( program );
+			for ( int unit = 0; unit < 4; ++unit )
+			{
+				char sampler_name[32];
+				snprintf( sampler_name, sizeof( sampler_name ), "texture%d_0", unit );
+				GLint loc = glGetUniformLocation( program, sampler_name );
+				if ( loc != -1 )
+					glUniform1i( loc, unit );
+			}
+
+#ifndef GL_INVALID_INDEX
+#define GL_INVALID_INDEX 0xFFFFFFFFu
+#endif
+			typedef unsigned int (APIENTRY* PFNGLGETUNIFORMBLOCKINDEXPROC)( unsigned int, const char* );
+			typedef void (APIENTRY* PFNGLUNIFORMBLOCKBINDINGPROC)( unsigned int, unsigned int, unsigned int );
+			static PFNGLGETUNIFORMBLOCKINDEXPROC glGetUniformBlockIndex_ptr = nullptr;
+			static PFNGLUNIFORMBLOCKBINDINGPROC glUniformBlockBinding_ptr = nullptr;
+			if ( glGetUniformBlockIndex_ptr == nullptr || glUniformBlockBinding_ptr == nullptr )
+			{
+				glGetUniformBlockIndex_ptr = (PFNGLGETUNIFORMBLOCKINDEXPROC)imgl3wGetProcAddress( "glGetUniformBlockIndex" );
+				glUniformBlockBinding_ptr = (PFNGLUNIFORMBLOCKBINDINGPROC)imgl3wGetProcAddress( "glUniformBlockBinding" );
+#if defined(_WIN32)
+				if ( glGetUniformBlockIndex_ptr == nullptr )
+					glGetUniformBlockIndex_ptr = (PFNGLGETUNIFORMBLOCKINDEXPROC)wglGetProcAddress( "glGetUniformBlockIndex" );
+				if ( glUniformBlockBinding_ptr == nullptr )
+					glUniformBlockBinding_ptr = (PFNGLUNIFORMBLOCKBINDINGPROC)wglGetProcAddress( "glUniformBlockBinding" );
+#endif
+			}
+			if ( shader.vs_binding_index >= 0 )
+			{
+				if ( glGetUniformBlockIndex_ptr && glUniformBlockBinding_ptr )
+				{
+					GLuint block = glGetUniformBlockIndex_ptr( program, "block_SLANG_ParameterGroup_vertexBuffer_std140_0" );
+					if ( block != GL_INVALID_INDEX )
+						glUniformBlockBinding_ptr( program, block, (GLuint)shader.vs_binding_index );
+				}
+			}
+			if ( shader.ps_binding_index >= 0 )
+			{
+				if ( glGetUniformBlockIndex_ptr && glUniformBlockBinding_ptr )
+				{
+					GLuint block = glGetUniformBlockIndex_ptr( program, "block_SLANG_ParameterGroup_PS_CONSTANT_BUFFER_std140_0" );
+					if ( block != GL_INVALID_INDEX )
+						glUniformBlockBinding_ptr( program, block, (GLuint)shader.ps_binding_index );
+				}
+			}
+			glUseProgram( 0 );
+
 			if ( sizeof_in_bytes_vs_constants > 0 )
 			{
 				GLuint ubo;
@@ -532,6 +670,10 @@ namespace ImPlatform
 					memcpy( shader.cpu_vs_data, init_vs_data_constant, sizeof_in_bytes_vs_constants );
 					shader.is_cpu_vs_data_dirty = true;
 				}
+			}
+			else
+			{
+				shader.vs_binding_index = -1;
 			}
 
 			if ( sizeof_in_bytes_ps_constants > 0 )
@@ -549,6 +691,10 @@ namespace ImPlatform
 					memcpy( shader.cpu_ps_data, init_ps_data_constant, sizeof_in_bytes_ps_constants );
 					shader.is_cpu_ps_data_dirty = true;
 				}
+			}
+			else
+			{
+				shader.ps_binding_index = -1;
 			}
 
 			return shader;
@@ -588,6 +734,9 @@ namespace ImPlatform
 				IM_FREE( shader.cpu_ps_data );
 				shader.cpu_ps_data = nullptr;
 			}
+
+			shader.vs_binding_index = -1;
+			shader.ps_binding_index = -1;
 		}
 
 		void BeginCustomShader( ImDrawList* draw, ImDrawShader& shader )
