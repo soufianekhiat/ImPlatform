@@ -1,542 +1,225 @@
+// dear imgui: Platform/Renderer Abstraction Layer
+// This is a higher-level C API that abstracts platform and graphics boilerplate from examples.
+//
+// Configuration: Define IM_CURRENT_PLATFORM and IM_CURRENT_GFX before including this header:
+//   Example: #define IM_CURRENT_PLATFORM IM_PLATFORM_WIN32
+//            #define IM_CURRENT_GFX IM_GFX_DIRECTX11
+//
+// Available platforms:
+//   IM_PLATFORM_WIN32, IM_PLATFORM_GLFW, IM_PLATFORM_APPLE
+// Available graphics APIs:
+//   IM_GFX_OPENGL3, IM_GFX_DIRECTX11, IM_GFX_DIRECTX12, IM_GFX_VULKAN, IM_GFX_METAL, IM_GFX_WGPU
+//
+// Or use predefined combinations:
+//   IM_TARGET_WIN32_DX11, IM_TARGET_WIN32_DX12, IM_TARGET_WIN32_OPENGL3
+//   IM_TARGET_GLFW_OPENGL3, IM_TARGET_GLFW_VULKAN, IM_TARGET_GLFW_METAL
+//   IM_TARGET_APPLE_METAL
+//
+// Usage:
+//   1. ImPlatform_CreateWindow() - Create your application window
+//   2. ImPlatform_InitGfxAPI() - Initialize graphics device
+//   3. ImPlatform_ShowWindow() - Display the window
+//   4. ImPlatform_InitPlatform() - Initialize ImGui platform backend
+//   5. ImPlatform_InitGfx() - Create graphics resources
+//   6. Main loop:
+//      while (ImPlatform_PlatformContinue())
+//      {
+//          ImPlatform_PlatformEvents();
+//          if (!ImPlatform_GfxCheck()) continue;
+//
+//          ImPlatform_GfxAPINewFrame();
+//          ImPlatform_PlatformNewFrame();
+//          ImGui::NewFrame();
+//
+//          // Your ImGui code here
+//
+//          ImGui::Render();
+//          ImPlatform_GfxAPIClear(clear_color);
+//          ImPlatform_GfxAPIRender(clear_color);
+//          ImPlatform_GfxViewportPre();
+//          ImPlatform_GfxViewportPost();
+//          ImPlatform_GfxAPISwapBuffer();
+//      }
+//   7. Cleanup:
+//      ImPlatform_ShutdownGfxAPI();
+//      ImPlatform_ShutdownWindow();
+//      ImPlatform_ShutdownPostGfxAPI();
+//      ImPlatform_DestroyWindow();
+
 #pragma once
 
-#ifndef __IM_PLATFORM_H__
-#define __IM_PLATFORM_H__
-
-// For Dx12: #define ImTextureID ImU64
-
-#include <imgui.h>
-
-// To override the link of glfw3 do not use, other it ImPlatform will use the lib included on imgui
-//#define IM_GLFW3_AUTO_LINK
-// Use https://github.com/TheCherno/glfw/tree/dev to have CustomTitleBar Available
-//#define IM_THE_CHERNO_GLFW3
-
-// - [   ] WIN32_OPENGL3 // TBD
-// - [ O ] WIN32_DIRECTX11
-// - [   ] WIN32_DIRECTX12 // Issue with images
-// - [   ] GLFW_OPENGL3 // Do not work well with high DPI
-// - [ O ] GLFW_VULKAN
-// - [   ] GLFW_EMSCRIPTEM_OPENGL3
-
-// INTERNAL_MACRO
-#define IM_GFX_OPENGL3		( 1u << 0u )
-#define IM_GFX_DIRECTX11	( 1u << 1u )
-#define IM_GFX_DIRECTX12	( 1u << 2u )
-#define IM_GFX_VULKAN		( 1u << 6u )
-#define IM_GFX_METAL		( 1u << 7u )
-#define IM_GFX_WGPU			( 1u << 8u )
-#define IM_GFX_EMSCRIPTEM	( 1u << 9u )
-
-#define IM_GFX_MASK			0x0000FFFFu
-
-#define IM_PLATFORM_WIN32	( ( 1u << 0u ) << 16u )
-#define IM_PLATFORM_GLFW	( ( 1u << 1u ) << 16u )
-#define IM_PLATFORM_APPLE	( ( 1u << 2u ) << 16u )
-
-#define IM_PLATFORM_MASK	0xFFFF0000u
-
-#ifndef IM_CURRENT_TARGET
-
-#ifdef __DEAR_WIN__
-#define IM_CURRENT_PLATFORM IM_PLATFORM_WIN32
-#elif defined(__DEAR_LINUX__)
-#define IM_CURRENT_PLATFORM IM_PLATFORM_GLFW
-#elif defined(__DEAR_GLFW__)
-#define IM_CURRENT_PLATFORM IM_PLATFORM_GLFW
-#elif defined(__DEAR_MAC__)
-#define IM_CURRENT_PLATFORM IM_PLATFORM_APPLE
-#else
-#error __DEAR_{X}__ not specified correctly
+#ifndef IMPLATFORM_API
+#define IMPLATFORM_API
 #endif
 
-#ifdef __DEAR_GFX_DX11__
-#define IM_CURRENT_GFX IM_GFX_DIRECTX11
-#elif defined(__DEAR_GFX_DX12__)
-#define IM_CURRENT_GFX IM_GFX_DIRECTX12
-#elif defined(__DEAR_GFX_OGL3__)
-#define IM_CURRENT_GFX IM_GFX_OPENGL3
-#elif defined(__DEAR_GFX_VULKAN__)
-#define IM_CURRENT_GFX IM_GFX_VULKAN
-#elif defined(__DEAR_METAL__)
-#define IM_CURRENT_GFX IM_GFX_METAL
-#else
-#error __DEAR_GFX_{X}__ not specified correctly
+// Include imgui for types
+#ifndef IMGUI_VERSION
+#include "imgui.h"
 #endif
 
-#define IM_CURRENT_TARGET	(IM_CURRENT_PLATFORM | IM_CURRENT_GFX)
+// Platform/Graphics API defines
+#define IM_GFX_OPENGL3      ( 1u << 0u )
+#define IM_GFX_DIRECTX9     ( 1u << 1u )
+#define IM_GFX_DIRECTX10    ( 1u << 2u )
+#define IM_GFX_DIRECTX11    ( 1u << 3u )
+#define IM_GFX_DIRECTX12    ( 1u << 4u )
+#define IM_GFX_VULKAN       ( 1u << 5u )
+#define IM_GFX_METAL        ( 1u << 6u )
+#define IM_GFX_WGPU         ( 1u << 7u )
 
-#else
+#define IM_GFX_MASK         0x0000FFFFu
 
-#define IM_CURRENT_PLATFORM	( IM_CURRENT_TARGET & IM_PLATFORM_MASK )
-#define IM_CURRENT_GFX		( IM_CURRENT_TARGET & IM_GFX_MASK )
+#define IM_PLATFORM_WIN32   ( ( 1u << 0u ) << 16u )
+#define IM_PLATFORM_GLFW    ( ( 1u << 1u ) << 16u )
+#define IM_PLATFORM_SDL2    ( ( 1u << 2u ) << 16u )
+#define IM_PLATFORM_SDL3    ( ( 1u << 3u ) << 16u )
+#define IM_PLATFORM_APPLE   ( ( 1u << 4u ) << 16u )
 
+#define IM_PLATFORM_MASK    0xFFFF0000u
+
+// Predefined target combinations
+#define IM_TARGET_WIN32_DX10        ( IM_PLATFORM_WIN32 | IM_GFX_DIRECTX10 )
+#define IM_TARGET_WIN32_DX11        ( IM_PLATFORM_WIN32 | IM_GFX_DIRECTX11 )
+#define IM_TARGET_WIN32_DX12        ( IM_PLATFORM_WIN32 | IM_GFX_DIRECTX12 )
+#define IM_TARGET_WIN32_OPENGL3     ( IM_PLATFORM_WIN32 | IM_GFX_OPENGL3 )
+
+#define IM_TARGET_APPLE_METAL       ( IM_PLATFORM_APPLE | IM_GFX_METAL )
+
+#define IM_TARGET_GLFW_OPENGL3      ( IM_PLATFORM_GLFW | IM_GFX_OPENGL3 )
+#define IM_TARGET_GLFW_VULKAN       ( IM_PLATFORM_GLFW | IM_GFX_VULKAN )
+#define IM_TARGET_GLFW_METAL        ( IM_PLATFORM_GLFW | IM_GFX_METAL )
+
+#if defined(IM_CURRENT_GFX) && defined(IM_CURRENT_PLATFORM)
+#elif defined(IM_CURRENT_GFX) && !defined(IM_CURRENT_PLATFORM)
+#error ImPlatform if IM_CURRENT_GFX is defined IM_CURRENT_PLATFORM have to be defined too.
+#elif !defined(IM_CURRENT_GFX) && defined(IM_CURRENT_PLATFORM)
+#error ImPlatform if IM_CURRENT_PLATFORM is defined IM_CURRENT_GFX have to be defined too.
 #endif
 
-// Possible Permutation
-#define IM_TARGET_WIN32_DX11	( IM_PLATFORM_WIN32 | IM_GFX_DIRECTX11 )
-#define IM_TARGET_WIN32_DX12	( IM_PLATFORM_WIN32 | IM_GFX_DIRECTX12 )
-#define IM_TARGET_WIN32_OPENGL3	( IM_PLATFORM_WIN32 | IM_GFX_OPENGL3 )
-
-#define IM_TARGET_APPLE_METAL	( IM_PLATFORM_APPLE | IM_GFX_METAL )
-
-#define IM_TARGET_GLFW_OPENGL3	( IM_PLATFORM_GLFW | IM_GFX_OPENGL3 )
-
-#define IM_TARGET_GLFW_VULKAN	( IM_PLATFORM_GLFW | IM_GFX_VULKAN )
-
-#define IM_TARGET_GLFW_METAL	( IM_PLATFORM_GLFW | IM_GFX_METAL )
-
-#if IM_CURRENT_TARGET != IM_TARGET_WIN32_DX11		&&	\
-	IM_CURRENT_TARGET != IM_TARGET_WIN32_DX12		&&	\
-	IM_CURRENT_TARGET != IM_TARGET_WIN32_OPENGL3	&&	\
-	IM_CURRENT_TARGET != IM_TARGET_GLFW_OPENGL3			
-
-//#warning ImPlatform unsupported permutation
-#pragma message( "ImPlatform unsupported permutation" )
-
+#ifdef __cplusplus
+extern "C" {
 #endif
 
-#if (IM_CURRENT_PLATFORM == IM_PLATFORM_WIN32)
-#include <backends/imgui_impl_win32.h>
-#define DIRECTINPUT_VERSION 0x0800
-#include <dinput.h>
-#include <tchar.h>
-extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
-#ifndef WM_DPICHANGED
-#define WM_DPICHANGED 0x02E0 // From Windows SDK 8.1+ headers
-#endif
-#ifndef WIN32_LEAN_AND_MEAN
-#define WIN32_LEAN_AND_MEAN
-#endif
-#elif (IM_CURRENT_PLATFORM == IM_PLATFORM_GLFW)
-#include <backends/imgui_impl_glfw.h>
-#elif (IM_CURRENT_PLATFORM == IM_PLATFORM_APPLE)
-#include <backends/imgui_impl_osx.h>
-#else
-#error IM_CURRENT_TARGET not specified correctly
-#endif
+// Core API Functions
 
-#if (IM_CURRENT_GFX == IM_GFX_DIRECTX11)
-#include <backends/imgui_impl_dx11.h>
-#include <d3d11.h>
-#define IM_SUPPORT_CUSTOM_SHADER
-#define IM_GFX_HLSL
-#elif (IM_CURRENT_GFX == IM_GFX_DIRECTX12)
-#include <backends/imgui_impl_dx12.h>
-#include <d3d12.h>
-#include <dxgi1_4.h>
-#define IM_SUPPORT_CUSTOM_SHADER
-#define IM_GFX_HLSL
-#elif (IM_CURRENT_GFX == IM_GFX_VULKAN)
-#include <backends/imgui_impl_vulkan.h>
-#define IM_GFX_GLSL
-#elif (IM_CURRENT_GFX == IM_GFX_METAL)
-#include <backends/imgui_impl_metal.h>
-#define IM_GFX_MSL
-#elif (IM_CURRENT_GFX == IM_GFX_OPENGL3)
-// The backend cpp (imgui_impl_opengl3.cpp) is compiled separately
-// and uses Dear ImGui's integrated OpenGL loader
-#include <backends/imgui_impl_opengl3.h>
-#define IM_SUPPORT_CUSTOM_SHADER
-#define IM_GFX_GLSL
-#elif (IM_CURRENT_GFX == IM_GFX_WGPU)
-#include <backends/imgui_impl_wgpu.h>
-#define IM_GFX_WGPU
-#endif
+// Create a window with specified name, position, and size
+// Returns true on success
+IMPLATFORM_API bool ImPlatform_CreateWindow(char const* pWindowsName, ImVec2 const vPos, unsigned int uWidth, unsigned int uHeight);
 
-#include <stdio.h>
+// Initialize the graphics API (creates device, swapchain, etc.)
+// Must call after CreateWindow
+// Returns true on success
+IMPLATFORM_API bool ImPlatform_InitGfxAPI(void);
 
-enum ImPlatformFeatures_
-{
-	ImPlatformFeatures_None,
-	ImPlatformFeatures_CustomShader,
+// Show the window
+// Returns true on success
+IMPLATFORM_API bool ImPlatform_ShowWindow(void);
 
-	ImPlatformFeatures_COUNT
-};
-typedef int ImPlatformFeatures;
+// Initialize the platform and renderer backends
+// Must call after InitGfxAPI
+// Returns true on success
+IMPLATFORM_API bool ImPlatform_InitPlatform(void);
 
-struct PlatformDataImpl
-{
-#if (IM_CURRENT_PLATFORM == IM_PLATFORM_WIN32)
-	HWND		pHandle		= nullptr;
-#ifdef UNICODE
-	WNDCLASSEXW	oWinStruct;
-#else
-	WNDCLASSEXA	oWinStruct;
-#endif
-	MSG			oMessage;
+// Complete graphics initialization (create device objects, fonts, etc.)
+// Returns true on success
+IMPLATFORM_API bool ImPlatform_InitGfx(void);
 
-	// Dx12 Backend uses WM_SIZE to resize buffers
-#if (IM_CURRENT_GFX != IM_GFX_DIRECTX12) && (IM_CURRENT_GFX != IM_GFX_OPENGL3)
-	UINT		uResizeWidth	= 0;
-	UINT		uResizeHeight	= 0;
-#endif
+// Main loop functions
 
-#elif (IM_CURRENT_PLATFORM == IM_PLATFORM_GLFW)
-	GLFWwindow*	pWindow			= nullptr;
-	GLFWwindow* pBackupContext	= nullptr;
-#elif (IM_CURRENT_PLATFORM) == IM_PLATFORM_APPLE)
-#else
-#error IM_CURRENT_TARGET not specified correctly
-#endif
+// Check if the platform should continue running (window not closed)
+// Returns true if should continue, false if should exit
+IMPLATFORM_API bool ImPlatform_PlatformContinue(void);
 
-#if (IM_CURRENT_GFX == IM_GFX_OPENGL3)
+// Process platform events (input, window messages, etc.)
+// Returns true on success
+IMPLATFORM_API bool ImPlatform_PlatformEvents(void);
 
-#if (IM_CURRENT_PLATFORM == IM_PLATFORM_WIN32)
-	struct WGL_WindowData
-	{
-		HDC hDC;
-	};
-	HGLRC				pRC;
-	WGL_WindowData		oMainWindow;
-	int					iWidth;
-	int					iHeight;
-#endif
+// Check graphics state (device lost, window occluded, etc.)
+// Returns true if graphics are ready to render
+IMPLATFORM_API bool ImPlatform_GfxCheck(void);
 
-	char const*				pGLSLVersion			= nullptr;  // Will be auto-detected if not specified
-#elif (IM_CURRENT_GFX == IM_GFX_DIRECTX11)
-	ID3D11Device*			pD3DDevice				= nullptr;
-	ID3D11DeviceContext*	pD3DDeviceContext		= nullptr;
-	IDXGISwapChain*			pSwapChain				= nullptr;
-	ID3D11RenderTargetView*	pMainRenderTargetView	= nullptr;
-	bool					bSwapChainOccluded		= false;
-#elif (IM_CURRENT_GFX == IM_GFX_DIRECTX12)
-	struct FrameContext
-	{
-		ID3D12CommandAllocator*	CommandAllocator;
-		UINT64					FenceValue;
-	};
+// Begin new frame for graphics API backend
+IMPLATFORM_API void ImPlatform_GfxAPINewFrame(void);
 
-	static int const			NUM_FRAMES_IN_FLIGHT		= 3;
-	FrameContext				pFrameContext[ NUM_FRAMES_IN_FLIGHT ]
-															= {};
-	UINT						uFrameIndex					= 0;
+// Begin new frame for platform backend
+IMPLATFORM_API void ImPlatform_PlatformNewFrame(void);
 
-	static int const			NUM_BACK_BUFFERS			= 3;
-	ID3D12Device*				pD3DDevice					= nullptr;
-	ID3D12DescriptorHeap*		pD3DRTVDescHeap				= nullptr;
-	ID3D12DescriptorHeap*		pD3DSRVDescHeap				= nullptr;
-	ID3D12CommandQueue*			pD3DCommandQueue			= nullptr;
-	ID3D12GraphicsCommandList*	pD3DCommandList				= nullptr;
-	ID3D12Fence*				pFence						= nullptr;
-	HANDLE						pFenceEvent					= nullptr;
-	UINT64						uFenceLastSignaledValue		= 0;
-	IDXGISwapChain3*			pSwapChain					= nullptr;
-	HANDLE						pSwapChainWaitableObject	= nullptr;
-	ID3D12Resource*				pMainRenderTargetResource[ NUM_BACK_BUFFERS ]
-															= {};
-	D3D12_CPU_DESCRIPTOR_HANDLE	pMainRenderTargetDescriptor[ NUM_BACK_BUFFERS ]
-															= {};
-	bool							bSwapChainOccluded		= false;
+// Clear the framebuffer with specified color
+// vClearColor: RGBA clear color
+// Returns true on success
+IMPLATFORM_API bool ImPlatform_GfxAPIClear(ImVec4 const vClearColor);
 
-	static int const			NUM_SRV_DESCRIPTORS			= 128;
-	UINT						uNextSRVDescriptor			= 1;
-	ID3D12Resource*				pSRVResources[ NUM_SRV_DESCRIPTORS ] = {};
-#elif (IM_CURRENT_GFX == IM_GFX_VULKAN)
-	VkAllocationCallbacks*		pAllocator					= nullptr;
-	VkInstance					pInstance					= VK_NULL_HANDLE;
-	VkPhysicalDevice			pPhysicalDevice				= VK_NULL_HANDLE;
-	VkDevice					pDevice						= VK_NULL_HANDLE;
-	uint32_t					uQueueFamily				= (uint32_t)-1;
-	VkQueue						pQueue						= VK_NULL_HANDLE;
-	VkPipelineCache				pPipelineCache				= VK_NULL_HANDLE;
-	VkDescriptorPool			pDescriptorPool				= VK_NULL_HANDLE;
-	ImGui_ImplVulkanH_Window	oMainWindowData;
-	uint32_t					uMinImageCount				= 2;
-	bool						bSwapChainRebuild			= false;
-	VkImageUsageFlags			uSwapChainImageUsage		= VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
-#ifdef _DEBUG
-	VkDebugReportCallbackEXT	pDebugReport				= VK_NULL_HANDLE;
-#endif
-#endif
+// Render ImGui draw data
+// vClearColor: RGBA clear color (needed for DX12 command list setup)
+// Returns true on success
+IMPLATFORM_API bool ImPlatform_GfxAPIRender(ImVec4 const vClearColor);
 
-	ImVec2	vEndCustomToolBar		= ImVec2( 0.0f, 0.0f );
-	float	fCustomTitleBarHeight	= 32.0f;
-	ImPlatformFeatures	features	= ImPlatformFeatures_None;
-	bool	bCustomTitleBar			= false;
-	bool	bTitleBarHovered		= false;
-};
+// Update platform windows (for multi-viewport support)
+// Call before rendering viewports
+IMPLATFORM_API void ImPlatform_GfxViewportPre(void);
 
-enum ImPixelType
-{
-	ImPixelType_UInt8,
-	ImPixelType_UInt16,
-	ImPixelType_UInt32,
-	ImPixelType_UInt64,
-	ImPixelType_Int8,
-	ImPixelType_Int16,
-	ImPixelType_Int32,
-	ImPixelType_Int64,
-	ImPixelType_Float16,
-	ImPixelType_Float32,
-	ImPixelType_Float64
-};
+// Render platform windows (for multi-viewport support)
+// Call after main rendering
+IMPLATFORM_API void ImPlatform_GfxViewportPost(void);
 
-enum ImPixelChannel
-{
-	ImPixelChannel_R = 1,
-	ImPixelChannel_RG,
-	ImPixelChannel_RGB,
-	ImPixelChannel_RGBA
-};
+// Swap buffers / present
+// Returns true on success
+IMPLATFORM_API bool ImPlatform_GfxAPISwapBuffer(void);
 
-enum ImTextureFiltering
-{
-	ImTextureFiltering_Nearest,
-	ImTextureFiltering_Linear
-};
+// Shutdown functions (call in this order)
 
-enum ImTextureBoundary
-{
-	ImTextureBoundary_Clamp,
-	ImTextureBoundary_Repeat,
-	ImTextureBoundary_Mirror
-};
+// Shutdown graphics API backend (invalidate device objects)
+IMPLATFORM_API void ImPlatform_ShutdownGfxAPI(void);
 
-struct ImImageDesc
-{
-	ImPixelChannel		eChannel;
-	ImPixelType			eType;
-	ImTextureFiltering	eFiltering;
-	ImTextureBoundary	eBoundaryU;
-	ImTextureBoundary	eBoundaryV;
-};
+// Shutdown ImGui backends
+IMPLATFORM_API void ImPlatform_ShutdownWindow(void);
 
-typedef void* ImShaderID;
-typedef void* ImConstantID;
-struct ImDrawShader
-{
-	ImShaderID vs;
-	ImShaderID ps;
-	ImConstantID vs_cst;
-	ImConstantID ps_cst;
-	void* cpu_vs_data;
-	void* cpu_ps_data;
-	int sizeof_in_bytes_vs_constants;
-	int sizeof_in_bytes_ps_constants;
-	bool is_cpu_vs_data_dirty;
-	bool is_cpu_ps_data_dirty;
-	int vs_binding_index;
-	int ps_binding_index;
-};
+// Post-graphics API shutdown (cleanup device, swapchain)
+IMPLATFORM_API void ImPlatform_ShutdownPostGfxAPI(void);
 
-// Store a vertex buffer for a given and a *fixed* struct of B
-typedef void* ImVertexBufferID;
-typedef void* ImIndexBufferID;
-struct ImVertexBuffer
-{
-	ImVertexBufferID gpu_buffer;
-	int vertices_count;
-	int sizeof_each_struct_in_bytes;
-};
-struct ImIndexBuffer
-{
-	ImIndexBufferID gpu_buffer;
-	int indices_count;
-	ImU8 sizeof_each_index;
-};
+// Destroy window and platform
+IMPLATFORM_API void ImPlatform_DestroyWindow(void);
 
-namespace ImPlatform
-{
-	extern PlatformDataImpl PlatformData;
-
-	// Generic
-	ImTextureID	CreateTexture2D	( char* pData, ImU32 const uWidth, ImU32 const uHeight, ImImageDesc const& oImgDesc );
-	void		ReleaseTexture2D( ImTextureID id );
-
-	// [Deprecated]
-	// Default Vertex Buffer used by Dear ImGui { float2 pos; float4 col; float2 uv; } => { float4 pos; float4 cocl; float2 uv; }
-	void	CreateDefaultPixelShaderSource
-								( char** out_vs_source,
-								  char** out_ps_source,
-								  char const* ps_pre_functions,
-								  char const* ps_params,
-								  char const* ps_source,
-								  bool multiply_with_texture = true );
-
-	// [Deprecated]
-	void	CreateShaderSource	( char** out_vs_source,
-								  char** out_ps_source,
-								  char const* vs_pre_functions,
-								  char const* vs_params,
-								  char const* vs_source,
-								  char const* ps_pre_functions,
-								  char const* ps_params,
-								  char const* ps_source,
-								  char const* vb_desc,
-								  char const* vs_to_ps_desc,
-								  bool multiply_with_texture = true );
-
-	ImDrawShader	CreateShader( char const* vs_source,
-								  char const* ps_source,
-								  int sizeof_in_bytes_vs_constants,
-								  void* init_vs_data_constant,
-								  int sizeof_in_bytes_ps_constants,
-								  void* init_ps_data_constant );
-
-	void			ReleaseShader( ImDrawShader& shader );
-
-	void	CreateVertexBuffer( ImVertexBuffer*& buffer, int sizeof_vertex_buffer, int vertices_count );
-	void	CreateVertexBufferAndGrow( ImVertexBuffer** buffer, int sizeof_vertex_buffer, int vertices_count, int growth_size );
-	void	UpdateVertexBuffer( ImVertexBuffer** buffer, int sizeof_vertex_buffer, int vertices_count, void* cpu_data );
-	void	ReleaseVertexBuffer( ImVertexBuffer** buffer );
-	void	CreateIndexBuffer( ImIndexBuffer*& buffer, int indices_count );
-	void	CreateIndexBufferAndGrow( ImIndexBuffer** buffer, int indices_count, int growth_size );
-	void	UpdateIndexBuffer( ImIndexBuffer** buffer, int indices_count, void* cpu_data );
-	void	ReleaseIndexBuffer( ImIndexBuffer** buffer );
-
-	void		BeginCustomShader( ImDrawList* draw, ImDrawShader& shader );
-	void		UpdateCustomPixelShaderConstants( ImDrawShader& shader, void* ptr_to_constants );
-	void		UpdateCustomVertexShaderConstants( ImDrawShader& shader, void* ptr_to_constants );
-	void		EndCustomShader( ImDrawList* draw );
-
-	bool		ImIsMaximized();
-
-	// Custom Title Bar
-	bool		CustomTitleBarSupported();
-	bool		CustomTitleBarEnabled();
-	void		EnableCustomTitleBar();
-	void		DisableCustomTitleBar();
-
-	void		DrawCustomMenuBarDefault();
-
-	void		MinimizeApp();
-	void		MaximizeApp();
-	void		CloseApp();
-
-	bool		BeginCustomTitleBar( float fHeight );
-	void		EndCustomTitleBar();
-
-	// Configuration
-	void SetFeatures( ImPlatformFeatures features );
-	bool ValidateFeatures();
-
-	// OpenGL3 specific configuration (call before SimpleStart or CreateWindow)
-	void SetGLSLVersion( char const* glsl_version );
-
-	// DX12 specific configuration (call before SimpleStart or CreateWindow)
-	void SetDX12FramesInFlight( int frames_in_flight );
-	void SetDX12RTVFormat( int rtv_format );  // DXGI_FORMAT
-	void SetDX12DSVFormat( int dsv_format );  // DXGI_FORMAT
-
-	// SimpleAPI:
-	bool SimpleStart( char const* pWindowsName, ImVec2 const vPos, ImU32 const uWidth, ImU32 const uHeight );
-	bool SimpleInitialize( bool hasViewport );
-	void SimpleFinish();
-
-	void SimpleBegin();
-	void SimpleEnd( ImVec4 const vClearColor, bool hasViewport );
-
-	// ExplicitAPI:
-#ifdef CreateWindow
-#undef CreateWindow // Windows API :(
-#endif
-	bool CreateWindowApp( char const* pWindowsName, ImVec2 const vPos, ImU32 const uWidth, ImU32 const uHeight );
-	bool InitGfxAPI();
-	bool ShowWindow();
-	bool InitPlatform();
-	bool InitGfx();
-	bool PlatformContinue();
-	bool PlatformEvents();
-	bool GfxCheck();
-	void GfxAPINewFrame();
-	void PlatformNewFrame();
-	bool GfxAPIClear( ImVec4 const vClearColor );
-	// Need to pass the clear color to support dx12
-	bool GfxAPIRender( ImVec4 const vClearColor );
-	void GfxViewportPre();
-	void GfxViewportPost();
-	bool GfxAPISwapBuffer();
-	void ShutdownGfxAPI();
-	void ShutdownWindow();
-	void ShutdownPostGfxAPI();
-	void DestroyWindow();
-
-	// Internal API:
-	namespace Internal
-	{
-		// Resize is not handle in the same way depending on the GfxAPI, do not call by yourself
-		bool WindowResize();
-	}
+#ifdef __cplusplus
 }
-
-#ifdef IM_PLATFORM_IMPLEMENTATION
-
-// Include common implementation code
-#ifndef IM_PLATFORM_IMPLEMENTATION
-#include <ImPlatform.h>
 #endif
 
-#include <string>
-#include <fstream>
-#include <imgui_internal.h>
+#ifdef IMPLATFORM_IMPLEMENTATION
 
-// Platform-specific includes
-#if (IM_CURRENT_PLATFORM == IM_PLATFORM_WIN32)
-#include <windowsx.h>
-#define DIRECTINPUT_VERSION 0x0800
-extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler( HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam );
-#elif (IM_CURRENT_PLATFORM == IM_PLATFORM_GLFW)
-#ifdef IM_GLFW3_AUTO_LINK
-#pragma comment( lib, "lib-vc2010-64/glfw3.lib" )
-#pragma comment( lib, "legacy_stdio_definitions.lib" )
-#endif
-#elif (IM_CURRENT_PLATFORM) == IM_PLATFORM_APPLE)
+// Include graphics backend implementation
+#if IM_CURRENT_GFX == IM_GFX_OPENGL3
+    #include "ImPlatform_gfx_opengl3.cpp"
+#elif IM_CURRENT_GFX == IM_GFX_DIRECTX9
+    #include "ImPlatform_gfx_dx9.cpp"
+#elif IM_CURRENT_GFX == IM_GFX_DIRECTX10
+    #include "ImPlatform_gfx_dx10.cpp"
+#elif IM_CURRENT_GFX == IM_GFX_DIRECTX11
+    #include "ImPlatform_gfx_dx11.cpp"
+#elif IM_CURRENT_GFX == IM_GFX_DIRECTX12
+    #include "ImPlatform_gfx_dx12.cpp"
+#elif IM_CURRENT_GFX == IM_GFX_VULKAN
+    #include "ImPlatform_gfx_vulkan.cpp"
+#elif IM_CURRENT_GFX == IM_GFX_METAL
+    #include "ImPlatform_gfx_metal.mm"
+#elif IM_CURRENT_GFX == IM_GFX_WGPU
+    #include "ImPlatform_gfx_wgpu.cpp"
 #else
-#error IM_CURRENT_TARGET not specified correctly
+    #error "Unknown or unsupported IM_CURRENT_GFX backend"
 #endif
 
-// Include ImGui platform backend implementations
-#if (IM_CURRENT_PLATFORM == IM_PLATFORM_WIN32)
-#include <backends/imgui_impl_win32.cpp>
-#elif (IM_CURRENT_PLATFORM == IM_PLATFORM_GLFW)
-#include <backends/imgui_impl_glfw.cpp>
+// Include platform backend implementation
+#if IM_CURRENT_PLATFORM == IM_PLATFORM_WIN32
+    #include "ImPlatform_app_win32.cpp"
+#elif IM_CURRENT_PLATFORM == IM_PLATFORM_GLFW
+    #include "ImPlatform_app_glfw.cpp"
+#elif IM_CURRENT_PLATFORM == IM_PLATFORM_SDL2
+    #include "ImPlatform_app_sdl2.cpp"
+#elif IM_CURRENT_PLATFORM == IM_PLATFORM_SDL3
+    #include "ImPlatform_app_sdl3.cpp"
+#elif IM_CURRENT_PLATFORM == IM_PLATFORM_APPLE
+    #include "ImPlatform_app_apple.mm"
+#else
+    #error "Unknown or unsupported IM_CURRENT_PLATFORM backend"
 #endif
 
-// Include ImGui graphics backend implementations
-#if (IM_CURRENT_GFX == IM_GFX_DIRECTX11)
-#include <backends/imgui_impl_dx11.cpp>
-#pragma comment( lib, "d3d11.lib" )
-#pragma comment( lib, "d3dcompiler.lib" )
-#pragma comment( lib, "dxgi.lib" )
-#include <comdef.h>
-#elif (IM_CURRENT_GFX == IM_GFX_DIRECTX12)
-#include <backends/imgui_impl_dx12.cpp>
-#pragma comment( lib, "d3d12.lib" )
-#pragma comment( lib, "d3dcompiler.lib" )
-#pragma comment( lib, "dxgi.lib" )
-#elif (IM_CURRENT_GFX == IM_GFX_VULKAN)
-#include <backends/imgui_impl_vulkan.cpp>
-#elif (IM_CURRENT_GFX == IM_GFX_METAL)
-#include <backends/imgui_impl_metal.cpp>
-#elif (IM_CURRENT_GFX == IM_GFX_OPENGL3)
-#include <backends/imgui_impl_opengl3.cpp>
-#pragma comment( lib, "opengl32.lib" )
-#elif (IM_CURRENT_GFX == IM_GFX_WGPU)
-#include <backends/imgui_impl_wgpu.cpp>
-#endif
-
-// Include ImPlatform graphics backend implementations
-#if (IM_CURRENT_GFX == IM_GFX_DIRECTX11)
-#include "implatform_impl_dx11.cpp"
-#elif (IM_CURRENT_GFX == IM_GFX_DIRECTX12)
-#include "implatform_impl_dx12.cpp"
-#elif (IM_CURRENT_GFX == IM_GFX_VULKAN)
-#include "implatform_impl_vulkan.cpp"
-#elif (IM_CURRENT_GFX == IM_GFX_OPENGL3)
-#include "implatform_impl_opengl3.cpp"
-#endif
-
-// Include ImPlatform platform backend implementations
-#if (IM_CURRENT_PLATFORM == IM_PLATFORM_WIN32)
-#include "implatform_impl_win32.cpp"
-#elif (IM_CURRENT_PLATFORM == IM_PLATFORM_GLFW)
-#include "implatform_impl_glfw.cpp"
-#endif
-
-// Include common implementation code (non-backend-specific)
-#include <ImPlatform.cpp>
-
-#endif
-
-#endif
+#endif // IMPLATFORM_IMPLEMENTATION

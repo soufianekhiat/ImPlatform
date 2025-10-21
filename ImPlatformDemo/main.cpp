@@ -1,47 +1,41 @@
-﻿
+
 #ifdef _WIN32
 extern "C" {
 	__declspec(dllexport) unsigned long NvOptimusEnablement = 0x00000001;
 	__declspec(dllexport) int AmdPowerXpressRequestHighPerformance = 1;
 }
 #endif
+
 #define IMGUI_DEFINE_MATH_OPERATORS
 #include <imgui.h>
-// Available target, not all tested.
-// IM_TARGET_WIN32_DX9
-// IM_TARGET_WIN32_DX10
-// IM_TARGET_WIN32_DX11
-// IM_TARGET_WIN32_DX12
-// IM_TARGET_WIN32_OPENGL3
 
-// Available Permutations:
-//	OS
-//		__DEAR_WIN__
-//		__DEAR_GLFW__
-//		__DEAR_LINUX__
-//		__DEAR_MAC__
-//	Gfx API:
-//		__DEAR_GFX_DX11__
-//		__DEAR_GFX_DX12__
-//		__DEAR_GFX_OGL3__
-//		__DEAR_GFX_VULKAN__
-//		__DEAR_GFX_METAL__
+// Platform and Graphics API are defined by the project configuration via:
+// IM_CONFIG_PLATFORM and IM_CONFIG_GFX preprocessor defines
+//
+// Available configurations:
+//   Win32_DX9        - Windows + DirectX 9
+//   Win32_DX10       - Windows + DirectX 10
+//   Win32_DX11       - Windows + DirectX 11
+//   Win32_DX12       - Windows + DirectX 12
+//   Win32_OpenGL3    - Windows + OpenGL 3
+//   GLFW_OpenGL3     - GLFW + OpenGL 3
+//   GLFW_Vulkan      - GLFW + Vulkan
 
-#define IM_PLATFORM_IMPLEMENTATION // It will include ImPlatform.cpp internally
-// // Define target
-//#define IM_CURRENT_TARGET IM_TARGET_WIN32_DX11
-// Or
-//#define IM_CURRENT_TARGET (IM_PLATFORM_WIN32 | IM_GFX_OPENGL3)
-// Or a permutation, Not all permutation are valid for instance __DEAR_MAC__ + __DEAR_GFX_DX11__
-//#define IM_GLFW3_AUTO_LINK
-//#define __DEAR_GLFW__
-#define __DEAR_WIN__
+#ifndef IM_CONFIG_PLATFORM
+#error "IM_CONFIG_PLATFORM must be defined by project configuration"
+#endif
 
-//#define __DEAR_GFX_DX11__
-//#define __DEAR_GFX_DX12__
-#define __DEAR_GFX_OGL3__
-//#define __DEAR_GFX_VULKAN__
-//#define IM_CURRENT_TARGET IM_TARGET_GLFW_OPENGL3
+#ifndef IM_CONFIG_GFX
+#error "IM_CONFIG_GFX must be defined by project configuration"
+#endif
+
+// Define platform and graphics API from project configuration
+#define IM_CURRENT_PLATFORM IM_CONFIG_PLATFORM
+#define IM_CURRENT_GFX IM_CONFIG_GFX
+
+// Define implementation to include the backend code
+#define IMPLATFORM_IMPLEMENTATION
+
 #include <ImPlatform.h>
 
 #include <stdio.h>
@@ -59,7 +53,8 @@ extern "C" {
 static bool g_bSimpleAPI		= false;
 //////////////////////////////////////////////////////////////////////////
 
-//#undef IM_SUPPORT_CUSTOM_SHADER
+// Custom shader support not available in new API yet
+#undef IM_SUPPORT_CUSTOM_SHADER
 
 #ifdef IM_SUPPORT_CUSTOM_SHADER
 struct param2
@@ -210,8 +205,8 @@ int main()
 	// If we don't have stb_image we create an image manually instead of loading the file.
 	width = height = 256;
 	channel = 4;
-	unsigned char* data = ( unsigned char* )malloc( width * height * channel );
-	unsigned char* white_data = ( unsigned char* )malloc( width * height * channel );
+	unsigned char* data = ( unsigned char* )IM_ALLOC( width * height * channel );
+	unsigned char* white_data = ( unsigned char* )IM_ALLOC( width * height * channel );
 	for ( int j = 0; j < height; ++j )
 	{
 		for ( int i = 0; i < width; ++i )
@@ -232,175 +227,47 @@ int main()
 	}
 #endif
 
-	ImPlatform::SetFeatures( ImPlatformFeatures_CustomShader );
-
-	assert( ImPlatform::ValidateFeatures() );
-
-	if ( ImPlatform::CustomTitleBarSupported() )
-		ImPlatform::EnableCustomTitleBar();
-
-	ImPlatform::DisableCustomTitleBar();
-
 	float t = 0.0f;
-	// ImPlatform::SimpleAPI
-	if ( g_bSimpleAPI )
+
+	// Note: SimpleAPI is not available in the new C API yet
+	// Using the explicit API instead
+	if ( false ) // g_bSimpleAPI disabled - not implemented in new API
 	{
-		bool bGood;
-
-		bGood = ImPlatform::SimpleStart( "ImPlatform Simple Demo", ImVec2( 100, 100 ), 1024, 764 );
-		if ( !bGood )
-		{
-			fprintf( stderr, "ImPlatform: Cannot Simple Start." );
-			return false;
-		}
-
-		// Setup Dear ImGui context
-		ImGuiIO& io = ImGui::GetIO(); ( void )io;
-		io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;	// Enable Keyboard Controls
-		io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;	// Enable Gamepad Controls
-		io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;		// Enable Docking
-		io.ConfigFlags |= ImGuiConfigFlags_ViewportsEnable;		// Enable Multi-Viewport / Platform Windows
-
-		// Setup Dear ImGui style
-		ImGui::StyleColorsDark();
-
-		//io.Fonts->AddFontFromFileTTF( "../extern/FiraCode/distr/ttf/FiraCode-Medium.ttf", 16.0f );
-
-		// When viewports are enabled we tweak WindowRounding/WindowBg so platform windows can look identical to regular ones.
-		ImGuiStyle& style = ImGui::GetStyle();
-
-		bGood = ImPlatform::SimpleInitialize( io.ConfigFlags & ImGuiConfigFlags_ViewportsEnable );
-		if ( !bGood )
-		{
-			fprintf( stderr, "ImPlatform : Cannot Initialize." );
-			return false;
-		}
-
-		ImTextureID img = ImPlatform::CreateTexture2D( ( char* )data, width, height,
-														 {
-															ImPixelChannel_RGBA,
-															ImPixelType_UInt8,
-															ImTextureFiltering_Linear,
-															ImTextureBoundary_Clamp,
-															ImTextureBoundary_Clamp
-														 } );
-		ImTextureID img_white = ImPlatform::CreateTexture2D( ( char* )white_data, width, height,
-														 {
-															ImPixelChannel_RGBA,
-															ImPixelType_UInt8,
-															ImTextureFiltering_Linear,
-															ImTextureBoundary_Clamp,
-															ImTextureBoundary_Clamp
-														 } );
-#if IM_HAS_STBI
-		stbi_image_free( data );
-#else
-		free( data );
-#endif
-
-#ifdef IM_SUPPORT_CUSTOM_SHADER
-		param2 p2;
-		p2.col0 = ImVec4( 1.0f, 1.0f, 1.0f, 1.0f );  // White with full alpha
-		p2.col1 = ImVec4( 0.0f, 1.0f, 1.0f, 1.0f );  // Cyan with full alpha (fixed from 0.0)
-		p2.uv_start = ImVec2( 0.0f, 0.0f );
-		p2.uv_end = ImVec2( 0.0f, 1.0f );
-		ImDrawShader shader0, shader1, shader2;
-		CreateDearImGuiShaders( &shader0, &shader1, &shader2, &p2 );
-#endif
-
-		ImVec4 clear_color = ImVec4( 0.461f, 0.461f, 0.461f, 1.0f );
-		while ( ImPlatform::PlatformContinue() )
-		{
-			bool quit = ImPlatform::PlatformEvents();
-			if ( quit )
-				break;
-
-			if ( !ImPlatform::GfxCheck() )
-			{
-				continue;
-			}
-
-			ImPlatform::SimpleBegin();
-
-			if ( ImPlatform::CustomTitleBarSupported() &&
-				 ImPlatform::CustomTitleBarEnabled() )
-			{
-				if ( ImPlatform::BeginCustomTitleBar( 32.0f ) )
-				{
-					ImGui::Text( "ImPlatform with Custom Title Bar" );
-					ImGui::SameLine();
-
-					if ( ImGui::Button( "Minimize" ) )
-						ImPlatform::MinimizeApp();
-					ImGui::SameLine();
-
-					if ( ImGui::Button( "Maximize" ) )
-						ImPlatform::MaximizeApp();
-					ImGui::SameLine();
-
-					if ( ImGui::Button( "Close" ) )
-						ImPlatform::CloseApp();
-				}
-				ImPlatform::EndCustomTitleBar();
-			}
-
-			// ImGui Code
-			bool show = true;
-			ImGui::ShowDemoWindow( &show );
-
-#ifdef IM_SUPPORT_CUSTOM_SHADER
-			DemoCustomShaders(  &shader0,
-								&shader1,
-								&shader2,
-								&p2,
-								img, img_white, t );
-#endif
-
-			if ( ImGui::Begin( "Image" ) )
-			{
-					ImGui::Image( img, ImGui::GetContentRegionAvail() );
-			}
-			ImGui::End();
-
-			ImPlatform::SimpleEnd( clear_color, io.ConfigFlags & ImGuiConfigFlags_ViewportsEnable );
-
-			t += ImGui::GetIO().DeltaTime;
-		}
-
-		ImPlatform::SimpleFinish();
+		fprintf( stderr, "ImPlatform: Simple API not available in new C API yet.\n" );
+		return 1;
 	}
 	else
 	{
-		// ImPlatform::ExplicitAPI
+		// Using the new C API
 		bool bGood;
 
-		bGood = ImPlatform::CreateWindow( "ImPlatform Demo", ImVec2( 100, 100 ), 1024, 764 );
+		bGood = ImPlatform_CreateWindow( "ImPlatform Demo", ImVec2( 100, 100 ), 1024, 764 );
 		if ( !bGood )
 		{
-			fprintf( stderr, "ImPlatform: Cannot create window." );
-			return false;
+			fprintf( stderr, "ImPlatform: Cannot create window.\n" );
+			return 1;
 		}
 
-		bGood = ImPlatform::InitGfxAPI();
+		bGood = ImPlatform_InitGfxAPI();
 		if ( !bGood )
 		{
-			fprintf( stderr, "ImPlatform: Cannot initialize the Graphics API." );
-			return false;
+			fprintf( stderr, "ImPlatform: Cannot initialize the Graphics API.\n" );
+			return 1;
 		}
 
-		bGood = ImPlatform::ShowWindow();
+		bGood = ImPlatform_ShowWindow();
 		if ( !bGood )
 		{
-			fprintf( stderr, "ImPlatform: Cannot show the window." );
-			return false;
+			fprintf( stderr, "ImPlatform: Cannot show the window.\n" );
+			return 1;
 		}
 
 		IMGUI_CHECKVERSION();
 		bGood = ImGui::CreateContext() != nullptr;
 		if ( !bGood )
 		{
-			fprintf( stderr, "ImGui: Cannot create context." );
-			return false;
+			fprintf( stderr, "ImGui: Cannot create context.\n" );
+			return 1;
 		}
 
 		// Setup Dear ImGui context
@@ -426,136 +293,70 @@ int main()
 			style.Colors[ ImGuiCol_WindowBg ].w = 1.0f;
 		}
 
-		bGood = ImPlatform::InitPlatform();
+		bGood = ImPlatform_InitPlatform();
 		if ( !bGood )
 		{
-			fprintf( stderr, "ImPlatform: Cannot initialize platform." );
-			return false;
+			fprintf( stderr, "ImPlatform: Cannot initialize platform.\n" );
+			return 1;
 		}
-		bGood = ImPlatform::InitGfx();
+		bGood = ImPlatform_InitGfx();
 		if ( !bGood )
 		{
-			fprintf( stderr, "ImPlatform: Cannot initialize graphics." );
-			return false;
+			fprintf( stderr, "ImPlatform: Cannot initialize graphics.\n" );
+			return 1;
 		}
-		ImTextureID img = ImPlatform::CreateTexture2D( ( char* )data, width, height,
-														 {
-															ImPixelChannel_RGBA,
-															ImPixelType_UInt8,
-															ImTextureFiltering_Linear,
-															ImTextureBoundary_Clamp,
-															ImTextureBoundary_Clamp
-														 } );
-		ImTextureID img_white = ImPlatform::CreateTexture2D( ( char* )white_data, width, height,
-															   {
-																  ImPixelChannel_RGBA,
-																  ImPixelType_UInt8,
-																  ImTextureFiltering_Linear,
-																  ImTextureBoundary_Clamp,
-																  ImTextureBoundary_Clamp
-															   } );
+
+		// Note: Texture creation API not yet available in new C API
+		// ImTextureID img = NULL;
+		// ImTextureID img_white = NULL;
 
 #if IM_HAS_STBI
 		stbi_image_free( data );
 #else
-		free( data );
-#endif
-
-#ifdef IM_SUPPORT_CUSTOM_SHADER
-		param2 p2;
-		p2.col0 = ImVec4( 1.0f, 0.0f, 0.0f, 1.0f );  // White with full alpha
-		p2.col1 = ImVec4( 0.0f, 1.0f, 0.0f, 1.0f );  // Cyan with full alpha (fixed from 0.0)
-		p2.uv_start = ImVec2( 0.0f, 0.0f );
-		p2.uv_end = ImVec2( 0.0f, 1.0f );
-		ImDrawShader shader0, shader1, shader2;
-		CreateDearImGuiShaders( &shader0, &shader1, &shader2, &p2 );
+		IM_FREE( data );
 #endif
 
 		ImVec4 clear_color = ImVec4( 0.461f, 0.461f, 0.461f, 1.0f );
-		while ( ImPlatform::PlatformContinue() )
+		while ( ImPlatform_PlatformContinue() )
 		{
-			bool quit = ImPlatform::PlatformEvents();
-			if ( quit )
-				break;
+			ImPlatform_PlatformEvents();
 
-			if ( !ImPlatform::GfxCheck() )
+			if ( !ImPlatform_GfxCheck() )
 			{
 				continue;
 			}
 
-			ImPlatform::GfxAPINewFrame();
-			ImPlatform::PlatformNewFrame();
+			ImPlatform_GfxAPINewFrame();
+			ImPlatform_PlatformNewFrame();
 
 			ImGui::NewFrame();
 
-			if ( ImPlatform::CustomTitleBarSupported() &&
-				 ImPlatform::CustomTitleBarEnabled() )
-			{
-				if ( ImPlatform::BeginCustomTitleBar( 64.0f ) )
-				{
-					ImGui::Text( "ImPlatform with Custom Title Bar" );
-					ImGui::SameLine();
-
-					if ( ImGui::Button( "Minimize" ) )
-						ImPlatform::MinimizeApp();
-					ImGui::SameLine();
-
-					if ( ImGui::Button( "Maximize" ) )
-						ImPlatform::MaximizeApp();
-					ImGui::SameLine();
-
-					if ( ImGui::Button( "Close" ) )
-						ImPlatform::CloseApp();
-					ImGui::SameLine();
-				}
-				ImPlatform::EndCustomTitleBar();
-			}
-
-			// ImGui Code
+			// ImGui Demo Code
 			bool show = true;
 			ImGui::ShowDemoWindow( &show );
 
-#ifdef IM_SUPPORT_CUSTOM_SHADER
-			DemoCustomShaders( &shader0,
-							   &shader1,
-							   &shader2,
-							   &p2,
-							   img, img_white, t );
-#endif
+			ImGui::Render();
 
-			if ( ImGui::Begin( "Image" ) )
-			{
-				ImGui::Image( img, ImGui::GetContentRegionAvail() );
-			}
-			ImGui::End();
-
-			ImPlatform::GfxAPIClear( clear_color );
-			ImPlatform::GfxAPIRender( clear_color );
+			ImPlatform_GfxAPIClear( clear_color );
+			ImPlatform_GfxAPIRender( clear_color );
 
 			// Update and Render additional Platform Windows
-			if ( io.ConfigFlags & ImGuiConfigFlags_ViewportsEnable )
-			{
-				ImPlatform::GfxViewportPre();
-
-				ImGui::UpdatePlatformWindows();
-				ImGui::RenderPlatformWindowsDefault();
-
-				ImPlatform::GfxViewportPost();
-			}
+			ImPlatform_GfxViewportPre();
+			ImPlatform_GfxViewportPost();
 
 			t += ImGui::GetIO().DeltaTime;
 
-			ImPlatform::GfxAPISwapBuffer();
+			ImPlatform_GfxAPISwapBuffer();
 		}
 
-		ImPlatform::ShutdownGfxAPI();
-		ImPlatform::ShutdownWindow();
+		ImPlatform_ShutdownGfxAPI();
+		ImPlatform_ShutdownWindow();
 
 		ImGui::DestroyContext();
 
-		ImPlatform::ShutdownPostGfxAPI();
+		ImPlatform_ShutdownPostGfxAPI();
 
-		ImPlatform::DestroyWindow();
+		ImPlatform_DestroyWindow();
 	}
 
 	return 0;
