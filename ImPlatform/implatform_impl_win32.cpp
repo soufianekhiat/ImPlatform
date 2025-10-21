@@ -129,7 +129,7 @@ namespace ImPlatform
 				::DestroyWindow( PlatformData.pHandle );
 				PlatformData.pHandle = nullptr;
 			}
-			::UnregisterClassW( PlatformData.oWinStruct.lpszClassName, PlatformData.oWinStruct.hInstance );
+			::UnregisterClass( PlatformData.oWinStruct.lpszClassName, PlatformData.oWinStruct.hInstance );
 		}
 
 		bool InitPlatform()
