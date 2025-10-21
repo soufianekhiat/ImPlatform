@@ -3,6 +3,8 @@
 
 #include "ImPlatform_Internal.h"
 
+#include <stdio.h>
+
 #ifdef IM_PLATFORM_GLFW
 
 #include "../imgui/backends/imgui_impl_glfw.h"
