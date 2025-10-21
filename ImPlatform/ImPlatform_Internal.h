@@ -75,6 +75,7 @@ struct ImPlatform_AppData_Win32 {
     WNDCLASSEXW wc;
     HWND hWnd;
     bool bDone;
+    float fDpiScale;
 };
 #endif
 
@@ -231,6 +232,7 @@ struct ImPlatform_GfxData_WebGPU {
 
 #if defined(IM_CURRENT_PLATFORM) && (IM_CURRENT_PLATFORM == IM_PLATFORM_WIN32)
 HWND ImPlatform_App_GetHWND(void);
+float ImPlatform_App_GetDpiScale_Win32(void);
 struct ImPlatform_AppData_Win32* ImPlatform_App_GetData_Win32(void);
 #endif
 

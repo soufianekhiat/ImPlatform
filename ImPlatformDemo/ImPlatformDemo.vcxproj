@@ -64,8 +64,8 @@
 
   <!-- Common Include and Library Paths -->
   <PropertyGroup>
-    <IncludePath>$(SolutionDir)..\ImPlatform;$(SolutionDir)..\imgui;$(SolutionDir)..\imgui\examples\libs\glfw\include;$(IncludePath)</IncludePath>
-    <LibraryPath>$(SolutionDir)..\imgui\examples\libs\glfw\lib-vc2010-64;$(VC_LibraryPath_x64);$(WindowsSDK_LibraryPath_x64)</LibraryPath>
+    <IncludePath>$(SolutionDir)..\ImPlatform;$(SolutionDir)..\imgui;$(SolutionDir)..\imgui\examples\libs\glfw\include;$(VULKAN_SDK)\Include;$(IncludePath)</IncludePath>
+    <LibraryPath>$(SolutionDir)..\imgui\examples\libs\glfw\lib-vc2010-64;$(VULKAN_SDK)\Lib;$(VC_LibraryPath_x64);$(WindowsSDK_LibraryPath_x64)</LibraryPath>
     <OutDir>$(SolutionDir)$(Platform)\$(Configuration)\</OutDir>
     <IntDir>$(Platform)\$(Configuration)\</IntDir>
   </PropertyGroup>
