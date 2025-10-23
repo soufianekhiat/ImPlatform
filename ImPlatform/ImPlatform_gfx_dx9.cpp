@@ -6,6 +6,11 @@
 #ifdef IM_GFX_DIRECTX9
 
 #include "../imgui/backends/imgui_impl_dx9.h"
+// Note: D3DX is deprecated and not available in modern Windows SDK
+// For shader compilation, would need to use D3DCompile from d3dcompiler.lib
+#include <stdio.h>
+#include <string.h>
+#include <stdint.h>
 
 // Link with d3d9.lib
 #pragma comment(lib, "d3d9")
@@ -431,6 +436,297 @@ IMPLATFORM_API void ImPlatform_DestroyTexture(ImTextureID texture_id)
 
     LPDIRECT3DTEXTURE9 pTexture = (LPDIRECT3DTEXTURE9)texture_id;
     pTexture->Release();
+}
+
+// ============================================================================
+// Custom Vertex/Index Buffer Management API - DirectX 9
+// ============================================================================
+
+struct ImPlatform_BufferData_DX9
+{
+    LPDIRECT3DVERTEXBUFFER9 pVertexBuffer;
+    LPDIRECT3DINDEXBUFFER9 pIndexBuffer;
+    LPDIRECT3DVERTEXDECLARATION9 pVertexDeclaration;
+    ImPlatform_VertexBufferDesc vb_desc;
+    ImPlatform_IndexBufferDesc ib_desc;
+    ImPlatform_VertexAttribute* attributes;
+};
+
+static D3DPOOL ImPlatform_GetD3D9Pool(ImPlatform_BufferUsage usage)
+{
+    return (usage == ImPlatform_BufferUsage_Static) ? D3DPOOL_MANAGED : D3DPOOL_DEFAULT;
+}
+
+static DWORD ImPlatform_GetD3D9Usage(ImPlatform_BufferUsage usage)
+{
+    return (usage == ImPlatform_BufferUsage_Dynamic || usage == ImPlatform_BufferUsage_Stream) ? D3DUSAGE_DYNAMIC | D3DUSAGE_WRITEONLY : 0;
+}
+
+static D3DFORMAT ImPlatform_GetD3D9IndexFormat(ImPlatform_IndexFormat format)
+{
+    return (format == ImPlatform_IndexFormat_UInt16) ? D3DFMT_INDEX16 : D3DFMT_INDEX32;
+}
+
+IMPLATFORM_API ImPlatform_VertexBuffer ImPlatform_CreateVertexBuffer(const void* vertex_data, const ImPlatform_VertexBufferDesc* desc)
+{
+    if (!desc || !vertex_data)
+        return NULL;
+
+    ImPlatform_BufferData_DX9* buffer = new ImPlatform_BufferData_DX9();
+    memset(buffer, 0, sizeof(ImPlatform_BufferData_DX9));
+    buffer->vb_desc = *desc;
+
+    if (desc->attribute_count > 0 && desc->attributes)
+    {
+        buffer->attributes = new ImPlatform_VertexAttribute[desc->attribute_count];
+        memcpy(buffer->attributes, desc->attributes, sizeof(ImPlatform_VertexAttribute) * desc->attribute_count);
+        buffer->vb_desc.attributes = buffer->attributes;
+    }
+
+    DWORD usage = ImPlatform_GetD3D9Usage(desc->usage);
+    D3DPOOL pool = ImPlatform_GetD3D9Pool(desc->usage);
+
+    HRESULT hr = g_GfxData.pDevice->CreateVertexBuffer(
+        desc->vertex_count * desc->vertex_stride,
+        usage,
+        0,
+        pool,
+        &buffer->pVertexBuffer,
+        NULL);
+
+    if (FAILED(hr))
+    {
+        delete[] buffer->attributes;
+        delete buffer;
+        return NULL;
+    }
+
+    void* pData;
+    if (SUCCEEDED(buffer->pVertexBuffer->Lock(0, 0, &pData, 0)))
+    {
+        memcpy(pData, vertex_data, desc->vertex_count * desc->vertex_stride);
+        buffer->pVertexBuffer->Unlock();
+    }
+
+    return (ImPlatform_VertexBuffer)buffer;
+}
+
+IMPLATFORM_API bool ImPlatform_UpdateVertexBuffer(ImPlatform_VertexBuffer vertex_buffer, const void* vertex_data, unsigned int vertex_count, unsigned int offset)
+{
+    if (!vertex_buffer || !vertex_data)
+        return false;
+
+    ImPlatform_BufferData_DX9* buffer = (ImPlatform_BufferData_DX9*)vertex_buffer;
+    void* pData;
+    HRESULT hr = buffer->pVertexBuffer->Lock(0, 0, &pData, D3DLOCK_DISCARD);
+    if (FAILED(hr))
+        return false;
+
+    size_t byte_offset = offset * buffer->vb_desc.vertex_stride;
+    size_t byte_size = vertex_count * buffer->vb_desc.vertex_stride;
+    memcpy((char*)pData + byte_offset, vertex_data, byte_size);
+    buffer->pVertexBuffer->Unlock();
+    return true;
+}
+
+IMPLATFORM_API void ImPlatform_DestroyVertexBuffer(ImPlatform_VertexBuffer vertex_buffer)
+{
+    if (!vertex_buffer)
+        return;
+
+    ImPlatform_BufferData_DX9* buffer = (ImPlatform_BufferData_DX9*)vertex_buffer;
+    if (buffer->pVertexBuffer) buffer->pVertexBuffer->Release();
+    if (buffer->pVertexDeclaration) buffer->pVertexDeclaration->Release();
+    delete[] buffer->attributes;
+    delete buffer;
+}
+
+IMPLATFORM_API ImPlatform_IndexBuffer ImPlatform_CreateIndexBuffer(const void* index_data, const ImPlatform_IndexBufferDesc* desc)
+{
+    if (!desc || !index_data)
+        return NULL;
+
+    ImPlatform_BufferData_DX9* buffer = new ImPlatform_BufferData_DX9();
+    memset(buffer, 0, sizeof(ImPlatform_BufferData_DX9));
+    buffer->ib_desc = *desc;
+
+    unsigned int index_size = (desc->format == ImPlatform_IndexFormat_UInt16) ? sizeof(uint16_t) : sizeof(uint32_t);
+    DWORD usage = ImPlatform_GetD3D9Usage(desc->usage);
+    D3DPOOL pool = ImPlatform_GetD3D9Pool(desc->usage);
+    D3DFORMAT format = ImPlatform_GetD3D9IndexFormat(desc->format);
+
+    HRESULT hr = g_GfxData.pDevice->CreateIndexBuffer(
+        desc->index_count * index_size,
+        usage,
+        format,
+        pool,
+        &buffer->pIndexBuffer,
+        NULL);
+
+    if (FAILED(hr))
+    {
+        delete buffer;
+        return NULL;
+    }
+
+    void* pData;
+    if (SUCCEEDED(buffer->pIndexBuffer->Lock(0, 0, &pData, 0)))
+    {
+        memcpy(pData, index_data, desc->index_count * index_size);
+        buffer->pIndexBuffer->Unlock();
+    }
+
+    return (ImPlatform_IndexBuffer)buffer;
+}
+
+IMPLATFORM_API bool ImPlatform_UpdateIndexBuffer(ImPlatform_IndexBuffer index_buffer, const void* index_data, unsigned int index_count, unsigned int offset)
+{
+    if (!index_buffer || !index_data)
+        return false;
+
+    ImPlatform_BufferData_DX9* buffer = (ImPlatform_BufferData_DX9*)index_buffer;
+    unsigned int index_size = (buffer->ib_desc.format == ImPlatform_IndexFormat_UInt16) ? sizeof(uint16_t) : sizeof(uint32_t);
+
+    void* pData;
+    HRESULT hr = buffer->pIndexBuffer->Lock(0, 0, &pData, D3DLOCK_DISCARD);
+    if (FAILED(hr))
+        return false;
+
+    size_t byte_offset = offset * index_size;
+    size_t byte_size = index_count * index_size;
+    memcpy((char*)pData + byte_offset, index_data, byte_size);
+    buffer->pIndexBuffer->Unlock();
+    return true;
+}
+
+IMPLATFORM_API void ImPlatform_DestroyIndexBuffer(ImPlatform_IndexBuffer index_buffer)
+{
+    if (!index_buffer)
+        return;
+
+    ImPlatform_BufferData_DX9* buffer = (ImPlatform_BufferData_DX9*)index_buffer;
+    if (buffer->pIndexBuffer) buffer->pIndexBuffer->Release();
+    delete buffer;
+}
+
+IMPLATFORM_API void ImPlatform_BindVertexBuffer(ImPlatform_VertexBuffer vertex_buffer)
+{
+    if (!vertex_buffer)
+        return;
+
+    ImPlatform_BufferData_DX9* buffer = (ImPlatform_BufferData_DX9*)vertex_buffer;
+    g_GfxData.pDevice->SetStreamSource(0, buffer->pVertexBuffer, 0, buffer->vb_desc.vertex_stride);
+    if (buffer->pVertexDeclaration)
+        g_GfxData.pDevice->SetVertexDeclaration(buffer->pVertexDeclaration);
+}
+
+IMPLATFORM_API void ImPlatform_BindIndexBuffer(ImPlatform_IndexBuffer index_buffer)
+{
+    if (!index_buffer)
+        return;
+
+    ImPlatform_BufferData_DX9* buffer = (ImPlatform_BufferData_DX9*)index_buffer;
+    g_GfxData.pDevice->SetIndices(buffer->pIndexBuffer);
+}
+
+IMPLATFORM_API void ImPlatform_DrawIndexed(unsigned int primitive_type, unsigned int index_count, unsigned int start_index)
+{
+    D3DPRIMITIVETYPE d3d_prim;
+    UINT prim_count;
+
+    switch (primitive_type)
+    {
+    case 0: // Triangles
+        d3d_prim = D3DPT_TRIANGLELIST;
+        prim_count = index_count / 3;
+        break;
+    case 1: // Lines
+        d3d_prim = D3DPT_LINELIST;
+        prim_count = index_count / 2;
+        break;
+    case 2: // Points
+        d3d_prim = D3DPT_POINTLIST;
+        prim_count = index_count;
+        break;
+    default:
+        d3d_prim = D3DPT_TRIANGLELIST;
+        prim_count = index_count / 3;
+        break;
+    }
+
+    g_GfxData.pDevice->DrawIndexedPrimitive(d3d_prim, 0, 0, index_count, start_index, prim_count);
+}
+
+// ============================================================================
+// Custom Shader System API - DirectX 9
+// ============================================================================
+// Note: DirectX 9 shader support is limited because D3DX is deprecated
+// For full shader support, consider using D3DCompile from d3dcompiler.lib
+// or pre-compiled shader bytecode
+
+IMPLATFORM_API ImPlatform_Shader ImPlatform_CreateShader(const ImPlatform_ShaderDesc* desc)
+{
+    // Stub: D3DX is not available in modern Windows SDK
+    // Would need to use D3DCompile or pre-compiled bytecode
+    return NULL;
+}
+
+IMPLATFORM_API void ImPlatform_DestroyShader(ImPlatform_Shader shader)
+{
+    // Stub
+}
+
+IMPLATFORM_API ImPlatform_ShaderProgram ImPlatform_CreateShaderProgram(ImPlatform_Shader vertex_shader, ImPlatform_Shader fragment_shader)
+{
+    // Stub
+    return NULL;
+}
+
+IMPLATFORM_API void ImPlatform_DestroyShaderProgram(ImPlatform_ShaderProgram program)
+{
+    // Stub
+}
+
+IMPLATFORM_API void ImPlatform_UseShaderProgram(ImPlatform_ShaderProgram program)
+{
+    // Stub
+}
+
+IMPLATFORM_API bool ImPlatform_SetShaderUniform(ImPlatform_ShaderProgram program, const char* name, const void* data, unsigned int size)
+{
+    return false;
+}
+
+IMPLATFORM_API bool ImPlatform_SetShaderTexture(ImPlatform_ShaderProgram program, const char* name, unsigned int slot, ImTextureID texture)
+{
+    return false;
+}
+
+// ============================================================================
+// Custom Shader DrawList Integration
+// ============================================================================
+
+// ImDrawCallback handler to activate a custom shader
+static void ImPlatform_SetCustomShader(const ImDrawList* parent_list, const ImDrawCmd* cmd)
+{
+    // DX9 custom shaders not supported (D3DX deprecated)
+    // This is a stub for API consistency
+}
+
+IMPLATFORM_API void ImPlatform_BeginCustomShader(ImDrawList* draw, ImPlatform_ShaderProgram shader)
+{
+    if (!draw || !shader)
+        return;
+
+    draw->AddCallback(&ImPlatform_SetCustomShader, shader);
+}
+
+IMPLATFORM_API void ImPlatform_EndCustomShader(ImDrawList* draw)
+{
+    if (!draw)
+        return;
+
+    draw->AddCallback(ImDrawCallback_ResetRenderState, NULL);
 }
 
 #endif // IM_GFX_DIRECTX9

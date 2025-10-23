@@ -7,6 +7,10 @@
 
 #include "../imgui/backends/imgui_impl_dx11.h"
 #include <d3d11.h>
+#include <d3dcompiler.h>
+#include <stdio.h>
+#include <string.h>
+#include <stdint.h>
 
 // Global state
 static ImPlatform_GfxData_DX11 g_GfxData = { 0 };
@@ -444,6 +448,526 @@ IMPLATFORM_API void ImPlatform_DestroyTexture(ImTextureID texture_id)
 
     ID3D11ShaderResourceView* pSRV = (ID3D11ShaderResourceView*)texture_id;
     pSRV->Release();
+}
+
+// ============================================================================
+// Custom Vertex/Index Buffer Management API - DirectX 11
+// ============================================================================
+
+// Internal buffer structure for DX11
+struct ImPlatform_BufferData_DX11
+{
+    ID3D11Buffer* pVertexBuffer;
+    ID3D11Buffer* pIndexBuffer;
+    ID3D11InputLayout* pInputLayout;
+    ImPlatform_VertexBufferDesc vb_desc;
+    ImPlatform_IndexBufferDesc ib_desc;
+    ImPlatform_VertexAttribute* attributes;
+};
+
+// Helper to convert ImPlatform usage to D3D11 usage
+static D3D11_USAGE ImPlatform_GetD3D11Usage(ImPlatform_BufferUsage usage)
+{
+    switch (usage)
+    {
+    case ImPlatform_BufferUsage_Static:  return D3D11_USAGE_DEFAULT;
+    case ImPlatform_BufferUsage_Dynamic: return D3D11_USAGE_DYNAMIC;
+    case ImPlatform_BufferUsage_Stream:  return D3D11_USAGE_DYNAMIC;
+    default: return D3D11_USAGE_DEFAULT;
+    }
+}
+
+// Helper to convert ImPlatform usage to D3D11 CPU access flags
+static UINT ImPlatform_GetD3D11CPUAccessFlags(ImPlatform_BufferUsage usage)
+{
+    switch (usage)
+    {
+    case ImPlatform_BufferUsage_Static:  return 0;
+    case ImPlatform_BufferUsage_Dynamic: return D3D11_CPU_ACCESS_WRITE;
+    case ImPlatform_BufferUsage_Stream:  return D3D11_CPU_ACCESS_WRITE;
+    default: return 0;
+    }
+}
+
+// Helper to convert ImPlatform vertex format to DXGI format
+static DXGI_FORMAT ImPlatform_GetDXGIFormat(ImPlatform_VertexFormat format)
+{
+    switch (format)
+    {
+    case ImPlatform_VertexFormat_Float:     return DXGI_FORMAT_R32_FLOAT;
+    case ImPlatform_VertexFormat_Float2:    return DXGI_FORMAT_R32G32_FLOAT;
+    case ImPlatform_VertexFormat_Float3:    return DXGI_FORMAT_R32G32B32_FLOAT;
+    case ImPlatform_VertexFormat_Float4:    return DXGI_FORMAT_R32G32B32A32_FLOAT;
+    case ImPlatform_VertexFormat_UByte4:    return DXGI_FORMAT_R8G8B8A8_UINT;
+    default: return DXGI_FORMAT_R32G32B32A32_FLOAT;
+    }
+}
+
+// Helper to convert ImPlatform index format to DXGI format
+static DXGI_FORMAT ImPlatform_GetIndexFormat_DX11(ImPlatform_IndexFormat format)
+{
+    return (format == ImPlatform_IndexFormat_UInt16) ? DXGI_FORMAT_R16_UINT : DXGI_FORMAT_R32_UINT;
+}
+
+IMPLATFORM_API ImPlatform_VertexBuffer ImPlatform_CreateVertexBuffer(const void* vertex_data, const ImPlatform_VertexBufferDesc* desc)
+{
+    if (!desc || !vertex_data)
+        return NULL;
+
+    ImPlatform_BufferData_DX11* buffer = new ImPlatform_BufferData_DX11();
+    memset(buffer, 0, sizeof(ImPlatform_BufferData_DX11));
+    buffer->vb_desc = *desc;
+
+    // Copy attribute array
+    if (desc->attribute_count > 0 && desc->attributes)
+    {
+        buffer->attributes = new ImPlatform_VertexAttribute[desc->attribute_count];
+        memcpy(buffer->attributes, desc->attributes, sizeof(ImPlatform_VertexAttribute) * desc->attribute_count);
+        buffer->vb_desc.attributes = buffer->attributes;
+    }
+
+    // Create vertex buffer
+    D3D11_BUFFER_DESC bd;
+    memset(&bd, 0, sizeof(bd));
+    bd.Usage = ImPlatform_GetD3D11Usage(desc->usage);
+    bd.ByteWidth = desc->vertex_count * desc->vertex_stride;
+    bd.BindFlags = D3D11_BIND_VERTEX_BUFFER;
+    bd.CPUAccessFlags = ImPlatform_GetD3D11CPUAccessFlags(desc->usage);
+
+    D3D11_SUBRESOURCE_DATA initData;
+    memset(&initData, 0, sizeof(initData));
+    initData.pSysMem = vertex_data;
+
+    HRESULT hr = g_GfxData.pDevice->CreateBuffer(&bd, &initData, &buffer->pVertexBuffer);
+    if (FAILED(hr))
+    {
+        delete[] buffer->attributes;
+        delete buffer;
+        return NULL;
+    }
+
+    return (ImPlatform_VertexBuffer)buffer;
+}
+
+IMPLATFORM_API bool ImPlatform_UpdateVertexBuffer(ImPlatform_VertexBuffer vertex_buffer, const void* vertex_data, unsigned int vertex_count, unsigned int offset)
+{
+    if (!vertex_buffer || !vertex_data)
+        return false;
+
+    ImPlatform_BufferData_DX11* buffer = (ImPlatform_BufferData_DX11*)vertex_buffer;
+
+    D3D11_MAPPED_SUBRESOURCE mapped;
+    HRESULT hr = g_GfxData.pDeviceContext->Map(buffer->pVertexBuffer, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped);
+    if (FAILED(hr))
+        return false;
+
+    size_t byte_offset = offset * buffer->vb_desc.vertex_stride;
+    size_t byte_size = vertex_count * buffer->vb_desc.vertex_stride;
+    memcpy((char*)mapped.pData + byte_offset, vertex_data, byte_size);
+
+    g_GfxData.pDeviceContext->Unmap(buffer->pVertexBuffer, 0);
+    return true;
+}
+
+IMPLATFORM_API void ImPlatform_DestroyVertexBuffer(ImPlatform_VertexBuffer vertex_buffer)
+{
+    if (!vertex_buffer)
+        return;
+
+    ImPlatform_BufferData_DX11* buffer = (ImPlatform_BufferData_DX11*)vertex_buffer;
+
+    if (buffer->pVertexBuffer)
+        buffer->pVertexBuffer->Release();
+    if (buffer->pInputLayout)
+        buffer->pInputLayout->Release();
+
+    delete[] buffer->attributes;
+    delete buffer;
+}
+
+IMPLATFORM_API ImPlatform_IndexBuffer ImPlatform_CreateIndexBuffer(const void* index_data, const ImPlatform_IndexBufferDesc* desc)
+{
+    if (!desc || !index_data)
+        return NULL;
+
+    ImPlatform_BufferData_DX11* buffer = new ImPlatform_BufferData_DX11();
+    memset(buffer, 0, sizeof(ImPlatform_BufferData_DX11));
+    buffer->ib_desc = *desc;
+
+    // Create index buffer
+    unsigned int index_size = (desc->format == ImPlatform_IndexFormat_UInt16) ? sizeof(uint16_t) : sizeof(uint32_t);
+
+    D3D11_BUFFER_DESC bd;
+    memset(&bd, 0, sizeof(bd));
+    bd.Usage = ImPlatform_GetD3D11Usage(desc->usage);
+    bd.ByteWidth = desc->index_count * index_size;
+    bd.BindFlags = D3D11_BIND_INDEX_BUFFER;
+    bd.CPUAccessFlags = ImPlatform_GetD3D11CPUAccessFlags(desc->usage);
+
+    D3D11_SUBRESOURCE_DATA initData;
+    memset(&initData, 0, sizeof(initData));
+    initData.pSysMem = index_data;
+
+    HRESULT hr = g_GfxData.pDevice->CreateBuffer(&bd, &initData, &buffer->pIndexBuffer);
+    if (FAILED(hr))
+    {
+        delete buffer;
+        return NULL;
+    }
+
+    return (ImPlatform_IndexBuffer)buffer;
+}
+
+IMPLATFORM_API bool ImPlatform_UpdateIndexBuffer(ImPlatform_IndexBuffer index_buffer, const void* index_data, unsigned int index_count, unsigned int offset)
+{
+    if (!index_buffer || !index_data)
+        return false;
+
+    ImPlatform_BufferData_DX11* buffer = (ImPlatform_BufferData_DX11*)index_buffer;
+    unsigned int index_size = (buffer->ib_desc.format == ImPlatform_IndexFormat_UInt16) ? sizeof(uint16_t) : sizeof(uint32_t);
+
+    D3D11_MAPPED_SUBRESOURCE mapped;
+    HRESULT hr = g_GfxData.pDeviceContext->Map(buffer->pIndexBuffer, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped);
+    if (FAILED(hr))
+        return false;
+
+    size_t byte_offset = offset * index_size;
+    size_t byte_size = index_count * index_size;
+    memcpy((char*)mapped.pData + byte_offset, index_data, byte_size);
+
+    g_GfxData.pDeviceContext->Unmap(buffer->pIndexBuffer, 0);
+    return true;
+}
+
+IMPLATFORM_API void ImPlatform_DestroyIndexBuffer(ImPlatform_IndexBuffer index_buffer)
+{
+    if (!index_buffer)
+        return;
+
+    ImPlatform_BufferData_DX11* buffer = (ImPlatform_BufferData_DX11*)index_buffer;
+
+    if (buffer->pIndexBuffer)
+        buffer->pIndexBuffer->Release();
+
+    delete buffer;
+}
+
+IMPLATFORM_API void ImPlatform_BindVertexBuffer(ImPlatform_VertexBuffer vertex_buffer)
+{
+    if (!vertex_buffer)
+        return;
+
+    ImPlatform_BufferData_DX11* buffer = (ImPlatform_BufferData_DX11*)vertex_buffer;
+
+    UINT stride = buffer->vb_desc.vertex_stride;
+    UINT offset = 0;
+    g_GfxData.pDeviceContext->IASetVertexBuffers(0, 1, &buffer->pVertexBuffer, &stride, &offset);
+
+    if (buffer->pInputLayout)
+        g_GfxData.pDeviceContext->IASetInputLayout(buffer->pInputLayout);
+}
+
+IMPLATFORM_API void ImPlatform_BindIndexBuffer(ImPlatform_IndexBuffer index_buffer)
+{
+    if (!index_buffer)
+        return;
+
+    ImPlatform_BufferData_DX11* buffer = (ImPlatform_BufferData_DX11*)index_buffer;
+    DXGI_FORMAT format = ImPlatform_GetIndexFormat_DX11(buffer->ib_desc.format);
+
+    g_GfxData.pDeviceContext->IASetIndexBuffer(buffer->pIndexBuffer, format, 0);
+}
+
+IMPLATFORM_API void ImPlatform_DrawIndexed(unsigned int primitive_type, unsigned int index_count, unsigned int start_index)
+{
+    D3D11_PRIMITIVE_TOPOLOGY topology;
+    switch (primitive_type)
+    {
+    case 0: topology = D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST; break; // ImPlatform_PrimitiveType_Triangles
+    case 1: topology = D3D11_PRIMITIVE_TOPOLOGY_LINELIST; break;     // ImPlatform_PrimitiveType_Lines
+    case 2: topology = D3D11_PRIMITIVE_TOPOLOGY_POINTLIST; break;    // ImPlatform_PrimitiveType_Points
+    default: topology = D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST; break;
+    }
+
+    g_GfxData.pDeviceContext->IASetPrimitiveTopology(topology);
+    g_GfxData.pDeviceContext->DrawIndexed(index_count, start_index, 0);
+}
+
+// ============================================================================
+// Custom Shader System API - DirectX 11
+// ============================================================================
+
+// Internal shader structure for DX11
+struct ImPlatform_ShaderData_DX11
+{
+    union
+    {
+        ID3D11VertexShader* pVertexShader;
+        ID3D11PixelShader* pPixelShader;
+    };
+    ImPlatform_ShaderStage stage;
+    ID3DBlob* pBlob; // Keep blob for input layout creation
+};
+
+// Internal shader program structure for DX11
+struct ImPlatform_ShaderProgramData_DX11
+{
+    ID3D11VertexShader* pVertexShader;
+    ID3D11PixelShader* pPixelShader;
+    ID3DBlob* pVSBlob;
+    ID3D11InputLayout* pInputLayout;
+    ID3D11Buffer* pVertexConstantBuffer;
+};
+
+// Constant buffer structure for projection matrix
+struct VERTEX_CONSTANT_BUFFER_DX11
+{
+    float   mvp[4][4];
+};
+
+IMPLATFORM_API ImPlatform_Shader ImPlatform_CreateShader(const ImPlatform_ShaderDesc* desc)
+{
+    if (!desc || !desc->source_code)
+        return NULL;
+
+    if (desc->format != ImPlatform_ShaderFormat_HLSL)
+        return NULL;
+
+    ImPlatform_ShaderData_DX11* shader_data = new ImPlatform_ShaderData_DX11();
+    memset(shader_data, 0, sizeof(ImPlatform_ShaderData_DX11));
+    shader_data->stage = desc->stage;
+
+    // Compile shader
+    ID3DBlob* pErrorBlob = NULL;
+    const char* target = NULL;
+
+    if (desc->stage == ImPlatform_ShaderStage_Vertex)
+        target = "vs_4_0";
+    else if (desc->stage == ImPlatform_ShaderStage_Fragment)
+        target = "ps_4_0";
+    else
+    {
+        delete shader_data;
+        return NULL;
+    }
+
+    HRESULT hr = D3DCompile(
+        desc->source_code,
+        strlen(desc->source_code),
+        NULL,  // pSourceName
+        NULL,  // pDefines
+        NULL,  // pInclude
+        desc->entry_point ? desc->entry_point : "main",  // pEntrypoint
+        target,  // pTarget
+        D3DCOMPILE_ENABLE_STRICTNESS,  // Flags1
+        0,  // Flags2
+        &shader_data->pBlob,  // ppCode
+        &pErrorBlob);  // ppErrorMsgs
+
+    if (FAILED(hr))
+    {
+        if (pErrorBlob)
+        {
+            fprintf(stderr, "Shader compilation failed: %s\n", (char*)pErrorBlob->GetBufferPointer());
+            pErrorBlob->Release();
+        }
+        delete shader_data;
+        return NULL;
+    }
+
+    // Create shader object
+    if (desc->stage == ImPlatform_ShaderStage_Vertex)
+    {
+        hr = g_GfxData.pDevice->CreateVertexShader(
+            shader_data->pBlob->GetBufferPointer(),
+            shader_data->pBlob->GetBufferSize(),
+            NULL,
+            &shader_data->pVertexShader);
+    }
+    else
+    {
+        hr = g_GfxData.pDevice->CreatePixelShader(
+            shader_data->pBlob->GetBufferPointer(),
+            shader_data->pBlob->GetBufferSize(),
+            NULL,
+            &shader_data->pPixelShader);
+    }
+
+    if (FAILED(hr))
+    {
+        shader_data->pBlob->Release();
+        delete shader_data;
+        return NULL;
+    }
+
+    return (ImPlatform_Shader)shader_data;
+}
+
+IMPLATFORM_API void ImPlatform_DestroyShader(ImPlatform_Shader shader)
+{
+    if (!shader)
+        return;
+
+    ImPlatform_ShaderData_DX11* shader_data = (ImPlatform_ShaderData_DX11*)shader;
+
+    if (shader_data->stage == ImPlatform_ShaderStage_Vertex && shader_data->pVertexShader)
+        shader_data->pVertexShader->Release();
+    else if (shader_data->stage == ImPlatform_ShaderStage_Fragment && shader_data->pPixelShader)
+        shader_data->pPixelShader->Release();
+
+    if (shader_data->pBlob)
+        shader_data->pBlob->Release();
+
+    delete shader_data;
+}
+
+IMPLATFORM_API ImPlatform_ShaderProgram ImPlatform_CreateShaderProgram(ImPlatform_Shader vertex_shader, ImPlatform_Shader fragment_shader)
+{
+    if (!vertex_shader || !fragment_shader)
+        return NULL;
+
+    ImPlatform_ShaderData_DX11* vs_data = (ImPlatform_ShaderData_DX11*)vertex_shader;
+    ImPlatform_ShaderData_DX11* ps_data = (ImPlatform_ShaderData_DX11*)fragment_shader;
+
+    if (vs_data->stage != ImPlatform_ShaderStage_Vertex || ps_data->stage != ImPlatform_ShaderStage_Fragment)
+        return NULL;
+
+    ImPlatform_ShaderProgramData_DX11* program = new ImPlatform_ShaderProgramData_DX11();
+    memset(program, 0, sizeof(ImPlatform_ShaderProgramData_DX11));
+    program->pVertexShader = vs_data->pVertexShader;
+    program->pPixelShader = ps_data->pPixelShader;
+    program->pVSBlob = vs_data->pBlob;
+
+    // Add ref to keep shaders alive
+    program->pVertexShader->AddRef();
+    program->pPixelShader->AddRef();
+    if (program->pVSBlob)
+        program->pVSBlob->AddRef();
+
+    // Create input layout for ImGui's vertex format (must match ImDrawVert structure)
+    // ImDrawVert layout: pos(8 bytes), uv(8 bytes), col(4 bytes) = offsets 0, 8, 16
+    if (program->pVSBlob)
+    {
+        D3D11_INPUT_ELEMENT_DESC layout[] =
+        {
+            { "POSITION", 0, DXGI_FORMAT_R32G32_FLOAT,   0, 0,  D3D11_INPUT_PER_VERTEX_DATA, 0 },
+            { "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT,   0, 8,  D3D11_INPUT_PER_VERTEX_DATA, 0 },
+            { "COLOR",    0, DXGI_FORMAT_R8G8B8A8_UNORM, 0, 16, D3D11_INPUT_PER_VERTEX_DATA, 0 },
+        };
+        g_GfxData.pDevice->CreateInputLayout(
+            layout,
+            3,
+            program->pVSBlob->GetBufferPointer(),
+            program->pVSBlob->GetBufferSize(),
+            &program->pInputLayout
+        );
+    }
+
+    // Create constant buffer for projection matrix
+    D3D11_BUFFER_DESC cbDesc = {};
+    cbDesc.ByteWidth = sizeof(VERTEX_CONSTANT_BUFFER_DX11);
+    cbDesc.Usage = D3D11_USAGE_DYNAMIC;
+    cbDesc.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
+    cbDesc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
+    cbDesc.MiscFlags = 0;
+    g_GfxData.pDevice->CreateBuffer(&cbDesc, nullptr, &program->pVertexConstantBuffer);
+
+    return (ImPlatform_ShaderProgram)program;
+}
+
+IMPLATFORM_API void ImPlatform_DestroyShaderProgram(ImPlatform_ShaderProgram program)
+{
+    if (!program)
+        return;
+
+    ImPlatform_ShaderProgramData_DX11* program_data = (ImPlatform_ShaderProgramData_DX11*)program;
+
+    if (program_data->pVertexShader)
+        program_data->pVertexShader->Release();
+    if (program_data->pPixelShader)
+        program_data->pPixelShader->Release();
+    if (program_data->pVSBlob)
+        program_data->pVSBlob->Release();
+    if (program_data->pInputLayout)
+        program_data->pInputLayout->Release();
+    if (program_data->pVertexConstantBuffer)
+        program_data->pVertexConstantBuffer->Release();
+
+    delete program_data;
+}
+
+IMPLATFORM_API void ImPlatform_UseShaderProgram(ImPlatform_ShaderProgram program)
+{
+    if (!program)
+        return;
+
+    ImPlatform_ShaderProgramData_DX11* program_data = (ImPlatform_ShaderProgramData_DX11*)program;
+
+    g_GfxData.pDeviceContext->VSSetShader(program_data->pVertexShader, NULL, 0);
+    g_GfxData.pDeviceContext->PSSetShader(program_data->pPixelShader, NULL, 0);
+}
+
+IMPLATFORM_API bool ImPlatform_SetShaderUniform(ImPlatform_ShaderProgram program, const char* name, const void* data, unsigned int size)
+{
+    // In DX11, uniforms are set via constant buffers, not by name
+    // This is a simplified implementation that would need constant buffer management
+    // For now, return false to indicate this needs a different approach in DX11
+    return false;
+}
+
+IMPLATFORM_API bool ImPlatform_SetShaderTexture(ImPlatform_ShaderProgram program, const char* name, unsigned int slot, ImTextureID texture)
+{
+    if (!program || !texture)
+        return false;
+
+    ID3D11ShaderResourceView* pSRV = (ID3D11ShaderResourceView*)texture;
+    g_GfxData.pDeviceContext->PSSetShaderResources(slot, 1, &pSRV);
+
+    return true;
+}
+
+// ============================================================================
+// Custom Shader DrawList Integration
+// ============================================================================
+
+// ImDrawCallback handler to activate a custom shader
+static void ImPlatform_SetCustomShader(const ImDrawList* parent_list, const ImDrawCmd* cmd)
+{
+    ImPlatform_ShaderProgram program = (ImPlatform_ShaderProgram)cmd->UserCallbackData;
+    if (program)
+    {
+        ImPlatform_ShaderProgramData_DX11* program_data = (ImPlatform_ShaderProgramData_DX11*)program;
+
+        // Set custom shaders
+        ImPlatform_UseShaderProgram(program);
+
+        // Set the input layout for the custom shader
+        if (program_data->pInputLayout)
+        {
+            g_GfxData.pDeviceContext->IASetInputLayout(program_data->pInputLayout);
+        }
+
+        // Note: We don't need to set a constant buffer here!
+        // ImGui's backend has already set up the vertex constant buffer with the
+        // correct projection matrix before this callback is invoked.
+        // Our custom shaders will use that same constant buffer at register(b0).
+    }
+}
+
+IMPLATFORM_API void ImPlatform_BeginCustomShader(ImDrawList* draw, ImPlatform_ShaderProgram shader)
+{
+    if (!draw || !shader)
+        return;
+
+    draw->AddCallback(&ImPlatform_SetCustomShader, shader);
+}
+
+IMPLATFORM_API void ImPlatform_EndCustomShader(ImDrawList* draw)
+{
+    if (!draw)
+        return;
+
+    draw->AddCallback(ImDrawCallback_ResetRenderState, NULL);
 }
 
 #endif // IM_GFX_DIRECTX11

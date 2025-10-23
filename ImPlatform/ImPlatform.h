@@ -69,6 +69,22 @@
 
 #define IM_GFX_MASK         0x0000FFFFu
 
+// Graphics API feature support flags
+// These indicate which features are supported by each backend
+#if defined(IM_CURRENT_GFX)
+    #if (IM_CURRENT_GFX == IM_GFX_OPENGL3) || \
+        (IM_CURRENT_GFX == IM_GFX_DIRECTX10) || \
+        (IM_CURRENT_GFX == IM_GFX_DIRECTX11) || \
+        (IM_CURRENT_GFX == IM_GFX_DIRECTX12) || \
+        (IM_CURRENT_GFX == IM_GFX_VULKAN) || \
+        (IM_CURRENT_GFX == IM_GFX_METAL) || \
+        (IM_CURRENT_GFX == IM_GFX_WGPU)
+        #define IMPLATFORM_GFX_SUPPORT_CUSTOM_SHADER 1
+    #else
+        #define IMPLATFORM_GFX_SUPPORT_CUSTOM_SHADER 0
+    #endif
+#endif
+
 #define IM_PLATFORM_WIN32   ( ( 1u << 0u ) << 16u )
 #define IM_PLATFORM_GLFW    ( ( 1u << 1u ) << 16u )
 #define IM_PLATFORM_SDL2    ( ( 1u << 2u ) << 16u )
@@ -407,6 +423,33 @@ IMPLATFORM_API bool ImPlatform_SetShaderTexture(
     ImTextureID texture
 );
 
+// Begin using a custom shader for ImDrawList rendering
+// Adds a callback to the drawlist to switch to the custom shader
+// draw: ImGui draw list
+// shader: Shader program to use for subsequent draw calls
+IMPLATFORM_API void ImPlatform_BeginCustomShader(
+    ImDrawList* draw,
+    ImPlatform_ShaderProgram shader
+);
+
+// End custom shader usage and restore default ImGui rendering state
+// Adds a callback to reset render state to ImGui defaults
+// draw: ImGui draw list
+IMPLATFORM_API void ImPlatform_EndCustomShader(
+    ImDrawList* draw
+);
+
+// Helper function to draw a fullscreen quad with a custom shader
+// Automatically handles BeginCustomShader/EndCustomShader and draws a quad
+// program: Shader program to use
+// This is equivalent to:
+//   ImPlatform_BeginCustomShader(draw, program);
+//   draw->AddImageQuad(...);  // fullscreen quad
+//   ImPlatform_EndCustomShader(draw);
+IMPLATFORM_API void ImPlatform_DrawCustomShaderQuad(
+    ImPlatform_ShaderProgram program
+);
+
 // ============================================================================
 // Core API Functions
 // ============================================================================
@@ -530,5 +573,47 @@ IMPLATFORM_API void ImPlatform_DestroyWindow(void);
 #else
     #error "Unknown or unsupported IM_CURRENT_PLATFORM backend"
 #endif
+
+// ============================================================================
+// Common Helper Functions (C++ inline implementations)
+// ============================================================================
+
+// Helper function to draw a content-region quad with a custom shader
+// This must be called from within an ImGui window context (after ImGui::Begin)
+IMPLATFORM_API void ImPlatform_DrawCustomShaderQuad(ImPlatform_ShaderProgram program)
+{
+    if (!program)
+        return;
+
+    ImDrawList* draw = ImGui::GetWindowDrawList();
+    ImVec2 cur = ImGui::GetCursorScreenPos();
+    ImVec2 region = ImGui::GetContentRegionAvail();
+
+    if (region.x > 0 && region.y > 0)
+    {
+        // Get a dummy texture from ImGui's font atlas for the quad
+        ImTextureRef tex = ImGui::GetIO().Fonts->TexID;
+
+        ImPlatform_BeginCustomShader(draw, program);
+
+        // Calculate quad corners
+        ImVec2 p_min = cur;
+        ImVec2 p_max(cur.x + region.x, cur.y + region.y);
+        ImVec2 tl(p_min.x, p_min.y);  // top-left
+        ImVec2 tr(p_max.x, p_min.y);  // top-right
+        ImVec2 br(p_max.x, p_max.y);  // bottom-right
+        ImVec2 bl(p_min.x, p_max.y);  // bottom-left
+
+        // AddImageQuad order: p1, p2, p3, p4 with UV: uv1, uv2, uv3, uv4
+        // Standard UV mapping: (0,0)=top-left, (1,0)=top-right, (1,1)=bottom-right, (0,1)=bottom-left
+        draw->AddImageQuad(tex, tl, tr, br, bl,
+            ImVec2(0, 0), ImVec2(1, 0), ImVec2(1, 1), ImVec2(0, 1), IM_COL32_WHITE);
+
+        ImPlatform_EndCustomShader(draw);
+
+        // Advance cursor so window doesn't collapse
+        ImGui::Dummy(region);
+    }
+}
 
 #endif // IMPLATFORM_IMPLEMENTATION
