@@ -45,9 +45,12 @@
 #endif
 
 #if defined(IM_CURRENT_GFX) && (IM_CURRENT_GFX == IM_GFX_OPENGL3)
-    #if defined(IM_CURRENT_PLATFORM) && (IM_CURRENT_PLATFORM == IM_PLATFORM_WIN32)
-        #include <GL/GL.h>
+    // Include ImGui's OpenGL loader for modern OpenGL functions
+    // This must be included BEFORE any system OpenGL headers to avoid conflicts
+    #if !defined(IMGUI_IMPL_OPENGL_LOADER_CUSTOM)
+        #include "../imgui/backends/imgui_impl_opengl3_loader.h"
     #endif
+    // Note: Additional GL constants not in the stripped loader are defined in ImPlatform_gfx_opengl3.cpp
 #endif
 
 #if defined(IM_CURRENT_GFX) && (IM_CURRENT_GFX == IM_GFX_VULKAN)

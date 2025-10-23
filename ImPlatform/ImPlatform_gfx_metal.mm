@@ -395,4 +395,54 @@ IMPLATFORM_API void ImPlatform_DestroyTexture(ImTextureID texture_id)
     }
 }
 
+// ============================================================================
+// Custom Vertex/Index Buffer Management API - Metal (Stubs)
+// ============================================================================
+
+IMPLATFORM_API ImPlatform_VertexBuffer ImPlatform_CreateVertexBuffer(const void* vertex_data, const ImPlatform_VertexBufferDesc* desc) { return NULL; }
+IMPLATFORM_API bool ImPlatform_UpdateVertexBuffer(ImPlatform_VertexBuffer vertex_buffer, const void* vertex_data, unsigned int vertex_count, unsigned int offset) { return false; }
+IMPLATFORM_API void ImPlatform_DestroyVertexBuffer(ImPlatform_VertexBuffer vertex_buffer) {}
+IMPLATFORM_API ImPlatform_IndexBuffer ImPlatform_CreateIndexBuffer(const void* index_data, const ImPlatform_IndexBufferDesc* desc) { return NULL; }
+IMPLATFORM_API bool ImPlatform_UpdateIndexBuffer(ImPlatform_IndexBuffer index_buffer, const void* index_data, unsigned int index_count, unsigned int offset) { return false; }
+IMPLATFORM_API void ImPlatform_DestroyIndexBuffer(ImPlatform_IndexBuffer index_buffer) {}
+IMPLATFORM_API void ImPlatform_BindVertexBuffer(ImPlatform_VertexBuffer vertex_buffer) {}
+IMPLATFORM_API void ImPlatform_BindIndexBuffer(ImPlatform_IndexBuffer index_buffer) {}
+IMPLATFORM_API void ImPlatform_DrawIndexed(unsigned int primitive_type, unsigned int index_count, unsigned int start_index) {}
+
+// Custom Shader System API - Metal (Stubs)
+IMPLATFORM_API ImPlatform_Shader ImPlatform_CreateShader(const ImPlatform_ShaderDesc* desc) { return NULL; }
+IMPLATFORM_API void ImPlatform_DestroyShader(ImPlatform_Shader shader) {}
+IMPLATFORM_API ImPlatform_ShaderProgram ImPlatform_CreateShaderProgram(ImPlatform_Shader vertex_shader, ImPlatform_Shader fragment_shader) { return NULL; }
+IMPLATFORM_API void ImPlatform_DestroyShaderProgram(ImPlatform_ShaderProgram program) {}
+IMPLATFORM_API void ImPlatform_UseShaderProgram(ImPlatform_ShaderProgram program) {}
+IMPLATFORM_API bool ImPlatform_SetShaderUniform(ImPlatform_ShaderProgram program, const char* name, const void* data, unsigned int size) { return false; }
+IMPLATFORM_API bool ImPlatform_SetShaderTexture(ImPlatform_ShaderProgram program, const char* name, unsigned int slot, ImTextureID texture) { return false; }
+
+// ============================================================================
+// Custom Shader DrawList Integration
+// ============================================================================
+
+// ImDrawCallback handler to activate a custom shader
+static void ImPlatform_SetCustomShader(const ImDrawList* parent_list, const ImDrawCmd* cmd)
+{
+    // Metal custom shaders stub - needs render pipeline setup
+    // This is a stub for API consistency
+}
+
+IMPLATFORM_API void ImPlatform_BeginCustomShader(ImDrawList* draw, ImPlatform_ShaderProgram shader)
+{
+    if (!draw || !shader)
+        return;
+
+    draw->AddCallback(&ImPlatform_SetCustomShader, shader);
+}
+
+IMPLATFORM_API void ImPlatform_EndCustomShader(ImDrawList* draw)
+{
+    if (!draw)
+        return;
+
+    draw->AddCallback(ImDrawCallback_ResetRenderState, NULL);
+}
+
 #endif // IM_GFX_METAL
