@@ -410,6 +410,36 @@ IMPLATFORM_API bool ImPlatform_SetShaderUniform(
     unsigned int size
 );
 
+// Begin accumulating uniforms for batched upload
+// This allows you to set multiple uniforms and upload them together
+// Usage:
+//   ImPlatform_BeginUniformBlock(program);
+//   ImPlatform_SetUniform("ColorStart", &color1, sizeof(ImVec4));
+//   ImPlatform_SetUniform("ColorEnd", &color2, sizeof(ImVec4));
+//   ImPlatform_EndUniformBlock(program);
+// program: Shader program to set uniforms on
+IMPLATFORM_API void ImPlatform_BeginUniformBlock(
+    ImPlatform_ShaderProgram program
+);
+
+// Add a uniform to the current uniform block
+// Must be called between BeginUniformBlock and EndUniformBlock
+// name: Uniform name in the shader
+// data: Pointer to uniform data
+// size: Size of data in bytes
+// Returns: true on success, false if block is full or not started
+IMPLATFORM_API bool ImPlatform_SetUniform(
+    const char* name,
+    const void* data,
+    unsigned int size
+);
+
+// Finalize and upload the uniform block to the GPU
+// program: Shader program (must match the one from BeginUniformBlock)
+IMPLATFORM_API void ImPlatform_EndUniformBlock(
+    ImPlatform_ShaderProgram program
+);
+
 // Set shader texture binding
 // program: Shader program
 // name: Texture uniform name (e.g., "u_Texture")
