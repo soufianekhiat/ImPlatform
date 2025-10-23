@@ -230,4 +230,169 @@ IMPLATFORM_API void ImPlatform_ShutdownWindow(void)
     ImPlatform_Gfx_CleanupDevice_Metal(&g_GfxData);
 }
 
+// ============================================================================
+// Texture Creation API - Metal Implementation
+// ============================================================================
+
+// Helper to get Metal pixel format from ImPlatform format
+static MTLPixelFormat ImPlatform_GetMetalFormat(ImPlatform_PixelFormat format, int* out_bytes_per_pixel)
+{
+    switch (format)
+    {
+    case ImPlatform_PixelFormat_R8:
+        *out_bytes_per_pixel = 1;
+        return MTLPixelFormatR8Unorm;
+    case ImPlatform_PixelFormat_RG8:
+        *out_bytes_per_pixel = 2;
+        return MTLPixelFormatRG8Unorm;
+    case ImPlatform_PixelFormat_RGB8:
+        // Metal doesn't have RGB8, use RGBA8
+        *out_bytes_per_pixel = 4;
+        return MTLPixelFormatRGBA8Unorm;
+    case ImPlatform_PixelFormat_RGBA8:
+        *out_bytes_per_pixel = 4;
+        return MTLPixelFormatRGBA8Unorm;
+    case ImPlatform_PixelFormat_R16:
+        *out_bytes_per_pixel = 2;
+        return MTLPixelFormatR16Unorm;
+    case ImPlatform_PixelFormat_RG16:
+        *out_bytes_per_pixel = 4;
+        return MTLPixelFormatRG16Unorm;
+    case ImPlatform_PixelFormat_RGBA16:
+        *out_bytes_per_pixel = 8;
+        return MTLPixelFormatRGBA16Unorm;
+    case ImPlatform_PixelFormat_R32F:
+        *out_bytes_per_pixel = 4;
+        return MTLPixelFormatR32Float;
+    case ImPlatform_PixelFormat_RG32F:
+        *out_bytes_per_pixel = 8;
+        return MTLPixelFormatRG32Float;
+    case ImPlatform_PixelFormat_RGBA32F:
+        *out_bytes_per_pixel = 16;
+        return MTLPixelFormatRGBA32Float;
+    default:
+        *out_bytes_per_pixel = 4;
+        return MTLPixelFormatRGBA8Unorm;
+    }
+}
+
+IMPLATFORM_API ImPlatform_TextureDesc ImPlatform_TextureDesc_Default(unsigned int width, unsigned int height)
+{
+    ImPlatform_TextureDesc desc;
+    desc.width = width;
+    desc.height = height;
+    desc.format = ImPlatform_PixelFormat_RGBA8;
+    desc.min_filter = ImPlatform_TextureFilter_Linear;
+    desc.mag_filter = ImPlatform_TextureFilter_Linear;
+    desc.wrap_u = ImPlatform_TextureWrap_Clamp;
+    desc.wrap_v = ImPlatform_TextureWrap_Clamp;
+    return desc;
+}
+
+IMPLATFORM_API ImTextureID ImPlatform_CreateTexture(const void* pixel_data, const ImPlatform_TextureDesc* desc)
+{
+    if (!desc || !pixel_data || !g_GfxData.device)
+        return NULL;
+
+    @autoreleasepool {
+        int bytes_per_pixel;
+        MTLPixelFormat format = ImPlatform_GetMetalFormat(desc->format, &bytes_per_pixel);
+
+        // Create texture descriptor
+        MTLTextureDescriptor* textureDescriptor = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:format
+                                                                                                      width:desc->width
+                                                                                                     height:desc->height
+                                                                                                  mipmapped:NO];
+        textureDescriptor.usage = MTLTextureUsageShaderRead;
+        textureDescriptor.storageMode = MTLStorageModeManaged;
+
+        // Create the texture
+        id<MTLTexture> texture = [(__bridge id<MTLDevice>)g_GfxData.device newTextureWithDescriptor:textureDescriptor];
+        if (!texture)
+            return NULL;
+
+        // Upload pixel data
+        NSUInteger bytesPerRow = desc->width * bytes_per_pixel;
+        MTLRegion region = MTLRegionMake2D(0, 0, desc->width, desc->height);
+        [texture replaceRegion:region mipmapLevel:0 withBytes:pixel_data bytesPerRow:bytesPerRow];
+
+        // Create sampler descriptor
+        MTLSamplerDescriptor* samplerDescriptor = [[MTLSamplerDescriptor alloc] init];
+        samplerDescriptor.minFilter = (desc->min_filter == ImPlatform_TextureFilter_Nearest) ? MTLSamplerMinMagFilterNearest : MTLSamplerMinMagFilterLinear;
+        samplerDescriptor.magFilter = (desc->mag_filter == ImPlatform_TextureFilter_Nearest) ? MTLSamplerMinMagFilterNearest : MTLSamplerMinMagFilterLinear;
+        samplerDescriptor.mipFilter = MTLSamplerMipFilterNotMipmapped;
+
+        MTLSamplerAddressMode wrap_s = MTLSamplerAddressModeClampToEdge;
+        MTLSamplerAddressMode wrap_t = MTLSamplerAddressModeClampToEdge;
+
+        if (desc->wrap_u == ImPlatform_TextureWrap_Repeat)
+            wrap_s = MTLSamplerAddressModeRepeat;
+        else if (desc->wrap_u == ImPlatform_TextureWrap_Mirror)
+            wrap_s = MTLSamplerAddressModeMirrorRepeat;
+
+        if (desc->wrap_v == ImPlatform_TextureWrap_Repeat)
+            wrap_t = MTLSamplerAddressModeRepeat;
+        else if (desc->wrap_v == ImPlatform_TextureWrap_Mirror)
+            wrap_t = MTLSamplerAddressModeMirrorRepeat;
+
+        samplerDescriptor.sAddressMode = wrap_s;
+        samplerDescriptor.tAddressMode = wrap_t;
+        samplerDescriptor.rAddressMode = MTLSamplerAddressModeClampToEdge;
+
+        // For Metal, ImTextureID is just the texture pointer
+        // We don't create a sampler object as Metal binds samplers separately
+        // ImGui's Metal backend handles samplers internally
+        return (__bridge_retained void*)texture;
+    }
+}
+
+IMPLATFORM_API bool ImPlatform_UpdateTexture(ImTextureID texture_id, const void* pixel_data,
+                                              unsigned int x, unsigned int y,
+                                              unsigned int width, unsigned int height)
+{
+    if (!texture_id || !pixel_data)
+        return false;
+
+    @autoreleasepool {
+        id<MTLTexture> texture = (__bridge id<MTLTexture>)texture_id;
+
+        // Determine bytes per pixel from texture format
+        MTLPixelFormat format = texture.pixelFormat;
+        int bytes_per_pixel = 4; // Default RGBA8
+
+        switch (format)
+        {
+            case MTLPixelFormatR8Unorm: bytes_per_pixel = 1; break;
+            case MTLPixelFormatRG8Unorm: bytes_per_pixel = 2; break;
+            case MTLPixelFormatRGBA8Unorm: bytes_per_pixel = 4; break;
+            case MTLPixelFormatR16Unorm: bytes_per_pixel = 2; break;
+            case MTLPixelFormatRG16Unorm: bytes_per_pixel = 4; break;
+            case MTLPixelFormatRGBA16Unorm: bytes_per_pixel = 8; break;
+            case MTLPixelFormatR32Float: bytes_per_pixel = 4; break;
+            case MTLPixelFormatRG32Float: bytes_per_pixel = 8; break;
+            case MTLPixelFormatRGBA32Float: bytes_per_pixel = 16; break;
+            default: break;
+        }
+
+        // Update the sub-region
+        NSUInteger bytesPerRow = width * bytes_per_pixel;
+        MTLRegion region = MTLRegionMake2D(x, y, width, height);
+        [texture replaceRegion:region mipmapLevel:0 withBytes:pixel_data bytesPerRow:bytesPerRow];
+
+        return true;
+    }
+}
+
+IMPLATFORM_API void ImPlatform_DestroyTexture(ImTextureID texture_id)
+{
+    if (!texture_id)
+        return;
+
+    @autoreleasepool {
+        // Release the bridged texture
+        id<MTLTexture> texture = (__bridge_transfer id<MTLTexture>)texture_id;
+        texture = nil; // Explicitly release
+    }
+}
+
 #endif // IM_GFX_METAL

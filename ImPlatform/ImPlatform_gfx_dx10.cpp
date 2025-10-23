@@ -221,4 +221,176 @@ IMPLATFORM_API void ImPlatform_ShutdownWindow(void)
     ImPlatform_Gfx_CleanupDevice_DX10(&g_GfxData);
 }
 
+// ============================================================================
+// Texture Creation API - DirectX 10 Implementation
+// ============================================================================
+
+// Helper to get D3D10 format from ImPlatform format (same as DX11)
+static DXGI_FORMAT ImPlatform_GetD3D10Format(ImPlatform_PixelFormat format, int* out_bytes_per_pixel)
+{
+    switch (format)
+    {
+    case ImPlatform_PixelFormat_R8:
+        *out_bytes_per_pixel = 1;
+        return DXGI_FORMAT_R8_UNORM;
+    case ImPlatform_PixelFormat_RG8:
+        *out_bytes_per_pixel = 2;
+        return DXGI_FORMAT_R8G8_UNORM;
+    case ImPlatform_PixelFormat_RGB8:
+        *out_bytes_per_pixel = 4;
+        return DXGI_FORMAT_R8G8B8A8_UNORM;
+    case ImPlatform_PixelFormat_RGBA8:
+        *out_bytes_per_pixel = 4;
+        return DXGI_FORMAT_R8G8B8A8_UNORM;
+    case ImPlatform_PixelFormat_R16:
+        *out_bytes_per_pixel = 2;
+        return DXGI_FORMAT_R16_UNORM;
+    case ImPlatform_PixelFormat_RG16:
+        *out_bytes_per_pixel = 4;
+        return DXGI_FORMAT_R16G16_UNORM;
+    case ImPlatform_PixelFormat_RGBA16:
+        *out_bytes_per_pixel = 8;
+        return DXGI_FORMAT_R16G16B16A16_UNORM;
+    case ImPlatform_PixelFormat_R32F:
+        *out_bytes_per_pixel = 4;
+        return DXGI_FORMAT_R32_FLOAT;
+    case ImPlatform_PixelFormat_RG32F:
+        *out_bytes_per_pixel = 8;
+        return DXGI_FORMAT_R32G32_FLOAT;
+    case ImPlatform_PixelFormat_RGBA32F:
+        *out_bytes_per_pixel = 16;
+        return DXGI_FORMAT_R32G32B32A32_FLOAT;
+    default:
+        *out_bytes_per_pixel = 4;
+        return DXGI_FORMAT_R8G8B8A8_UNORM;
+    }
+}
+
+IMPLATFORM_API ImPlatform_TextureDesc ImPlatform_TextureDesc_Default(unsigned int width, unsigned int height)
+{
+    ImPlatform_TextureDesc desc;
+    desc.width = width;
+    desc.height = height;
+    desc.format = ImPlatform_PixelFormat_RGBA8;
+    desc.min_filter = ImPlatform_TextureFilter_Linear;
+    desc.mag_filter = ImPlatform_TextureFilter_Linear;
+    desc.wrap_u = ImPlatform_TextureWrap_Clamp;
+    desc.wrap_v = ImPlatform_TextureWrap_Clamp;
+    return desc;
+}
+
+IMPLATFORM_API ImTextureID ImPlatform_CreateTexture(const void* pixel_data, const ImPlatform_TextureDesc* desc)
+{
+    if (!desc || !pixel_data || !g_GfxData.pDevice)
+        return NULL;
+
+    int bytes_per_pixel;
+    DXGI_FORMAT format = ImPlatform_GetD3D10Format(desc->format, &bytes_per_pixel);
+
+    // Create texture
+    D3D10_TEXTURE2D_DESC tex_desc;
+    ZeroMemory(&tex_desc, sizeof(tex_desc));
+    tex_desc.Width = desc->width;
+    tex_desc.Height = desc->height;
+    tex_desc.MipLevels = 1;
+    tex_desc.ArraySize = 1;
+    tex_desc.Format = format;
+    tex_desc.SampleDesc.Count = 1;
+    tex_desc.Usage = D3D10_USAGE_DEFAULT;
+    tex_desc.BindFlags = D3D10_BIND_SHADER_RESOURCE;
+    tex_desc.CPUAccessFlags = 0;
+
+    D3D10_SUBRESOURCE_DATA subResource;
+    subResource.pSysMem = pixel_data;
+    subResource.SysMemPitch = desc->width * bytes_per_pixel;
+    subResource.SysMemSlicePitch = 0;
+
+    ID3D10Texture2D* pTexture = NULL;
+    HRESULT hr = g_GfxData.pDevice->CreateTexture2D(&tex_desc, &subResource, &pTexture);
+    if (FAILED(hr) || !pTexture)
+        return NULL;
+
+    // Create shader resource view
+    D3D10_SHADER_RESOURCE_VIEW_DESC srv_desc;
+    ZeroMemory(&srv_desc, sizeof(srv_desc));
+    srv_desc.Format = format;
+    srv_desc.ViewDimension = D3D10_SRV_DIMENSION_TEXTURE2D;
+    srv_desc.Texture2D.MipLevels = tex_desc.MipLevels;
+    srv_desc.Texture2D.MostDetailedMip = 0;
+
+    ID3D10ShaderResourceView* pSRV = NULL;
+    hr = g_GfxData.pDevice->CreateShaderResourceView(pTexture, &srv_desc, &pSRV);
+    pTexture->Release();
+
+    if (FAILED(hr) || !pSRV)
+        return NULL;
+
+    return (ImTextureID)pSRV;
+}
+
+IMPLATFORM_API bool ImPlatform_UpdateTexture(ImTextureID texture_id, const void* pixel_data,
+                                              unsigned int x, unsigned int y,
+                                              unsigned int width, unsigned int height)
+{
+    if (!texture_id || !pixel_data || !g_GfxData.pDevice)
+        return false;
+
+    ID3D10ShaderResourceView* pSRV = (ID3D10ShaderResourceView*)texture_id;
+
+    // Get the underlying texture
+    ID3D10Resource* pResource = NULL;
+    pSRV->GetResource(&pResource);
+    if (!pResource)
+        return false;
+
+    ID3D10Texture2D* pTexture = NULL;
+    HRESULT hr = pResource->QueryInterface(__uuidof(ID3D10Texture2D), (void**)&pTexture);
+    pResource->Release();
+
+    if (FAILED(hr) || !pTexture)
+        return false;
+
+    // Get texture description to determine format
+    D3D10_TEXTURE2D_DESC desc;
+    pTexture->GetDesc(&desc);
+
+    // Calculate bytes per pixel from format
+    int bytes_per_pixel = 4;
+    switch (desc.Format)
+    {
+    case DXGI_FORMAT_R8_UNORM: bytes_per_pixel = 1; break;
+    case DXGI_FORMAT_R8G8_UNORM: bytes_per_pixel = 2; break;
+    case DXGI_FORMAT_R8G8B8A8_UNORM: bytes_per_pixel = 4; break;
+    case DXGI_FORMAT_R16_UNORM: bytes_per_pixel = 2; break;
+    case DXGI_FORMAT_R16G16_UNORM: bytes_per_pixel = 4; break;
+    case DXGI_FORMAT_R16G16B16A16_UNORM: bytes_per_pixel = 8; break;
+    case DXGI_FORMAT_R32_FLOAT: bytes_per_pixel = 4; break;
+    case DXGI_FORMAT_R32G32_FLOAT: bytes_per_pixel = 8; break;
+    case DXGI_FORMAT_R32G32B32A32_FLOAT: bytes_per_pixel = 16; break;
+    }
+
+    // Update texture sub-region
+    D3D10_BOX box;
+    box.left = x;
+    box.right = x + width;
+    box.top = y;
+    box.bottom = y + height;
+    box.front = 0;
+    box.back = 1;
+
+    g_GfxData.pDevice->UpdateSubresource(pTexture, 0, &box, pixel_data, width * bytes_per_pixel, 0);
+
+    pTexture->Release();
+    return true;
+}
+
+IMPLATFORM_API void ImPlatform_DestroyTexture(ImTextureID texture_id)
+{
+    if (!texture_id)
+        return;
+
+    ID3D10ShaderResourceView* pSRV = (ID3D10ShaderResourceView*)texture_id;
+    pSRV->Release();
+}
+
 #endif // IM_GFX_DIRECTX10
