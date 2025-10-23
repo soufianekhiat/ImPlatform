@@ -360,10 +360,9 @@ int main()
 
 		ImPlatform_ShutdownGfxAPI();
 		ImPlatform_ShutdownWindow();
+		ImPlatform_ShutdownPostGfxAPI();
 
 		ImGui::DestroyContext();
-
-		ImPlatform_ShutdownPostGfxAPI();
 
 		ImPlatform_DestroyWindow();
 	}

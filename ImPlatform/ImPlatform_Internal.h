@@ -295,6 +295,7 @@ struct ImPlatform_GfxData_DX12* ImPlatform_Gfx_GetData_DX12(void);
 #if defined(IM_CURRENT_PLATFORM) && (IM_CURRENT_PLATFORM == IM_PLATFORM_WIN32)
 bool ImPlatform_Gfx_CreateDevice_OpenGL3(void* hWnd, struct ImPlatform_GfxData_OpenGL3* pData);
 void ImPlatform_Gfx_CleanupDevice_OpenGL3(void* hWnd, struct ImPlatform_GfxData_OpenGL3* pData);
+void ImPlatform_Gfx_SetSize_OpenGL3(int width, int height);
 #elif defined(IM_CURRENT_PLATFORM) && (IM_CURRENT_PLATFORM == IM_PLATFORM_GLFW)
 bool ImPlatform_Gfx_CreateDevice_OpenGL3(void* pWindow, struct ImPlatform_GfxData_OpenGL3* pData);
 void ImPlatform_Gfx_CleanupDevice_OpenGL3(void* pWindow, struct ImPlatform_GfxData_OpenGL3* pData);

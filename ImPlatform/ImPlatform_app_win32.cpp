@@ -40,6 +40,8 @@ static LRESULT WINAPI WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
             ImPlatform_Gfx_OnResize_DX11(ImPlatform_Gfx_GetData_DX11(), uWidth, uHeight);
 #elif defined(IM_CURRENT_GFX) && (IM_CURRENT_GFX == IM_GFX_DIRECTX12)
             ImPlatform_Gfx_OnResize_DX12(ImPlatform_Gfx_GetData_DX12(), uWidth, uHeight);
+#elif defined(IM_CURRENT_GFX) && (IM_CURRENT_GFX == IM_GFX_OPENGL3)
+            ImPlatform_Gfx_SetSize_OpenGL3(uWidth, uHeight);
 #endif
         }
         return 0;
@@ -61,7 +63,13 @@ static LRESULT WINAPI WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
 IMPLATFORM_API bool ImPlatform_CreateWindow(char const* pWindowsName, ImVec2 const vPos, unsigned int uWidth, unsigned int uHeight)
 {
     // Make process DPI aware and obtain main monitor scale
+    // NOTE: DPI awareness is disabled for OpenGL3 - the official ImGui example has it commented out
+    //       with "FIXME: This somehow doesn't work in the Win32+OpenGL example. Why?"
+#if defined(IM_CURRENT_GFX) && (IM_CURRENT_GFX == IM_GFX_OPENGL3)
+    //ImGui_ImplWin32_EnableDpiAwareness(); // Disabled for OpenGL3
+#else
     ImGui_ImplWin32_EnableDpiAwareness();
+#endif
     float main_scale = ImGui_ImplWin32_GetDpiScaleForMonitor(::MonitorFromPoint({0, 0}, MONITOR_DEFAULTTOPRIMARY));
 
     // Store scale for later use in ImPlatform_InitPlatform
@@ -74,7 +82,11 @@ IMPLATFORM_API bool ImPlatform_CreateWindow(char const* pWindowsName, ImVec2 con
 
     // Create application window
     g_AppData.wc.cbSize = sizeof(WNDCLASSEXW);
+#if defined(IM_CURRENT_GFX) && (IM_CURRENT_GFX == IM_GFX_OPENGL3)
+    g_AppData.wc.style = CS_OWNDC; // OpenGL needs CS_OWNDC
+#else
     g_AppData.wc.style = CS_CLASSDC;
+#endif
     g_AppData.wc.lpfnWndProc = WndProc;
     g_AppData.wc.cbClsExtra = 0L;
     g_AppData.wc.cbWndExtra = 0L;
@@ -104,6 +116,18 @@ IMPLATFORM_API bool ImPlatform_CreateWindow(char const* pWindowsName, ImVec2 con
     if (!g_AppData.hWnd)
         return false;
 
+    // Get actual client area size after window creation and update graphics backend
+    RECT rect;
+    ::GetClientRect(g_AppData.hWnd, &rect);
+    unsigned int client_width = (unsigned int)(rect.right - rect.left);
+    unsigned int client_height = (unsigned int)(rect.bottom - rect.top);
+
+#if defined(IM_CURRENT_GFX) && (IM_CURRENT_GFX == IM_GFX_OPENGL3)
+    // OpenGL needs viewport size set immediately
+    ImPlatform_Gfx_SetSize_OpenGL3(client_width, client_height);
+#endif
+    // DirectX backends handle size through OnResize during swapchain creation, not here
+
     g_AppData.bDone = false;
     return true;
 }
@@ -119,7 +143,11 @@ IMPLATFORM_API bool ImPlatform_ShowWindow(void)
 // ImPlatform API - InitPlatform (platform-specific part)
 IMPLATFORM_API bool ImPlatform_InitPlatform(void)
 {
+#if defined(IM_CURRENT_GFX) && (IM_CURRENT_GFX == IM_GFX_OPENGL3)
+    return ImGui_ImplWin32_InitForOpenGL(g_AppData.hWnd);
+#else
     return ImGui_ImplWin32_Init(g_AppData.hWnd);
+#endif
 }
 
 // ImPlatform API - PlatformContinue

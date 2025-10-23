@@ -27,6 +27,16 @@ static ImPlatform_GfxData_OpenGL3 g_GfxData = { 0 };
 static HGLRC g_hRC = NULL; // Shared GL context for main window
 static int g_Width = 1280;
 static int g_Height = 800;
+
+// Data stored per platform window (for multi-viewports)
+struct WGL_WindowData { HDC hDC; };
+static WGL_WindowData g_MainWindow;
+
+// Forward declarations for viewport hooks
+static void Hook_Renderer_CreateWindow(ImGuiViewport* viewport);
+static void Hook_Renderer_DestroyWindow(ImGuiViewport* viewport);
+static void Hook_Platform_RenderWindow(ImGuiViewport* viewport, void*);
+static void Hook_Renderer_SwapBuffers(ImGuiViewport* viewport, void*);
 #endif
 
 // Internal API - Create OpenGL context
@@ -55,6 +65,9 @@ bool ImPlatform_Gfx_CreateDevice_OpenGL3(void* hWnd, ImPlatform_GfxData_OpenGL3*
     pData->hRC = g_hRC;
 
     wglMakeCurrent(pData->hDC, pData->hRC);
+
+    // Store main window HDC for viewport system
+    g_MainWindow.hDC = pData->hDC;
 
     return true;
 }
@@ -167,6 +180,23 @@ IMPLATFORM_API bool ImPlatform_InitGfx(void)
     if (!ImGui_ImplOpenGL3_Init(glsl_version))
         return false;
 
+#if defined(IM_CURRENT_PLATFORM) && (IM_CURRENT_PLATFORM == IM_PLATFORM_WIN32)
+    // Win32+GL needs specific hooks for viewport, as there are specific things needed to tie Win32 and GL api.
+    ImGuiIO& io = ImGui::GetIO();
+    if (io.ConfigFlags & ImGuiConfigFlags_ViewportsEnable)
+    {
+        ImGuiPlatformIO& platform_io = ImGui::GetPlatformIO();
+        IM_ASSERT(platform_io.Renderer_CreateWindow == NULL);
+        IM_ASSERT(platform_io.Renderer_DestroyWindow == NULL);
+        IM_ASSERT(platform_io.Renderer_SwapBuffers == NULL);
+        IM_ASSERT(platform_io.Platform_RenderWindow == NULL);
+        platform_io.Renderer_CreateWindow = Hook_Renderer_CreateWindow;
+        platform_io.Renderer_DestroyWindow = Hook_Renderer_DestroyWindow;
+        platform_io.Renderer_SwapBuffers = Hook_Renderer_SwapBuffers;
+        platform_io.Platform_RenderWindow = Hook_Platform_RenderWindow;
+    }
+#endif
+
     return true;
 }
 
@@ -208,7 +238,8 @@ IMPLATFORM_API bool ImPlatform_GfxAPIClear(ImVec4 const vClearColor)
 IMPLATFORM_API bool ImPlatform_GfxAPIRender(ImVec4 const vClearColor)
 {
     (void)vClearColor; // Not used for OpenGL
-    ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
+    ImDrawData* draw_data = ImGui::GetDrawData();
+    ImGui_ImplOpenGL3_RenderDrawData(draw_data);
     return true;
 }
 
@@ -230,7 +261,7 @@ IMPLATFORM_API void ImPlatform_GfxViewportPost(void)
 
 #if defined(IM_CURRENT_PLATFORM) && (IM_CURRENT_PLATFORM == IM_PLATFORM_WIN32)
         // Restore the OpenGL rendering context to the main window DC
-        wglMakeCurrent(g_GfxData.hDC, g_GfxData.hRC);
+        wglMakeCurrent(g_MainWindow.hDC, g_hRC);
 #elif defined(IM_CURRENT_PLATFORM) && (IM_CURRENT_PLATFORM == IM_PLATFORM_GLFW)
         // GLFW backend handles context switching automatically
         glfwMakeContextCurrent(ImPlatform_App_GetGLFWWindow());
@@ -252,7 +283,7 @@ IMPLATFORM_API void ImPlatform_GfxViewportPost(void)
 IMPLATFORM_API bool ImPlatform_GfxAPISwapBuffer(void)
 {
 #if defined(IM_CURRENT_PLATFORM) && (IM_CURRENT_PLATFORM == IM_PLATFORM_WIN32)
-    ::SwapBuffers(g_GfxData.hDC);
+    ::SwapBuffers(g_MainWindow.hDC);
 #elif defined(IM_CURRENT_PLATFORM) && (IM_CURRENT_PLATFORM == IM_PLATFORM_GLFW)
     glfwSwapBuffers(ImPlatform_App_GetGLFWWindow());
 #elif defined(IM_CURRENT_PLATFORM) && (IM_CURRENT_PLATFORM == IM_PLATFORM_SDL2)
@@ -302,6 +333,42 @@ void ImPlatform_Gfx_SetSize_OpenGL3(int width, int height)
 {
     g_Width = width;
     g_Height = height;
+}
+
+// Win32+OpenGL viewport hooks
+// Unlike most other backend combinations, we need specific hooks to combine Win32+OpenGL.
+static void Hook_Renderer_CreateWindow(ImGuiViewport* viewport)
+{
+    assert(viewport->RendererUserData == NULL);
+
+    WGL_WindowData* data = IM_NEW(WGL_WindowData);
+    ImPlatform_Gfx_CreateDevice_OpenGL3((HWND)viewport->PlatformHandle, &g_GfxData);
+    data->hDC = g_GfxData.hDC;
+    viewport->RendererUserData = data;
+}
+
+static void Hook_Renderer_DestroyWindow(ImGuiViewport* viewport)
+{
+    if (viewport->RendererUserData != NULL)
+    {
+        WGL_WindowData* data = (WGL_WindowData*)viewport->RendererUserData;
+        ImPlatform_Gfx_CleanupDevice_OpenGL3((HWND)viewport->PlatformHandle, &g_GfxData);
+        IM_DELETE(data);
+        viewport->RendererUserData = NULL;
+    }
+}
+
+static void Hook_Platform_RenderWindow(ImGuiViewport* viewport, void*)
+{
+    // Activate the platform window DC in the OpenGL rendering context
+    if (WGL_WindowData* data = (WGL_WindowData*)viewport->RendererUserData)
+        wglMakeCurrent(data->hDC, g_hRC);
+}
+
+static void Hook_Renderer_SwapBuffers(ImGuiViewport* viewport, void*)
+{
+    if (WGL_WindowData* data = (WGL_WindowData*)viewport->RendererUserData)
+        ::SwapBuffers(data->hDC);
 }
 #endif
 
