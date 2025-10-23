@@ -315,14 +315,21 @@ int main()
 			return 1;
 		}
 
-		// Note: Texture creation API not yet available in new C API
-		// ImTextureID img = NULL;
-		// ImTextureID img_white = NULL;
+		// Create test textures using new Texture Creation API
+		ImPlatform_TextureDesc tex_desc = ImPlatform_TextureDesc_Default(width, height);
+		ImTextureID img = ImPlatform_CreateTexture(data, &tex_desc);
+		ImTextureID img_white = ImPlatform_CreateTexture(white_data, &tex_desc);
+
+		if (!img || !img_white)
+		{
+			fprintf(stderr, "ImPlatform: Failed to create textures.\n");
+		}
 
 #if IM_HAS_STBI
 		stbi_image_free( data );
 #else
 		IM_FREE( data );
+		IM_FREE( white_data );
 #endif
 
 		ImVec4 clear_color = ImVec4( 0.461f, 0.461f, 0.461f, 1.0f );
@@ -344,6 +351,25 @@ int main()
 			bool show = true;
 			ImGui::ShowDemoWindow( &show );
 
+			// Texture API Demo Window
+			if (img && img_white)
+			{
+				ImGui::Begin("ImPlatform Texture API Demo");
+				ImGui::Text("Checkerboard texture created with ImPlatform_CreateTexture:");
+				ImGui::Image(img, ImVec2(256, 256));
+
+				ImGui::Separator();
+				ImGui::Text("White texture:");
+				ImGui::Image(img_white, ImVec2(128, 128));
+
+				ImGui::Separator();
+				ImGui::Text("This demonstrates the new Texture Creation API:");
+				ImGui::BulletText("ImPlatform_TextureDesc_Default()");
+				ImGui::BulletText("ImPlatform_CreateTexture()");
+				ImGui::BulletText("Works with OpenGL3, DX11, and other backends");
+				ImGui::End();
+			}
+
 			ImGui::Render();
 
 			ImPlatform_GfxAPIClear( clear_color );
@@ -357,6 +383,12 @@ int main()
 
 			ImPlatform_GfxAPISwapBuffer();
 		}
+
+		// Cleanup textures
+		if (img)
+			ImPlatform_DestroyTexture(img);
+		if (img_white)
+			ImPlatform_DestroyTexture(img_white);
 
 		ImPlatform_ShutdownGfxAPI();
 		ImPlatform_ShutdownWindow();

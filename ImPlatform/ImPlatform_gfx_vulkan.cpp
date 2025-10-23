@@ -702,4 +702,373 @@ IMPLATFORM_API void ImPlatform_ShutdownWindow(void)
     ImPlatform_Gfx_CleanupDevice_Vulkan(&g_GfxData);
 }
 
+// ============================================================================
+// Texture Creation API - Vulkan Implementation
+// ============================================================================
+
+// Helper to get Vulkan format from ImPlatform format
+static VkFormat ImPlatform_GetVulkanFormat(ImPlatform_PixelFormat format, int* out_bytes_per_pixel)
+{
+    switch (format)
+    {
+    case ImPlatform_PixelFormat_R8:
+        *out_bytes_per_pixel = 1;
+        return VK_FORMAT_R8_UNORM;
+    case ImPlatform_PixelFormat_RG8:
+        *out_bytes_per_pixel = 2;
+        return VK_FORMAT_R8G8_UNORM;
+    case ImPlatform_PixelFormat_RGB8:
+        // Vulkan prefers RGBA8, RGB8 has limited support
+        *out_bytes_per_pixel = 4;
+        return VK_FORMAT_R8G8B8A8_UNORM;
+    case ImPlatform_PixelFormat_RGBA8:
+        *out_bytes_per_pixel = 4;
+        return VK_FORMAT_R8G8B8A8_UNORM;
+    case ImPlatform_PixelFormat_R16:
+        *out_bytes_per_pixel = 2;
+        return VK_FORMAT_R16_UNORM;
+    case ImPlatform_PixelFormat_RG16:
+        *out_bytes_per_pixel = 4;
+        return VK_FORMAT_R16G16_UNORM;
+    case ImPlatform_PixelFormat_RGBA16:
+        *out_bytes_per_pixel = 8;
+        return VK_FORMAT_R16G16B16A16_UNORM;
+    case ImPlatform_PixelFormat_R32F:
+        *out_bytes_per_pixel = 4;
+        return VK_FORMAT_R32_SFLOAT;
+    case ImPlatform_PixelFormat_RG32F:
+        *out_bytes_per_pixel = 8;
+        return VK_FORMAT_R32G32_SFLOAT;
+    case ImPlatform_PixelFormat_RGBA32F:
+        *out_bytes_per_pixel = 16;
+        return VK_FORMAT_R32G32B32A32_SFLOAT;
+    default:
+        *out_bytes_per_pixel = 4;
+        return VK_FORMAT_R8G8B8A8_UNORM;
+    }
+}
+
+// Helper function to find suitable memory type
+static uint32_t ImPlatform_FindMemoryType(VkMemoryPropertyFlags properties, uint32_t type_bits)
+{
+    VkPhysicalDeviceMemoryProperties prop;
+    vkGetPhysicalDeviceMemoryProperties(g_GfxData.physicalDevice, &prop);
+    for (uint32_t i = 0; i < prop.memoryTypeCount; i++)
+    {
+        if ((prop.memoryTypes[i].propertyFlags & properties) == properties && (type_bits & (1 << i)))
+            return i;
+    }
+    return 0xFFFFFFFF; // Unable to find memoryType
+}
+
+IMPLATFORM_API ImPlatform_TextureDesc ImPlatform_TextureDesc_Default(unsigned int width, unsigned int height)
+{
+    ImPlatform_TextureDesc desc;
+    desc.width = width;
+    desc.height = height;
+    desc.format = ImPlatform_PixelFormat_RGBA8;
+    desc.min_filter = ImPlatform_TextureFilter_Linear;
+    desc.mag_filter = ImPlatform_TextureFilter_Linear;
+    desc.wrap_u = ImPlatform_TextureWrap_Clamp;
+    desc.wrap_v = ImPlatform_TextureWrap_Clamp;
+    return desc;
+}
+
+IMPLATFORM_API ImTextureID ImPlatform_CreateTexture(const void* pixel_data, const ImPlatform_TextureDesc* desc)
+{
+    if (!desc || !pixel_data || !g_GfxData.device)
+        return NULL;
+
+    int bytes_per_pixel;
+    VkFormat format = ImPlatform_GetVulkanFormat(desc->format, &bytes_per_pixel);
+    VkDeviceSize upload_size = desc->width * desc->height * bytes_per_pixel;
+
+    VkResult err;
+
+    // Create staging buffer
+    VkBuffer staging_buffer;
+    VkDeviceMemory staging_memory;
+    {
+        VkBufferCreateInfo buffer_info = {};
+        buffer_info.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+        buffer_info.size = upload_size;
+        buffer_info.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+        buffer_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+        err = vkCreateBuffer(g_GfxData.device, &buffer_info, g_Allocator, &staging_buffer);
+        if (err != VK_SUCCESS)
+            return NULL;
+
+        VkMemoryRequirements mem_req;
+        vkGetBufferMemoryRequirements(g_GfxData.device, staging_buffer, &mem_req);
+
+        VkMemoryAllocateInfo alloc_info = {};
+        alloc_info.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+        alloc_info.allocationSize = mem_req.size;
+        alloc_info.memoryTypeIndex = ImPlatform_FindMemoryType(VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT, mem_req.memoryTypeBits);
+        err = vkAllocateMemory(g_GfxData.device, &alloc_info, g_Allocator, &staging_memory);
+        if (err != VK_SUCCESS)
+        {
+            vkDestroyBuffer(g_GfxData.device, staging_buffer, g_Allocator);
+            return NULL;
+        }
+
+        err = vkBindBufferMemory(g_GfxData.device, staging_buffer, staging_memory, 0);
+        if (err != VK_SUCCESS)
+        {
+            vkDestroyBuffer(g_GfxData.device, staging_buffer, g_Allocator);
+            vkFreeMemory(g_GfxData.device, staging_memory, g_Allocator);
+            return NULL;
+        }
+    }
+
+    // Upload to staging buffer
+    {
+        void* map = NULL;
+        err = vkMapMemory(g_GfxData.device, staging_memory, 0, upload_size, 0, &map);
+        if (err != VK_SUCCESS)
+        {
+            vkDestroyBuffer(g_GfxData.device, staging_buffer, g_Allocator);
+            vkFreeMemory(g_GfxData.device, staging_memory, g_Allocator);
+            return NULL;
+        }
+        memcpy(map, pixel_data, upload_size);
+        VkMappedMemoryRange range[1] = {};
+        range[0].sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE;
+        range[0].memory = staging_memory;
+        range[0].size = upload_size;
+        err = vkFlushMappedMemoryRanges(g_GfxData.device, 1, range);
+        vkUnmapMemory(g_GfxData.device, staging_memory);
+        if (err != VK_SUCCESS)
+        {
+            vkDestroyBuffer(g_GfxData.device, staging_buffer, g_Allocator);
+            vkFreeMemory(g_GfxData.device, staging_memory, g_Allocator);
+            return NULL;
+        }
+    }
+
+    // Create the Image
+    VkImage image;
+    VkDeviceMemory image_memory;
+    {
+        VkImageCreateInfo image_info = {};
+        image_info.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+        image_info.imageType = VK_IMAGE_TYPE_2D;
+        image_info.format = format;
+        image_info.extent.width = desc->width;
+        image_info.extent.height = desc->height;
+        image_info.extent.depth = 1;
+        image_info.mipLevels = 1;
+        image_info.arrayLayers = 1;
+        image_info.samples = VK_SAMPLE_COUNT_1_BIT;
+        image_info.tiling = VK_IMAGE_TILING_OPTIMAL;
+        image_info.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+        image_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+        image_info.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        err = vkCreateImage(g_GfxData.device, &image_info, g_Allocator, &image);
+        if (err != VK_SUCCESS)
+        {
+            vkDestroyBuffer(g_GfxData.device, staging_buffer, g_Allocator);
+            vkFreeMemory(g_GfxData.device, staging_memory, g_Allocator);
+            return NULL;
+        }
+
+        VkMemoryRequirements mem_req;
+        vkGetImageMemoryRequirements(g_GfxData.device, image, &mem_req);
+
+        VkMemoryAllocateInfo alloc_info = {};
+        alloc_info.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+        alloc_info.allocationSize = mem_req.size;
+        alloc_info.memoryTypeIndex = ImPlatform_FindMemoryType(VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, mem_req.memoryTypeBits);
+        err = vkAllocateMemory(g_GfxData.device, &alloc_info, g_Allocator, &image_memory);
+        if (err != VK_SUCCESS)
+        {
+            vkDestroyImage(g_GfxData.device, image, g_Allocator);
+            vkDestroyBuffer(g_GfxData.device, staging_buffer, g_Allocator);
+            vkFreeMemory(g_GfxData.device, staging_memory, g_Allocator);
+            return NULL;
+        }
+
+        err = vkBindImageMemory(g_GfxData.device, image, image_memory, 0);
+        if (err != VK_SUCCESS)
+        {
+            vkFreeMemory(g_GfxData.device, image_memory, g_Allocator);
+            vkDestroyImage(g_GfxData.device, image, g_Allocator);
+            vkDestroyBuffer(g_GfxData.device, staging_buffer, g_Allocator);
+            vkFreeMemory(g_GfxData.device, staging_memory, g_Allocator);
+            return NULL;
+        }
+    }
+
+    // Create the Image View
+    VkImageView image_view;
+    {
+        VkImageViewCreateInfo view_info = {};
+        view_info.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+        view_info.image = image;
+        view_info.viewType = VK_IMAGE_VIEW_TYPE_2D;
+        view_info.format = format;
+        view_info.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        view_info.subresourceRange.levelCount = 1;
+        view_info.subresourceRange.layerCount = 1;
+        err = vkCreateImageView(g_GfxData.device, &view_info, g_Allocator, &image_view);
+        if (err != VK_SUCCESS)
+        {
+            vkFreeMemory(g_GfxData.device, image_memory, g_Allocator);
+            vkDestroyImage(g_GfxData.device, image, g_Allocator);
+            vkDestroyBuffer(g_GfxData.device, staging_buffer, g_Allocator);
+            vkFreeMemory(g_GfxData.device, staging_memory, g_Allocator);
+            return NULL;
+        }
+    }
+
+    // Create sampler
+    VkSampler sampler;
+    {
+        VkSamplerCreateInfo sampler_info = {};
+        sampler_info.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+        sampler_info.magFilter = (desc->mag_filter == ImPlatform_TextureFilter_Nearest) ? VK_FILTER_NEAREST : VK_FILTER_LINEAR;
+        sampler_info.minFilter = (desc->min_filter == ImPlatform_TextureFilter_Nearest) ? VK_FILTER_NEAREST : VK_FILTER_LINEAR;
+        sampler_info.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+
+        VkSamplerAddressMode wrap_u = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        VkSamplerAddressMode wrap_v = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        if (desc->wrap_u == ImPlatform_TextureWrap_Repeat)
+            wrap_u = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+        else if (desc->wrap_u == ImPlatform_TextureWrap_Mirror)
+            wrap_u = VK_SAMPLER_ADDRESS_MODE_MIRRORED_REPEAT;
+        if (desc->wrap_v == ImPlatform_TextureWrap_Repeat)
+            wrap_v = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+        else if (desc->wrap_v == ImPlatform_TextureWrap_Mirror)
+            wrap_v = VK_SAMPLER_ADDRESS_MODE_MIRRORED_REPEAT;
+
+        sampler_info.addressModeU = wrap_u;
+        sampler_info.addressModeV = wrap_v;
+        sampler_info.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        sampler_info.minLod = -1000;
+        sampler_info.maxLod = 1000;
+        sampler_info.maxAnisotropy = 1.0f;
+        err = vkCreateSampler(g_GfxData.device, &sampler_info, g_Allocator, &sampler);
+        if (err != VK_SUCCESS)
+        {
+            vkDestroyImageView(g_GfxData.device, image_view, g_Allocator);
+            vkFreeMemory(g_GfxData.device, image_memory, g_Allocator);
+            vkDestroyImage(g_GfxData.device, image, g_Allocator);
+            vkDestroyBuffer(g_GfxData.device, staging_buffer, g_Allocator);
+            vkFreeMemory(g_GfxData.device, staging_memory, g_Allocator);
+            return NULL;
+        }
+    }
+
+    // Create descriptor set
+    VkDescriptorSet descriptor_set = (VkDescriptorSet)ImGui_ImplVulkan_AddTexture(sampler, image_view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+
+    // Upload to GPU using command buffer
+    {
+        VkCommandBuffer command_buffer = g_MainWindowData.Frames[g_MainWindowData.FrameIndex].CommandBuffer;
+
+        VkCommandBufferBeginInfo begin_info = {};
+        begin_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+        begin_info.flags |= VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+        err = vkBeginCommandBuffer(command_buffer, &begin_info);
+        if (err != VK_SUCCESS)
+        {
+            // Cleanup and return null
+            ImGui_ImplVulkan_RemoveTexture(descriptor_set);
+            vkDestroySampler(g_GfxData.device, sampler, g_Allocator);
+            vkDestroyImageView(g_GfxData.device, image_view, g_Allocator);
+            vkFreeMemory(g_GfxData.device, image_memory, g_Allocator);
+            vkDestroyImage(g_GfxData.device, image, g_Allocator);
+            vkDestroyBuffer(g_GfxData.device, staging_buffer, g_Allocator);
+            vkFreeMemory(g_GfxData.device, staging_memory, g_Allocator);
+            return NULL;
+        }
+
+        // Transition to transfer dst
+        {
+            VkImageMemoryBarrier barrier = {};
+            barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+            barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+            barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+            barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            barrier.image = image;
+            barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+            barrier.subresourceRange.levelCount = 1;
+            barrier.subresourceRange.layerCount = 1;
+            barrier.srcAccessMask = 0;
+            barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+            vkCmdPipelineBarrier(command_buffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0, NULL, 1, &barrier);
+        }
+
+        // Copy buffer to image
+        {
+            VkBufferImageCopy region = {};
+            region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+            region.imageSubresource.layerCount = 1;
+            region.imageExtent.width = desc->width;
+            region.imageExtent.height = desc->height;
+            region.imageExtent.depth = 1;
+            vkCmdCopyBufferToImage(command_buffer, staging_buffer, image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+        }
+
+        // Transition to shader read
+        {
+            VkImageMemoryBarrier barrier = {};
+            barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+            barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+            barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+            barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            barrier.image = image;
+            barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+            barrier.subresourceRange.levelCount = 1;
+            barrier.subresourceRange.layerCount = 1;
+            barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+            barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+            vkCmdPipelineBarrier(command_buffer, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, NULL, 0, NULL, 1, &barrier);
+        }
+
+        vkEndCommandBuffer(command_buffer);
+
+        VkSubmitInfo submit_info = {};
+        submit_info.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+        submit_info.commandBufferCount = 1;
+        submit_info.pCommandBuffers = &command_buffer;
+        err = vkQueueSubmit(g_GfxData.queue, 1, &submit_info, VK_NULL_HANDLE);
+        vkQueueWaitIdle(g_GfxData.queue); // Wait for upload to complete
+    }
+
+    // Cleanup staging resources
+    vkDestroyBuffer(g_GfxData.device, staging_buffer, g_Allocator);
+    vkFreeMemory(g_GfxData.device, staging_memory, g_Allocator);
+
+    // Note: We're leaking image and image_memory here as we have no way to track them
+    // A production implementation would need a texture registry
+    // The descriptor set is the handle we return
+
+    return (ImTextureID)descriptor_set;
+}
+
+IMPLATFORM_API bool ImPlatform_UpdateTexture(ImTextureID texture_id, const void* pixel_data,
+                                              unsigned int x, unsigned int y,
+                                              unsigned int width, unsigned int height)
+{
+    // Vulkan texture updates require staging buffers and command lists
+    // This is complex and not implemented yet
+    return false;
+}
+
+IMPLATFORM_API void ImPlatform_DestroyTexture(ImTextureID texture_id)
+{
+    if (!texture_id)
+        return;
+
+    // Remove from ImGui's texture registry
+    VkDescriptorSet descriptor_set = (VkDescriptorSet)texture_id;
+    ImGui_ImplVulkan_RemoveTexture(descriptor_set);
+
+    // Note: We're not cleaning up the image, image_memory, image_view, or sampler
+    // because we don't track them. A production implementation would need proper tracking.
+}
+
 #endif // IM_GFX_VULKAN

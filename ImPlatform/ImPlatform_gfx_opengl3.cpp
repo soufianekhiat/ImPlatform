@@ -5,6 +5,7 @@
 
 #if defined(IM_CURRENT_GFX) && (IM_CURRENT_GFX == IM_GFX_OPENGL3)
 
+#include <stdint.h>  // For uint16_t, uint32_t
 #include "../imgui/backends/imgui_impl_opengl3.h"
 
 #if defined(IM_CURRENT_PLATFORM) && (IM_CURRENT_PLATFORM == IM_PLATFORM_WIN32)
@@ -66,8 +67,10 @@ bool ImPlatform_Gfx_CreateDevice_OpenGL3(void* hWnd, ImPlatform_GfxData_OpenGL3*
 
     wglMakeCurrent(pData->hDC, pData->hRC);
 
-    // Store main window HDC for viewport system
-    g_MainWindow.hDC = pData->hDC;
+    // Store main window HDC for viewport system (only for the first window created)
+    // Viewport windows will also call this function, but we don't want to overwrite the main window HDC
+    if (g_MainWindow.hDC == NULL)
+        g_MainWindow.hDC = pData->hDC;
 
     return true;
 }
@@ -342,8 +345,11 @@ static void Hook_Renderer_CreateWindow(ImGuiViewport* viewport)
     assert(viewport->RendererUserData == NULL);
 
     WGL_WindowData* data = IM_NEW(WGL_WindowData);
-    ImPlatform_Gfx_CreateDevice_OpenGL3((HWND)viewport->PlatformHandle, &g_GfxData);
-    data->hDC = g_GfxData.hDC;
+    // Create OpenGL context for this viewport window
+    // We need a temporary structure to get the HDC
+    ImPlatform_GfxData_OpenGL3 temp_data = { 0 };
+    ImPlatform_Gfx_CreateDevice_OpenGL3((HWND)viewport->PlatformHandle, &temp_data);
+    data->hDC = temp_data.hDC;
     viewport->RendererUserData = data;
 }
 
@@ -352,7 +358,11 @@ static void Hook_Renderer_DestroyWindow(ImGuiViewport* viewport)
     if (viewport->RendererUserData != NULL)
     {
         WGL_WindowData* data = (WGL_WindowData*)viewport->RendererUserData;
-        ImPlatform_Gfx_CleanupDevice_OpenGL3((HWND)viewport->PlatformHandle, &g_GfxData);
+        // We need to pass the correct data structure for cleanup
+        ImPlatform_GfxData_OpenGL3 temp_data = { 0 };
+        temp_data.hDC = data->hDC;
+        temp_data.hRC = g_hRC;  // Shared context
+        ImPlatform_Gfx_CleanupDevice_OpenGL3((HWND)viewport->PlatformHandle, &temp_data);
         IM_DELETE(data);
         viewport->RendererUserData = NULL;
     }
@@ -371,5 +381,391 @@ static void Hook_Renderer_SwapBuffers(ImGuiViewport* viewport, void*)
         ::SwapBuffers(data->hDC);
 }
 #endif
+
+// ============================================================================
+// Texture Creation API - OpenGL3 Implementation
+// ============================================================================
+
+// Define OpenGL 3.0+ constants if not available
+#ifndef GL_R8
+#define GL_R8 0x8229
+#endif
+#ifndef GL_RG8
+#define GL_RG8 0x822B
+#endif
+#ifndef GL_R16
+#define GL_R16 0x822A
+#endif
+#ifndef GL_RG16
+#define GL_RG16 0x822C
+#endif
+#ifndef GL_R32F
+#define GL_R32F 0x822E
+#endif
+#ifndef GL_RG32F
+#define GL_RG32F 0x8230
+#endif
+#ifndef GL_RGBA32F
+#define GL_RGBA32F 0x8814
+#endif
+#ifndef GL_RED
+#define GL_RED 0x1903
+#endif
+#ifndef GL_RG
+#define GL_RG 0x8227
+#endif
+#ifndef GL_CLAMP_TO_EDGE
+#define GL_CLAMP_TO_EDGE 0x812F
+#endif
+#ifndef GL_MIRRORED_REPEAT
+#define GL_MIRRORED_REPEAT 0x8370
+#endif
+
+// Define buffer-related constants if not available
+#ifndef GL_ARRAY_BUFFER
+#define GL_ARRAY_BUFFER 0x8892
+#endif
+#ifndef GL_ELEMENT_ARRAY_BUFFER
+#define GL_ELEMENT_ARRAY_BUFFER 0x8893
+#endif
+#ifndef GL_STATIC_DRAW
+#define GL_STATIC_DRAW 0x88E4
+#endif
+#ifndef GL_DYNAMIC_DRAW
+#define GL_DYNAMIC_DRAW 0x88E8
+#endif
+#ifndef GL_STREAM_DRAW
+#define GL_STREAM_DRAW 0x88E0
+#endif
+
+// Helper to get OpenGL format info from ImPlatform format
+static void ImPlatform_GetOpenGLFormat(ImPlatform_PixelFormat format, GLint* out_internal_format, GLenum* out_format, GLenum* out_type, int* out_channels)
+{
+    switch (format)
+    {
+    case ImPlatform_PixelFormat_R8:
+        *out_internal_format = GL_R8;
+        *out_format = GL_RED;
+        *out_type = GL_UNSIGNED_BYTE;
+        *out_channels = 1;
+        break;
+    case ImPlatform_PixelFormat_RG8:
+        *out_internal_format = GL_RG8;
+        *out_format = GL_RG;
+        *out_type = GL_UNSIGNED_BYTE;
+        *out_channels = 2;
+        break;
+    case ImPlatform_PixelFormat_RGB8:
+        *out_internal_format = GL_RGB8;
+        *out_format = GL_RGB;
+        *out_type = GL_UNSIGNED_BYTE;
+        *out_channels = 3;
+        break;
+    case ImPlatform_PixelFormat_RGBA8:
+        *out_internal_format = GL_RGBA8;
+        *out_format = GL_RGBA;
+        *out_type = GL_UNSIGNED_BYTE;
+        *out_channels = 4;
+        break;
+    case ImPlatform_PixelFormat_R16:
+        *out_internal_format = GL_R16;
+        *out_format = GL_RED;
+        *out_type = GL_UNSIGNED_SHORT;
+        *out_channels = 1;
+        break;
+    case ImPlatform_PixelFormat_RG16:
+        *out_internal_format = GL_RG16;
+        *out_format = GL_RG;
+        *out_type = GL_UNSIGNED_SHORT;
+        *out_channels = 2;
+        break;
+    case ImPlatform_PixelFormat_RGBA16:
+        *out_internal_format = GL_RGBA16;
+        *out_format = GL_RGBA;
+        *out_type = GL_UNSIGNED_SHORT;
+        *out_channels = 4;
+        break;
+    case ImPlatform_PixelFormat_R32F:
+        *out_internal_format = GL_R32F;
+        *out_format = GL_RED;
+        *out_type = GL_FLOAT;
+        *out_channels = 1;
+        break;
+    case ImPlatform_PixelFormat_RG32F:
+        *out_internal_format = GL_RG32F;
+        *out_format = GL_RG;
+        *out_type = GL_FLOAT;
+        *out_channels = 2;
+        break;
+    case ImPlatform_PixelFormat_RGBA32F:
+        *out_internal_format = GL_RGBA32F;
+        *out_format = GL_RGBA;
+        *out_type = GL_FLOAT;
+        *out_channels = 4;
+        break;
+    default:
+        *out_internal_format = GL_RGBA8;
+        *out_format = GL_RGBA;
+        *out_type = GL_UNSIGNED_BYTE;
+        *out_channels = 4;
+        break;
+    }
+}
+
+IMPLATFORM_API ImPlatform_TextureDesc ImPlatform_TextureDesc_Default(unsigned int width, unsigned int height)
+{
+    ImPlatform_TextureDesc desc;
+    desc.width = width;
+    desc.height = height;
+    desc.format = ImPlatform_PixelFormat_RGBA8;
+    desc.min_filter = ImPlatform_TextureFilter_Linear;
+    desc.mag_filter = ImPlatform_TextureFilter_Linear;
+    desc.wrap_u = ImPlatform_TextureWrap_Clamp;
+    desc.wrap_v = ImPlatform_TextureWrap_Clamp;
+    return desc;
+}
+
+IMPLATFORM_API ImTextureID ImPlatform_CreateTexture(const void* pixel_data, const ImPlatform_TextureDesc* desc)
+{
+    if (!desc || !pixel_data)
+        return 0;
+
+    GLint internal_format;
+    GLenum format;
+    GLenum type;
+    int channels;
+    ImPlatform_GetOpenGLFormat(desc->format, &internal_format, &format, &type, &channels);
+
+    GLuint texture_id;
+    glGenTextures(1, &texture_id);
+    glBindTexture(GL_TEXTURE_2D, texture_id);
+
+    // Set filtering
+    GLint min_filter = (desc->min_filter == ImPlatform_TextureFilter_Nearest) ? GL_NEAREST : GL_LINEAR;
+    GLint mag_filter = (desc->mag_filter == ImPlatform_TextureFilter_Nearest) ? GL_NEAREST : GL_LINEAR;
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, min_filter);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, mag_filter);
+
+    // Set wrapping
+    GLint wrap_s = GL_CLAMP_TO_EDGE;
+    GLint wrap_t = GL_CLAMP_TO_EDGE;
+
+    if (desc->wrap_u == ImPlatform_TextureWrap_Repeat)
+        wrap_s = GL_REPEAT;
+    else if (desc->wrap_u == ImPlatform_TextureWrap_Mirror)
+        wrap_s = GL_MIRRORED_REPEAT;
+
+    if (desc->wrap_v == ImPlatform_TextureWrap_Repeat)
+        wrap_t = GL_REPEAT;
+    else if (desc->wrap_v == ImPlatform_TextureWrap_Mirror)
+        wrap_t = GL_MIRRORED_REPEAT;
+
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, wrap_s);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, wrap_t);
+
+#if defined(GL_UNPACK_ROW_LENGTH) && !defined(__EMSCRIPTEN__)
+    glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
+#endif
+
+    // Upload texture data
+    glTexImage2D(GL_TEXTURE_2D, 0, internal_format, desc->width, desc->height, 0, format, type, pixel_data);
+
+    return (ImTextureID)(intptr_t)texture_id;
+}
+
+IMPLATFORM_API bool ImPlatform_UpdateTexture(ImTextureID texture_id, const void* pixel_data,
+                                              unsigned int x, unsigned int y,
+                                              unsigned int width, unsigned int height)
+{
+    if (!texture_id || !pixel_data)
+        return false;
+
+    GLuint tex = (GLuint)(intptr_t)texture_id;
+    glBindTexture(GL_TEXTURE_2D, tex);
+
+    // Get texture format info
+    GLint internal_format;
+    glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_INTERNAL_FORMAT, &internal_format);
+
+    // Determine format and type from internal format
+    GLenum format = GL_RGBA;
+    GLenum type = GL_UNSIGNED_BYTE;
+
+    // Map internal format to format/type (simplified)
+    if (internal_format == GL_R8 || internal_format == GL_R16 || internal_format == GL_R32F)
+        format = GL_RED;
+    else if (internal_format == GL_RG8 || internal_format == GL_RG16 || internal_format == GL_RG32F)
+        format = GL_RG;
+    else if (internal_format == GL_RGB8)
+        format = GL_RGB;
+    else if (internal_format == GL_RGBA8 || internal_format == GL_RGBA16 || internal_format == GL_RGBA32F)
+        format = GL_RGBA;
+
+    if (internal_format == GL_R16 || internal_format == GL_RG16 || internal_format == GL_RGBA16)
+        type = GL_UNSIGNED_SHORT;
+    else if (internal_format == GL_R32F || internal_format == GL_RG32F || internal_format == GL_RGBA32F)
+        type = GL_FLOAT;
+
+#if defined(GL_UNPACK_ROW_LENGTH) && !defined(__EMSCRIPTEN__)
+    glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
+#endif
+
+    // Update texture sub-region
+    glTexSubImage2D(GL_TEXTURE_2D, 0, x, y, width, height, format, type, pixel_data);
+
+    return true;
+}
+
+IMPLATFORM_API void ImPlatform_DestroyTexture(ImTextureID texture_id)
+{
+    if (!texture_id)
+        return;
+
+    GLuint tex = (GLuint)(intptr_t)texture_id;
+    glDeleteTextures(1, &tex);
+}
+
+// ============================================================================
+// Custom Vertex/Index Buffer Management API - OpenGL3 Implementation
+// ============================================================================
+
+// NOTE: Full implementation of vertex/index buffer API requires access to OpenGL 3+ functions
+// (glGenVertexArrays, glGenBuffers, etc.) which need to be loaded dynamically on Windows.
+// Since imgui_impl_opengl3.cpp already loads these, we would need to either:
+// 1. Expose the loaded function pointers from imgui backend
+// 2. Load them again here (duplicated effort)
+// 3. Implement this properly when we add the Custom Shader System
+//
+// For now, these are stub implementations that will be completed alongside the shader system.
+
+IMPLATFORM_API ImPlatform_VertexBuffer ImPlatform_CreateVertexBuffer(const void* vertex_data, const ImPlatform_VertexBufferDesc* desc)
+{
+    (void)vertex_data;
+    (void)desc;
+    // TODO: Implement when shader system is added
+    return NULL;
+}
+
+IMPLATFORM_API bool ImPlatform_UpdateVertexBuffer(ImPlatform_VertexBuffer buffer, const void* vertex_data, unsigned int offset, unsigned int count)
+{
+    (void)buffer;
+    (void)vertex_data;
+    (void)offset;
+    (void)count;
+    // TODO: Implement when shader system is added
+    return false;
+}
+
+IMPLATFORM_API void ImPlatform_DestroyVertexBuffer(ImPlatform_VertexBuffer buffer)
+{
+    (void)buffer;
+    // TODO: Implement when shader system is added
+}
+
+IMPLATFORM_API ImPlatform_IndexBuffer ImPlatform_CreateIndexBuffer(const void* index_data, const ImPlatform_IndexBufferDesc* desc)
+{
+    (void)index_data;
+    (void)desc;
+    // TODO: Implement when shader system is added
+    return NULL;
+}
+
+IMPLATFORM_API bool ImPlatform_UpdateIndexBuffer(ImPlatform_IndexBuffer buffer, const void* index_data, unsigned int offset, unsigned int count)
+{
+    (void)buffer;
+    (void)index_data;
+    (void)offset;
+    (void)count;
+    // TODO: Implement when shader system is added
+    return false;
+}
+
+IMPLATFORM_API void ImPlatform_DestroyIndexBuffer(ImPlatform_IndexBuffer buffer)
+{
+    (void)buffer;
+    // TODO: Implement when shader system is added
+}
+
+IMPLATFORM_API void ImPlatform_BindBuffers(ImPlatform_VertexBuffer vertex_buffer, ImPlatform_IndexBuffer index_buffer)
+{
+    (void)vertex_buffer;
+    (void)index_buffer;
+    // TODO: Implement when shader system is added
+}
+
+IMPLATFORM_API void ImPlatform_DrawIndexed(unsigned int primitive_type, unsigned int index_count, unsigned int start_index)
+{
+    (void)primitive_type;
+    (void)index_count;
+    (void)start_index;
+    // TODO: Implement when shader system is added
+}
+
+// ============================================================================
+// Custom Shader System API - OpenGL3 Implementation
+// ============================================================================
+
+// NOTE: Full shader system implementation is complex and requires:
+// - Shader compilation (glCreateShader, glShaderSource, glCompileShader)
+// - Program linking (glCreateProgram, glAttachShader, glLinkProgram)
+// - Uniform management (glGetUniformLocation, glUniform*)
+// - Proper error handling and reporting
+//
+// This is a substantial feature that should be implemented together with
+// the vertex/index buffer system as they are tightly coupled.
+// For now, these are stub implementations.
+
+IMPLATFORM_API ImPlatform_Shader ImPlatform_CreateShader(const ImPlatform_ShaderDesc* desc)
+{
+    (void)desc;
+    // TODO: Implement shader compilation
+    return NULL;
+}
+
+IMPLATFORM_API void ImPlatform_DestroyShader(ImPlatform_Shader shader)
+{
+    (void)shader;
+    // TODO: Implement shader destruction
+}
+
+IMPLATFORM_API ImPlatform_ShaderProgram ImPlatform_CreateShaderProgram(ImPlatform_Shader vertex_shader, ImPlatform_Shader fragment_shader)
+{
+    (void)vertex_shader;
+    (void)fragment_shader;
+    // TODO: Implement program linking
+    return NULL;
+}
+
+IMPLATFORM_API void ImPlatform_DestroyShaderProgram(ImPlatform_ShaderProgram program)
+{
+    (void)program;
+    // TODO: Implement program destruction
+}
+
+IMPLATFORM_API void ImPlatform_BindShaderProgram(ImPlatform_ShaderProgram program)
+{
+    (void)program;
+    // TODO: Implement program binding
+}
+
+IMPLATFORM_API bool ImPlatform_SetShaderUniform(ImPlatform_ShaderProgram program, const char* name, const void* data, unsigned int size)
+{
+    (void)program;
+    (void)name;
+    (void)data;
+    (void)size;
+    // TODO: Implement uniform setting
+    return false;
+}
+
+IMPLATFORM_API bool ImPlatform_SetShaderTexture(ImPlatform_ShaderProgram program, const char* name, unsigned int slot, ImTextureID texture)
+{
+    (void)program;
+    (void)name;
+    (void)slot;
+    (void)texture;
+    // TODO: Implement texture binding
+    return false;
+}
 
 #endif // IM_GFX_OPENGL3

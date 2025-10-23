@@ -242,4 +242,195 @@ IMPLATFORM_API void ImPlatform_ShutdownWindow(void)
     ImPlatform_Gfx_CleanupDevice_DX9(&g_GfxData);
 }
 
+// ============================================================================
+// Texture Creation API - DirectX 9 Implementation
+// ============================================================================
+
+// Helper to get D3D9 format from ImPlatform format
+static D3DFORMAT ImPlatform_GetD3D9Format(ImPlatform_PixelFormat format, int* out_bytes_per_pixel)
+{
+    switch (format)
+    {
+    case ImPlatform_PixelFormat_R8:
+        *out_bytes_per_pixel = 1;
+        return D3DFMT_L8; // Luminance 8-bit
+    case ImPlatform_PixelFormat_RG8:
+        // D3D9 doesn't have RG8, use A8L8 (alpha+luminance)
+        *out_bytes_per_pixel = 2;
+        return D3DFMT_A8L8;
+    case ImPlatform_PixelFormat_RGB8:
+        // D3D9 doesn't have RGB8, use X8R8G8B8 or A8R8G8B8
+        *out_bytes_per_pixel = 4;
+        return D3DFMT_X8R8G8B8;
+    case ImPlatform_PixelFormat_RGBA8:
+        *out_bytes_per_pixel = 4;
+        return D3DFMT_A8R8G8B8;
+    case ImPlatform_PixelFormat_R16:
+        *out_bytes_per_pixel = 2;
+        return D3DFMT_L16; // Luminance 16-bit
+    case ImPlatform_PixelFormat_RG16:
+        // D3D9 doesn't have true RG16, use G16R16
+        *out_bytes_per_pixel = 4;
+        return D3DFMT_G16R16;
+    case ImPlatform_PixelFormat_RGBA16:
+        *out_bytes_per_pixel = 8;
+        return D3DFMT_A16B16G16R16;
+    case ImPlatform_PixelFormat_R32F:
+        *out_bytes_per_pixel = 4;
+        return D3DFMT_R32F;
+    case ImPlatform_PixelFormat_RG32F:
+        *out_bytes_per_pixel = 8;
+        return D3DFMT_G32R32F;
+    case ImPlatform_PixelFormat_RGBA32F:
+        *out_bytes_per_pixel = 16;
+        return D3DFMT_A32B32G32R32F;
+    default:
+        *out_bytes_per_pixel = 4;
+        return D3DFMT_A8R8G8B8;
+    }
+}
+
+IMPLATFORM_API ImPlatform_TextureDesc ImPlatform_TextureDesc_Default(unsigned int width, unsigned int height)
+{
+    ImPlatform_TextureDesc desc;
+    desc.width = width;
+    desc.height = height;
+    desc.format = ImPlatform_PixelFormat_RGBA8;
+    desc.min_filter = ImPlatform_TextureFilter_Linear;
+    desc.mag_filter = ImPlatform_TextureFilter_Linear;
+    desc.wrap_u = ImPlatform_TextureWrap_Clamp;
+    desc.wrap_v = ImPlatform_TextureWrap_Clamp;
+    return desc;
+}
+
+IMPLATFORM_API ImTextureID ImPlatform_CreateTexture(const void* pixel_data, const ImPlatform_TextureDesc* desc)
+{
+    if (!desc || !pixel_data || !g_GfxData.pDevice)
+        return NULL;
+
+    int bytes_per_pixel;
+    D3DFORMAT format = ImPlatform_GetD3D9Format(desc->format, &bytes_per_pixel);
+
+    // Create texture
+    LPDIRECT3DTEXTURE9 pTexture = NULL;
+    HRESULT hr = g_GfxData.pDevice->CreateTexture(
+        desc->width, desc->height, 1, 0,
+        format, D3DPOOL_MANAGED, &pTexture, NULL);
+
+    if (FAILED(hr) || !pTexture)
+        return NULL;
+
+    // Lock and copy data
+    D3DLOCKED_RECT rect;
+    hr = pTexture->LockRect(0, &rect, NULL, D3DLOCK_DISCARD);
+    if (FAILED(hr))
+    {
+        pTexture->Release();
+        return NULL;
+    }
+
+    // Copy pixel data row by row
+    unsigned char* dest = (unsigned char*)rect.pBits;
+    const unsigned char* src = (const unsigned char*)pixel_data;
+    for (unsigned int y = 0; y < desc->height; y++)
+    {
+        memcpy(dest + y * rect.Pitch, src + y * desc->width * bytes_per_pixel, desc->width * bytes_per_pixel);
+    }
+
+    pTexture->UnlockRect(0);
+
+    // Set texture to stage 0 (not strictly necessary but matches old implementation)
+    g_GfxData.pDevice->SetTexture(0, pTexture);
+
+    // Set sampler states based on descriptor
+    D3DTEXTUREFILTERTYPE min_filter = (desc->min_filter == ImPlatform_TextureFilter_Nearest) ? D3DTEXF_POINT : D3DTEXF_LINEAR;
+    D3DTEXTUREFILTERTYPE mag_filter = (desc->mag_filter == ImPlatform_TextureFilter_Nearest) ? D3DTEXF_POINT : D3DTEXF_LINEAR;
+
+    g_GfxData.pDevice->SetSamplerState(0, D3DSAMP_MINFILTER, min_filter);
+    g_GfxData.pDevice->SetSamplerState(0, D3DSAMP_MAGFILTER, mag_filter);
+
+    // Set addressing modes
+    D3DTEXTUREADDRESS wrap_u = D3DTADDRESS_CLAMP;
+    D3DTEXTUREADDRESS wrap_v = D3DTADDRESS_CLAMP;
+
+    if (desc->wrap_u == ImPlatform_TextureWrap_Repeat)
+        wrap_u = D3DTADDRESS_WRAP;
+    else if (desc->wrap_u == ImPlatform_TextureWrap_Mirror)
+        wrap_u = D3DTADDRESS_MIRROR;
+
+    if (desc->wrap_v == ImPlatform_TextureWrap_Repeat)
+        wrap_v = D3DTADDRESS_WRAP;
+    else if (desc->wrap_v == ImPlatform_TextureWrap_Mirror)
+        wrap_v = D3DTADDRESS_MIRROR;
+
+    g_GfxData.pDevice->SetSamplerState(0, D3DSAMP_ADDRESSU, wrap_u);
+    g_GfxData.pDevice->SetSamplerState(0, D3DSAMP_ADDRESSV, wrap_v);
+
+    return (ImTextureID)pTexture;
+}
+
+IMPLATFORM_API bool ImPlatform_UpdateTexture(ImTextureID texture_id, const void* pixel_data,
+                                              unsigned int x, unsigned int y,
+                                              unsigned int width, unsigned int height)
+{
+    if (!texture_id || !pixel_data)
+        return false;
+
+    LPDIRECT3DTEXTURE9 pTexture = (LPDIRECT3DTEXTURE9)texture_id;
+
+    // Get texture description
+    D3DSURFACE_DESC desc;
+    HRESULT hr = pTexture->GetLevelDesc(0, &desc);
+    if (FAILED(hr))
+        return false;
+
+    // Calculate bytes per pixel from format
+    int bytes_per_pixel = 4; // Default
+    switch (desc.Format)
+    {
+    case D3DFMT_L8: bytes_per_pixel = 1; break;
+    case D3DFMT_A8L8: bytes_per_pixel = 2; break;
+    case D3DFMT_X8R8G8B8:
+    case D3DFMT_A8R8G8B8: bytes_per_pixel = 4; break;
+    case D3DFMT_L16: bytes_per_pixel = 2; break;
+    case D3DFMT_G16R16: bytes_per_pixel = 4; break;
+    case D3DFMT_A16B16G16R16: bytes_per_pixel = 8; break;
+    case D3DFMT_R32F: bytes_per_pixel = 4; break;
+    case D3DFMT_G32R32F: bytes_per_pixel = 8; break;
+    case D3DFMT_A32B32G32R32F: bytes_per_pixel = 16; break;
+    }
+
+    // Lock the sub-rectangle
+    RECT rect;
+    rect.left = x;
+    rect.top = y;
+    rect.right = x + width;
+    rect.bottom = y + height;
+
+    D3DLOCKED_RECT locked_rect;
+    hr = pTexture->LockRect(0, &locked_rect, &rect, 0);
+    if (FAILED(hr))
+        return false;
+
+    // Copy data
+    unsigned char* dest = (unsigned char*)locked_rect.pBits;
+    const unsigned char* src = (const unsigned char*)pixel_data;
+    for (unsigned int row = 0; row < height; row++)
+    {
+        memcpy(dest + row * locked_rect.Pitch, src + row * width * bytes_per_pixel, width * bytes_per_pixel);
+    }
+
+    pTexture->UnlockRect(0);
+    return true;
+}
+
+IMPLATFORM_API void ImPlatform_DestroyTexture(ImTextureID texture_id)
+{
+    if (!texture_id)
+        return;
+
+    LPDIRECT3DTEXTURE9 pTexture = (LPDIRECT3DTEXTURE9)texture_id;
+    pTexture->Release();
+}
+
 #endif // IM_GFX_DIRECTX9

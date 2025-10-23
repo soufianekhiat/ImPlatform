@@ -100,7 +100,316 @@
 extern "C" {
 #endif
 
+// ============================================================================
+// Texture Creation API
+// ============================================================================
+
+// Pixel format enums
+typedef enum ImPlatform_PixelFormat {
+    ImPlatform_PixelFormat_R8,           // Single channel, 8-bit unsigned
+    ImPlatform_PixelFormat_RG8,          // Two channel, 8-bit unsigned per channel
+    ImPlatform_PixelFormat_RGB8,         // Three channel, 8-bit unsigned per channel
+    ImPlatform_PixelFormat_RGBA8,        // Four channel, 8-bit unsigned per channel (most common)
+    ImPlatform_PixelFormat_R16,          // Single channel, 16-bit unsigned
+    ImPlatform_PixelFormat_RG16,         // Two channel, 16-bit unsigned per channel
+    ImPlatform_PixelFormat_RGBA16,       // Four channel, 16-bit unsigned per channel
+    ImPlatform_PixelFormat_R32F,         // Single channel, 32-bit float
+    ImPlatform_PixelFormat_RG32F,        // Two channel, 32-bit float per channel
+    ImPlatform_PixelFormat_RGBA32F,      // Four channel, 32-bit float per channel
+} ImPlatform_PixelFormat;
+
+// Texture filtering modes
+typedef enum ImPlatform_TextureFilter {
+    ImPlatform_TextureFilter_Nearest,    // Point sampling (sharp, pixelated)
+    ImPlatform_TextureFilter_Linear,     // Linear filtering (smooth, blurred)
+} ImPlatform_TextureFilter;
+
+// Texture wrap/boundary modes
+typedef enum ImPlatform_TextureWrap {
+    ImPlatform_TextureWrap_Clamp,        // Clamp to edge (extends edge pixels)
+    ImPlatform_TextureWrap_Repeat,       // Repeat/wrap texture coordinates
+    ImPlatform_TextureWrap_Mirror,       // Mirror repeat (flips at boundaries)
+} ImPlatform_TextureWrap;
+
+// Texture descriptor - defines texture properties
+typedef struct ImPlatform_TextureDesc {
+    unsigned int width;                   // Texture width in pixels
+    unsigned int height;                  // Texture height in pixels
+    ImPlatform_PixelFormat format;        // Pixel format
+    ImPlatform_TextureFilter min_filter;  // Minification filter
+    ImPlatform_TextureFilter mag_filter;  // Magnification filter
+    ImPlatform_TextureWrap wrap_u;        // Horizontal wrap mode
+    ImPlatform_TextureWrap wrap_v;        // Vertical wrap mode
+} ImPlatform_TextureDesc;
+
+// Helper function to create a texture descriptor with common defaults
+// Default: RGBA8, Linear filtering, Clamp wrapping
+IMPLATFORM_API ImPlatform_TextureDesc ImPlatform_TextureDesc_Default(
+    unsigned int width,
+    unsigned int height
+);
+
+// Create a 2D texture from raw pixel data
+// pixel_data: Pointer to pixel data (size must match width * height * pixel_format_size)
+// desc: Texture descriptor defining texture properties
+// Returns: ImTextureID (opaque handle) or NULL on failure
+// Note: The pixel data can be freed after this call returns
+IMPLATFORM_API ImTextureID ImPlatform_CreateTexture(
+    const void* pixel_data,
+    const ImPlatform_TextureDesc* desc
+);
+
+// Update existing texture with new pixel data
+// texture_id: Previously created texture
+// pixel_data: New pixel data (must match original texture format and dimensions)
+// x, y: Offset within texture to start update (0, 0 for full update)
+// width, height: Size of region to update (use original dimensions for full update)
+// Returns: true on success, false on failure
+IMPLATFORM_API bool ImPlatform_UpdateTexture(
+    ImTextureID texture_id,
+    const void* pixel_data,
+    unsigned int x,
+    unsigned int y,
+    unsigned int width,
+    unsigned int height
+);
+
+// Destroy a texture and free its resources
+// texture_id: Texture to destroy
+IMPLATFORM_API void ImPlatform_DestroyTexture(
+    ImTextureID texture_id
+);
+
+// ============================================================================
+// Custom Vertex/Index Buffer Management API
+// ============================================================================
+
+// Buffer usage hints - tells the graphics API how the buffer will be used
+typedef enum ImPlatform_BufferUsage {
+    ImPlatform_BufferUsage_Static,       // Data will not change (upload once, use many times)
+    ImPlatform_BufferUsage_Dynamic,      // Data changes occasionally (re-upload per frame)
+    ImPlatform_BufferUsage_Stream,       // Data changes every frame (streaming/transient data)
+} ImPlatform_BufferUsage;
+
+// Vertex attribute format - describes a single vertex element
+typedef enum ImPlatform_VertexFormat {
+    ImPlatform_VertexFormat_Float,       // Single float (4 bytes)
+    ImPlatform_VertexFormat_Float2,      // Two floats (8 bytes) - e.g., UV coordinates
+    ImPlatform_VertexFormat_Float3,      // Three floats (12 bytes) - e.g., position, normal
+    ImPlatform_VertexFormat_Float4,      // Four floats (16 bytes) - e.g., color, tangent
+    ImPlatform_VertexFormat_UByte4,      // Four unsigned bytes (4 bytes) - e.g., packed color
+    ImPlatform_VertexFormat_UByte4N,     // Four unsigned bytes normalized to [0,1] (4 bytes)
+} ImPlatform_VertexFormat;
+
+// Index format - size of each index
+typedef enum ImPlatform_IndexFormat {
+    ImPlatform_IndexFormat_UInt16,       // 16-bit unsigned int (supports up to 65535 vertices)
+    ImPlatform_IndexFormat_UInt32,       // 32-bit unsigned int (supports billions of vertices)
+} ImPlatform_IndexFormat;
+
+// Vertex attribute descriptor - describes one element in a vertex layout
+typedef struct ImPlatform_VertexAttribute {
+    ImPlatform_VertexFormat format;      // Format of this attribute
+    unsigned int offset;                  // Byte offset within vertex structure
+    const char* semantic_name;            // Semantic name (e.g., "POSITION", "TEXCOORD", "COLOR")
+} ImPlatform_VertexAttribute;
+
+// Vertex buffer descriptor - describes vertex buffer properties
+typedef struct ImPlatform_VertexBufferDesc {
+    unsigned int vertex_count;            // Number of vertices
+    unsigned int vertex_stride;           // Size of one vertex in bytes
+    ImPlatform_BufferUsage usage;         // Usage hint
+    const ImPlatform_VertexAttribute* attributes; // Array of vertex attributes
+    unsigned int attribute_count;         // Number of attributes in array
+} ImPlatform_VertexBufferDesc;
+
+// Index buffer descriptor - describes index buffer properties
+typedef struct ImPlatform_IndexBufferDesc {
+    unsigned int index_count;             // Number of indices
+    ImPlatform_IndexFormat format;        // Index format (16-bit or 32-bit)
+    ImPlatform_BufferUsage usage;         // Usage hint
+} ImPlatform_IndexBufferDesc;
+
+// Opaque handles for buffers
+typedef void* ImPlatform_VertexBuffer;
+typedef void* ImPlatform_IndexBuffer;
+
+// Create a vertex buffer with initial data
+// vertex_data: Pointer to vertex data (size must match vertex_count * vertex_stride)
+// desc: Vertex buffer descriptor
+// Returns: Vertex buffer handle or NULL on failure
+// Note: The vertex data can be freed after this call returns (for Static usage)
+IMPLATFORM_API ImPlatform_VertexBuffer ImPlatform_CreateVertexBuffer(
+    const void* vertex_data,
+    const ImPlatform_VertexBufferDesc* desc
+);
+
+// Update vertex buffer data (for Dynamic/Stream usage)
+// buffer: Vertex buffer to update
+// vertex_data: New vertex data
+// offset: Offset in vertices (NOT bytes)
+// count: Number of vertices to update
+// Returns: true on success, false on failure
+IMPLATFORM_API bool ImPlatform_UpdateVertexBuffer(
+    ImPlatform_VertexBuffer buffer,
+    const void* vertex_data,
+    unsigned int offset,
+    unsigned int count
+);
+
+// Destroy a vertex buffer and free its resources
+// buffer: Vertex buffer to destroy
+IMPLATFORM_API void ImPlatform_DestroyVertexBuffer(
+    ImPlatform_VertexBuffer buffer
+);
+
+// Create an index buffer with initial data
+// index_data: Pointer to index data
+// desc: Index buffer descriptor
+// Returns: Index buffer handle or NULL on failure
+// Note: The index data can be freed after this call returns (for Static usage)
+IMPLATFORM_API ImPlatform_IndexBuffer ImPlatform_CreateIndexBuffer(
+    const void* index_data,
+    const ImPlatform_IndexBufferDesc* desc
+);
+
+// Update index buffer data (for Dynamic/Stream usage)
+// buffer: Index buffer to update
+// index_data: New index data
+// offset: Offset in indices (NOT bytes)
+// count: Number of indices to update
+// Returns: true on success, false on failure
+IMPLATFORM_API bool ImPlatform_UpdateIndexBuffer(
+    ImPlatform_IndexBuffer buffer,
+    const void* index_data,
+    unsigned int offset,
+    unsigned int count
+);
+
+// Destroy an index buffer and free its resources
+// buffer: Index buffer to destroy
+IMPLATFORM_API void ImPlatform_DestroyIndexBuffer(
+    ImPlatform_IndexBuffer buffer
+);
+
+// Bind vertex and index buffers for rendering
+// vertex_buffer: Vertex buffer to bind (or NULL to unbind)
+// index_buffer: Index buffer to bind (or NULL to unbind)
+IMPLATFORM_API void ImPlatform_BindBuffers(
+    ImPlatform_VertexBuffer vertex_buffer,
+    ImPlatform_IndexBuffer index_buffer
+);
+
+// Draw primitives using currently bound buffers
+// primitive_type: Type of primitive (0=triangles, 1=lines, 2=points)
+// index_count: Number of indices to draw (0 = draw all indices in buffer)
+// start_index: Starting index in index buffer
+IMPLATFORM_API void ImPlatform_DrawIndexed(
+    unsigned int primitive_type,
+    unsigned int index_count,
+    unsigned int start_index
+);
+
+// ============================================================================
+// Custom Shader System API
+// ============================================================================
+
+// Shader stage types
+typedef enum ImPlatform_ShaderStage {
+    ImPlatform_ShaderStage_Vertex,       // Vertex shader
+    ImPlatform_ShaderStage_Fragment,     // Fragment/Pixel shader
+    ImPlatform_ShaderStage_Compute,      // Compute shader (if supported)
+} ImPlatform_ShaderStage;
+
+// Shader source format
+typedef enum ImPlatform_ShaderFormat {
+    ImPlatform_ShaderFormat_GLSL,        // OpenGL GLSL source code
+    ImPlatform_ShaderFormat_HLSL,        // DirectX HLSL source code
+    ImPlatform_ShaderFormat_MSL,         // Metal Shading Language source code
+    ImPlatform_ShaderFormat_SPIRV,       // SPIR-V bytecode (Vulkan)
+    ImPlatform_ShaderFormat_WGSL,        // WebGPU Shading Language
+} ImPlatform_ShaderFormat;
+
+// Shader descriptor - describes shader source
+typedef struct ImPlatform_ShaderDesc {
+    ImPlatform_ShaderStage stage;        // Shader stage (vertex, fragment, etc.)
+    ImPlatform_ShaderFormat format;      // Source code format
+    const char* source_code;              // Shader source code string
+    const void* bytecode;                 // Pre-compiled bytecode (optional, for SPIRV/DXIL)
+    unsigned int bytecode_size;           // Size of bytecode in bytes
+    const char* entry_point;              // Entry point function name (e.g., "main", "VSMain")
+} ImPlatform_ShaderDesc;
+
+// Opaque handle for shader
+typedef void* ImPlatform_Shader;
+
+// Opaque handle for shader program (linked vertex + fragment shaders)
+typedef void* ImPlatform_ShaderProgram;
+
+// Create a shader from source code or bytecode
+// desc: Shader descriptor
+// Returns: Shader handle or NULL on failure
+// Note: Compile errors will be logged to console/debug output
+IMPLATFORM_API ImPlatform_Shader ImPlatform_CreateShader(
+    const ImPlatform_ShaderDesc* desc
+);
+
+// Destroy a shader and free its resources
+// shader: Shader to destroy
+IMPLATFORM_API void ImPlatform_DestroyShader(
+    ImPlatform_Shader shader
+);
+
+// Create a shader program by linking vertex and fragment shaders
+// vertex_shader: Vertex shader handle
+// fragment_shader: Fragment shader handle
+// Returns: Shader program handle or NULL on failure
+IMPLATFORM_API ImPlatform_ShaderProgram ImPlatform_CreateShaderProgram(
+    ImPlatform_Shader vertex_shader,
+    ImPlatform_Shader fragment_shader
+);
+
+// Destroy a shader program and free its resources
+// program: Shader program to destroy
+IMPLATFORM_API void ImPlatform_DestroyShaderProgram(
+    ImPlatform_ShaderProgram program
+);
+
+// Bind a shader program for rendering
+// program: Shader program to bind (or NULL to unbind)
+IMPLATFORM_API void ImPlatform_BindShaderProgram(
+    ImPlatform_ShaderProgram program
+);
+
+// Set shader uniform/constant buffer values
+// program: Shader program
+// name: Uniform variable name (e.g., "u_ModelViewProjection")
+// data: Pointer to uniform data
+// size: Size of data in bytes
+// Returns: true on success, false if uniform not found
+IMPLATFORM_API bool ImPlatform_SetShaderUniform(
+    ImPlatform_ShaderProgram program,
+    const char* name,
+    const void* data,
+    unsigned int size
+);
+
+// Set shader texture binding
+// program: Shader program
+// name: Texture uniform name (e.g., "u_Texture")
+// slot: Texture slot/unit (0-15 typically)
+// texture: Texture ID to bind
+// Returns: true on success, false if uniform not found
+IMPLATFORM_API bool ImPlatform_SetShaderTexture(
+    ImPlatform_ShaderProgram program,
+    const char* name,
+    unsigned int slot,
+    ImTextureID texture
+);
+
+// ============================================================================
 // Core API Functions
+// ============================================================================
 
 // Create a window with specified name, position, and size
 // Returns true on success

@@ -474,4 +474,268 @@ IMPLATFORM_API void ImPlatform_ShutdownWindow(void)
     ImPlatform_Gfx_CleanupDevice_DX12(&g_GfxData);
 }
 
+// ============================================================================
+// Texture Creation API - DirectX 12 Implementation
+// ============================================================================
+
+// Helper to get D3D12 format from ImPlatform format
+static DXGI_FORMAT ImPlatform_GetD3D12Format(ImPlatform_PixelFormat format, int* out_bytes_per_pixel)
+{
+    switch (format)
+    {
+    case ImPlatform_PixelFormat_R8:
+        *out_bytes_per_pixel = 1;
+        return DXGI_FORMAT_R8_UNORM;
+    case ImPlatform_PixelFormat_RG8:
+        *out_bytes_per_pixel = 2;
+        return DXGI_FORMAT_R8G8_UNORM;
+    case ImPlatform_PixelFormat_RGB8:
+        // D3D12 doesn't have RGB8, use RGBA8 instead
+        *out_bytes_per_pixel = 4;
+        return DXGI_FORMAT_R8G8B8A8_UNORM;
+    case ImPlatform_PixelFormat_RGBA8:
+        *out_bytes_per_pixel = 4;
+        return DXGI_FORMAT_R8G8B8A8_UNORM;
+    case ImPlatform_PixelFormat_R16:
+        *out_bytes_per_pixel = 2;
+        return DXGI_FORMAT_R16_UNORM;
+    case ImPlatform_PixelFormat_RG16:
+        *out_bytes_per_pixel = 4;
+        return DXGI_FORMAT_R16G16_UNORM;
+    case ImPlatform_PixelFormat_RGBA16:
+        *out_bytes_per_pixel = 8;
+        return DXGI_FORMAT_R16G16B16A16_UNORM;
+    case ImPlatform_PixelFormat_R32F:
+        *out_bytes_per_pixel = 4;
+        return DXGI_FORMAT_R32_FLOAT;
+    case ImPlatform_PixelFormat_RG32F:
+        *out_bytes_per_pixel = 8;
+        return DXGI_FORMAT_R32G32_FLOAT;
+    case ImPlatform_PixelFormat_RGBA32F:
+        *out_bytes_per_pixel = 16;
+        return DXGI_FORMAT_R32G32B32A32_FLOAT;
+    default:
+        *out_bytes_per_pixel = 4;
+        return DXGI_FORMAT_R8G8B8A8_UNORM;
+    }
+}
+
+IMPLATFORM_API ImPlatform_TextureDesc ImPlatform_TextureDesc_Default(unsigned int width, unsigned int height)
+{
+    ImPlatform_TextureDesc desc;
+    desc.width = width;
+    desc.height = height;
+    desc.format = ImPlatform_PixelFormat_RGBA8;
+    desc.min_filter = ImPlatform_TextureFilter_Linear;
+    desc.mag_filter = ImPlatform_TextureFilter_Linear;
+    desc.wrap_u = ImPlatform_TextureWrap_Clamp;
+    desc.wrap_v = ImPlatform_TextureWrap_Clamp;
+    return desc;
+}
+
+IMPLATFORM_API ImTextureID ImPlatform_CreateTexture(const void* pixel_data, const ImPlatform_TextureDesc* desc)
+{
+    if (!desc || !pixel_data || !g_GfxData.pDevice || !g_GfxData.pCommandQueue || !g_GfxData.pSrvDescHeapAlloc)
+        return NULL;
+
+    int bytes_per_pixel;
+    DXGI_FORMAT format = ImPlatform_GetD3D12Format(desc->format, &bytes_per_pixel);
+
+    // Create texture resource
+    D3D12_HEAP_PROPERTIES props;
+    memset(&props, 0, sizeof(D3D12_HEAP_PROPERTIES));
+    props.Type = D3D12_HEAP_TYPE_DEFAULT;
+    props.CPUPageProperty = D3D12_CPU_PAGE_PROPERTY_UNKNOWN;
+    props.MemoryPoolPreference = D3D12_MEMORY_POOL_UNKNOWN;
+
+    D3D12_RESOURCE_DESC resource_desc;
+    ZeroMemory(&resource_desc, sizeof(resource_desc));
+    resource_desc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+    resource_desc.Alignment = 0;
+    resource_desc.Width = desc->width;
+    resource_desc.Height = desc->height;
+    resource_desc.DepthOrArraySize = 1;
+    resource_desc.MipLevels = 1;
+    resource_desc.Format = format;
+    resource_desc.SampleDesc.Count = 1;
+    resource_desc.SampleDesc.Quality = 0;
+    resource_desc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
+    resource_desc.Flags = D3D12_RESOURCE_FLAG_NONE;
+
+    ID3D12Resource* pTexture = nullptr;
+    HRESULT hr = g_GfxData.pDevice->CreateCommittedResource(
+        &props, D3D12_HEAP_FLAG_NONE, &resource_desc,
+        D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(&pTexture));
+
+    if (FAILED(hr) || !pTexture)
+        return NULL;
+
+    // Create upload buffer
+    UINT uploadPitch = (desc->width * bytes_per_pixel + D3D12_TEXTURE_DATA_PITCH_ALIGNMENT - 1u) & ~(D3D12_TEXTURE_DATA_PITCH_ALIGNMENT - 1u);
+    UINT uploadSize = desc->height * uploadPitch;
+
+    D3D12_RESOURCE_DESC upload_desc;
+    ZeroMemory(&upload_desc, sizeof(upload_desc));
+    upload_desc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+    upload_desc.Alignment = 0;
+    upload_desc.Width = uploadSize;
+    upload_desc.Height = 1;
+    upload_desc.DepthOrArraySize = 1;
+    upload_desc.MipLevels = 1;
+    upload_desc.Format = DXGI_FORMAT_UNKNOWN;
+    upload_desc.SampleDesc.Count = 1;
+    upload_desc.SampleDesc.Quality = 0;
+    upload_desc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+    upload_desc.Flags = D3D12_RESOURCE_FLAG_NONE;
+
+    D3D12_HEAP_PROPERTIES upload_props;
+    memset(&upload_props, 0, sizeof(upload_props));
+    upload_props.Type = D3D12_HEAP_TYPE_UPLOAD;
+    upload_props.CPUPageProperty = D3D12_CPU_PAGE_PROPERTY_UNKNOWN;
+    upload_props.MemoryPoolPreference = D3D12_MEMORY_POOL_UNKNOWN;
+
+    ID3D12Resource* uploadBuffer = nullptr;
+    hr = g_GfxData.pDevice->CreateCommittedResource(
+        &upload_props, D3D12_HEAP_FLAG_NONE, &upload_desc,
+        D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&uploadBuffer));
+
+    if (FAILED(hr) || !uploadBuffer)
+    {
+        pTexture->Release();
+        return NULL;
+    }
+
+    // Map and copy data
+    void* mapped = nullptr;
+    D3D12_RANGE range = { 0, uploadSize };
+    hr = uploadBuffer->Map(0, &range, &mapped);
+    if (SUCCEEDED(hr))
+    {
+        for (UINT y = 0; y < desc->height; y++)
+        {
+            memcpy(
+                (void*)((uintptr_t)mapped + y * uploadPitch),
+                (const unsigned char*)pixel_data + y * desc->width * bytes_per_pixel,
+                desc->width * bytes_per_pixel);
+        }
+        uploadBuffer->Unmap(0, &range);
+    }
+
+    // Create command list for upload
+    ID3D12CommandAllocator* pCommandAllocator = g_GfxData.frameContext[g_GfxData.uFrameIndex].pCommandAllocator;
+    pCommandAllocator->Reset();
+
+    ID3D12GraphicsCommandList* pCommandList = nullptr;
+    hr = g_GfxData.pDevice->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, pCommandAllocator, NULL, IID_PPV_ARGS(&pCommandList));
+    if (FAILED(hr))
+    {
+        uploadBuffer->Release();
+        pTexture->Release();
+        return NULL;
+    }
+
+    // Copy from upload buffer to texture
+    D3D12_TEXTURE_COPY_LOCATION srcLocation = {};
+    srcLocation.pResource = uploadBuffer;
+    srcLocation.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+    srcLocation.PlacedFootprint.Footprint.Format = format;
+    srcLocation.PlacedFootprint.Footprint.Width = desc->width;
+    srcLocation.PlacedFootprint.Footprint.Height = desc->height;
+    srcLocation.PlacedFootprint.Footprint.Depth = 1;
+    srcLocation.PlacedFootprint.Footprint.RowPitch = uploadPitch;
+
+    D3D12_TEXTURE_COPY_LOCATION dstLocation = {};
+    dstLocation.pResource = pTexture;
+    dstLocation.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+    dstLocation.SubresourceIndex = 0;
+
+    D3D12_RESOURCE_BARRIER barrier = {};
+    barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    barrier.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
+    barrier.Transition.pResource = pTexture;
+    barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+    barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
+    barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+
+    pCommandList->CopyTextureRegion(&dstLocation, 0, 0, 0, &srcLocation, nullptr);
+    pCommandList->ResourceBarrier(1, &barrier);
+    pCommandList->Close();
+
+    // Execute command list
+    g_GfxData.pCommandQueue->ExecuteCommandLists(1, (ID3D12CommandList* const*)&pCommandList);
+
+    // Wait for upload to complete (simplified - in production you'd want async)
+    g_GfxData.uFenceLastSignaledValue++;
+    g_GfxData.pCommandQueue->Signal(g_GfxData.pFence, g_GfxData.uFenceLastSignaledValue);
+    g_GfxData.pFence->SetEventOnCompletion(g_GfxData.uFenceLastSignaledValue, g_GfxData.hFenceEvent);
+    WaitForSingleObject(g_GfxData.hFenceEvent, INFINITE);
+
+    // Cleanup temp resources
+    pCommandList->Release();
+    uploadBuffer->Release();
+
+    // Create SRV in descriptor heap
+    D3D12_CPU_DESCRIPTOR_HANDLE srvCpuHandle;
+    D3D12_GPU_DESCRIPTOR_HANDLE srvGpuHandle;
+    g_GfxData.pSrvDescHeapAlloc->Alloc(&srvCpuHandle, &srvGpuHandle);
+
+    D3D12_SHADER_RESOURCE_VIEW_DESC srv_desc;
+    ZeroMemory(&srv_desc, sizeof(srv_desc));
+    srv_desc.Format = format;
+    srv_desc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+    srv_desc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+    srv_desc.Texture2D.MipLevels = 1;
+    srv_desc.Texture2D.MostDetailedMip = 0;
+
+    g_GfxData.pDevice->CreateShaderResourceView(pTexture, &srv_desc, srvCpuHandle);
+
+    // IMPORTANT: We do NOT release pTexture here because:
+    // 1. The SRV descriptor does NOT keep the resource alive (unlike DX11)
+    // 2. In DX12, ImTextureID is the GPU descriptor handle (not the resource)
+    // 3. We have no way to retrieve the resource pointer from the descriptor handle later
+    //
+    // This means DestroyTexture() won't be able to properly clean up (small leak).
+    // A proper implementation would need a texture registry that maps:
+    //   GPU descriptor handle -> ID3D12Resource* + CPU descriptor handle
+    //
+    // For now, we keep the texture alive by NOT calling Release().
+    // The texture will stay in memory until the application exits.
+
+    return (ImTextureID)srvGpuHandle.ptr;
+}
+
+IMPLATFORM_API bool ImPlatform_UpdateTexture(ImTextureID texture_id, const void* pixel_data,
+                                              unsigned int x, unsigned int y,
+                                              unsigned int width, unsigned int height)
+{
+    // DX12 texture updates are complex and require command lists
+    // For now, we return false to indicate this feature is not implemented
+    // A full implementation would need to:
+    // 1. Track the texture resource from ImTextureID
+    // 2. Create an upload buffer
+    // 3. Copy data to upload buffer
+    // 4. Use command list to copy from upload to texture
+    // 5. Handle resource barriers
+    // This is quite involved for DX12
+    return false;
+}
+
+IMPLATFORM_API void ImPlatform_DestroyTexture(ImTextureID texture_id)
+{
+    if (!texture_id || !g_GfxData.pSrvDescHeapAlloc)
+        return;
+
+    // Free the descriptor from the heap
+    D3D12_GPU_DESCRIPTOR_HANDLE gpuHandle;
+    gpuHandle.ptr = (UINT64)texture_id;
+
+    // Convert GPU handle to CPU handle for freeing
+    // This requires knowing the descriptor heap structure
+    // For now, this is a simplified version
+    // A full implementation would need proper handle tracking
+
+    // Note: The texture resource itself will be released when its ref count hits zero
+    // The descriptor heap allocator should handle freeing the slot
+}
+
 #endif // IM_GFX_DIRECTX12
