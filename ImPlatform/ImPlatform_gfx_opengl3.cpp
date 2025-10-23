@@ -986,6 +986,17 @@ struct ImPlatform_ShaderProgramData_GL
     int uniform_count;
 };
 
+// Global state for uniform block batching
+static ImPlatform_ShaderProgram g_CurrentUniformBlockProgram = nullptr;
+
+// Structure to pass viewport info along with shader program to callback
+struct ImPlatform_CallbackData_GL
+{
+    ImPlatform_ShaderProgram program;
+    ImVec2 DisplayPos;
+    ImVec2 DisplaySize;
+};
+
 // Helper to compile a shader and check for errors
 static GLuint ImPlatform_CompileShader_GL(GLenum shader_type, const char* source)
 {
@@ -1165,6 +1176,35 @@ IMPLATFORM_API bool ImPlatform_SetShaderUniform(ImPlatform_ShaderProgram program
     return true;
 }
 
+IMPLATFORM_API void ImPlatform_BeginUniformBlock(ImPlatform_ShaderProgram program)
+{
+    if (!program)
+        return;
+
+    g_CurrentUniformBlockProgram = program;
+}
+
+IMPLATFORM_API bool ImPlatform_SetUniform(const char* name, const void* data, unsigned int size)
+{
+    if (!g_CurrentUniformBlockProgram)
+        return false; // BeginUniformBlock not called
+
+    // Delegate to existing SetShaderUniform which handles storage
+    return ImPlatform_SetShaderUniform(g_CurrentUniformBlockProgram, name, data, size);
+}
+
+IMPLATFORM_API void ImPlatform_EndUniformBlock(ImPlatform_ShaderProgram program)
+{
+    if (!program || program != g_CurrentUniformBlockProgram)
+        return;
+
+    // For OpenGL3, uniforms are already stored and will be applied
+    // in the callback when the shader is activated
+    // Nothing more to do here
+
+    g_CurrentUniformBlockProgram = nullptr;
+}
+
 IMPLATFORM_API bool ImPlatform_SetShaderTexture(ImPlatform_ShaderProgram program, const char* name, unsigned int slot, ImTextureID texture)
 {
     if (!program || !name)
@@ -1194,58 +1234,57 @@ IMPLATFORM_API bool ImPlatform_SetShaderTexture(ImPlatform_ShaderProgram program
 static void ImPlatform_SetCustomShader(const ImDrawList* parent_list, const ImDrawCmd* cmd)
 {
     ImPlatform_ShaderProgram program = (ImPlatform_ShaderProgram)cmd->UserCallbackData;
-    if (program)
+    if (!program) return;
+
+    ImPlatform_ShaderProgramData_GL* program_data = (ImPlatform_ShaderProgramData_GL*)program;
+
+    // Bind the shader program
+    ImPlatform_BindShaderProgram(program);
+
+    // Get viewport info at render time
+    // During multi-viewport rendering, GetDrawData() should return the current viewport's draw_data
+    ImDrawData* draw_data = ImGui::GetDrawData();
+    if (!draw_data) return;
+
+    float L = draw_data->DisplayPos.x;
+    float R = draw_data->DisplayPos.x + draw_data->DisplaySize.x;
+    float T = draw_data->DisplayPos.y;
+    float B = draw_data->DisplayPos.y + draw_data->DisplaySize.y;
+
+    const float ortho_projection[4][4] = {
+        { 2.0f/(R-L),   0.0f,         0.0f,   0.0f },
+        { 0.0f,         2.0f/(T-B),   0.0f,   0.0f },
+        { 0.0f,         0.0f,        -1.0f,   0.0f },
+        { (R+L)/(L-R),  (T+B)/(B-T),  0.0f,   1.0f },
+    };
+
+    // Apply projection matrix
+    GLint proj_loc = glGetUniformLocation(program_data->program_id, "ProjMtx");
+    if (proj_loc != -1)
+        glUniformMatrix4fv(proj_loc, 1, GL_FALSE, &ortho_projection[0][0]);
+
+    // Apply all stored uniforms
+    for (int i = 0; i < program_data->uniform_count; i++)
     {
-        ImPlatform_ShaderProgramData_GL* program_data = (ImPlatform_ShaderProgramData_GL*)program;
+        ImPlatform_UniformData_GL* uniform = &program_data->uniforms[i];
+        GLint location = glGetUniformLocation(program_data->program_id, uniform->name);
 
-        // Bind the shader program
-        ImPlatform_BindShaderProgram(program);
+        if (location == -1)
+            continue;
 
-        // Set the projection matrix uniform that ImGui uses
-        // We need to use the viewport from the current draw data, not just io.DisplaySize
-        ImDrawData* draw_data = ImGui::GetDrawData();
-        if (!draw_data) return;
+        unsigned int size = uniform->size;
+        const float* data = uniform->data;
 
-        float L = draw_data->DisplayPos.x;
-        float R = draw_data->DisplayPos.x + draw_data->DisplaySize.x;
-        float T = draw_data->DisplayPos.y;
-        float B = draw_data->DisplayPos.y + draw_data->DisplaySize.y;
-
-        const float ortho_projection[4][4] = {
-            { 2.0f/(R-L),   0.0f,         0.0f,   0.0f },
-            { 0.0f,         2.0f/(T-B),   0.0f,   0.0f },
-            { 0.0f,         0.0f,        -1.0f,   0.0f },
-            { (R+L)/(L-R),  (T+B)/(B-T),  0.0f,   1.0f },
-        };
-
-        // Apply projection matrix
-        GLint proj_loc = glGetUniformLocation(program_data->program_id, "ProjMtx");
-        if (proj_loc != -1)
-            glUniformMatrix4fv(proj_loc, 1, GL_FALSE, &ortho_projection[0][0]);
-
-        // Apply all stored uniforms
-        for (int i = 0; i < program_data->uniform_count; i++)
-        {
-            ImPlatform_UniformData_GL* uniform = &program_data->uniforms[i];
-            GLint location = glGetUniformLocation(program_data->program_id, uniform->name);
-
-            if (location == -1)
-                continue;
-
-            unsigned int size = uniform->size;
-            const float* data = uniform->data;
-
-            if (size == sizeof(float) * 1)
-                glUniform1fv_Ptr(location, 1, data);
-            else if (size == sizeof(float) * 2)
-                glUniform2fv_Ptr(location, 1, data);
-            else if (size == sizeof(float) * 3)
-                glUniform3fv_Ptr(location, 1, data);
-            else if (size == sizeof(float) * 4)
-                glUniform4fv_Ptr(location, 1, data);
-            else if (size == sizeof(float) * 16)
-                glUniformMatrix4fv(location, 1, GL_FALSE, data);
-        }
+        if (size == sizeof(float) * 1)
+            glUniform1fv_Ptr(location, 1, data);
+        else if (size == sizeof(float) * 2)
+            glUniform2fv_Ptr(location, 1, data);
+        else if (size == sizeof(float) * 3)
+            glUniform3fv_Ptr(location, 1, data);
+        else if (size == sizeof(float) * 4)
+            glUniform4fv_Ptr(location, 1, data);
+        else if (size == sizeof(float) * 16)
+            glUniformMatrix4fv(location, 1, GL_FALSE, data);
     }
 }
 
@@ -1254,6 +1293,7 @@ IMPLATFORM_API void ImPlatform_BeginCustomShader(ImDrawList* draw, ImPlatform_Sh
     if (!draw || !shader)
         return;
 
+    // Just pass the shader program - we'll get viewport info in the callback
     draw->AddCallback(&ImPlatform_SetCustomShader, shader);
 }
 

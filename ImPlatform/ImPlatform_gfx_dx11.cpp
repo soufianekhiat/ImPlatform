@@ -723,6 +723,11 @@ struct ImPlatform_ShaderProgramData_DX11
     bool pixelConstantDataDirty;
 };
 
+// Global state for uniform block batching
+static ImPlatform_ShaderProgram g_CurrentUniformBlockProgram = nullptr;
+static void* g_UniformBlockData = nullptr;
+static size_t g_UniformBlockSize = 0;
+
 // Constant buffer structure for projection matrix
 struct VERTEX_CONSTANT_BUFFER_DX11
 {
@@ -949,6 +954,60 @@ IMPLATFORM_API bool ImPlatform_SetShaderUniform(ImPlatform_ShaderProgram program
     program_data->pixelConstantDataDirty = true;
 
     return true;
+}
+
+IMPLATFORM_API void ImPlatform_BeginUniformBlock(ImPlatform_ShaderProgram program)
+{
+    if (!program)
+        return;
+
+    g_CurrentUniformBlockProgram = program;
+
+    // Free any previous block data
+    if (g_UniformBlockData)
+    {
+        free(g_UniformBlockData);
+        g_UniformBlockData = nullptr;
+        g_UniformBlockSize = 0;
+    }
+}
+
+IMPLATFORM_API bool ImPlatform_SetUniform(const char* name, const void* data, unsigned int size)
+{
+    if (!g_CurrentUniformBlockProgram || !data || size == 0)
+        return false;
+
+    // For DirectX, we accumulate all uniforms into a single buffer
+    // Allocate or expand the buffer
+    size_t new_size = g_UniformBlockSize + size;
+    void* new_data = realloc(g_UniformBlockData, new_size);
+    if (!new_data)
+        return false;
+
+    g_UniformBlockData = new_data;
+    memcpy((char*)g_UniformBlockData + g_UniformBlockSize, data, size);
+    g_UniformBlockSize = new_size;
+
+    return true;
+}
+
+IMPLATFORM_API void ImPlatform_EndUniformBlock(ImPlatform_ShaderProgram program)
+{
+    if (!program || program != g_CurrentUniformBlockProgram)
+        return;
+
+    if (g_UniformBlockData && g_UniformBlockSize > 0)
+    {
+        // Upload the accumulated uniform block to the shader
+        ImPlatform_SetShaderUniform(program, "pixelBuffer", g_UniformBlockData, g_UniformBlockSize);
+
+        // Clean up
+        free(g_UniformBlockData);
+        g_UniformBlockData = nullptr;
+        g_UniformBlockSize = 0;
+    }
+
+    g_CurrentUniformBlockProgram = nullptr;
 }
 
 IMPLATFORM_API bool ImPlatform_SetShaderTexture(ImPlatform_ShaderProgram program, const char* name, unsigned int slot, ImTextureID texture)

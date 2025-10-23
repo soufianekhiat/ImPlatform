@@ -480,29 +480,20 @@ int main()
 			ImGui::TextColored(ImVec4(0.2f, 1.0f, 0.2f, 1.0f), "Shader API Used:");
 #if (IM_CURRENT_GFX == IM_GFX_OPENGL3)
 			ImGui::BulletText("GLSL #version 130");
-			ImGui::BulletText("Uniforms: ColorStart, ColorEnd");
 #elif (IM_CURRENT_GFX == IM_GFX_DIRECTX10) || (IM_CURRENT_GFX == IM_GFX_DIRECTX11)
 			ImGui::BulletText("HLSL Shader Model 4.0");
-			ImGui::BulletText("Note: Constant buffers not yet implemented");
 #endif
+			ImGui::BulletText("Uniforms: ColorStart, ColorEnd");
+			ImGui::BulletText("Using ImPlatform Uniform Block API");
 			ImGui::BulletText("Pixel shader interpolates between two colors");
 
 			ImGui::Separator();
 
-			// Update shader uniforms
-#if (IM_CURRENT_GFX == IM_GFX_OPENGL3)
-			ImPlatform_SetShaderUniform(gradient_program, "ColorStart", &gradient_color_start, sizeof(ImVec4));
-			ImPlatform_SetShaderUniform(gradient_program, "ColorEnd", &gradient_color_end, sizeof(ImVec4));
-#elif (IM_CURRENT_GFX == IM_GFX_DIRECTX10) || (IM_CURRENT_GFX == IM_GFX_DIRECTX11)
-			// For DirectX, pack both colors into a single constant buffer
-			struct GradientColors {
-				ImVec4 ColorStart;
-				ImVec4 ColorEnd;
-			} colors;
-			colors.ColorStart = gradient_color_start;
-			colors.ColorEnd = gradient_color_end;
-			ImPlatform_SetShaderUniform(gradient_program, "pixelBuffer", &colors, sizeof(colors));
-#endif
+			// Update shader uniforms using uniform block API
+			ImPlatform_BeginUniformBlock(gradient_program);
+			ImPlatform_SetUniform("ColorStart", &gradient_color_start, sizeof(ImVec4));
+			ImPlatform_SetUniform("ColorEnd", &gradient_color_end, sizeof(ImVec4));
+			ImPlatform_EndUniformBlock(gradient_program);
 
 			// Render the gradient using custom shader (using helper function)
 			ImPlatform_DrawCustomShaderQuad(gradient_program);
