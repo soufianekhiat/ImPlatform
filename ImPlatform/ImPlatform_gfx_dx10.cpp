@@ -628,6 +628,10 @@ struct ImPlatform_ShaderProgramData_DX10
     ID3DBlob* pVSBlob;
     ID3D10InputLayout* pInputLayout;
     ID3D10Buffer* pVertexConstantBuffer;
+    ID3D10Buffer* pPixelConstantBuffer;
+    void* pPixelConstantData;  // CPU-side copy of pixel shader constants
+    size_t pixelConstantDataSize;
+    bool pixelConstantDataDirty;
 };
 
 // Constant buffer structure for projection matrix
@@ -786,6 +790,8 @@ IMPLATFORM_API void ImPlatform_DestroyShaderProgram(ImPlatform_ShaderProgram pro
     if (program_data->pVSBlob) program_data->pVSBlob->Release();
     if (program_data->pInputLayout) program_data->pInputLayout->Release();
     if (program_data->pVertexConstantBuffer) program_data->pVertexConstantBuffer->Release();
+    if (program_data->pPixelConstantBuffer) program_data->pPixelConstantBuffer->Release();
+    if (program_data->pPixelConstantData) free(program_data->pPixelConstantData);
     delete program_data;
 }
 
@@ -801,7 +807,38 @@ IMPLATFORM_API void ImPlatform_UseShaderProgram(ImPlatform_ShaderProgram program
 
 IMPLATFORM_API bool ImPlatform_SetShaderUniform(ImPlatform_ShaderProgram program, const char* name, const void* data, unsigned int size)
 {
-    return false; // DX10 uses constant buffers
+    if (!program || !data || size == 0)
+        return false;
+
+    ImPlatform_ShaderProgramData_DX10* program_data = (ImPlatform_ShaderProgramData_DX10*)program;
+
+    // Allocate or reallocate pixel constant buffer storage if needed
+    if (program_data->pPixelConstantData == nullptr || program_data->pixelConstantDataSize < size)
+    {
+        if (program_data->pPixelConstantData)
+            free(program_data->pPixelConstantData);
+
+        program_data->pPixelConstantData = malloc(size);
+        program_data->pixelConstantDataSize = size;
+
+        // Recreate GPU constant buffer with new size
+        if (program_data->pPixelConstantBuffer)
+            program_data->pPixelConstantBuffer->Release();
+
+        D3D10_BUFFER_DESC cbDesc = {};
+        cbDesc.ByteWidth = (size + 15) & ~15; // Round up to 16-byte boundary
+        cbDesc.Usage = D3D10_USAGE_DYNAMIC;
+        cbDesc.BindFlags = D3D10_BIND_CONSTANT_BUFFER;
+        cbDesc.CPUAccessFlags = D3D10_CPU_ACCESS_WRITE;
+        cbDesc.MiscFlags = 0;
+        g_GfxData.pDevice->CreateBuffer(&cbDesc, nullptr, &program_data->pPixelConstantBuffer);
+    }
+
+    // Copy data to CPU storage
+    memcpy(program_data->pPixelConstantData, data, size);
+    program_data->pixelConstantDataDirty = true;
+
+    return true;
 }
 
 IMPLATFORM_API bool ImPlatform_SetShaderTexture(ImPlatform_ShaderProgram program, const char* name, unsigned int slot, ImTextureID texture)
@@ -835,10 +872,22 @@ static void ImPlatform_SetCustomShader(const ImDrawList* parent_list, const ImDr
             g_GfxData.pDevice->IASetInputLayout(program_data->pInputLayout);
         }
 
-        // Note: We don't need to set a constant buffer here!
-        // ImGui's backend has already set up the vertex constant buffer with the
-        // correct projection matrix before this callback is invoked.
-        // Our custom shaders will use that same constant buffer at register(b0).
+        // Note: Vertex constant buffer (b0) is already set by ImGui's backend with projection matrix
+
+        // Update pixel shader constant buffer if dirty
+        if (program_data->pPixelConstantBuffer && program_data->pixelConstantDataDirty && program_data->pPixelConstantData)
+        {
+            void* mapped_resource = nullptr;
+            if (program_data->pPixelConstantBuffer->Map(D3D10_MAP_WRITE_DISCARD, 0, &mapped_resource) == S_OK)
+            {
+                memcpy(mapped_resource, program_data->pPixelConstantData, program_data->pixelConstantDataSize);
+                program_data->pPixelConstantBuffer->Unmap();
+                program_data->pixelConstantDataDirty = false;
+            }
+
+            // Bind pixel shader constant buffer to register b0
+            g_GfxData.pDevice->PSSetConstantBuffers(0, 1, &program_data->pPixelConstantBuffer);
+        }
     }
 }
 
