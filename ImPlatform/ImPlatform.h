@@ -715,7 +715,7 @@ IMPLATFORM_API void ImPlatform_DrawCustomShaderQuad(ImPlatform_ShaderProgram pro
     if (region.x > 0 && region.y > 0)
     {
         // Get a dummy texture from ImGui's font atlas for the quad
-        ImTextureRef tex = ImGui::GetIO().Fonts->TexID;
+        ImTextureRef tex = ImGui::GetIO().Fonts->TexRef;
 
         ImPlatform_BeginCustomShader(draw, program);
 
