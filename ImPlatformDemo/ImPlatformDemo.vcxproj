@@ -31,8 +31,33 @@
       <Configuration>GLFW_Vulkan</Configuration>
       <Platform>x64</Platform>
     </ProjectConfiguration>
+    <!-- SDL2 Configurations -->
+    <ProjectConfiguration Include="SDL2_DX11|x64">
+      <Configuration>SDL2_DX11</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="SDL2_OpenGL3|x64">
+      <Configuration>SDL2_OpenGL3</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="SDL2_Vulkan|x64">
+      <Configuration>SDL2_Vulkan</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+    <!-- SDL3 Configurations -->
+    <ProjectConfiguration Include="SDL3_DX11|x64">
+      <Configuration>SDL3_DX11</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="SDL3_OpenGL3|x64">
+      <Configuration>SDL3_OpenGL3</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="SDL3_Vulkan|x64">
+      <Configuration>SDL3_Vulkan</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
   </ItemGroup>
-
   <PropertyGroup Label="Globals">
     <VCProjectVersion>17.0</VCProjectVersion>
     <Keyword>Win32Proj</Keyword>
@@ -40,9 +65,7 @@
     <RootNamespace>ImPlatformDemo</RootNamespace>
     <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
   </PropertyGroup>
-
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
-
   <!-- Configuration Properties for all configs -->
   <PropertyGroup Label="Configuration">
     <ConfigurationType>Application</ConfigurationType>
@@ -50,7 +73,6 @@
     <PlatformToolset>v143</PlatformToolset>
     <CharacterSet>Unicode</CharacterSet>
   </PropertyGroup>
-
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
   <ImportGroup Label="ExtensionSettings">
   </ImportGroup>
@@ -59,9 +81,7 @@
   <ImportGroup Label="PropertySheets">
     <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
   </ImportGroup>
-
   <PropertyGroup Label="UserMacros" />
-
   <!-- Common Include and Library Paths -->
   <PropertyGroup>
     <IncludePath>$(SolutionDir)..\ImPlatform;$(SolutionDir)..\imgui;$(SolutionDir)..\imgui\examples\libs\glfw\include;$(VULKAN_SDK)\Include;$(IncludePath)</IncludePath>
@@ -69,11 +89,9 @@
     <OutDir>$(SolutionDir)$(Platform)\$(Configuration)\</OutDir>
     <IntDir>$(Platform)\$(Configuration)\</IntDir>
   </PropertyGroup>
-
   <PropertyGroup Label="Vcpkg">
     <VcpkgEnabled>false</VcpkgEnabled>
   </PropertyGroup>
-
   <!-- Win32_DX9 Configuration -->
   <ItemDefinitionGroup Condition="'$(Configuration)'=='Win32_DX9'">
     <ClCompile>
@@ -88,7 +106,6 @@
       <AdditionalDependencies>d3d9.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
   </ItemDefinitionGroup>
-
   <!-- Win32_DX10 Configuration -->
   <ItemDefinitionGroup Condition="'$(Configuration)'=='Win32_DX10'">
     <ClCompile>
@@ -103,7 +120,6 @@
       <AdditionalDependencies>d3d10.lib;dxgi.lib;d3dcompiler.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
   </ItemDefinitionGroup>
-
   <!-- Win32_DX11 Configuration -->
   <ItemDefinitionGroup Condition="'$(Configuration)'=='Win32_DX11'">
     <ClCompile>
@@ -118,7 +134,6 @@
       <AdditionalDependencies>d3d11.lib;dxgi.lib;d3dcompiler.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
   </ItemDefinitionGroup>
-
   <!-- Win32_DX12 Configuration -->
   <ItemDefinitionGroup Condition="'$(Configuration)'=='Win32_DX12'">
     <ClCompile>
@@ -133,7 +148,6 @@
       <AdditionalDependencies>d3d12.lib;dxgi.lib;d3dcompiler.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
   </ItemDefinitionGroup>
-
   <!-- Win32_OpenGL3 Configuration -->
   <ItemDefinitionGroup Condition="'$(Configuration)'=='Win32_OpenGL3'">
     <ClCompile>
@@ -148,7 +162,6 @@
       <AdditionalDependencies>opengl32.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
   </ItemDefinitionGroup>
-
   <!-- GLFW_OpenGL3 Configuration -->
   <ItemDefinitionGroup Condition="'$(Configuration)'=='GLFW_OpenGL3'">
     <ClCompile>
@@ -163,7 +176,6 @@
       <AdditionalDependencies>glfw3.lib;opengl32.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
   </ItemDefinitionGroup>
-
   <!-- GLFW_Vulkan Configuration -->
   <ItemDefinitionGroup Condition="'$(Configuration)'=='GLFW_Vulkan'">
     <ClCompile>
@@ -178,7 +190,90 @@
       <AdditionalDependencies>glfw3.lib;vulkan-1.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
   </ItemDefinitionGroup>
-
+  <!-- SDL2_DX11 Configuration -->
+  <ItemDefinitionGroup Condition="'$(Configuration)'=='SDL2_DX11'">
+    <ClCompile>
+      <WarningLevel>Level3</WarningLevel>
+      <SDLCheck>true</SDLCheck>
+      <PreprocessorDefinitions>_CRT_SECURE_NO_WARNINGS;_DEBUG;_CONSOLE;IM_CONFIG_PLATFORM=IM_PLATFORM_SDL2;IM_CONFIG_GFX=IM_GFX_DIRECTX11;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <ConformanceMode>true</ConformanceMode>
+    </ClCompile>
+    <Link>
+      <SubSystem>Console</SubSystem>
+      <GenerateDebugInformation>true</GenerateDebugInformation>
+      <AdditionalDependencies>SDL2.lib;SDL2main.lib;d3d11.lib;d3dcompiler.lib;%(AdditionalDependencies)</AdditionalDependencies>
+    </Link>
+  </ItemDefinitionGroup>
+  <!-- SDL2_OpenGL3 Configuration -->
+  <ItemDefinitionGroup Condition="'$(Configuration)'=='SDL2_OpenGL3'">
+    <ClCompile>
+      <WarningLevel>Level3</WarningLevel>
+      <SDLCheck>true</SDLCheck>
+      <PreprocessorDefinitions>_CRT_SECURE_NO_WARNINGS;_DEBUG;_CONSOLE;IM_CONFIG_PLATFORM=IM_PLATFORM_SDL2;IM_CONFIG_GFX=IM_GFX_OPENGL3;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <ConformanceMode>true</ConformanceMode>
+    </ClCompile>
+    <Link>
+      <SubSystem>Console</SubSystem>
+      <GenerateDebugInformation>true</GenerateDebugInformation>
+      <AdditionalDependencies>SDL2.lib;SDL2main.lib;opengl32.lib;%(AdditionalDependencies)</AdditionalDependencies>
+    </Link>
+  </ItemDefinitionGroup>
+  <!-- SDL2_Vulkan Configuration -->
+  <ItemDefinitionGroup Condition="'$(Configuration)'=='SDL2_Vulkan'">
+    <ClCompile>
+      <WarningLevel>Level3</WarningLevel>
+      <SDLCheck>true</SDLCheck>
+      <PreprocessorDefinitions>_CRT_SECURE_NO_WARNINGS;_DEBUG;_CONSOLE;IM_CONFIG_PLATFORM=IM_PLATFORM_SDL2;IM_CONFIG_GFX=IM_GFX_VULKAN;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <ConformanceMode>true</ConformanceMode>
+    </ClCompile>
+    <Link>
+      <SubSystem>Console</SubSystem>
+      <GenerateDebugInformation>true</GenerateDebugInformation>
+      <AdditionalDependencies>SDL2.lib;SDL2main.lib;vulkan-1.lib;%(AdditionalDependencies)</AdditionalDependencies>
+    </Link>
+  </ItemDefinitionGroup>
+  <!-- SDL3_DX11 Configuration -->
+  <ItemDefinitionGroup Condition="'$(Configuration)'=='SDL3_DX11'">
+    <ClCompile>
+      <WarningLevel>Level3</WarningLevel>
+      <SDLCheck>true</SDLCheck>
+      <PreprocessorDefinitions>_CRT_SECURE_NO_WARNINGS;_DEBUG;_CONSOLE;IM_CONFIG_PLATFORM=IM_PLATFORM_SDL3;IM_CONFIG_GFX=IM_GFX_DIRECTX11;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <ConformanceMode>true</ConformanceMode>
+    </ClCompile>
+    <Link>
+      <SubSystem>Console</SubSystem>
+      <GenerateDebugInformation>true</GenerateDebugInformation>
+      <AdditionalDependencies>SDL3.lib;d3d11.lib;d3dcompiler.lib;%(AdditionalDependencies)</AdditionalDependencies>
+    </Link>
+  </ItemDefinitionGroup>
+  <!-- SDL3_OpenGL3 Configuration -->
+  <ItemDefinitionGroup Condition="'$(Configuration)'=='SDL3_OpenGL3'">
+    <ClCompile>
+      <WarningLevel>Level3</WarningLevel>
+      <SDLCheck>true</SDLCheck>
+      <PreprocessorDefinitions>_CRT_SECURE_NO_WARNINGS;_DEBUG;_CONSOLE;IM_CONFIG_PLATFORM=IM_PLATFORM_SDL3;IM_CONFIG_GFX=IM_GFX_OPENGL3;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <ConformanceMode>true</ConformanceMode>
+    </ClCompile>
+    <Link>
+      <SubSystem>Console</SubSystem>
+      <GenerateDebugInformation>true</GenerateDebugInformation>
+      <AdditionalDependencies>SDL3.lib;opengl32.lib;%(AdditionalDependencies)</AdditionalDependencies>
+    </Link>
+  </ItemDefinitionGroup>
+  <!-- SDL3_Vulkan Configuration -->
+  <ItemDefinitionGroup Condition="'$(Configuration)'=='SDL3_Vulkan'">
+    <ClCompile>
+      <WarningLevel>Level3</WarningLevel>
+      <SDLCheck>true</SDLCheck>
+      <PreprocessorDefinitions>_CRT_SECURE_NO_WARNINGS;_DEBUG;_CONSOLE;IM_CONFIG_PLATFORM=IM_PLATFORM_SDL3;IM_CONFIG_GFX=IM_GFX_VULKAN;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <ConformanceMode>true</ConformanceMode>
+    </ClCompile>
+    <Link>
+      <SubSystem>Console</SubSystem>
+      <GenerateDebugInformation>true</GenerateDebugInformation>
+      <AdditionalDependencies>SDL3.lib;vulkan-1.lib;%(AdditionalDependencies)</AdditionalDependencies>
+    </Link>
+  </ItemDefinitionGroup>
   <ItemGroup>
     <!-- ImGui Core Files (always included) -->
     <ClCompile Include="..\imgui\imgui.cpp" />
@@ -186,11 +281,16 @@
     <ClCompile Include="..\imgui\imgui_draw.cpp" />
     <ClCompile Include="..\imgui\imgui_tables.cpp" />
     <ClCompile Include="..\imgui\imgui_widgets.cpp" />
-
     <!-- ImGui Backend Files - Platform -->
     <ClCompile Include="..\imgui\backends\imgui_impl_win32.cpp">
       <ExcludedFromBuild Condition="'$(Configuration)'=='GLFW_OpenGL3'">true</ExcludedFromBuild>
       <ExcludedFromBuild Condition="'$(Configuration)'=='GLFW_Vulkan'">true</ExcludedFromBuild>
+      <ExcludedFromBuild Condition="'$(Configuration)'=='SDL2_DX11'">true</ExcludedFromBuild>
+      <ExcludedFromBuild Condition="'$(Configuration)'=='SDL2_OpenGL3'">true</ExcludedFromBuild>
+      <ExcludedFromBuild Condition="'$(Configuration)'=='SDL2_Vulkan'">true</ExcludedFromBuild>
+      <ExcludedFromBuild Condition="'$(Configuration)'=='SDL3_DX11'">true</ExcludedFromBuild>
+      <ExcludedFromBuild Condition="'$(Configuration)'=='SDL3_OpenGL3'">true</ExcludedFromBuild>
+      <ExcludedFromBuild Condition="'$(Configuration)'=='SDL3_Vulkan'">true</ExcludedFromBuild>
     </ClCompile>
     <ClCompile Include="..\imgui\backends\imgui_impl_glfw.cpp">
       <ExcludedFromBuild Condition="'$(Configuration)'=='Win32_DX9'">true</ExcludedFromBuild>
@@ -198,8 +298,37 @@
       <ExcludedFromBuild Condition="'$(Configuration)'=='Win32_DX11'">true</ExcludedFromBuild>
       <ExcludedFromBuild Condition="'$(Configuration)'=='Win32_DX12'">true</ExcludedFromBuild>
       <ExcludedFromBuild Condition="'$(Configuration)'=='Win32_OpenGL3'">true</ExcludedFromBuild>
+      <ExcludedFromBuild Condition="'$(Configuration)'=='SDL2_DX11'">true</ExcludedFromBuild>
+      <ExcludedFromBuild Condition="'$(Configuration)'=='SDL2_OpenGL3'">true</ExcludedFromBuild>
+      <ExcludedFromBuild Condition="'$(Configuration)'=='SDL2_Vulkan'">true</ExcludedFromBuild>
+      <ExcludedFromBuild Condition="'$(Configuration)'=='SDL3_DX11'">true</ExcludedFromBuild>
+      <ExcludedFromBuild Condition="'$(Configuration)'=='SDL3_OpenGL3'">true</ExcludedFromBuild>
+      <ExcludedFromBuild Condition="'$(Configuration)'=='SDL3_Vulkan'">true</ExcludedFromBuild>
     </ClCompile>
-
+    <ClCompile Include="..\imgui\backends\imgui_impl_sdl2.cpp">
+      <ExcludedFromBuild Condition="'$(Configuration)'=='Win32_DX9'">true</ExcludedFromBuild>
+      <ExcludedFromBuild Condition="'$(Configuration)'=='Win32_DX10'">true</ExcludedFromBuild>
+      <ExcludedFromBuild Condition="'$(Configuration)'=='Win32_DX11'">true</ExcludedFromBuild>
+      <ExcludedFromBuild Condition="'$(Configuration)'=='Win32_DX12'">true</ExcludedFromBuild>
+      <ExcludedFromBuild Condition="'$(Configuration)'=='Win32_OpenGL3'">true</ExcludedFromBuild>
+      <ExcludedFromBuild Condition="'$(Configuration)'=='GLFW_OpenGL3'">true</ExcludedFromBuild>
+      <ExcludedFromBuild Condition="'$(Configuration)'=='GLFW_Vulkan'">true</ExcludedFromBuild>
+      <ExcludedFromBuild Condition="'$(Configuration)'=='SDL3_DX11'">true</ExcludedFromBuild>
+      <ExcludedFromBuild Condition="'$(Configuration)'=='SDL3_OpenGL3'">true</ExcludedFromBuild>
+      <ExcludedFromBuild Condition="'$(Configuration)'=='SDL3_Vulkan'">true</ExcludedFromBuild>
+    </ClCompile>
+    <ClCompile Include="..\imgui\backends\imgui_impl_sdl3.cpp">
+      <ExcludedFromBuild Condition="'$(Configuration)'=='Win32_DX9'">true</ExcludedFromBuild>
+      <ExcludedFromBuild Condition="'$(Configuration)'=='Win32_DX10'">true</ExcludedFromBuild>
+      <ExcludedFromBuild Condition="'$(Configuration)'=='Win32_DX11'">true</ExcludedFromBuild>
+      <ExcludedFromBuild Condition="'$(Configuration)'=='Win32_DX12'">true</ExcludedFromBuild>
+      <ExcludedFromBuild Condition="'$(Configuration)'=='Win32_OpenGL3'">true</ExcludedFromBuild>
+      <ExcludedFromBuild Condition="'$(Configuration)'=='GLFW_OpenGL3'">true</ExcludedFromBuild>
+      <ExcludedFromBuild Condition="'$(Configuration)'=='GLFW_Vulkan'">true</ExcludedFromBuild>
+      <ExcludedFromBuild Condition="'$(Configuration)'=='SDL2_DX11'">true</ExcludedFromBuild>
+      <ExcludedFromBuild Condition="'$(Configuration)'=='SDL2_OpenGL3'">true</ExcludedFromBuild>
+      <ExcludedFromBuild Condition="'$(Configuration)'=='SDL2_Vulkan'">true</ExcludedFromBuild>
+    </ClCompile>
     <!-- ImGui Backend Files - Graphics API -->
     <ClCompile Include="..\imgui\backends\imgui_impl_dx9.cpp">
       <ExcludedFromBuild Condition="'$(Configuration)'!='Win32_DX9'">true</ExcludedFromBuild>
@@ -208,7 +337,7 @@
       <ExcludedFromBuild Condition="'$(Configuration)'!='Win32_DX10'">true</ExcludedFromBuild>
     </ClCompile>
     <ClCompile Include="..\imgui\backends\imgui_impl_dx11.cpp">
-      <ExcludedFromBuild Condition="'$(Configuration)'!='Win32_DX11'">true</ExcludedFromBuild>
+      <ExcludedFromBuild Condition="'$(Configuration)'!='Win32_DX11' And '$(Configuration)'!='SDL2_DX11' And '$(Configuration)'!='SDL3_DX11'">true</ExcludedFromBuild>
     </ClCompile>
     <ClCompile Include="..\imgui\backends\imgui_impl_dx12.cpp">
       <ExcludedFromBuild Condition="'$(Configuration)'!='Win32_DX12'">true</ExcludedFromBuild>
@@ -219,19 +348,20 @@
       <ExcludedFromBuild Condition="'$(Configuration)'=='Win32_DX11'">true</ExcludedFromBuild>
       <ExcludedFromBuild Condition="'$(Configuration)'=='Win32_DX12'">true</ExcludedFromBuild>
       <ExcludedFromBuild Condition="'$(Configuration)'=='GLFW_Vulkan'">true</ExcludedFromBuild>
+      <ExcludedFromBuild Condition="'$(Configuration)'=='SDL2_DX11'">true</ExcludedFromBuild>
+      <ExcludedFromBuild Condition="'$(Configuration)'=='SDL2_Vulkan'">true</ExcludedFromBuild>
+      <ExcludedFromBuild Condition="'$(Configuration)'=='SDL3_DX11'">true</ExcludedFromBuild>
+      <ExcludedFromBuild Condition="'$(Configuration)'=='SDL3_Vulkan'">true</ExcludedFromBuild>
     </ClCompile>
     <ClCompile Include="..\imgui\backends\imgui_impl_vulkan.cpp">
-      <ExcludedFromBuild Condition="'$(Configuration)'!='GLFW_Vulkan'">true</ExcludedFromBuild>
+      <ExcludedFromBuild Condition="'$(Configuration)'!='GLFW_Vulkan' And '$(Configuration)'!='SDL2_Vulkan' And '$(Configuration)'!='SDL3_Vulkan'">true</ExcludedFromBuild>
     </ClCompile>
-
     <!-- Main Application -->
     <ClCompile Include="main.cpp" />
   </ItemGroup>
-
   <ItemGroup>
     <ClInclude Include="..\ImPlatform\ImPlatform.h" />
   </ItemGroup>
-
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
   </ImportGroup>
