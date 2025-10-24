@@ -48,6 +48,14 @@
 
 #pragma once
 
+// ImPlatform version
+// (Integer encoded as XYYZZ for use in #if preprocessor conditionals, e.g. '#if IMPLATFORM_VERSION_NUM >= 500')
+#define IMPLATFORM_VERSION          "0.5.0"
+#define IMPLATFORM_VERSION_NUM      500
+#define IMPLATFORM_VERSION_MAJOR    0
+#define IMPLATFORM_VERSION_MINOR    5
+#define IMPLATFORM_VERSION_PATCH    0
+
 #ifndef IMPLATFORM_API
 #define IMPLATFORM_API
 #endif
@@ -135,6 +143,18 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
+
+// ============================================================================
+// Version Information
+// ============================================================================
+
+// Get ImPlatform version string (e.g., "0.5.0")
+// Returns: Version string (compile-time constant, do not free)
+IMPLATFORM_API const char* ImPlatform_GetVersion(void);
+
+// Get ImPlatform version as integer (e.g., 500 for version 0.5.0)
+// Returns: Version number encoded as XYYZZ
+IMPLATFORM_API int ImPlatform_GetVersionNum(void);
 
 // ============================================================================
 // Texture Creation API
@@ -621,6 +641,20 @@ IMPLATFORM_API void ImPlatform_DestroyWindow(void);
 #endif
 
 #ifdef IMPLATFORM_IMPLEMENTATION
+
+// ============================================================================
+// Version Information Implementation
+// ============================================================================
+
+IMPLATFORM_API const char* ImPlatform_GetVersion(void)
+{
+    return IMPLATFORM_VERSION;
+}
+
+IMPLATFORM_API int ImPlatform_GetVersionNum(void)
+{
+    return IMPLATFORM_VERSION_NUM;
+}
 
 // Include graphics backend implementation
 #if IM_CURRENT_GFX == IM_GFX_OPENGL3

@@ -16,6 +16,29 @@ ImPlatform is a platform abstraction layer that simplifies multiplatform develop
 
 ## Quick Start
 
+### Version Checking
+
+You can check the ImPlatform version at both compile-time and runtime:
+
+```cpp
+// Compile-time version checking
+#include <ImPlatform.h>
+
+#if IMPLATFORM_VERSION_NUM >= 500
+    // Features available in version 0.5.0+
+#endif
+
+// Runtime version checking
+const char* version = ImPlatform_GetVersion();  // Returns "0.5.0"
+int version_num = ImPlatform_GetVersionNum();   // Returns 500
+
+printf("ImPlatform version: %s (numeric: %d)\n", version, version_num);
+```
+
+Version encoding: `XYYZZ` where `X` = major, `YY` = minor, `ZZ` = patch
+- Version 0.5.0 = 500
+- Version 1.2.3 = 10203
+
 ### Basic Usage
 
 ```cpp
