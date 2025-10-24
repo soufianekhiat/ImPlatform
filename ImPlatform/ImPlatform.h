@@ -536,6 +536,7 @@ IMPLATFORM_API bool ImPlatform_GfxAPIClear(ImVec4 const vClearColor);
 // Returns true on success
 IMPLATFORM_API bool ImPlatform_GfxAPIRender(ImVec4 const vClearColor);
 
+#ifdef IMGUI_HAS_VIEWPORT
 // Update platform windows (for multi-viewport support)
 // Call before rendering viewports
 IMPLATFORM_API void ImPlatform_GfxViewportPre(void);
@@ -543,6 +544,7 @@ IMPLATFORM_API void ImPlatform_GfxViewportPre(void);
 // Render platform windows (for multi-viewport support)
 // Call after main rendering
 IMPLATFORM_API void ImPlatform_GfxViewportPost(void);
+#endif
 
 // Swap buffers / present
 // Returns true on success

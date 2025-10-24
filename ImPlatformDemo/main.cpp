@@ -120,10 +120,14 @@ int main()
 	ImGuiIO& io = ImGui::GetIO(); ( void )io;
 	io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;	// Enable Keyboard Controls
 	io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;	// Enable Gamepad Controls
+#ifdef IMGUI_HAS_DOCK
 	io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;		// Enable Docking
+#endif
+#ifdef IMGUI_HAS_VIEWPORT
 	io.ConfigFlags |= ImGuiConfigFlags_ViewportsEnable;		// Enable Multi-Viewport / Platform Windows
 	////io.ConfigViewportsNoAutoMerge = true;
 	////io.ConfigViewportsNoTaskBarIcon = true;
+#endif
 
 	// Setup Dear ImGui style
 	ImGui::StyleColorsDark();
@@ -137,16 +141,22 @@ int main()
 	float dpi_scale = ImPlatform_App_GetDpiScale_Win32();
 	style.ScaleAllSizes(dpi_scale);
 	style.FontScaleDpi = dpi_scale;
+#if IMGUI_HAS_DOCK
 	io.ConfigDpiScaleFonts = true;
+#endif
+#ifdef IMGUI_HAS_VIEWPORT
 	io.ConfigDpiScaleViewports = true;
+#endif
 #endif
 
 	// When viewports are enabled we tweak WindowRounding/WindowBg so platform windows can look identical to regular ones.
+#ifdef IMGUI_HAS_VIEWPORT
 	if ( io.ConfigFlags & ImGuiConfigFlags_ViewportsEnable )
 	{
 		style.WindowRounding = 0.0f;
 		style.Colors[ ImGuiCol_WindowBg ].w = 1.0f;
 	}
+#endif
 
 	bGood = ImPlatform_InitPlatform();
 	if ( !bGood )
@@ -162,9 +172,14 @@ int main()
 	}
 
 	// Create test textures using new Texture Creation API
+#ifdef IMGUI_HAS_TEXTURES
 	ImPlatform_TextureDesc tex_desc = ImPlatform_TextureDesc_Default(width, height);
 	ImTextureID img = ImPlatform_CreateTexture(data, &tex_desc);
 	ImTextureID img_white = ImPlatform_CreateTexture(white_data, &tex_desc);
+#else
+	ImTextureID img = NULL;
+	ImTextureID img_white = NULL;
+#endif
 
 #if IMPLATFORM_GFX_SUPPORT_CUSTOM_SHADER
 	// ========================================================================
@@ -387,10 +402,12 @@ int main()
 	}
 #endif // IMPLATFORM_GFX_SUPPORT_CUSTOM_SHADER
 
+#ifdef IMGUI_HAS_TEXTURES
 	if (!img || !img_white)
 	{
 		fprintf(stderr, "ImPlatform: Failed to create textures.\n");
 	}
+#endif
 
 #if IM_HAS_STBI
 	stbi_image_free( data );
@@ -419,6 +436,7 @@ int main()
 		ImGui::ShowDemoWindow( &show );
 
 		// Texture API Demo Window
+#ifdef IMGUI_HAS_TEXTURES
 		if (img && img_white)
 		{
 			ImGui::Begin("ImPlatform Texture API Demo");
@@ -436,6 +454,7 @@ int main()
 			ImGui::BulletText("Works with OpenGL3, DX11, and other backends");
 			ImGui::End();
 		}
+#endif
 
 #if IMPLATFORM_GFX_SUPPORT_CUSTOM_SHADER
 		// Custom Shader Demo Window 1: Arrow SDF Shape
@@ -528,8 +547,10 @@ int main()
 		ImPlatform_GfxAPIRender( clear_color );
 
 		// Update and Render additional Platform Windows
+#ifdef IMGUI_HAS_VIEWPORT
 		ImPlatform_GfxViewportPre();
 		ImPlatform_GfxViewportPost();
+#endif
 
 		t += ImGui::GetIO().DeltaTime;
 
@@ -537,10 +558,12 @@ int main()
 	}
 
 	// Cleanup textures
+#ifdef IMGUI_HAS_TEXTURES
 	if (img)
 		ImPlatform_DestroyTexture(img);
 	if (img_white)
 		ImPlatform_DestroyTexture(img_white);
+#endif
 
 #if IMPLATFORM_GFX_SUPPORT_CUSTOM_SHADER
 	// Cleanup shaders
