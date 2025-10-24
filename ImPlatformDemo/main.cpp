@@ -141,7 +141,7 @@ int main()
 	float dpi_scale = ImPlatform_App_GetDpiScale_Win32();
 	style.ScaleAllSizes(dpi_scale);
 	style.FontScaleDpi = dpi_scale;
-#if IMGUI_HAS_DOCK
+#ifdef IMGUI_HAS_DOCK
 	io.ConfigDpiScaleFonts = true;
 #endif
 #ifdef IMGUI_HAS_VIEWPORT
