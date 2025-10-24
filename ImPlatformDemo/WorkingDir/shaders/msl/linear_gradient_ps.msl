@@ -1,0 +1,91 @@
+#include <metal_stdlib>
+#include <metal_math>
+#include <metal_texture>
+using namespace metal;
+
+#line 12038 "hlsl.meta.slang"
+float rcp_0(float x_0)
+{
+
+#line 12044
+    return 1.0 / x_0;
+}
+
+
+#line 90 "core"
+struct pixelOutput_0
+{
+    float4 output_0 [[color(0)]];
+};
+
+
+#line 90
+struct pixelInput_0
+{
+    float4 col_0 [[user(COLOR)]];
+    float2 uv_0 [[user(TEXCOORD)]];
+};
+
+
+#line 26 "C:/git/DearWidgets/extern/ImPlatform/ImPlatformDemo/WorkingDir/shaders/hlsl_src/linear_gradient.hlsl"
+struct SLANG_ParameterGroup_PS_CONSTANT_BUFFER_0
+{
+    float4 col0_0;
+    float4 col1_0;
+    float2 uv_start_0;
+    float2 uv_end_0;
+};
+
+
+#line 4264 "core.meta.slang"
+struct KernelContext_0
+{
+    SLANG_ParameterGroup_PS_CONSTANT_BUFFER_0 constant* PS_CONSTANT_BUFFER_0;
+};
+
+
+#line 46 "C:/git/DearWidgets/extern/ImPlatform/ImPlatformDemo/WorkingDir/shaders/hlsl_src/linear_gradient.hlsl"
+[[fragment]] pixelOutput_0 main_ps(pixelInput_0 _S1 [[stage_in]], float4 pos_0 [[position]], SLANG_ParameterGroup_PS_CONSTANT_BUFFER_0 constant* PS_CONSTANT_BUFFER_1 [[buffer(0)]])
+{
+
+#line 46
+    KernelContext_0 kernelContext_0;
+
+#line 46
+    (&kernelContext_0)->PS_CONSTANT_BUFFER_0 = PS_CONSTANT_BUFFER_1;
+
+
+    float4 _S2 = PS_CONSTANT_BUFFER_1->col0_0;
+
+
+    float2 delta_0 = PS_CONSTANT_BUFFER_1->uv_end_0 - PS_CONSTANT_BUFFER_1->uv_start_0;
+    float delta_length_0 = length(delta_0);
+
+#line 53
+    float4 col_out_0;
+
+
+    if(delta_length_0 > 0.00100000004749745)
+    {
+
+#line 56
+        col_out_0 = mix(PS_CONSTANT_BUFFER_1->col0_0, (&kernelContext_0)->PS_CONSTANT_BUFFER_0->col1_0, float4(saturate(dot(delta_0 / float2(delta_length_0) , _S1.uv_0 - PS_CONSTANT_BUFFER_1->uv_start_0) * rcp_0(delta_length_0))) );
+
+#line 56
+    }
+    else
+    {
+
+#line 56
+        col_out_0 = _S2;
+
+#line 56
+    }
+
+#line 56
+    pixelOutput_0 _S3 = { col_out_0 };
+
+#line 76
+    return _S3;
+}
+

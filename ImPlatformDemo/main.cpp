@@ -1,47 +1,41 @@
 
+#ifdef _WIN32
+extern "C" {
+	__declspec(dllexport) unsigned long NvOptimusEnablement = 0x00000001;
+	__declspec(dllexport) int AmdPowerXpressRequestHighPerformance = 1;
+}
+#endif
+
 #define IMGUI_DEFINE_MATH_OPERATORS
 #include <imgui.h>
-// Available target, not all tested.
-// IM_TARGET_WIN32_DX9
-// IM_TARGET_WIN32_DX10
-// IM_TARGET_WIN32_DX11
-// IM_TARGET_WIN32_DX12
-// IM_TARGET_WIN32_OPENGL3
 
-// Available Permutations:
-//	OS
-//		__DEAR_WIN__
-//		__DEAR_GLFW__
-//		__DEAR_LINUX__
-//		__DEAR_MAC__
-//	Gfx API:
-//		__DEAR_GFX_DX9__
-//		__DEAR_GFX_DX10__
-//		__DEAR_GFX_DX11__
-//		__DEAR_GFX_DX12__
-//		__DEAR_GFX_OGL2__
-//		__DEAR_GFX_OGL3__
-//		__DEAR_GFX_VULKAN__
-//		__DEAR_GFX_METAL__
+// Platform and Graphics API are defined by the project configuration via:
+// IM_CONFIG_PLATFORM and IM_CONFIG_GFX preprocessor defines
+//
+// Available configurations:
+//   Win32_DX9        - Windows + DirectX 9
+//   Win32_DX10       - Windows + DirectX 10
+//   Win32_DX11       - Windows + DirectX 11
+//   Win32_DX12       - Windows + DirectX 12
+//   Win32_OpenGL3    - Windows + OpenGL 3
+//   GLFW_OpenGL3     - GLFW + OpenGL 3
+//   GLFW_Vulkan      - GLFW + Vulkan
 
-#define IM_PLATFORM_IMPLEMENTATION // It will include ImPlatform.cpp internally
-// // Define target
-//#define IM_CURRENT_TARGET IM_TARGET_WIN32_DX11
-// Or
-//#define IM_CURRENT_TARGET (IM_PLATFORM_WIN32 | IM_GFX_OPENGL3)
-// Or a permutation, Not all permutation are valid for instance __DEAR_MAC__ + __DEAR_GFX_DX11__
-//#define __DEAR_GLFW__
-#define __DEAR_WIN__
-//#define IM_GLFW3_AUTO_LINK)
+#ifndef IM_CONFIG_PLATFORM
+#error "IM_CONFIG_PLATFORM must be defined by project configuration"
+#endif
 
-//#define __DEAR_GLFW__
-//#define __DEAR_GFX_DX9__
-//#define __DEAR_GFX_DX10__
-#define __DEAR_GFX_DX11__
-//#define __DEAR_GFX_DX12__
-//#define __DEAR_GFX_OGL3__
-//#define IM_CURRENT_TARGET IM_TARGET_GLFW_OPENGL3
-//#define IM_THE_CHERNO_GLFW3
+#ifndef IM_CONFIG_GFX
+#error "IM_CONFIG_GFX must be defined by project configuration"
+#endif
+
+// Define platform and graphics API from project configuration
+#define IM_CURRENT_PLATFORM IM_CONFIG_PLATFORM
+#define IM_CURRENT_GFX IM_CONFIG_GFX
+
+// Define implementation to include the backend code
+#define IMPLATFORM_IMPLEMENTATION
+
 #include <ImPlatform.h>
 
 #include <stdio.h>
@@ -54,128 +48,11 @@
 #include <stb_image.h>
 #endif
 
-//////////////////////////////////////////////////////////////////////////
-// Global Options
-static bool g_bSimpleAPI		= true;
-static bool g_bCustomTitleBar	= true;
-//////////////////////////////////////////////////////////////////////////
-
-#ifdef IM_SUPPORT_CUSTOM_SHADER
-struct param2
-{
-	ImVec4 col0;
-	ImVec4 col1;
-	ImVec2 uv_start;
-	ImVec2 uv_end;
-};
-
-void CreateDearImGuiShaders( ImDrawShader* shader0,
-							 ImDrawShader* shader1,
-							 ImDrawShader* shader2,
-							 param2* p2)
-{
-	char const *source0 =
-		"float2 P = uv - 0.5f;\n\
-		P.y = -P.y;\n\
-		float size = 1.0f;\n\
-		float x = sqrt(2.0f) / 2.0f * ( P.x - P.y );\n\
-		float y = sqrt(2.0f) / 2.0f * ( P.x + P.y );\n\
-		float r1 = max( abs( x ), abs( y ) ) - size / 3.5f;\n\
-		float r2 = length( P - sqrt( 2.0f ) / 2.0f * float2( +1.0f, -1.0f ) * size / 3.5f ) - size / 3.5f;\n\
-		float r3 = length( P - sqrt( 2.0f ) / 2.0f * float2( -1.0f, -1.0f ) * size / 3.5f ) - size / 3.5f;\n\
-		col_out.rgb = ( min( min( r1, r2 ), r3 ) < 0.0f ).xxx;\n";
-	char const *source1 =
-		"float2 P = uv - 0.5f;\n\
-		P.y = -P.y;\n\
-		float size = 1.0f;\n\
-		float x = P.x;\n\
-		float y = P.y;\n\
-		float r1 = abs( x ) + abs( y ) - size / 2.0f;\n\
-		float r2 = max( abs( x + size / 2.0f ), abs( y ) ) - size / 2;\n\
-		float r3 = max( abs( x - size / 6.0f ) - size / 4.0f, abs( y ) - size / 4.0f );\n\
-		col_out.rgb = ( min( r3, max( .75f * r1, r2 ) ) < 0.0f ).xxx;\n";
-	char const *params2 =
-		"float4 col0;\n\
-		float4 col1;\n\
-		float2 uv_start;\n\
-		float2 uv_end;\n";
-	char const *source2 =
-		"float2 delta = uv_end - uv_start;\n\
-		float2 d = normalize( delta );\n\
-		float l = rcp( length( delta ) );\n\
-		float2 c = uv - uv_start;\n\
-		float t = saturate( dot( d, c ) * l );\n\
-		col_out = lerp( col0, col1, t );\n";
-
-	char *vs_source;
-	char *ps_source;
-
-	ImPlatform::CreateDefaultPixelShaderSource( &vs_source,
-												&ps_source, "", "", source0, false );
-	*shader0 = ImPlatform::CreateShader( vs_source, ps_source, 0, NULL, 0, NULL );
-	IM_FREE( vs_source );
-	IM_FREE( ps_source );
-
-	ImPlatform::CreateDefaultPixelShaderSource( &vs_source,
-												&ps_source, "", "", source1, false );
-	*shader1 = ImPlatform::CreateShader( vs_source, ps_source, 0, NULL, 0, NULL );
-	IM_FREE( vs_source );
-	IM_FREE( ps_source );
-
-	ImPlatform::CreateDefaultPixelShaderSource( &vs_source,
-												&ps_source, "", params2, source2, false );
-	*shader2 = ImPlatform::CreateShader( vs_source, ps_source, 0, NULL, sizeof( param2 ), p2 );
-	IM_FREE( vs_source );
-	IM_FREE( ps_source );
-}
-
-void DemoCustomShaders( ImDrawShader *shader0,
-						ImDrawShader *shader1,
-						ImDrawShader *shader2,
-						param2 *p2,
-						ImTextureID img, ImTextureID img_white,
-						float t )
-{
-	ImVec2 cur;
-	{
-		ImGui::Begin( "Custom Shader 0" );
-		ImDrawList *draw = ImGui::GetWindowDrawList();
-		cur = ImGui::GetCursorScreenPos();
-		ImPlatform::BeginCustomShader( draw, *shader0 );
-		ImRect bb( cur, cur + ImGui::GetContentRegionAvail() );
-		draw->AddImageQuad( img, bb.GetBL(), bb.GetBR(), bb.GetTR(), bb.GetTL(), ImVec2( 0, 0 ), ImVec2( 1, 0 ), ImVec2( 1, 1 ), ImVec2( 0, 1 ), IM_COL32_WHITE );
-		ImPlatform::EndCustomShader( draw );
-		ImGui::End();
-	}
-	{
-		ImGui::Begin( "Custom Shader 1" );
-		ImDrawList *draw = ImGui::GetWindowDrawList();
-		cur = ImGui::GetCursorScreenPos();
-		ImPlatform::BeginCustomShader( draw, *shader1 );
-		ImRect bb( cur, cur + ImGui::GetContentRegionAvail() );
-		draw->AddImageQuad( img_white, bb.GetBL(), bb.GetBR(), bb.GetTR(), bb.GetTL(), ImVec2( 0, 0 ), ImVec2( 1, 0 ), ImVec2( 1, 1 ), ImVec2( 0, 1 ), IM_COL32( 255, 0, 0, 255 ) );
-		ImPlatform::EndCustomShader( draw );
-		ImGui::End();
-	}
-	{
-		ImGui::Begin( "Custom Shader 2" );
-		ImDrawList *draw = ImGui::GetWindowDrawList();
-		cur = ImGui::GetCursorScreenPos();
-		float sin0 = ImSin( t );
-		p2->uv_start = ImVec2( 0.0f, sin0 * sin0 );
-		p2->uv_end = ImVec2( 0.0f, 1.0f );
-		ImPlatform::UpdateCustomPixelShaderConstants( *shader2, p2 );
-		ImPlatform::BeginCustomShader( draw, *shader2 );
-		ImRect bb( cur, cur + ImGui::GetContentRegionAvail() );
-		draw->AddImageQuad( img_white, bb.GetBL(), bb.GetBR(), bb.GetTR(), bb.GetTL(), ImVec2( 0, 0 ), ImVec2( 1, 0 ), ImVec2( 1, 1 ), ImVec2( 0, 1 ), IM_COL32( 255, 255, 255, 255 ) );
-		ImPlatform::EndCustomShader( draw );
-		ImGui::End();
-	}
-}
-#endif
-
 int main()
 {
+	// Uncomment to enable custom title bar:
+	// ImPlatform_EnableCustomTitleBar();
+
 	// Setup for an image
 	int width;
 	int height;
@@ -186,8 +63,8 @@ int main()
 	// If we don't have stb_image we create an image manually instead of loading the file.
 	width = height = 256;
 	channel = 4;
-	unsigned char* data = ( unsigned char* )malloc( width * height * channel );
-	unsigned char* white_data = ( unsigned char* )malloc( width * height * channel );
+	unsigned char* data = ( unsigned char* )IM_ALLOC( width * height * channel );
+	unsigned char* white_data = ( unsigned char* )IM_ALLOC( width * height * channel );
 	for ( int j = 0; j < height; ++j )
 	{
 		for ( int i = 0; i < width; ++i )
@@ -208,320 +85,543 @@ int main()
 	}
 #endif
 
-	if ( g_bCustomTitleBar )
-		ImPlatform::EnableCustomTitleBar();
-
 	float t = 0.0f;
-	// ImPlatform::SimpleAPI
-	if ( g_bSimpleAPI )
+
+	// Using the new C API
+	bool bGood;
+
+	// Optional: Enable custom titlebar (must be called before CreateWindow)
+	// Note: Only supported on Win32 by default. For GLFW, requires TheCherno's GLFW fork
+	//       and define IM_THE_CHERNO_GLFW3, then set IMPLATFORM_APP_SUPPORT_CUSTOM_TITLEBAR=1
+#if IMPLATFORM_APP_SUPPORT_CUSTOM_TITLEBAR
+	// ImPlatform_EnableCustomTitleBar();
+#endif
+
+	bGood = ImPlatform_CreateWindow( "ImPlatform Demo", ImVec2( 100, 100 ), 1024, 764 );
+	if ( !bGood )
 	{
-		bool bGood;
-
-		bGood = ImPlatform::SimpleStart( "ImPlatform Simple Demo", ImVec2( 100, 100 ), 1024, 764 );
-		if ( !bGood )
-		{
-			fprintf( stderr, "ImPlatform: Cannot Simple Start." );
-			return false;
-		}
-
-		// Setup Dear ImGui context
-		ImGuiIO& io = ImGui::GetIO(); ( void )io;
-		io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;	// Enable Keyboard Controls
-		io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;	// Enable Gamepad Controls
-		io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;		// Enable Docking
-		io.ConfigFlags |= ImGuiConfigFlags_ViewportsEnable;		// Enable Multi-Viewport / Platform Windows
-
-		// Setup Dear ImGui style
-		ImGui::StyleColorsDark();
-
-		//io.Fonts->AddFontFromFileTTF( "../extern/FiraCode/distr/ttf/FiraCode-Medium.ttf", 16.0f );
-
-		// When viewports are enabled we tweak WindowRounding/WindowBg so platform windows can look identical to regular ones.
-		ImGuiStyle& style = ImGui::GetStyle();
-
-		bGood = ImPlatform::SimpleInitialize( io.ConfigFlags & ImGuiConfigFlags_ViewportsEnable );
-		if ( !bGood )
-		{
-			fprintf( stderr, "ImPlatform : Cannot Initialize." );
-			return false;
-		}
-		ImTextureID img = ImPlatform::CreateTexture2D( ( char* )data, width, height,
-														 {
-															ImPixelChannel_RGBA,
-															ImPixelType_UInt8,
-															ImTextureFiltering_Linear,
-															ImTextureBoundary_Clamp,
-															ImTextureBoundary_Clamp
-														 } );
-		ImTextureID img_white = ImPlatform::CreateTexture2D( ( char* )white_data, width, height,
-														 {
-															ImPixelChannel_RGBA,
-															ImPixelType_UInt8,
-															ImTextureFiltering_Linear,
-															ImTextureBoundary_Clamp,
-															ImTextureBoundary_Clamp
-														 } );
-#if IM_HAS_STBI
-		stbi_image_free( data );
-#else
-		free( data );
-#endif
-
-#ifdef IM_SUPPORT_CUSTOM_SHADER
-		param2 p2;
-		p2.col0 = ImVec4( 1.0f, 1.0f, 1.0f, 1.0f );
-		p2.col1 = ImVec4( 0.0f, 1.0f, 1.0f, 0.0f );
-		p2.uv_start = ImVec2( 0.4f, 0.4f );
-		p2.uv_end = ImVec2( 0.45f, 0.45f );
-		ImDrawShader shader0, shader1, shader2;
-		CreateDearImGuiShaders( &shader0, &shader1, &shader2, &p2 );
-#endif
-
-		ImVec4 clear_color = ImVec4( 0.461f, 0.461f, 0.461f, 1.0f );
-		while ( ImPlatform::PlatformContinue() )
-		{
-			bool quit = ImPlatform::PlatformEvents();
-			if ( quit )
-				break;
-
-			if ( !ImPlatform::GfxCheck() )
-			{
-				continue;
-			}
-
-			ImPlatform::SimpleBegin();
-
-			if ( ImPlatform::CustomTitleBarEnabled() )
-			{
-				if ( ImPlatform::BeginCustomTitleBar( 32.0f ) )
-				{
-					ImGui::Text( "ImPlatform with Custom Title Bar" );
-					ImGui::SameLine();
-
-					if ( ImGui::Button( "Minimize" ) )
-						ImPlatform::MinimizeApp();
-					ImGui::SameLine();
-
-					if ( ImGui::Button( "Maximize" ) )
-						ImPlatform::MaximizeApp();
-					ImGui::SameLine();
-
-					if ( ImGui::Button( "Close" ) )
-						ImPlatform::CloseApp();
-				}
-				ImPlatform::EndCustomTitleBar();
-			}
-
-			// ImGui Code
-			bool show = true;
-			ImGui::ShowDemoWindow( &show );
-
-#ifdef IM_SUPPORT_CUSTOM_SHADER
-			DemoCustomShaders(  &shader0,
-								&shader1,
-								&shader2,
-								&p2,
-								img, img_white, t );
-#endif
-
-			if ( ImGui::Begin( "Image" ) )
-			{
-					ImGui::Image( img, ImGui::GetContentRegionAvail() );
-			}
-			ImGui::End();
-
-			ImPlatform::SimpleEnd( clear_color, io.ConfigFlags & ImGuiConfigFlags_ViewportsEnable );
-
-			t += ImGui::GetIO().DeltaTime;
-		}
-
-		ImPlatform::SimpleFinish();
+		fprintf( stderr, "ImPlatform: Cannot create window.\n" );
+		return 1;
 	}
-	else
+
+	bGood = ImPlatform_InitGfxAPI();
+	if ( !bGood )
 	{
-		// ImPlatform::ExplicitAPI
-		bool bGood;
+		fprintf( stderr, "ImPlatform: Cannot initialize the Graphics API.\n" );
+		return 1;
+	}
 
-		bGood = ImPlatform::CreateWindow( "ImPlatform Demo", ImVec2( 100, 100 ), 1024, 764 );
-		if ( !bGood )
-		{
-			fprintf( stderr, "ImPlatform: Cannot create window." );
-			return false;
+	bGood = ImPlatform_ShowWindow();
+	if ( !bGood )
+	{
+		fprintf( stderr, "ImPlatform: Cannot show the window.\n" );
+		return 1;
+	}
+
+	IMGUI_CHECKVERSION();
+	bGood = ImGui::CreateContext() != nullptr;
+	if ( !bGood )
+	{
+		fprintf( stderr, "ImGui: Cannot create context.\n" );
+		return 1;
+	}
+
+	// Setup Dear ImGui context
+	ImGuiIO& io = ImGui::GetIO(); ( void )io;
+	io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;	// Enable Keyboard Controls
+	io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;	// Enable Gamepad Controls
+#ifdef IMGUI_HAS_DOCK
+	io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;		// Enable Docking
+#endif
+#ifdef IMGUI_HAS_VIEWPORT
+	io.ConfigFlags |= ImGuiConfigFlags_ViewportsEnable;		// Enable Multi-Viewport / Platform Windows
+	////io.ConfigViewportsNoAutoMerge = true;
+	////io.ConfigViewportsNoTaskBarIcon = true;
+#endif
+
+	// Setup Dear ImGui style
+	ImGui::StyleColorsDark();
+	//ImGui::StyleColorsClassic();
+
+	//io.Fonts->AddFontFromFileTTF( "../extern/FiraCode/distr/ttf/FiraCode-Medium.ttf", 16.0f );
+
+	// Setup DPI scaling (Win32 only)
+	ImGuiStyle& style = ImGui::GetStyle();
+#if defined(IM_CURRENT_PLATFORM) && (IM_CURRENT_PLATFORM == IM_PLATFORM_WIN32)
+	float dpi_scale = ImPlatform_App_GetDpiScale_Win32();
+	style.ScaleAllSizes(dpi_scale);
+	style.FontScaleDpi = dpi_scale;
+#ifdef IMGUI_HAS_DOCK
+	io.ConfigDpiScaleFonts = true;
+#endif
+#ifdef IMGUI_HAS_VIEWPORT
+	io.ConfigDpiScaleViewports = true;
+#endif
+#endif
+
+	// When viewports are enabled we tweak WindowRounding/WindowBg so platform windows can look identical to regular ones.
+#ifdef IMGUI_HAS_VIEWPORT
+	if ( io.ConfigFlags & ImGuiConfigFlags_ViewportsEnable )
+	{
+		style.WindowRounding = 0.0f;
+		style.Colors[ ImGuiCol_WindowBg ].w = 1.0f;
+	}
+#endif
+
+	bGood = ImPlatform_InitPlatform();
+	if ( !bGood )
+	{
+		fprintf( stderr, "ImPlatform: Cannot initialize platform.\n" );
+		return 1;
+	}
+	bGood = ImPlatform_InitGfx();
+	if ( !bGood )
+	{
+		fprintf( stderr, "ImPlatform: Cannot initialize graphics.\n" );
+		return 1;
+	}
+
+	// Create test textures using new Texture Creation API
+#ifdef IMGUI_HAS_TEXTURES
+	ImPlatform_TextureDesc tex_desc = ImPlatform_TextureDesc_Default(width, height);
+	ImTextureID img = ImPlatform_CreateTexture(data, &tex_desc);
+	ImTextureID img_white = ImPlatform_CreateTexture(white_data, &tex_desc);
+#else
+	ImTextureID img = NULL;
+	ImTextureID img_white = NULL;
+#endif
+
+#if IMPLATFORM_GFX_SUPPORT_CUSTOM_SHADER
+	// ========================================================================
+	// Custom Shader Demo: Arrow SDF Shape
+	// ========================================================================
+
+	// Define shader source code based on graphics API
+	const char* arrow_vs_source = nullptr;
+	const char* arrow_ps_source = nullptr;
+	ImPlatform_ShaderFormat arrow_format = ImPlatform_ShaderFormat_GLSL;
+
+#if (IM_CURRENT_GFX == IM_GFX_OPENGL3)
+	// GLSL for OpenGL3
+	arrow_format = ImPlatform_ShaderFormat_GLSL;
+	arrow_vs_source =
+		"#version 130\n"
+		"uniform mat4 ProjMtx;\n"
+		"in vec2 Position;\n"
+		"in vec2 UV;\n"
+		"out vec2 Frag_UV;\n"
+		"void main() {\n"
+		"    Frag_UV = UV;\n"
+		"    gl_Position = ProjMtx * vec4(Position.xy, 0, 1);\n"
+		"}\n";
+
+	arrow_ps_source =
+		"#version 130\n"
+		"in vec2 Frag_UV;\n"
+		"out vec4 Out_Color;\n"
+		"float sdArrow(vec2 p) {\n"
+		"    // Arrow head (triangle pointing right)\n"
+		"    vec2 head = p - vec2(0.5, 0.0);\n"
+		"    float dHead = max(abs(head.y) + head.x * 0.5 - 0.25, -head.x - 0.3);\n"
+		"    \n"
+		"    // Arrow shaft (rectangle)\n"
+		"    vec2 shaft = p - vec2(-0.1, 0.0);\n"
+		"    float dShaft = max(abs(shaft.y) - 0.1, max(shaft.x - 0.4, -shaft.x - 0.6));\n"
+		"    \n"
+		"    return min(dHead, dShaft);\n"
+		"}\n"
+		"void main() {\n"
+		"    vec2 uv = Frag_UV * 2.0 - 1.0;\n"
+		"    float d = sdArrow(uv);\n"
+		"    float alpha = 1.0 - smoothstep(0.0, 0.02, d);\n"
+		"    Out_Color = vec4(1.0, 0.5, 0.2, 1.0) * alpha;\n"
+		"}\n";
+
+#elif (IM_CURRENT_GFX == IM_GFX_DIRECTX10) || (IM_CURRENT_GFX == IM_GFX_DIRECTX11)
+	// HLSL for DirectX 10/11
+	arrow_format = ImPlatform_ShaderFormat_HLSL;
+	arrow_vs_source =
+		"cbuffer vertexBuffer : register(b0) {\n"
+		"    float4x4 ProjMtx;\n"
+		"};\n"
+		"struct VS_INPUT {\n"
+		"    float2 pos : POSITION;\n"
+		"    float4 col : COLOR0;\n"
+		"    float2 uv  : TEXCOORD0;\n"
+		"};\n"
+		"struct PS_INPUT {\n"
+		"    float4 pos : SV_POSITION;\n"
+		"    float4 col : COLOR0;\n"
+		"    float2 uv  : TEXCOORD0;\n"
+		"};\n"
+		"PS_INPUT main(VS_INPUT input) {\n"
+		"    PS_INPUT output;\n"
+		"    output.pos = mul(ProjMtx, float4(input.pos.xy, 0.0, 1.0));\n"
+		"    output.col = input.col;\n"
+		"    output.uv = input.uv;\n"
+		"    return output;\n"
+		"}\n";
+
+	arrow_ps_source =
+		"struct PS_INPUT {\n"
+		"    float4 pos : SV_POSITION;\n"
+		"    float4 col : COLOR0;\n"
+		"    float2 uv  : TEXCOORD0;\n"
+		"};\n"
+		"float sdArrow(float2 p) {\n"
+		"    // Arrow head (triangle pointing right)\n"
+		"    float2 head = p - float2(0.5, 0.0);\n"
+		"    float dHead = max(abs(head.y) + head.x * 0.5 - 0.25, -head.x - 0.3);\n"
+		"    \n"
+		"    // Arrow shaft (rectangle)\n"
+		"    float2 shaft = p - float2(-0.1, 0.0);\n"
+		"    float dShaft = max(abs(shaft.y) - 0.1, max(shaft.x - 0.4, -shaft.x - 0.6));\n"
+		"    \n"
+		"    return min(dHead, dShaft);\n"
+		"}\n"
+		"float4 main(PS_INPUT input) : SV_TARGET {\n"
+		"    // Arrow SDF shader - renders arrow shape\n"
+		"    float2 uv = input.uv * 2.0 - 1.0;\n"
+		"    float d = sdArrow(uv);\n"
+		"    float alpha = 1.0 - smoothstep(0.0, 0.02, d);\n"
+		"    return float4(1.0, 0.5, 0.2, 1.0) * alpha;\n"
+		"}\n";
+#endif
+
+	// ========================================================================
+	// Custom Shader Demo: Linear Gradient with Custom Vertex Buffer
+	// ========================================================================
+
+	const char* gradient_vs_source = nullptr;
+	const char* gradient_ps_source = nullptr;
+	ImPlatform_ShaderFormat gradient_format = ImPlatform_ShaderFormat_GLSL;
+
+	// Gradient colors
+	ImVec4 gradient_color_start = ImVec4(1.0f, 0.2f, 0.2f, 1.0f);
+	ImVec4 gradient_color_end = ImVec4(0.2f, 0.2f, 1.0f, 1.0f);
+
+#if (IM_CURRENT_GFX == IM_GFX_OPENGL3)
+	gradient_format = ImPlatform_ShaderFormat_GLSL;
+	gradient_vs_source =
+		"#version 130\n"
+		"uniform mat4 ProjMtx;\n"
+		"in vec2 Position;\n"
+		"in vec2 UV;\n"
+		"out vec2 Frag_UV;\n"
+		"void main() {\n"
+		"    Frag_UV = UV;\n"
+		"    gl_Position = ProjMtx * vec4(Position.xy, 0, 1);\n"
+		"}\n";
+
+	gradient_ps_source =
+		"#version 130\n"
+		"uniform vec4 ColorStart;\n"
+		"uniform vec4 ColorEnd;\n"
+		"in vec2 Frag_UV;\n"
+		"out vec4 Out_Color;\n"
+		"void main() {\n"
+		"    Out_Color = mix(ColorStart, ColorEnd, Frag_UV.y);\n"
+		"}\n";
+
+#elif (IM_CURRENT_GFX == IM_GFX_DIRECTX10) || (IM_CURRENT_GFX == IM_GFX_DIRECTX11)
+	gradient_format = ImPlatform_ShaderFormat_HLSL;
+	gradient_vs_source =
+		"cbuffer vertexBuffer : register(b0) {\n"
+		"    float4x4 ProjMtx;\n"
+		"};\n"
+		"struct VS_INPUT {\n"
+		"    float2 pos : POSITION;\n"
+		"    float4 col : COLOR0;\n"
+		"    float2 uv  : TEXCOORD0;\n"
+		"};\n"
+		"struct PS_INPUT {\n"
+		"    float4 pos : SV_POSITION;\n"
+		"    float4 col : COLOR0;\n"
+		"    float2 uv  : TEXCOORD0;\n"
+		"};\n"
+		"PS_INPUT main(VS_INPUT input) {\n"
+		"    PS_INPUT output;\n"
+		"    output.pos = mul(ProjMtx, float4(input.pos.xy, 0.0, 1.0));\n"
+		"    output.col = input.col;\n"
+		"    output.uv = input.uv;\n"
+		"    return output;\n"
+		"}\n";
+
+	gradient_ps_source =
+		"cbuffer pixelBuffer : register(b0) {\n"
+		"    float4 ColorStart;\n"
+		"    float4 ColorEnd;\n"
+		"};\n"
+		"struct PS_INPUT {\n"
+		"    float4 pos : SV_POSITION;\n"
+		"    float4 col : COLOR0;\n"
+		"    float2 uv  : TEXCOORD0;\n"
+		"};\n"
+		"float4 main(PS_INPUT input) : SV_Target {\n"
+		"    return lerp(ColorStart, ColorEnd, input.uv.y);\n"
+		"}\n";
+#endif
+
+	// Create shaders and programs
+	ImPlatform_Shader arrow_vs = nullptr;
+	ImPlatform_Shader arrow_ps = nullptr;
+	ImPlatform_ShaderProgram arrow_program = nullptr;
+
+	ImPlatform_Shader gradient_vs = nullptr;
+	ImPlatform_Shader gradient_ps = nullptr;
+	ImPlatform_ShaderProgram gradient_program = nullptr;
+
+	if (arrow_vs_source && arrow_ps_source) {
+		ImPlatform_ShaderDesc vs_desc = {};
+		vs_desc.stage = ImPlatform_ShaderStage_Vertex;
+		vs_desc.format = arrow_format;
+		vs_desc.source_code = arrow_vs_source;
+		vs_desc.entry_point = "main";
+		arrow_vs = ImPlatform_CreateShader(&vs_desc);
+
+		ImPlatform_ShaderDesc ps_desc = {};
+		ps_desc.stage = ImPlatform_ShaderStage_Fragment;
+		ps_desc.format = arrow_format;
+		ps_desc.source_code = arrow_ps_source;
+		ps_desc.entry_point = "main";
+		arrow_ps = ImPlatform_CreateShader(&ps_desc);
+
+		if (arrow_vs && arrow_ps) {
+			arrow_program = ImPlatform_CreateShaderProgram(arrow_vs, arrow_ps);
 		}
+	}
 
-		bGood = ImPlatform::InitGfxAPI();
-		if ( !bGood )
-		{
-			fprintf( stderr, "ImPlatform: Cannot initialize the Graphics API." );
-			return false;
+	if (gradient_vs_source && gradient_ps_source) {
+		ImPlatform_ShaderDesc vs_desc = {};
+		vs_desc.stage = ImPlatform_ShaderStage_Vertex;
+		vs_desc.format = gradient_format;
+		vs_desc.source_code = gradient_vs_source;
+		vs_desc.entry_point = "main";
+		gradient_vs = ImPlatform_CreateShader(&vs_desc);
+
+		ImPlatform_ShaderDesc ps_desc = {};
+		ps_desc.stage = ImPlatform_ShaderStage_Fragment;
+		ps_desc.format = gradient_format;
+		ps_desc.source_code = gradient_ps_source;
+		ps_desc.entry_point = "main";
+		gradient_ps = ImPlatform_CreateShader(&ps_desc);
+
+		if (gradient_vs && gradient_ps) {
+			gradient_program = ImPlatform_CreateShaderProgram(gradient_vs, gradient_ps);
 		}
+	}
+#endif // IMPLATFORM_GFX_SUPPORT_CUSTOM_SHADER
 
-		bGood = ImPlatform::ShowWindow();
-		if ( !bGood )
-		{
-			fprintf( stderr, "ImPlatform: Cannot show the window." );
-			return false;
-		}
-
-		IMGUI_CHECKVERSION();
-		bGood = ImGui::CreateContext() != nullptr;
-		if ( !bGood )
-		{
-			fprintf( stderr, "ImGui: Cannot create context." );
-			return false;
-		}
-
-		// Setup Dear ImGui context
-		ImGuiIO& io = ImGui::GetIO(); ( void )io;
-		io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;	// Enable Keyboard Controls
-		io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;	// Enable Gamepad Controls
-		io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;		// Enable Docking
-		io.ConfigFlags |= ImGuiConfigFlags_ViewportsEnable;		// Enable Multi-Viewport / Platform Windows
-		////io.ConfigViewportsNoAutoMerge = true;
-		////io.ConfigViewportsNoTaskBarIcon = true;
-
-		// Setup Dear ImGui style
-		ImGui::StyleColorsDark();
-		//ImGui::StyleColorsClassic();
-
-		//io.Fonts->AddFontFromFileTTF( "../extern/FiraCode/distr/ttf/FiraCode-Medium.ttf", 16.0f );
-
-		// When viewports are enabled we tweak WindowRounding/WindowBg so platform windows can look identical to regular ones.
-		ImGuiStyle& style = ImGui::GetStyle();
-		if ( io.ConfigFlags & ImGuiConfigFlags_ViewportsEnable )
-		{
-			style.WindowRounding = 0.0f;
-			style.Colors[ ImGuiCol_WindowBg ].w = 1.0f;
-		}
-
-		bGood = ImPlatform::InitPlatform();
-		if ( !bGood )
-		{
-			fprintf( stderr, "ImPlatform: Cannot initialize platform." );
-			return false;
-		}
-		bGood = ImPlatform::InitGfx();
-		if ( !bGood )
-		{
-			fprintf( stderr, "ImPlatform: Cannot initialize graphics." );
-			return false;
-		}
-		ImTextureID img = ImPlatform::CreateTexture2D( ( char* )data, width, height,
-														 {
-															ImPixelChannel_RGBA,
-															ImPixelType_UInt8,
-															ImTextureFiltering_Linear,
-															ImTextureBoundary_Clamp,
-															ImTextureBoundary_Clamp
-														 } );
-		ImTextureID img_white = ImPlatform::CreateTexture2D( ( char* )white_data, width, height,
-															   {
-																  ImPixelChannel_RGBA,
-																  ImPixelType_UInt8,
-																  ImTextureFiltering_Linear,
-																  ImTextureBoundary_Clamp,
-																  ImTextureBoundary_Clamp
-															   } );
+#ifdef IMGUI_HAS_TEXTURES
+	if (!img || !img_white)
+	{
+		fprintf(stderr, "ImPlatform: Failed to create textures.\n");
+	}
+#endif
 
 #if IM_HAS_STBI
-		stbi_image_free( data );
+	stbi_image_free( data );
 #else
-		free( data );
+	IM_FREE( data );
+	IM_FREE( white_data );
 #endif
 
-#ifdef IM_SUPPORT_CUSTOM_SHADER
-		param2 p2;
-		p2.col0 = ImVec4( 1.0f, 1.0f, 1.0f, 1.0f );
-		p2.col1 = ImVec4( 0.0f, 1.0f, 1.0f, 0.0f );
-		p2.uv_start = ImVec2( 0.4f, 0.4f );
-		p2.uv_end = ImVec2( 0.45f, 0.45f );
-		ImDrawShader shader0, shader1, shader2;
-		CreateDearImGuiShaders( &shader0, &shader1, &shader2, &p2 );
-#endif
+	ImVec4 clear_color = ImVec4( 0.461f, 0.461f, 0.461f, 1.0f );
+	while ( ImPlatform_PlatformContinue() )
+	{
+		ImPlatform_PlatformEvents();
 
-		ImVec4 clear_color = ImVec4( 0.461f, 0.461f, 0.461f, 1.0f );
-		while ( ImPlatform::PlatformContinue() )
+		if ( !ImPlatform_GfxCheck() )
 		{
-			bool quit = ImPlatform::PlatformEvents();
-			if ( quit )
-				break;
-
-			if ( !ImPlatform::GfxCheck() )
-			{
-				continue;
-			}
-
-			ImPlatform::GfxAPINewFrame();
-			ImPlatform::PlatformNewFrame();
-
-			ImGui::NewFrame();
-
-			if ( ImPlatform::CustomTitleBarEnabled() )
-			{
-				if ( ImPlatform::BeginCustomTitleBar( 64.0f ) )
-				{
-					ImGui::Text( "ImPlatform with Custom Title Bar" );
-					ImGui::SameLine();
-
-					if ( ImGui::Button( "Minimize" ) )
-						ImPlatform::MinimizeApp();
-					ImGui::SameLine();
-
-					if ( ImGui::Button( "Maximize" ) )
-						ImPlatform::MaximizeApp();
-					ImGui::SameLine();
-
-					if ( ImGui::Button( "Close" ) )
-						ImPlatform::CloseApp();
-					ImGui::SameLine();
-				}
-				ImPlatform::EndCustomTitleBar();
-			}
-
-			// ImGui Code
-			bool show = true;
-			ImGui::ShowDemoWindow( &show );
-
-#ifdef IM_SUPPORT_CUSTOM_SHADER
-			DemoCustomShaders( &shader0,
-							   &shader1,
-							   &shader2,
-							   &p2,
-							   img, img_white, t );
-#endif
-
-			if ( ImGui::Begin( "Image" ) )
-			{
-				ImGui::Image( img, ImGui::GetContentRegionAvail() );
-			}
-			ImGui::End();
-
-			ImPlatform::GfxAPIClear( clear_color );
-			ImPlatform::GfxAPIRender( clear_color );
-
-			// Update and Render additional Platform Windows
-			if ( io.ConfigFlags & ImGuiConfigFlags_ViewportsEnable )
-			{
-				ImPlatform::GfxViewportPre();
-
-				ImGui::UpdatePlatformWindows();
-				ImGui::RenderPlatformWindowsDefault();
-
-				ImPlatform::GfxViewportPost();
-			}
-
-			ImPlatform::GfxAPISwapBuffer();
+			continue;
 		}
 
-		ImPlatform::ShutdownGfxAPI();
-		ImPlatform::ShutdownWindow();
+		ImPlatform_GfxAPINewFrame();
+		ImPlatform_PlatformNewFrame();
 
-		ImGui::DestroyContext();
+		ImGui::NewFrame();
 
-		ImPlatform::ShutdownPostGfxAPI();
+		// Custom Title Bar Demo (optional)
+#if IMPLATFORM_APP_SUPPORT_CUSTOM_TITLEBAR
+		// Uncomment to enable custom titlebar rendering
+		if (ImPlatform_BeginCustomTitleBar(32.0f))
+		{
+			// Option 1: Use the default titlebar with min/max/close buttons
+			ImPlatform_DrawCustomMenuBarDefault();
 
-		ImPlatform::DestroyWindow();
+			// Option 2: Create your own custom titlebar
+			// ImGui::Text("My Custom App");
+			// ImGui::SameLine(ImGui::GetWindowWidth() - 100);
+			// if (ImGui::Button("_"))
+			// 	ImPlatform_MinimizeApp();
+			// ImGui::SameLine();
+			// if (ImGui::Button("[]"))
+			// 	ImPlatform_MaximizeApp();
+			// ImGui::SameLine();
+			// if (ImGui::Button("X"))
+			// 	ImPlatform_CloseApp();
+		}
+		ImPlatform_EndCustomTitleBar();
+#endif
+
+		// ImGui Demo Code
+		bool show = true;
+		ImGui::ShowDemoWindow( &show );
+
+		// Texture API Demo Window
+#ifdef IMGUI_HAS_TEXTURES
+		if (img && img_white)
+		{
+			ImGui::Begin("ImPlatform Texture API Demo");
+			ImGui::Text("Checkerboard texture created with ImPlatform_CreateTexture:");
+			ImGui::Image(img, ImVec2(256, 256));
+
+			ImGui::Separator();
+			ImGui::Text("White texture:");
+			ImGui::Image(img_white, ImVec2(128, 128));
+
+			ImGui::Separator();
+			ImGui::Text("This demonstrates the new Texture Creation API:");
+			ImGui::BulletText("ImPlatform_TextureDesc_Default()");
+			ImGui::BulletText("ImPlatform_CreateTexture()");
+			ImGui::BulletText("Works with OpenGL3, DX11, and other backends");
+			ImGui::End();
+		}
+#endif
+
+#if IMPLATFORM_GFX_SUPPORT_CUSTOM_SHADER
+		// Custom Shader Demo Window 1: Arrow SDF Shape
+		if (arrow_program)
+		{
+			ImGui::Begin("Custom Shader: Arrow SDF");
+			ImGui::Text("This demonstrates a custom shader with SDF rendering.");
+			ImGui::Text("Arrow shape rendered using Signed Distance Field.");
+
+			ImGui::Separator();
+			ImGui::TextColored(ImVec4(0.2f, 1.0f, 0.2f, 1.0f), "Shader API Used:");
+#if (IM_CURRENT_GFX == IM_GFX_OPENGL3)
+			ImGui::BulletText("GLSL #version 130");
+#elif (IM_CURRENT_GFX == IM_GFX_DIRECTX10)
+			ImGui::BulletText("HLSL Shader Model 4.0 (DirectX 10)");
+#elif (IM_CURRENT_GFX == IM_GFX_DIRECTX11)
+			ImGui::BulletText("HLSL Shader Model 4.0 (DirectX 11)");
+#endif
+			ImGui::BulletText("Custom pixel shader with SDF function");
+			ImGui::BulletText("No custom vertex buffer (uses ImGui's default)");
+
+			ImGui::Separator();
+
+			// Render the arrow using custom shader (using helper function)
+			ImPlatform_DrawCustomShaderQuad(arrow_program);
+
+			ImGui::End();
+		}
+
+		// Custom Shader Demo Window 2: Linear Gradient
+		if (gradient_program)
+		{
+			ImGui::Begin("Custom Shader: Linear Gradient");
+			ImGui::Text("This demonstrates a custom shader with adjustable colors.");
+			ImGui::Text("Linear gradient interpolating between two colors.");
+
+			ImGui::Separator();
+			ImGui::ColorEdit4("Start Color", (float*)&gradient_color_start);
+			ImGui::ColorEdit4("End Color", (float*)&gradient_color_end);
+
+			ImGui::Separator();
+			ImGui::TextColored(ImVec4(0.2f, 1.0f, 0.2f, 1.0f), "Shader API Used:");
+#if (IM_CURRENT_GFX == IM_GFX_OPENGL3)
+			ImGui::BulletText("GLSL #version 130");
+#elif (IM_CURRENT_GFX == IM_GFX_DIRECTX10) || (IM_CURRENT_GFX == IM_GFX_DIRECTX11)
+			ImGui::BulletText("HLSL Shader Model 4.0");
+#endif
+			ImGui::BulletText("Uniforms: ColorStart, ColorEnd");
+			ImGui::BulletText("Using ImPlatform Uniform Block API");
+			ImGui::BulletText("Pixel shader interpolates between two colors");
+
+			ImGui::Separator();
+
+			// Update shader uniforms using uniform block API
+			ImPlatform_BeginUniformBlock(gradient_program);
+			ImPlatform_SetUniform("ColorStart", &gradient_color_start, sizeof(ImVec4));
+			ImPlatform_SetUniform("ColorEnd", &gradient_color_end, sizeof(ImVec4));
+			ImPlatform_EndUniformBlock(gradient_program);
+
+			// Render the gradient using custom shader (using helper function)
+			ImPlatform_DrawCustomShaderQuad(gradient_program);
+
+			ImGui::End();
+		}
+#else
+		// Show a message when custom shaders are not supported
+		{
+			ImGui::Begin("Custom Shader Support");
+			ImGui::TextColored(ImVec4(1.0f, 0.5f, 0.0f, 1.0f), "Custom Shaders Not Supported");
+			ImGui::Separator();
+			ImGui::Text("The current graphics backend does not support custom shaders.");
+#if (IM_CURRENT_GFX == IM_GFX_DIRECTX9)
+			ImGui::Text("DirectX 9: Shader API requires D3DX which is deprecated.");
+#endif
+			ImGui::Text("Supported backends:");
+			ImGui::BulletText("OpenGL 3");
+			ImGui::BulletText("DirectX 10");
+			ImGui::BulletText("DirectX 11");
+			ImGui::BulletText("DirectX 12 (stub)");
+			ImGui::BulletText("Vulkan (stub)");
+			ImGui::BulletText("Metal (stub)");
+			ImGui::BulletText("WebGPU (stub)");
+			ImGui::End();
+		}
+#endif // IMPLATFORM_GFX_SUPPORT_CUSTOM_SHADER
+
+		ImGui::Render();
+
+		ImPlatform_GfxAPIClear( clear_color );
+		ImPlatform_GfxAPIRender( clear_color );
+
+		// Update and Render additional Platform Windows
+#ifdef IMGUI_HAS_VIEWPORT
+		ImPlatform_GfxViewportPre();
+		ImPlatform_GfxViewportPost();
+#endif
+
+		t += ImGui::GetIO().DeltaTime;
+
+		ImPlatform_GfxAPISwapBuffer();
 	}
+
+	// Cleanup textures
+#ifdef IMGUI_HAS_TEXTURES
+	if (img)
+		ImPlatform_DestroyTexture(img);
+	if (img_white)
+		ImPlatform_DestroyTexture(img_white);
+#endif
+
+#if IMPLATFORM_GFX_SUPPORT_CUSTOM_SHADER
+	// Cleanup shaders
+	if (arrow_program)
+		ImPlatform_DestroyShaderProgram(arrow_program);
+	if (arrow_vs)
+		ImPlatform_DestroyShader(arrow_vs);
+	if (arrow_ps)
+		ImPlatform_DestroyShader(arrow_ps);
+
+	if (gradient_program)
+		ImPlatform_DestroyShaderProgram(gradient_program);
+	if (gradient_vs)
+		ImPlatform_DestroyShader(gradient_vs);
+	if (gradient_ps)
+		ImPlatform_DestroyShader(gradient_ps);
+#endif
+
+	ImPlatform_ShutdownGfxAPI();
+	ImPlatform_ShutdownWindow();
+	ImPlatform_ShutdownPostGfxAPI();
+
+	ImGui::DestroyContext();
+
+	ImPlatform_DestroyWindow();
 
 	return 0;
 }
