@@ -187,6 +187,7 @@ IMPLATFORM_API bool ImPlatform_GfxAPIRender(ImVec4 const vClearColor)
 }
 
 // ImPlatform API - GfxViewportPre
+#ifdef IMGUI_HAS_VIEWPORT
 IMPLATFORM_API void ImPlatform_GfxViewportPre(void)
 {
     if (ImGui::GetIO().ConfigFlags & ImGuiConfigFlags_ViewportsEnable)
@@ -203,6 +204,7 @@ IMPLATFORM_API void ImPlatform_GfxViewportPost(void)
         ImGui::RenderPlatformWindowsDefault();
     }
 }
+#endif
 
 // ImPlatform API - GfxAPISwapBuffer
 IMPLATFORM_API bool ImPlatform_GfxAPISwapBuffer(void)
