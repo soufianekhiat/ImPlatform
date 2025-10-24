@@ -8,8 +8,11 @@ ImPlatform is a platform abstraction layer that simplifies multiplatform develop
 - **Multiple Platform Support**: Win32, GLFW, SDL2, SDL3, Apple (macOS/iOS)
 - **Multiple Graphics API Support**: OpenGL 3, DirectX 9/10/11/12, Vulkan, Metal, WebGPU
 - **Header-Only Implementation**: Single header include with implementation macro
-- **Multi-Viewport Support**: Built-in support for ImGui's multi-viewport feature
-- **Flexible Configuration**: Define platform and graphics API at compile time
+- **Multi-Viewport Support**: Built-in support for ImGui's multi-viewport and docking features
+- **Custom Shader Support**: Render custom shaders with ImGui's vertex/index buffers
+- **Texture Creation API**: Platform-agnostic texture loading and management
+- **Custom Title Bar**: Optional borderless window with custom titlebar rendering (Win32, GLFW*)
+- **Flexible Configuration**: Define platform and graphics API at compile time with feature flags
 
 ## Quick Start
 
@@ -126,6 +129,70 @@ int main()
 - `ImPlatform_ShutdownWindow()` - Shutdown ImGui backends
 - `ImPlatform_ShutdownPostGfxAPI()` - Cleanup device and swapchain
 - `ImPlatform_DestroyWindow()` - Destroy window
+
+### Advanced Features
+
+#### Custom Shaders (when `IMPLATFORM_GFX_SUPPORT_CUSTOM_SHADER` is enabled)
+
+```cpp
+// Create custom shader
+ImPlatform_ShaderDesc vs_desc = ImPlatform_ShaderDesc_Default();
+vs_desc.shader_type = ImPlatform_ShaderType_Vertex;
+vs_desc.format = ImPlatform_ShaderFormat_GLSL; // or HLSL, MSL, SPIRV
+vs_desc.source_code = vertex_shader_source;
+vs_desc.entry_point = "main";
+ImPlatform_Shader vs = ImPlatform_CreateShader(&vs_desc);
+
+// Create shader program
+ImPlatform_ShaderProgram program = ImPlatform_CreateShaderProgram(vs, ps);
+
+// Set uniform parameters
+ImPlatform_BeginUniformBlock(program);
+ImPlatform_SetUniform("ColorStart", &color1, sizeof(ImVec4));
+ImPlatform_SetUniform("ColorEnd", &color2, sizeof(ImVec4));
+ImPlatform_EndUniformBlock(program);
+
+// Draw with custom shader
+ImPlatform_DrawCustomShaderQuad(program);
+```
+
+#### Texture Creation (when `IMGUI_HAS_TEXTURES` is defined)
+
+```cpp
+// Create texture
+ImPlatform_TextureDesc tex_desc = ImPlatform_TextureDesc_Default(width, height);
+ImTextureID texture = ImPlatform_CreateTexture(pixel_data, &tex_desc);
+
+// Use in ImGui
+ImGui::Image(texture, ImVec2(256, 256));
+
+// Cleanup
+ImPlatform_DestroyTexture(texture);
+```
+
+#### Custom Title Bar (when `IMPLATFORM_APP_SUPPORT_CUSTOM_TITLEBAR` is enabled)
+
+```cpp
+// Enable before creating window
+ImPlatform_EnableCustomTitleBar();
+ImPlatform_CreateWindow(...);
+
+// In main loop, before other ImGui windows:
+if (ImPlatform_BeginCustomTitleBar(32.0f))
+{
+    // Option 1: Use default titlebar
+    ImPlatform_DrawCustomMenuBarDefault();
+
+    // Option 2: Custom titlebar
+    ImGui::Text("My App");
+    if (ImGui::Button("_")) ImPlatform_MinimizeApp();
+    if (ImGui::Button("[]")) ImPlatform_MaximizeApp();
+    if (ImGui::Button("X")) ImPlatform_CloseApp();
+}
+ImPlatform_EndCustomTitleBar();
+```
+
+**Note**: Custom titlebar on GLFW requires [TheCherno's GLFW fork](https://github.com/TheCherno/glfw/tree/dev) and defining `IMPLATFORM_APP_SUPPORT_CUSTOM_TITLEBAR=1` and `IM_THE_CHERNO_GLFW3`.
 
 ## Platform & Graphics API Defines
 
@@ -264,20 +331,69 @@ The library has been refactored from a C++ namespace API to a clean C API. Key c
 | `__DEAR_GFX_DX11__`              | `IM_CURRENT_GFX`                 |
 | `IM_PLATFORM_IMPLEMENTATION`     | `IMPLATFORM_IMPLEMENTATION`      |
 
+## Tested Versions
+
+The library has been tested with the following configurations:
+
+### Platforms Tested
+- **Windows 10/11** (Win32 API) - Tested
+- **Windows 10/11** (GLFW) - Tested
+- **Windows 10/11** (SDL2) - Not tested (contributions welcome!)
+- **Windows 10/11** (SDL3) - Not tested (contributions welcome!)
+- **macOS** - Not tested (contributions welcome!)
+- **Linux** - Not tested (contributions welcome!)
+
+### Graphics APIs Tested
+- **DirectX 9** - Tested (Win32 only)
+- **DirectX 10** - Tested (Win32 only)
+- **DirectX 11** - Tested (Win32 only)
+- **DirectX 12** - Tested (Win32 only)
+- **OpenGL 3** - Tested (Win32, GLFW)
+- **Vulkan** - Basic testing (GLFW, SDL2, SDL3)
+- **Metal** - Not tested (macOS/iOS only, contributions welcome!)
+- **WebGPU** - Not tested (contributions welcome!)
+
+### Dear ImGui Version
+- **Tested with**: Dear ImGui v1.92.x (docking branch)
+- **Minimum required**: Dear ImGui v1.92.x
+- **Recommended**: Use the latest docking branch for full multi-viewport support
+
 ## Known Limitations
 
-- Simple API is not yet implemented in the new C API
-- Custom shader support is not yet available
-- Texture creation API is not yet available
-- Custom title bar feature is work in progress
+- Apple (macOS/iOS) platform implementation needs testing
+- WebGPU backend is not yet implemented
+- OpenGL3 multi-viewport with custom shaders may have minor offset issues in some edge cases
+- Custom titlebar on GLFW requires TheCherno's fork
 
 ## Contributing
 
-Contributions are welcome! The author primarily develops for Windows, so contributions for other platforms (macOS, Linux, etc.) are especially appreciated.
+Contributions are welcome! The author primarily develops and tests on **Windows with Visual Studio**, so contributions and testing reports for other platforms are **especially appreciated**.
+
+### We Need Your Help!
+
+**Platform Testers Wanted:**
+- macOS testers (Metal, OpenGL3)
+- Linux testers (OpenGL3, Vulkan)
+- SDL2/SDL3 comprehensive testing on all platforms
+- iOS/mobile platform testing
+
+**Feature Contributors:**
+- WebGPU backend implementation
+- Apple Metal backend improvements
+- SDL platform feature parity (custom titlebar, etc.)
+- Platform-specific bug fixes and optimizations
+
+**How to Contribute:**
+1. Test ImPlatform on your platform/configuration
+2. Report bugs or issues via GitHub Issues
+3. Submit pull requests with fixes or new features
+4. Share your experience and feedback
+
+If you've successfully built and tested ImPlatform on a platform/configuration not listed above, please let us know! Your feedback helps improve the library for everyone.
 
 ## License
 
-This project follows Dear ImGui's licensing model. Please refer to the Dear ImGui license for details.
+This project is licensed under the **MIT License**, the same as Dear ImGui.
 
 ## Credits
 
