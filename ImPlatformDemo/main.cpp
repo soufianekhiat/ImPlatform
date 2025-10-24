@@ -50,6 +50,9 @@ extern "C" {
 
 int main()
 {
+	// Uncomment to enable custom title bar:
+	// ImPlatform_EnableCustomTitleBar();
+
 	// Setup for an image
 	int width;
 	int height;
@@ -86,6 +89,13 @@ int main()
 
 	// Using the new C API
 	bool bGood;
+
+	// Optional: Enable custom titlebar (must be called before CreateWindow)
+	// Note: Only supported on Win32 by default. For GLFW, requires TheCherno's GLFW fork
+	//       and define IM_THE_CHERNO_GLFW3, then set IMPLATFORM_APP_SUPPORT_CUSTOM_TITLEBAR=1
+#if IMPLATFORM_APP_SUPPORT_CUSTOM_TITLEBAR
+	// ImPlatform_EnableCustomTitleBar();
+#endif
 
 	bGood = ImPlatform_CreateWindow( "ImPlatform Demo", ImVec2( 100, 100 ), 1024, 764 );
 	if ( !bGood )
@@ -430,6 +440,29 @@ int main()
 		ImPlatform_PlatformNewFrame();
 
 		ImGui::NewFrame();
+
+		// Custom Title Bar Demo (optional)
+#if IMPLATFORM_APP_SUPPORT_CUSTOM_TITLEBAR
+		// Uncomment to enable custom titlebar rendering
+		if (ImPlatform_BeginCustomTitleBar(32.0f))
+		{
+			// Option 1: Use the default titlebar with min/max/close buttons
+			ImPlatform_DrawCustomMenuBarDefault();
+
+			// Option 2: Create your own custom titlebar
+			// ImGui::Text("My Custom App");
+			// ImGui::SameLine(ImGui::GetWindowWidth() - 100);
+			// if (ImGui::Button("_"))
+			// 	ImPlatform_MinimizeApp();
+			// ImGui::SameLine();
+			// if (ImGui::Button("[]"))
+			// 	ImPlatform_MaximizeApp();
+			// ImGui::SameLine();
+			// if (ImGui::Button("X"))
+			// 	ImPlatform_CloseApp();
+		}
+		ImPlatform_EndCustomTitleBar();
+#endif
 
 		// ImGui Demo Code
 		bool show = true;

@@ -7,6 +7,7 @@
 
 #include "../imgui/backends/imgui_impl_win32.h"
 #include <tchar.h>
+#include <windowsx.h>  // For GET_X_LPARAM, GET_Y_LPARAM
 
 // Global state
 static ImPlatform_AppData_Win32 g_AppData = { 0 };
@@ -15,6 +16,11 @@ static ImPlatform_AppData_Win32 g_AppData = { 0 };
 extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
 
 // Forward declarations from internal header are already included
+
+#if IMPLATFORM_APP_SUPPORT_CUSTOM_TITLEBAR
+// Forward declaration - defined in ImPlatform_titlebar.cpp
+bool ImPlatform_IsMaximized(void);
+#endif
 
 // Win32 message handler
 static LRESULT WINAPI WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
@@ -50,6 +56,83 @@ static LRESULT WINAPI WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
         if ((wParam & 0xfff0) == SC_KEYMENU) // Disable ALT application menu
             return 0;
         break;
+
+#if IMPLATFORM_APP_SUPPORT_CUSTOM_TITLEBAR
+    case WM_NCCALCSIZE:
+        if (g_AppData.bCustomTitleBar && lParam)
+        {
+            // Custom titlebar: remove standard window frame but keep resize borders
+            RECT border_thickness = {0, 0, 0, 0};
+            AdjustWindowRectEx(&border_thickness, GetWindowLong(hWnd, GWL_STYLE) & ~WS_CAPTION, FALSE, NULL);
+            border_thickness.left *= -1;
+            border_thickness.top *= -1;
+            border_thickness.right *= -1;
+            border_thickness.bottom *= -1;
+
+            NCCALCSIZE_PARAMS* sz = (NCCALCSIZE_PARAMS*)lParam;
+            sz->rgrc[0].left += border_thickness.left;
+            sz->rgrc[0].right -= border_thickness.right;
+            sz->rgrc[0].bottom -= border_thickness.bottom;
+            return 0;
+        }
+        break;
+
+    case WM_NCHITTEST:
+        if (g_AppData.bCustomTitleBar)
+        {
+            // Allow resizing from borders when not maximized
+            if (!ImPlatform_IsMaximized())
+            {
+                RECT winRc;
+                GetClientRect(hWnd, &winRc);
+                POINT pt = { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
+                ScreenToClient(hWnd, &pt);
+
+                RECT border_thickness = {0, 0, 0, 0};
+                AdjustWindowRectEx(&border_thickness, GetWindowLong(hWnd, GWL_STYLE) & ~WS_CAPTION, FALSE, NULL);
+                border_thickness.left *= -1;
+                border_thickness.top *= -1;
+                border_thickness.right *= -1;
+                border_thickness.bottom *= -1;
+
+                const int verticalBorderSize = GetSystemMetrics(SM_CYFRAME);
+
+                if (PtInRect(&winRc, pt))
+                {
+                    enum { left = 1, top = 2, right = 4, bottom = 8 };
+                    int hit = 0;
+                    if (pt.x <= border_thickness.left)
+                        hit |= left;
+                    if (pt.x >= winRc.right - border_thickness.right)
+                        hit |= right;
+                    if (pt.y <= border_thickness.top || pt.y < verticalBorderSize)
+                        hit |= top;
+                    if (pt.y >= winRc.bottom - border_thickness.bottom)
+                        hit |= bottom;
+
+                    if (hit & top && hit & left)        return HTTOPLEFT;
+                    if (hit & top && hit & right)       return HTTOPRIGHT;
+                    if (hit & bottom && hit & left)     return HTBOTTOMLEFT;
+                    if (hit & bottom && hit & right)    return HTBOTTOMRIGHT;
+                    if (hit & left)                     return HTLEFT;
+                    if (hit & top)                      return HTTOP;
+                    if (hit & right)                    return HTRIGHT;
+                    if (hit & bottom)                   return HTBOTTOM;
+                }
+            }
+
+            // Check if hovering titlebar for dragging
+            if (g_AppData.bTitleBarHovered)
+            {
+                return HTCAPTION;
+            }
+            else
+            {
+                return HTCLIENT;
+            }
+        }
+        break;
+#endif // IMPLATFORM_APP_SUPPORT_CUSTOM_TITLEBAR
 
     case WM_DESTROY:
         ::PostQuitMessage(0);
@@ -100,10 +183,17 @@ IMPLATFORM_API bool ImPlatform_CreateWindow(char const* pWindowsName, ImVec2 con
     ::RegisterClassExW(&g_AppData.wc);
 
     // Apply DPI scaling to window size
+    // Use custom window style for custom titlebar (borderless with thick frame for resizing)
+#if IMPLATFORM_APP_SUPPORT_CUSTOM_TITLEBAR
+    DWORD dwStyle = g_AppData.bCustomTitleBar ? (WS_POPUP | WS_THICKFRAME) : WS_OVERLAPPEDWINDOW;
+#else
+    DWORD dwStyle = WS_OVERLAPPEDWINDOW;
+#endif
+
     g_AppData.hWnd = ::CreateWindowW(
         g_AppData.wc.lpszClassName,
         wName,
-        WS_OVERLAPPEDWINDOW,
+        dwStyle,
         (int)vPos.x, (int)vPos.y,
         (int)(uWidth * main_scale), (int)(uHeight * main_scale),
         NULL, NULL,

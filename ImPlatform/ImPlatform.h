@@ -85,6 +85,26 @@
     #endif
 #endif
 
+// Platform feature support flags
+// These indicate which features are supported by each platform
+#ifndef IMPLATFORM_APP_SUPPORT_CUSTOM_TITLEBAR
+    #if defined(IM_CURRENT_PLATFORM)
+        #if (IM_CURRENT_PLATFORM == IM_PLATFORM_WIN32)
+            // Win32: Full custom titlebar support
+            #define IMPLATFORM_APP_SUPPORT_CUSTOM_TITLEBAR 1
+        #elif (IM_CURRENT_PLATFORM == IM_PLATFORM_GLFW)
+            // GLFW: Requires TheCherno's GLFW fork, disabled by default
+            #define IMPLATFORM_APP_SUPPORT_CUSTOM_TITLEBAR 0
+        #elif (IM_CURRENT_PLATFORM == IM_PLATFORM_SDL2) || \
+              (IM_CURRENT_PLATFORM == IM_PLATFORM_SDL3)
+            // SDL: Not yet supported
+            #define IMPLATFORM_APP_SUPPORT_CUSTOM_TITLEBAR 0
+        #else
+            #define IMPLATFORM_APP_SUPPORT_CUSTOM_TITLEBAR 0
+        #endif
+    #endif
+#endif
+
 #define IM_PLATFORM_WIN32   ( ( 1u << 0u ) << 16u )
 #define IM_PLATFORM_GLFW    ( ( 1u << 1u ) << 16u )
 #define IM_PLATFORM_SDL2    ( ( 1u << 2u ) << 16u )
@@ -550,7 +570,39 @@ IMPLATFORM_API void ImPlatform_GfxViewportPost(void);
 // Returns true on success
 IMPLATFORM_API bool ImPlatform_GfxAPISwapBuffer(void);
 
+// ============================================================================
+// Custom Title Bar API
+// ============================================================================
+
+#if IMPLATFORM_APP_SUPPORT_CUSTOM_TITLEBAR
+
+// Check if custom titlebar is enabled
+IMPLATFORM_API bool ImPlatform_CustomTitleBarEnabled(void);
+
+// Enable custom titlebar (must be called before ImPlatform_InitPlatform)
+IMPLATFORM_API void ImPlatform_EnableCustomTitleBar(void);
+
+// Disable custom titlebar
+IMPLATFORM_API void ImPlatform_DisableCustomTitleBar(void);
+
+// Draw a default custom menu bar with minimize/maximize/close buttons
+IMPLATFORM_API void ImPlatform_DrawCustomMenuBarDefault(void);
+
+// Window control functions
+IMPLATFORM_API void ImPlatform_MinimizeApp(void);
+IMPLATFORM_API void ImPlatform_MaximizeApp(void);
+IMPLATFORM_API void ImPlatform_CloseApp(void);
+
+// Custom titlebar rendering
+// Returns true if the titlebar window began successfully
+IMPLATFORM_API bool ImPlatform_BeginCustomTitleBar(float height);
+IMPLATFORM_API void ImPlatform_EndCustomTitleBar(void);
+
+#endif // IMPLATFORM_APP_SUPPORT_CUSTOM_TITLEBAR
+
+// ============================================================================
 // Shutdown functions (call in this order)
+// ============================================================================
 
 // Shutdown graphics API backend (invalidate device objects)
 IMPLATFORM_API void ImPlatform_ShutdownGfxAPI(void);
@@ -604,6 +656,11 @@ IMPLATFORM_API void ImPlatform_DestroyWindow(void);
     #include "ImPlatform_app_apple.mm"
 #else
     #error "Unknown or unsupported IM_CURRENT_PLATFORM backend"
+#endif
+
+// Include custom titlebar implementation (when supported)
+#if IMPLATFORM_APP_SUPPORT_CUSTOM_TITLEBAR
+    #include "ImPlatform_titlebar.cpp"
 #endif
 
 // ============================================================================

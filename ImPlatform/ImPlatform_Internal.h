@@ -79,12 +79,24 @@ struct ImPlatform_AppData_Win32 {
     HWND hWnd;
     bool bDone;
     float fDpiScale;
+
+    // Custom TitleBar support
+    bool bCustomTitleBar;
+    bool bTitleBarHovered;
+    ImVec2 vEndCustomToolBar;
+    float fCustomTitleBarHeight;
 };
 #endif
 
 #if defined(IM_CURRENT_PLATFORM) && (IM_CURRENT_PLATFORM == IM_PLATFORM_GLFW)
 struct ImPlatform_AppData_GLFW {
     GLFWwindow* pWindow;
+
+    // Custom TitleBar support
+    bool bCustomTitleBar;
+    bool bTitleBarHovered;
+    ImVec2 vEndCustomToolBar;
+    float fCustomTitleBarHeight;
 };
 #endif
 
@@ -92,6 +104,7 @@ struct ImPlatform_AppData_GLFW {
 struct ImPlatform_AppData_SDL2 {
     SDL_Window* pWindow;
     SDL_GLContext glContext;
+    bool bDone;
 };
 #endif
 
@@ -99,6 +112,7 @@ struct ImPlatform_AppData_SDL2 {
 struct ImPlatform_AppData_SDL3 {
     SDL_Window* pWindow;
     SDL_GLContext glContext;
+    bool bDone;
 };
 #endif
 

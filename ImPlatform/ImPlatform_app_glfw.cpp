@@ -54,10 +54,36 @@ IMPLATFORM_API bool ImPlatform_CreateWindow(char const* pWindowsName, ImVec2 con
     glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
 #endif
 
+#if IMPLATFORM_APP_SUPPORT_CUSTOM_TITLEBAR
+    // Custom titlebar support (requires TheCherno's GLFW fork)
+    if (g_AppData.bCustomTitleBar)
+    {
+#ifdef IM_THE_CHERNO_GLFW3
+        glfwWindowHint(GLFW_TITLEBAR, false);
+#endif
+        glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE);
+    }
+#endif
+
     // Create window with graphics context
     g_AppData.pWindow = glfwCreateWindow((int)uWidth, (int)uHeight, pWindowsName, NULL, NULL);
     if (g_AppData.pWindow == NULL)
         return false;
+
+#if IMPLATFORM_APP_SUPPORT_CUSTOM_TITLEBAR
+    // Setup custom titlebar hit-test callback
+    if (g_AppData.bCustomTitleBar)
+    {
+        glfwSetWindowUserPointer(g_AppData.pWindow, &g_AppData);
+#ifdef IM_THE_CHERNO_GLFW3
+        glfwSetTitlebarHitTestCallback(g_AppData.pWindow,
+            [](GLFWwindow* window, int x, int y, int* hit) {
+                ImPlatform_AppData_GLFW* app = (ImPlatform_AppData_GLFW*)glfwGetWindowUserPointer(window);
+                *hit = app->bTitleBarHovered;
+            });
+#endif
+    }
+#endif
 
     // Set window position (GLFW doesn't support this in creation, so we set it after)
     glfwSetWindowPos(g_AppData.pWindow, (int)vPos.x, (int)vPos.y);
