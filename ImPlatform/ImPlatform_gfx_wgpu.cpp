@@ -18,6 +18,11 @@
 // Global state
 static ImPlatform_GfxData_WebGPU g_GfxData = { 0 };
 
+// Uniform block API state
+static ImPlatform_ShaderProgram g_CurrentUniformBlockProgram = nullptr;
+static void* g_UniformBlockData = nullptr;
+static size_t g_UniformBlockSize = 0;
+
 // Internal API - Get WebGPU gfx data
 ImPlatform_GfxData_WebGPU* ImPlatform_Gfx_GetData_WebGPU(void)
 {
@@ -426,6 +431,60 @@ IMPLATFORM_API void ImPlatform_DestroyShaderProgram(ImPlatform_ShaderProgram pro
 IMPLATFORM_API void ImPlatform_UseShaderProgram(ImPlatform_ShaderProgram program) {}
 IMPLATFORM_API bool ImPlatform_SetShaderUniform(ImPlatform_ShaderProgram program, const char* name, const void* data, unsigned int size) { return false; }
 IMPLATFORM_API bool ImPlatform_SetShaderTexture(ImPlatform_ShaderProgram program, const char* name, unsigned int slot, ImTextureID texture) { return false; }
+
+IMPLATFORM_API void ImPlatform_BeginUniformBlock(ImPlatform_ShaderProgram program)
+{
+    if (!program)
+        return;
+
+    g_CurrentUniformBlockProgram = program;
+
+    // Free any previous block data
+    if (g_UniformBlockData)
+    {
+        free(g_UniformBlockData);
+        g_UniformBlockData = nullptr;
+        g_UniformBlockSize = 0;
+    }
+}
+
+IMPLATFORM_API bool ImPlatform_SetUniform(const char* name, const void* data, unsigned int size)
+{
+    if (!g_CurrentUniformBlockProgram || !data || size == 0)
+        return false;
+
+    // Accumulate all uniforms into a single buffer
+    // Allocate or expand the buffer
+    size_t new_size = g_UniformBlockSize + size;
+    void* new_data = realloc(g_UniformBlockData, new_size);
+    if (!new_data)
+        return false;
+
+    g_UniformBlockData = new_data;
+    memcpy((char*)g_UniformBlockData + g_UniformBlockSize, data, size);
+    g_UniformBlockSize = new_size;
+
+    return true;
+}
+
+IMPLATFORM_API void ImPlatform_EndUniformBlock(ImPlatform_ShaderProgram program)
+{
+    if (!program || program != g_CurrentUniformBlockProgram)
+        return;
+
+    if (g_UniformBlockData && g_UniformBlockSize > 0)
+    {
+        // Upload the accumulated uniform block to the shader
+        ImPlatform_SetShaderUniform(program, "uniformBlock", g_UniformBlockData, g_UniformBlockSize);
+
+        // Clean up
+        free(g_UniformBlockData);
+        g_UniformBlockData = nullptr;
+        g_UniformBlockSize = 0;
+    }
+
+    g_CurrentUniformBlockProgram = nullptr;
+}
 
 // ============================================================================
 // Custom Shader DrawList Integration
