@@ -81,12 +81,14 @@
 // These indicate which features are supported by each backend
 #if defined(IM_CURRENT_GFX)
     #if (IM_CURRENT_GFX == IM_GFX_OPENGL3) || \
+        (IM_CURRENT_GFX == IM_GFX_DIRECTX9) || \
         (IM_CURRENT_GFX == IM_GFX_DIRECTX10) || \
         (IM_CURRENT_GFX == IM_GFX_DIRECTX11) || \
         (IM_CURRENT_GFX == IM_GFX_DIRECTX12) || \
         (IM_CURRENT_GFX == IM_GFX_VULKAN) || \
         (IM_CURRENT_GFX == IM_GFX_METAL) || \
         (IM_CURRENT_GFX == IM_GFX_WGPU)
+        // Custom shader API with uniform blocks is implemented for all graphics backends
         #define IMPLATFORM_GFX_SUPPORT_CUSTOM_SHADER 1
     #else
         #define IMPLATFORM_GFX_SUPPORT_CUSTOM_SHADER 0

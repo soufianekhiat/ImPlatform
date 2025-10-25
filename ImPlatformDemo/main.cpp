@@ -237,8 +237,8 @@ int main()
 		"    Out_Color = vec4(1.0, 0.5, 0.2, 1.0) * alpha;\n"
 		"}\n";
 
-#elif (IM_CURRENT_GFX == IM_GFX_DIRECTX10) || (IM_CURRENT_GFX == IM_GFX_DIRECTX11)
-	// HLSL for DirectX 10/11
+#elif (IM_CURRENT_GFX == IM_GFX_DIRECTX10) || (IM_CURRENT_GFX == IM_GFX_DIRECTX11) || (IM_CURRENT_GFX == IM_GFX_DIRECTX12)
+	// HLSL for DirectX 10/11/12
 	arrow_format = ImPlatform_ShaderFormat_HLSL;
 	arrow_vs_source =
 		"cbuffer vertexBuffer : register(b0) {\n"
@@ -323,7 +323,7 @@ int main()
 		"    Out_Color = mix(ColorStart, ColorEnd, Frag_UV.y);\n"
 		"}\n";
 
-#elif (IM_CURRENT_GFX == IM_GFX_DIRECTX10) || (IM_CURRENT_GFX == IM_GFX_DIRECTX11)
+#elif (IM_CURRENT_GFX == IM_GFX_DIRECTX10) || (IM_CURRENT_GFX == IM_GFX_DIRECTX11) || (IM_CURRENT_GFX == IM_GFX_DIRECTX12)
 	gradient_format = ImPlatform_ShaderFormat_HLSL;
 	gradient_vs_source =
 		"cbuffer vertexBuffer : register(b0) {\n"
@@ -348,7 +348,7 @@ int main()
 		"}\n";
 
 	gradient_ps_source =
-		"cbuffer pixelBuffer : register(b0) {\n"
+		"cbuffer pixelBuffer : register(b1) {\n"  // b1 for DX12 compatibility (b0 is projection matrix)
 		"    float4 ColorStart;\n"
 		"    float4 ColorEnd;\n"
 		"};\n"
@@ -505,6 +505,8 @@ int main()
 			ImGui::BulletText("HLSL Shader Model 4.0 (DirectX 10)");
 #elif (IM_CURRENT_GFX == IM_GFX_DIRECTX11)
 			ImGui::BulletText("HLSL Shader Model 4.0 (DirectX 11)");
+#elif (IM_CURRENT_GFX == IM_GFX_DIRECTX12)
+			ImGui::BulletText("HLSL Shader Model 5.0 (DirectX 12)");
 #endif
 			ImGui::BulletText("Custom pixel shader with SDF function");
 			ImGui::BulletText("No custom vertex buffer (uses ImGui's default)");
@@ -534,6 +536,8 @@ int main()
 			ImGui::BulletText("GLSL #version 130");
 #elif (IM_CURRENT_GFX == IM_GFX_DIRECTX10) || (IM_CURRENT_GFX == IM_GFX_DIRECTX11)
 			ImGui::BulletText("HLSL Shader Model 4.0");
+#elif (IM_CURRENT_GFX == IM_GFX_DIRECTX12)
+			ImGui::BulletText("HLSL Shader Model 5.0");
 #endif
 			ImGui::BulletText("Uniforms: ColorStart, ColorEnd");
 			ImGui::BulletText("Using ImPlatform Uniform Block API");

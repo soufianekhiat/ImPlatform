@@ -5,6 +5,10 @@
 
 #ifdef IM_GFX_DIRECTX12
 
+#include <stdio.h>
+#include <d3dcompiler.h>
+#pragma comment(lib, "d3dcompiler.lib")
+
 #include "../imgui/backends/imgui_impl_dx12.h"
 
 #ifdef _DEBUG
@@ -78,6 +82,11 @@ struct ExampleDescriptorHeapAllocator
 // Global state
 static ImPlatform_GfxData_DX12 g_GfxData = { 0 };
 static ExampleDescriptorHeapAllocator g_SrvDescHeapAlloc;
+
+// Uniform block API state
+static ImPlatform_ShaderProgram g_CurrentUniformBlockProgram = nullptr;
+static void* g_UniformBlockData = nullptr;
+static size_t g_UniformBlockSize = 0;
 
 // Helper functions
 static void CreateRenderTarget()
@@ -797,40 +806,414 @@ IMPLATFORM_API void ImPlatform_DrawIndexed(unsigned int primitive_type, unsigned
 // Custom Shader System API - DirectX 12
 // ============================================================================
 
+// Internal shader structure for DX12
+struct ImPlatform_ShaderData_DX12
+{
+    ID3DBlob* pBlob;                    // Compiled shader bytecode
+    ImPlatform_ShaderStage stage;       // Shader stage (vertex/pixel)
+};
+
+// Internal shader program structure for DX12
+struct ImPlatform_ShaderProgramData_DX12
+{
+    ID3DBlob* pVSBlob;                  // Vertex shader bytecode
+    ID3DBlob* pPSBlob;                  // Pixel shader bytecode
+    ID3D12PipelineState* pPSO;          // Pipeline State Object
+    ID3D12RootSignature* pRootSignature; // Root signature
+    ID3D12Resource* pPixelConstantBuffer; // GPU constant buffer for pixel shader
+    void* pPixelConstantData;           // CPU-side copy of pixel shader constants
+    size_t pixelConstantDataSize;       // Size of pixel constant data
+    bool pixelConstantDataDirty;        // Whether constant data needs upload
+};
+
+// Constant buffer structure for projection matrix (vertex shader)
+struct VERTEX_CONSTANT_BUFFER_DX12
+{
+    float mvp[4][4];
+};
+
 IMPLATFORM_API ImPlatform_Shader ImPlatform_CreateShader(const ImPlatform_ShaderDesc* desc)
 {
-    // Stub: DX12 shader creation requires PSO setup
-    return NULL;
+    if (!desc || !desc->source_code)
+        return NULL;
+
+    if (desc->format != ImPlatform_ShaderFormat_HLSL)
+        return NULL;
+
+    ImPlatform_ShaderData_DX12* shader_data = new ImPlatform_ShaderData_DX12();
+    memset(shader_data, 0, sizeof(ImPlatform_ShaderData_DX12));
+    shader_data->stage = desc->stage;
+
+    // Compile shader
+    ID3DBlob* pErrorBlob = NULL;
+    const char* target = NULL;
+
+    if (desc->stage == ImPlatform_ShaderStage_Vertex)
+        target = "vs_5_0";
+    else if (desc->stage == ImPlatform_ShaderStage_Fragment)
+        target = "ps_5_0";
+    else
+    {
+        delete shader_data;
+        return NULL;
+    }
+
+    HRESULT hr = D3DCompile(
+        desc->source_code,
+        strlen(desc->source_code),
+        NULL,  // pSourceName
+        NULL,  // pDefines
+        NULL,  // pInclude
+        desc->entry_point ? desc->entry_point : "main",  // pEntrypoint
+        target,  // pTarget (use shader model 5.0 for DX12)
+        D3DCOMPILE_ENABLE_STRICTNESS,  // Flags1
+        0,  // Flags2
+        &shader_data->pBlob,  // ppCode
+        &pErrorBlob);  // ppErrorMsgs
+
+    if (FAILED(hr))
+    {
+        if (pErrorBlob)
+        {
+            fprintf(stderr, "DX12 Shader compilation failed: %s\n", (char*)pErrorBlob->GetBufferPointer());
+            pErrorBlob->Release();
+        }
+        delete shader_data;
+        return NULL;
+    }
+
+    return (ImPlatform_Shader)shader_data;
 }
 
 IMPLATFORM_API void ImPlatform_DestroyShader(ImPlatform_Shader shader)
 {
-    // Stub
+    if (!shader)
+        return;
+
+    ImPlatform_ShaderData_DX12* shader_data = (ImPlatform_ShaderData_DX12*)shader;
+
+    if (shader_data->pBlob)
+        shader_data->pBlob->Release();
+
+    delete shader_data;
 }
 
 IMPLATFORM_API ImPlatform_ShaderProgram ImPlatform_CreateShaderProgram(ImPlatform_Shader vertex_shader, ImPlatform_Shader fragment_shader)
 {
-    return NULL;
+    if (!vertex_shader || !fragment_shader)
+        return NULL;
+
+    ImPlatform_ShaderData_DX12* vs_data = (ImPlatform_ShaderData_DX12*)vertex_shader;
+    ImPlatform_ShaderData_DX12* ps_data = (ImPlatform_ShaderData_DX12*)fragment_shader;
+
+    if (vs_data->stage != ImPlatform_ShaderStage_Vertex || ps_data->stage != ImPlatform_ShaderStage_Fragment)
+        return NULL;
+
+    ImPlatform_ShaderProgramData_DX12* program = new ImPlatform_ShaderProgramData_DX12();
+    memset(program, 0, sizeof(ImPlatform_ShaderProgramData_DX12));
+
+    program->pVSBlob = vs_data->pBlob;
+    program->pPSBlob = ps_data->pBlob;
+
+    // Add ref to keep shader blobs alive
+    if (program->pVSBlob)
+        program->pVSBlob->AddRef();
+    if (program->pPSBlob)
+        program->pPSBlob->AddRef();
+
+    // Create Root Signature
+    // Root signature MUST be compatible with ImGui's DX12 backend root signature!
+    // ImGui's layout:
+    // - Root parameter 0: 32-bit constants (16 values) for projection matrix - register(b0) VS
+    // - Root parameter 1: Descriptor table for texture SRV - register(t0) PS
+    //
+    // Our layout (compatible superset):
+    // - Root parameter 0: 32-bit constants (16 values) for projection matrix - register(b0) VS [MATCHES ImGui]
+    // - Root parameter 1: Descriptor table for texture SRV - register(t0) PS [MATCHES ImGui]
+    // - Root parameter 2: CBV for custom pixel shader uniforms - register(b1) PS [OUR ADDITION]
+
+    D3D12_DESCRIPTOR_RANGE descRange = {};
+    descRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+    descRange.NumDescriptors = 1;
+    descRange.BaseShaderRegister = 0; // register(t0)
+    descRange.RegisterSpace = 0;
+    descRange.OffsetInDescriptorsFromTableStart = 0;
+
+    D3D12_ROOT_PARAMETER rootParameters[3];
+
+    // Root parameter 0: 32-bit constants for vertex shader (projection matrix)
+    // MATCHES ImGui's backend parameter 0
+    rootParameters[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+    rootParameters[0].Constants.ShaderRegister = 0; // register(b0)
+    rootParameters[0].Constants.RegisterSpace = 0;
+    rootParameters[0].Constants.Num32BitValues = 16; // 4x4 matrix = 16 floats
+    rootParameters[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
+
+    // Root parameter 1: Descriptor table for texture SRV
+    // MATCHES ImGui's backend parameter 1
+    rootParameters[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+    rootParameters[1].DescriptorTable.NumDescriptorRanges = 1;
+    rootParameters[1].DescriptorTable.pDescriptorRanges = &descRange;
+    rootParameters[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+
+    // Root parameter 2: Pixel shader CBV for custom uniforms (OUR ADDITION)
+    // Uses register(b1) to avoid conflict with vertex shader's register(b0)
+    rootParameters[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
+    rootParameters[2].Descriptor.ShaderRegister = 1; // register(b1) NOT b0!
+    rootParameters[2].Descriptor.RegisterSpace = 0;
+    rootParameters[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+
+    // Static sampler
+    D3D12_STATIC_SAMPLER_DESC sampler = {};
+    sampler.Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
+    sampler.AddressU = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
+    sampler.AddressV = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
+    sampler.AddressW = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
+    sampler.MipLODBias = 0.f;
+    sampler.ComparisonFunc = D3D12_COMPARISON_FUNC_ALWAYS;
+    sampler.MinLOD = 0.f;
+    sampler.MaxLOD = 0.f;
+    sampler.ShaderRegister = 0; // register(s0)
+    sampler.RegisterSpace = 0;
+    sampler.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+
+    D3D12_ROOT_SIGNATURE_DESC rootSigDesc = {};
+    rootSigDesc.NumParameters = 3;
+    rootSigDesc.pParameters = rootParameters;
+    rootSigDesc.NumStaticSamplers = 1;
+    rootSigDesc.pStaticSamplers = &sampler;
+    rootSigDesc.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
+
+    ID3DBlob* pSignatureBlob = NULL;
+    ID3DBlob* pErrorBlob = NULL;
+    HRESULT hr = D3D12SerializeRootSignature(&rootSigDesc, D3D_ROOT_SIGNATURE_VERSION_1, &pSignatureBlob, &pErrorBlob);
+    if (FAILED(hr))
+    {
+        if (pErrorBlob)
+        {
+            fprintf(stderr, "DX12 Root signature serialization failed: %s\n", (char*)pErrorBlob->GetBufferPointer());
+            pErrorBlob->Release();
+        }
+        delete program;
+        return NULL;
+    }
+
+    hr = g_GfxData.pDevice->CreateRootSignature(
+        0,
+        pSignatureBlob->GetBufferPointer(),
+        pSignatureBlob->GetBufferSize(),
+        IID_PPV_ARGS(&program->pRootSignature)
+    );
+
+    pSignatureBlob->Release();
+
+    if (FAILED(hr))
+    {
+        fprintf(stderr, "DX12 CreateRootSignature failed\n");
+        if (program->pVSBlob) program->pVSBlob->Release();
+        if (program->pPSBlob) program->pPSBlob->Release();
+        delete program;
+        return NULL;
+    }
+
+    // Create Pipeline State Object (PSO)
+    // Define input layout matching ImDrawVert structure
+    D3D12_INPUT_ELEMENT_DESC inputLayout[] =
+    {
+        { "POSITION", 0, DXGI_FORMAT_R32G32_FLOAT,   0,  0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+        { "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT,   0,  8, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+        { "COLOR",    0, DXGI_FORMAT_R8G8B8A8_UNORM, 0, 16, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+    };
+
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC psoDesc = {};
+    psoDesc.pRootSignature = program->pRootSignature;
+    psoDesc.VS = { program->pVSBlob->GetBufferPointer(), program->pVSBlob->GetBufferSize() };
+    psoDesc.PS = { program->pPSBlob->GetBufferPointer(), program->pPSBlob->GetBufferSize() };
+    psoDesc.BlendState.RenderTarget[0].BlendEnable = TRUE;
+    psoDesc.BlendState.RenderTarget[0].SrcBlend = D3D12_BLEND_SRC_ALPHA;
+    psoDesc.BlendState.RenderTarget[0].DestBlend = D3D12_BLEND_INV_SRC_ALPHA;
+    psoDesc.BlendState.RenderTarget[0].BlendOp = D3D12_BLEND_OP_ADD;
+    psoDesc.BlendState.RenderTarget[0].SrcBlendAlpha = D3D12_BLEND_ONE;
+    psoDesc.BlendState.RenderTarget[0].DestBlendAlpha = D3D12_BLEND_INV_SRC_ALPHA;
+    psoDesc.BlendState.RenderTarget[0].BlendOpAlpha = D3D12_BLEND_OP_ADD;
+    psoDesc.BlendState.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
+    psoDesc.SampleMask = UINT_MAX;
+    psoDesc.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
+    psoDesc.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
+    psoDesc.RasterizerState.FrontCounterClockwise = FALSE;
+    psoDesc.RasterizerState.DepthBias = D3D12_DEFAULT_DEPTH_BIAS;
+    psoDesc.RasterizerState.DepthBiasClamp = D3D12_DEFAULT_DEPTH_BIAS_CLAMP;
+    psoDesc.RasterizerState.SlopeScaledDepthBias = D3D12_DEFAULT_SLOPE_SCALED_DEPTH_BIAS;
+    psoDesc.RasterizerState.DepthClipEnable = TRUE;
+    psoDesc.RasterizerState.MultisampleEnable = FALSE;
+    psoDesc.RasterizerState.AntialiasedLineEnable = FALSE;
+    psoDesc.DepthStencilState.DepthEnable = FALSE;
+    psoDesc.DepthStencilState.StencilEnable = FALSE;
+    psoDesc.InputLayout = { inputLayout, 3 };
+    psoDesc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+    psoDesc.NumRenderTargets = 1;
+    psoDesc.RTVFormats[0] = DXGI_FORMAT_R8G8B8A8_UNORM;  // Match the swapchain format
+    psoDesc.SampleDesc.Count = 1;
+
+    hr = g_GfxData.pDevice->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&program->pPSO));
+    if (FAILED(hr))
+    {
+        fprintf(stderr, "DX12 CreateGraphicsPipelineState failed\n");
+        if (program->pRootSignature) program->pRootSignature->Release();
+        if (program->pVSBlob) program->pVSBlob->Release();
+        if (program->pPSBlob) program->pPSBlob->Release();
+        delete program;
+        return NULL;
+    }
+
+    return (ImPlatform_ShaderProgram)program;
 }
 
 IMPLATFORM_API void ImPlatform_DestroyShaderProgram(ImPlatform_ShaderProgram program)
 {
-    // Stub
+    if (!program)
+        return;
+
+    ImPlatform_ShaderProgramData_DX12* program_data = (ImPlatform_ShaderProgramData_DX12*)program;
+
+    if (program_data->pPSO)
+        program_data->pPSO->Release();
+    if (program_data->pRootSignature)
+        program_data->pRootSignature->Release();
+    if (program_data->pVSBlob)
+        program_data->pVSBlob->Release();
+    if (program_data->pPSBlob)
+        program_data->pPSBlob->Release();
+    if (program_data->pPixelConstantBuffer)
+        program_data->pPixelConstantBuffer->Release();
+    if (program_data->pPixelConstantData)
+        free(program_data->pPixelConstantData);
+
+    delete program_data;
 }
 
 IMPLATFORM_API void ImPlatform_UseShaderProgram(ImPlatform_ShaderProgram program)
 {
-    // Stub
+    // In DX12, shader binding is done via PSO in the draw callback
+    // This function is a no-op for DX12
+    // The actual PSO binding happens in ImPlatform_SetCustomShader callback
 }
 
 IMPLATFORM_API bool ImPlatform_SetShaderUniform(ImPlatform_ShaderProgram program, const char* name, const void* data, unsigned int size)
 {
-    return false;
+    if (!program || !data || size == 0)
+        return false;
+
+    ImPlatform_ShaderProgramData_DX12* program_data = (ImPlatform_ShaderProgramData_DX12*)program;
+
+    // Allocate or reallocate pixel constant buffer storage if needed
+    if (program_data->pPixelConstantData == nullptr || program_data->pixelConstantDataSize < size)
+    {
+        if (program_data->pPixelConstantData)
+            free(program_data->pPixelConstantData);
+
+        program_data->pPixelConstantData = malloc(size);
+        program_data->pixelConstantDataSize = size;
+
+        // Recreate GPU constant buffer with new size
+        if (program_data->pPixelConstantBuffer)
+            program_data->pPixelConstantBuffer->Release();
+
+        // Create upload heap for constant buffer
+        D3D12_HEAP_PROPERTIES heapProps = {};
+        heapProps.Type = D3D12_HEAP_TYPE_UPLOAD;
+        heapProps.CPUPageProperty = D3D12_CPU_PAGE_PROPERTY_UNKNOWN;
+        heapProps.MemoryPoolPreference = D3D12_MEMORY_POOL_UNKNOWN;
+
+        D3D12_RESOURCE_DESC resourceDesc = {};
+        resourceDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+        resourceDesc.Alignment = 0;
+        resourceDesc.Width = (size + 255) & ~255; // Round up to 256-byte boundary for CBVs
+        resourceDesc.Height = 1;
+        resourceDesc.DepthOrArraySize = 1;
+        resourceDesc.MipLevels = 1;
+        resourceDesc.Format = DXGI_FORMAT_UNKNOWN;
+        resourceDesc.SampleDesc.Count = 1;
+        resourceDesc.SampleDesc.Quality = 0;
+        resourceDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+        resourceDesc.Flags = D3D12_RESOURCE_FLAG_NONE;
+
+        g_GfxData.pDevice->CreateCommittedResource(
+            &heapProps,
+            D3D12_HEAP_FLAG_NONE,
+            &resourceDesc,
+            D3D12_RESOURCE_STATE_GENERIC_READ,
+            nullptr,
+            IID_PPV_ARGS(&program_data->pPixelConstantBuffer)
+        );
+    }
+
+    // Copy data to CPU storage
+    memcpy(program_data->pPixelConstantData, data, size);
+    program_data->pixelConstantDataDirty = true;
+
+    return true;
 }
 
 IMPLATFORM_API bool ImPlatform_SetShaderTexture(ImPlatform_ShaderProgram program, const char* name, unsigned int slot, ImTextureID texture)
 {
+    // Texture binding in DX12 is done via descriptor tables in the draw callback
+    // For now, this is a stub - texture support can be added later
     return false;
+}
+
+IMPLATFORM_API void ImPlatform_BeginUniformBlock(ImPlatform_ShaderProgram program)
+{
+    if (!program)
+        return;
+
+    g_CurrentUniformBlockProgram = program;
+
+    // Free any previous block data
+    if (g_UniformBlockData)
+    {
+        free(g_UniformBlockData);
+        g_UniformBlockData = nullptr;
+        g_UniformBlockSize = 0;
+    }
+}
+
+IMPLATFORM_API bool ImPlatform_SetUniform(const char* name, const void* data, unsigned int size)
+{
+    if (!g_CurrentUniformBlockProgram || !data || size == 0)
+        return false;
+
+    // For DirectX, we accumulate all uniforms into a single buffer
+    // Allocate or expand the buffer
+    size_t new_size = g_UniformBlockSize + size;
+    void* new_data = realloc(g_UniformBlockData, new_size);
+    if (!new_data)
+        return false;
+
+    g_UniformBlockData = new_data;
+    memcpy((char*)g_UniformBlockData + g_UniformBlockSize, data, size);
+    g_UniformBlockSize = new_size;
+
+    return true;
+}
+
+IMPLATFORM_API void ImPlatform_EndUniformBlock(ImPlatform_ShaderProgram program)
+{
+    if (!program || program != g_CurrentUniformBlockProgram)
+        return;
+
+    if (g_UniformBlockData && g_UniformBlockSize > 0)
+    {
+        // Upload the accumulated uniform block to the shader
+        ImPlatform_SetShaderUniform(program, "pixelBuffer", g_UniformBlockData, g_UniformBlockSize);
+
+        // Clean up
+        free(g_UniformBlockData);
+        g_UniformBlockData = nullptr;
+        g_UniformBlockSize = 0;
+    }
+
+    g_CurrentUniformBlockProgram = nullptr;
 }
 
 // ============================================================================
@@ -840,8 +1223,44 @@ IMPLATFORM_API bool ImPlatform_SetShaderTexture(ImPlatform_ShaderProgram program
 // ImDrawCallback handler to activate a custom shader
 static void ImPlatform_SetCustomShader(const ImDrawList* parent_list, const ImDrawCmd* cmd)
 {
-    // DX12 custom shaders stub - needs PSO and root signature setup
-    // This is a stub for API consistency
+    ImPlatform_ShaderProgram program = (ImPlatform_ShaderProgram)cmd->UserCallbackData;
+    if (!program)
+        return;
+
+    ImPlatform_ShaderProgramData_DX12* program_data = (ImPlatform_ShaderProgramData_DX12*)program;
+
+    // Get the command list from ImGui backend
+    ID3D12GraphicsCommandList* cmdList = g_GfxData.pCommandList;
+    if (!cmdList)
+        return;
+
+    // Set Pipeline State Object and Root Signature
+    cmdList->SetPipelineState(program_data->pPSO);
+    cmdList->SetGraphicsRootSignature(program_data->pRootSignature);
+
+    // Note: Root parameter 0 (32-bit constants for projection matrix) is already set by ImGui's backend
+    // via SetGraphicsRoot32BitConstants(0, 16, ...). Our root signature is compatible, so no rebind needed.
+
+    // Note: Root parameter 1 (descriptor table for texture) is already set by ImGui's backend
+    // via SetGraphicsRootDescriptorTable(1, texture_handle). Our root signature is compatible, so no rebind needed.
+
+    // Upload and bind pixel shader constant buffer if dirty (root parameter 2)
+    if (program_data->pPixelConstantBuffer && program_data->pixelConstantDataDirty && program_data->pPixelConstantData)
+    {
+        // Map and upload constant buffer data
+        void* pMappedData = nullptr;
+        D3D12_RANGE readRange = { 0, 0 }; // We don't read from this resource on the CPU
+        if (SUCCEEDED(program_data->pPixelConstantBuffer->Map(0, &readRange, &pMappedData)))
+        {
+            memcpy(pMappedData, program_data->pPixelConstantData, program_data->pixelConstantDataSize);
+            program_data->pPixelConstantBuffer->Unmap(0, nullptr);
+            program_data->pixelConstantDataDirty = false;
+        }
+
+        // Bind pixel shader constant buffer to root parameter 2 (our custom uniforms)
+        D3D12_GPU_VIRTUAL_ADDRESS cbAddress = program_data->pPixelConstantBuffer->GetGPUVirtualAddress();
+        cmdList->SetGraphicsRootConstantBufferView(2, cbAddress);
+    }
 }
 
 IMPLATFORM_API void ImPlatform_BeginCustomShader(ImDrawList* draw, ImPlatform_ShaderProgram shader)
