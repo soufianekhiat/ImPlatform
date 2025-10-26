@@ -88,6 +88,9 @@ static ImPlatform_ShaderProgram g_CurrentUniformBlockProgram = nullptr;
 static void* g_UniformBlockData = nullptr;
 static size_t g_UniformBlockSize = 0;
 
+// Current draw data for custom shader rendering (needed for multi-viewport)
+static ImDrawData* g_CurrentDrawData = nullptr;
+
 // Helper functions
 static void CreateRenderTarget()
 {
@@ -416,11 +419,24 @@ IMPLATFORM_API bool ImPlatform_GfxAPIClear(ImVec4 const vClearColor)
     return true;
 }
 
+// Wrapper for ImGui_ImplDX12_RenderDrawData that stores draw_data for custom shader callbacks
+static void ImPlatform_RenderDrawDataWrapper(ImDrawData* draw_data, ID3D12GraphicsCommandList* command_list)
+{
+    // Store draw data for custom shader callbacks (needed for multi-viewport)
+    g_CurrentDrawData = draw_data;
+
+    ImGui_ImplDX12_RenderDrawData(draw_data, command_list);
+
+    // NOTE: Don't clear g_CurrentDrawData here - it will be updated by the next render call
+}
+
 // ImPlatform API - GfxAPIRender
 IMPLATFORM_API bool ImPlatform_GfxAPIRender(ImVec4 const vClearColor)
 {
     (void)vClearColor;
-    ImGui_ImplDX12_RenderDrawData(ImGui::GetDrawData(), g_GfxData.pCommandList);
+
+    ImPlatform_RenderDrawDataWrapper(ImGui::GetDrawData(), g_GfxData.pCommandList);
+
     return true;
 }
 
@@ -433,11 +449,36 @@ IMPLATFORM_API void ImPlatform_GfxViewportPre(void)
     }
 }
 
+// Custom viewport render callback that wraps ImGui's callback to use our wrapper
+static void (*g_OriginalRendererRenderWindow)(ImGuiViewport*, void*) = nullptr;
+
+static void ImPlatform_RendererRenderWindowWrapper(ImGuiViewport* viewport, void* renderer_arg)
+{
+    // Store the draw data before calling the original renderer
+    // NOTE: We DON'T clear this after - it will be cleared when the next viewport renders
+    // or when the frame is done. This ensures custom shader callbacks have access to it.
+    g_CurrentDrawData = viewport->DrawData;
+
+    // Call the original ImGui DX12 renderer
+    if (g_OriginalRendererRenderWindow)
+        g_OriginalRendererRenderWindow(viewport, renderer_arg);
+
+    // NOTE: Don't clear g_CurrentDrawData here - callbacks need it!
+}
+
 // ImPlatform API - GfxViewportPost
 IMPLATFORM_API void ImPlatform_GfxViewportPost(void)
 {
     if (ImGui::GetIO().ConfigFlags & ImGuiConfigFlags_ViewportsEnable)
     {
+        // Replace the renderer callback with our wrapper (only once)
+        ImGuiPlatformIO& platform_io = ImGui::GetPlatformIO();
+        if (!g_OriginalRendererRenderWindow && platform_io.Renderer_RenderWindow)
+        {
+            g_OriginalRendererRenderWindow = platform_io.Renderer_RenderWindow;
+            platform_io.Renderer_RenderWindow = ImPlatform_RendererRenderWindowWrapper;
+        }
+
         ImGui::RenderPlatformWindowsDefault(NULL, (void*)g_GfxData.pCommandList);
     }
 }
@@ -1076,6 +1117,30 @@ IMPLATFORM_API void ImPlatform_DestroyShaderProgram(ImPlatform_ShaderProgram pro
 
     ImPlatform_ShaderProgramData_DX12* program_data = (ImPlatform_ShaderProgramData_DX12*)program;
 
+    // Wait for GPU to finish using these resources
+    // This is important to avoid crashes during shutdown
+    if (g_GfxData.pDevice && g_GfxData.pCommandQueue)
+    {
+        // Flush the command queue to ensure GPU is done with these resources
+        ID3D12Fence* pFence = nullptr;
+        if (SUCCEEDED(g_GfxData.pDevice->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&pFence))))
+        {
+            HANDLE hEvent = CreateEvent(nullptr, FALSE, FALSE, nullptr);
+            if (hEvent)
+            {
+                g_GfxData.pCommandQueue->Signal(pFence, 1);
+                pFence->SetEventOnCompletion(1, hEvent);
+                WaitForSingleObject(hEvent, INFINITE);
+                CloseHandle(hEvent);
+            }
+            pFence->Release();
+        }
+    }
+
+    if (program_data->pPixelConstantBuffer)
+        program_data->pPixelConstantBuffer->Release();
+    if (program_data->pPixelConstantData)
+        free(program_data->pPixelConstantData);
     if (program_data->pPSO)
         program_data->pPSO->Release();
     if (program_data->pRootSignature)
@@ -1084,10 +1149,6 @@ IMPLATFORM_API void ImPlatform_DestroyShaderProgram(ImPlatform_ShaderProgram pro
         program_data->pVSBlob->Release();
     if (program_data->pPSBlob)
         program_data->pPSBlob->Release();
-    if (program_data->pPixelConstantBuffer)
-        program_data->pPixelConstantBuffer->Release();
-    if (program_data->pPixelConstantData)
-        free(program_data->pPixelConstantData);
 
     delete program_data;
 }
@@ -1229,20 +1290,73 @@ static void ImPlatform_SetCustomShader(const ImDrawList* parent_list, const ImDr
 
     ImPlatform_ShaderProgramData_DX12* program_data = (ImPlatform_ShaderProgramData_DX12*)program;
 
-    // Get the command list from ImGui backend
-    ID3D12GraphicsCommandList* cmdList = g_GfxData.pCommandList;
-    if (!cmdList)
+    // Get the command list from ImGui's render state (works for all viewports)
+    ImGuiPlatformIO& platform_io = ImGui::GetPlatformIO();
+    ImGui_ImplDX12_RenderState* render_state = (ImGui_ImplDX12_RenderState*)platform_io.Renderer_RenderState;
+    if (!render_state || !render_state->CommandList)
         return;
+
+    ID3D12GraphicsCommandList* cmdList = render_state->CommandList;
 
     // Set Pipeline State Object and Root Signature
     cmdList->SetPipelineState(program_data->pPSO);
     cmdList->SetGraphicsRootSignature(program_data->pRootSignature);
 
-    // Note: Root parameter 0 (32-bit constants for projection matrix) is already set by ImGui's backend
-    // via SetGraphicsRoot32BitConstants(0, 16, ...). Our root signature is compatible, so no rebind needed.
+    // IMPORTANT: SetGraphicsRootSignature() invalidates ALL root parameter bindings!
+    // We must rebind everything, even though our root signature is compatible with ImGui's.
 
-    // Note: Root parameter 1 (descriptor table for texture) is already set by ImGui's backend
-    // via SetGraphicsRootDescriptorTable(1, texture_handle). Our root signature is compatible, so no rebind needed.
+    // Rebind root parameter 0: projection matrix (32-bit constants)
+    // Find which viewport owns this draw list
+    ImDrawData* draw_data = nullptr;
+
+    // First, try the cached draw data
+    if (g_CurrentDrawData)
+    {
+        draw_data = g_CurrentDrawData;
+    }
+    else
+    {
+        // Fallback: search through all viewports to find which one owns this draw list
+        ImGuiPlatformIO& platform_io = ImGui::GetPlatformIO();
+        for (int i = 0; i < platform_io.Viewports.Size; i++)
+        {
+            ImGuiViewport* viewport = platform_io.Viewports[i];
+            if (viewport->DrawData)
+            {
+                for (int j = 0; j < viewport->DrawData->CmdLists.Size; j++)
+                {
+                    if (viewport->DrawData->CmdLists[j] == parent_list)
+                    {
+                        draw_data = viewport->DrawData;
+                        break;
+                    }
+                }
+                if (draw_data)
+                    break;
+            }
+        }
+    }
+
+    if (!draw_data)
+        return;
+
+    float L = draw_data->DisplayPos.x;
+    float R = draw_data->DisplayPos.x + draw_data->DisplaySize.x;
+    float T = draw_data->DisplayPos.y;
+    float B = draw_data->DisplayPos.y + draw_data->DisplaySize.y;
+    float mvp[4][4] =
+    {
+        { 2.0f/(R-L),   0.0f,           0.0f,       0.0f },
+        { 0.0f,         2.0f/(T-B),     0.0f,       0.0f },
+        { 0.0f,         0.0f,           0.5f,       0.0f },
+        { (R+L)/(L-R),  (T+B)/(B-T),    0.5f,       1.0f },
+    };
+    cmdList->SetGraphicsRoot32BitConstants(0, 16, mvp, 0);
+
+    // Rebind root parameter 1: texture descriptor table
+    D3D12_GPU_DESCRIPTOR_HANDLE texture_handle = {};
+    texture_handle.ptr = (UINT64)cmd->GetTexID();
+    cmdList->SetGraphicsRootDescriptorTable(1, texture_handle);
 
     // Upload and bind pixel shader constant buffer if dirty (root parameter 2)
     if (program_data->pPixelConstantBuffer && program_data->pixelConstantDataDirty && program_data->pPixelConstantData)
