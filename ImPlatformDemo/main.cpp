@@ -286,6 +286,14 @@ int main()
 		"    float alpha = 1.0 - smoothstep(0.0, 0.02, d);\n"
 		"    return float4(1.0, 0.5, 0.2, 1.0) * alpha;\n"
 		"}\n";
+
+#elif (IM_CURRENT_GFX == IM_GFX_VULKAN)
+	// Vulkan uses pre-compiled SPIR-V bytecode
+	arrow_format = ImPlatform_ShaderFormat_SPIRV;
+	// Include generated SPIR-V headers
+	#include "shaders/arrow_sdf.vert.h"
+	#include "shaders/arrow_sdf.frag.h"
+	// Note: For Vulkan, we'll use bytecode fields instead of source_code
 #endif
 
 	// ========================================================================
@@ -360,6 +368,14 @@ int main()
 		"float4 main(PS_INPUT input) : SV_Target {\n"
 		"    return lerp(ColorStart, ColorEnd, input.uv.y);\n"
 		"}\n";
+
+#elif (IM_CURRENT_GFX == IM_GFX_VULKAN)
+	// Vulkan uses pre-compiled SPIR-V bytecode
+	gradient_format = ImPlatform_ShaderFormat_SPIRV;
+	// Include generated SPIR-V headers
+	#include "shaders/gradient.vert.h"
+	#include "shaders/gradient.frag.h"
+	// Note: For Vulkan, we'll use bytecode fields instead of source_code
 #endif
 
 	// Create shaders and programs
@@ -371,6 +387,32 @@ int main()
 	ImPlatform_Shader gradient_ps = nullptr;
 	ImPlatform_ShaderProgram gradient_program = nullptr;
 
+	// Create arrow shaders based on graphics API
+#if (IM_CURRENT_GFX == IM_GFX_VULKAN)
+	// Vulkan: Use pre-compiled SPIR-V bytecode
+	{
+		ImPlatform_ShaderDesc vs_desc = {};
+		vs_desc.stage = ImPlatform_ShaderStage_Vertex;
+		vs_desc.format = ImPlatform_ShaderFormat_SPIRV;
+		vs_desc.bytecode = arrow_sdf_vert_spv;
+		vs_desc.bytecode_size = arrow_sdf_vert_spv_size;
+		vs_desc.entry_point = "main";
+		arrow_vs = ImPlatform_CreateShader(&vs_desc);
+
+		ImPlatform_ShaderDesc ps_desc = {};
+		ps_desc.stage = ImPlatform_ShaderStage_Fragment;
+		ps_desc.format = ImPlatform_ShaderFormat_SPIRV;
+		ps_desc.bytecode = arrow_sdf_frag_spv;
+		ps_desc.bytecode_size = arrow_sdf_frag_spv_size;
+		ps_desc.entry_point = "main";
+		arrow_ps = ImPlatform_CreateShader(&ps_desc);
+
+		if (arrow_vs && arrow_ps) {
+			arrow_program = ImPlatform_CreateShaderProgram(arrow_vs, arrow_ps);
+		}
+	}
+#else
+	// Other APIs: Use source code
 	if (arrow_vs_source && arrow_ps_source) {
 		ImPlatform_ShaderDesc vs_desc = {};
 		vs_desc.stage = ImPlatform_ShaderStage_Vertex;
@@ -390,7 +432,34 @@ int main()
 			arrow_program = ImPlatform_CreateShaderProgram(arrow_vs, arrow_ps);
 		}
 	}
+#endif
 
+	// Create gradient shaders based on graphics API
+#if (IM_CURRENT_GFX == IM_GFX_VULKAN)
+	// Vulkan: Use pre-compiled SPIR-V bytecode
+	{
+		ImPlatform_ShaderDesc vs_desc = {};
+		vs_desc.stage = ImPlatform_ShaderStage_Vertex;
+		vs_desc.format = ImPlatform_ShaderFormat_SPIRV;
+		vs_desc.bytecode = gradient_vert_spv;
+		vs_desc.bytecode_size = gradient_vert_spv_size;
+		vs_desc.entry_point = "main";
+		gradient_vs = ImPlatform_CreateShader(&vs_desc);
+
+		ImPlatform_ShaderDesc ps_desc = {};
+		ps_desc.stage = ImPlatform_ShaderStage_Fragment;
+		ps_desc.format = ImPlatform_ShaderFormat_SPIRV;
+		ps_desc.bytecode = gradient_frag_spv;
+		ps_desc.bytecode_size = gradient_frag_spv_size;
+		ps_desc.entry_point = "main";
+		gradient_ps = ImPlatform_CreateShader(&ps_desc);
+
+		if (gradient_vs && gradient_ps) {
+			gradient_program = ImPlatform_CreateShaderProgram(gradient_vs, gradient_ps);
+		}
+	}
+#else
+	// Other APIs: Use source code
 	if (gradient_vs_source && gradient_ps_source) {
 		ImPlatform_ShaderDesc vs_desc = {};
 		vs_desc.stage = ImPlatform_ShaderStage_Vertex;
@@ -410,6 +479,7 @@ int main()
 			gradient_program = ImPlatform_CreateShaderProgram(gradient_vs, gradient_ps);
 		}
 	}
+#endif
 #endif // IMPLATFORM_GFX_SUPPORT_CUSTOM_SHADER
 
 #ifdef IMGUI_HAS_TEXTURES

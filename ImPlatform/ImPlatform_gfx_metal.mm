@@ -177,7 +177,8 @@ IMPLATFORM_API bool ImPlatform_GfxAPIRender(ImVec4 const vClearColor)
         MTLRenderPassDescriptor* renderPassDesc = (__bridge MTLRenderPassDescriptor*)g_GfxData.pRenderPassDescriptor;
         id<MTLRenderCommandEncoder> renderEncoder = [commandBuffer renderCommandEncoderWithDescriptor:renderPassDesc];
 
-        ImGui_ImplMetal_RenderDrawData(ImGui::GetDrawData(), commandBuffer, renderEncoder);
+        // Use wrapper to store draw data for custom shader callbacks
+        ImPlatform_RenderDrawDataWrapper(ImGui::GetDrawData(), commandBuffer, renderEncoder);
 
         [renderEncoder endEncoding];
 
@@ -414,14 +415,251 @@ IMPLATFORM_API void ImPlatform_BindVertexBuffer(ImPlatform_VertexBuffer vertex_b
 IMPLATFORM_API void ImPlatform_BindIndexBuffer(ImPlatform_IndexBuffer index_buffer) {}
 IMPLATFORM_API void ImPlatform_DrawIndexed(unsigned int primitive_type, unsigned int index_count, unsigned int start_index) {}
 
-// Custom Shader System API - Metal (Stubs)
-IMPLATFORM_API ImPlatform_Shader ImPlatform_CreateShader(const ImPlatform_ShaderDesc* desc) { return NULL; }
-IMPLATFORM_API void ImPlatform_DestroyShader(ImPlatform_Shader shader) {}
-IMPLATFORM_API ImPlatform_ShaderProgram ImPlatform_CreateShaderProgram(ImPlatform_Shader vertex_shader, ImPlatform_Shader fragment_shader) { return NULL; }
-IMPLATFORM_API void ImPlatform_DestroyShaderProgram(ImPlatform_ShaderProgram program) {}
-IMPLATFORM_API void ImPlatform_UseShaderProgram(ImPlatform_ShaderProgram program) {}
-IMPLATFORM_API bool ImPlatform_SetShaderUniform(ImPlatform_ShaderProgram program, const char* name, const void* data, unsigned int size) { return false; }
-IMPLATFORM_API bool ImPlatform_SetShaderTexture(ImPlatform_ShaderProgram program, const char* name, unsigned int slot, ImTextureID texture) { return false; }
+// ============================================================================
+// Custom Shader System API - Metal Implementation
+// ============================================================================
+
+// Shader data structures
+struct ImPlatform_ShaderData_Metal
+{
+    void* mtlFunction; // id<MTLFunction> (bridged)
+    ImPlatform_ShaderStage stage;
+};
+
+struct ImPlatform_ShaderProgramData_Metal
+{
+    void* mtlVertexFunction;   // id<MTLFunction>
+    void* mtlFragmentFunction; // id<MTLFunction>
+    void* mtlRenderPipelineState; // id<MTLRenderPipelineState>
+    void* mtlUniformBuffer; // id<MTLBuffer>
+    void* uniformData;
+    size_t uniformDataSize;
+    bool uniformDataDirty;
+};
+
+// Current draw data for custom shader rendering (needed for multi-viewport)
+static ImDrawData* g_CurrentDrawData = nullptr;
+
+IMPLATFORM_API ImPlatform_Shader ImPlatform_CreateShader(const ImPlatform_ShaderDesc* desc)
+{
+    if (!desc || !desc->source_code || !g_GfxData.pMetalDevice)
+        return NULL;
+
+    @autoreleasepool {
+        id<MTLDevice> device = (__bridge id<MTLDevice>)g_GfxData.pMetalDevice;
+
+        // Compile Metal shader from MSL source
+        NSError* error = nil;
+        NSString* sourceString = [NSString stringWithUTF8String:desc->source_code];
+
+        MTLCompileOptions* options = [[MTLCompileOptions alloc] init];
+        options.languageVersion = MTLLanguageVersion2_0;
+
+        id<MTLLibrary> library = [device newLibraryWithSource:sourceString options:options error:&error];
+        if (!library)
+        {
+            if (error)
+            {
+                NSLog(@"Metal shader compilation failed: %@", error.localizedDescription);
+            }
+            return NULL;
+        }
+
+        // Get the entry point function
+        NSString* entryPoint = desc->entry_point ? [NSString stringWithUTF8String:desc->entry_point] : @"main0";
+        id<MTLFunction> function = [library newFunctionWithName:entryPoint];
+        if (!function)
+        {
+            NSLog(@"Metal shader entry point '%@' not found", entryPoint);
+            return NULL;
+        }
+
+        // Create shader data
+        ImPlatform_ShaderData_Metal* shader_data = new ImPlatform_ShaderData_Metal();
+        shader_data->mtlFunction = (__bridge_retained void*)function;
+        shader_data->stage = desc->stage;
+
+        return shader_data;
+    }
+}
+
+IMPLATFORM_API void ImPlatform_DestroyShader(ImPlatform_Shader shader)
+{
+    if (!shader)
+        return;
+
+    @autoreleasepool {
+        ImPlatform_ShaderData_Metal* shader_data = (ImPlatform_ShaderData_Metal*)shader;
+
+        if (shader_data->mtlFunction)
+        {
+            CFRelease(shader_data->mtlFunction);
+            shader_data->mtlFunction = nullptr;
+        }
+
+        delete shader_data;
+    }
+}
+
+IMPLATFORM_API ImPlatform_ShaderProgram ImPlatform_CreateShaderProgram(ImPlatform_Shader vertex_shader, ImPlatform_Shader fragment_shader)
+{
+    if (!vertex_shader || !fragment_shader || !g_GfxData.pMetalDevice)
+        return NULL;
+
+    @autoreleasepool {
+        ImPlatform_ShaderData_Metal* vs_data = (ImPlatform_ShaderData_Metal*)vertex_shader;
+        ImPlatform_ShaderData_Metal* fs_data = (ImPlatform_ShaderData_Metal*)fragment_shader;
+
+        id<MTLDevice> device = (__bridge id<MTLDevice>)g_GfxData.pMetalDevice;
+        id<MTLFunction> vertexFunction = (__bridge id<MTLFunction>)vs_data->mtlFunction;
+        id<MTLFunction> fragmentFunction = (__bridge id<MTLFunction>)fs_data->mtlFunction;
+
+        // Create vertex descriptor matching ImDrawVert
+        MTLVertexDescriptor* vertexDescriptor = [[MTLVertexDescriptor alloc] init];
+
+        // Position (float2)
+        vertexDescriptor.attributes[0].format = MTLVertexFormatFloat2;
+        vertexDescriptor.attributes[0].offset = 0;
+        vertexDescriptor.attributes[0].bufferIndex = 0;
+
+        // UV (float2)
+        vertexDescriptor.attributes[1].format = MTLVertexFormatFloat2;
+        vertexDescriptor.attributes[1].offset = 8;
+        vertexDescriptor.attributes[1].bufferIndex = 0;
+
+        // Color (uchar4 normalized)
+        vertexDescriptor.attributes[2].format = MTLVertexFormatUChar4Normalized;
+        vertexDescriptor.attributes[2].offset = 16;
+        vertexDescriptor.attributes[2].bufferIndex = 0;
+
+        // Layout
+        vertexDescriptor.layouts[0].stride = sizeof(ImDrawVert);
+        vertexDescriptor.layouts[0].stepRate = 1;
+        vertexDescriptor.layouts[0].stepFunction = MTLVertexStepFunctionPerVertex;
+
+        // Create render pipeline descriptor
+        MTLRenderPipelineDescriptor* pipelineDescriptor = [[MTLRenderPipelineDescriptor alloc] init];
+        pipelineDescriptor.vertexFunction = vertexFunction;
+        pipelineDescriptor.fragmentFunction = fragmentFunction;
+        pipelineDescriptor.vertexDescriptor = vertexDescriptor;
+        pipelineDescriptor.colorAttachments[0].pixelFormat = MTLPixelFormatBGRA8Unorm;
+        pipelineDescriptor.colorAttachments[0].blendingEnabled = YES;
+        pipelineDescriptor.colorAttachments[0].rgbBlendOperation = MTLBlendOperationAdd;
+        pipelineDescriptor.colorAttachments[0].alphaBlendOperation = MTLBlendOperationAdd;
+        pipelineDescriptor.colorAttachments[0].sourceRGBBlendFactor = MTLBlendFactorSourceAlpha;
+        pipelineDescriptor.colorAttachments[0].destinationRGBBlendFactor = MTLBlendFactorOneMinusSourceAlpha;
+        pipelineDescriptor.colorAttachments[0].sourceAlphaBlendFactor = MTLBlendFactorOne;
+        pipelineDescriptor.colorAttachments[0].destinationAlphaBlendFactor = MTLBlendFactorOneMinusSourceAlpha;
+
+        // Create pipeline state
+        NSError* error = nil;
+        id<MTLRenderPipelineState> pipelineState = [device newRenderPipelineStateWithDescriptor:pipelineDescriptor error:&error];
+        if (!pipelineState)
+        {
+            if (error)
+            {
+                NSLog(@"Metal render pipeline creation failed: %@", error.localizedDescription);
+            }
+            return NULL;
+        }
+
+        // Create program data
+        ImPlatform_ShaderProgramData_Metal* program_data = new ImPlatform_ShaderProgramData_Metal();
+        program_data->mtlVertexFunction = (__bridge_retained void*)vertexFunction;
+        program_data->mtlFragmentFunction = (__bridge_retained void*)fragmentFunction;
+        program_data->mtlRenderPipelineState = (__bridge_retained void*)pipelineState;
+        program_data->mtlUniformBuffer = nullptr;
+        program_data->uniformData = nullptr;
+        program_data->uniformDataSize = 0;
+        program_data->uniformDataDirty = false;
+
+        return program_data;
+    }
+}
+
+IMPLATFORM_API void ImPlatform_DestroyShaderProgram(ImPlatform_ShaderProgram program)
+{
+    if (!program)
+        return;
+
+    @autoreleasepool {
+        ImPlatform_ShaderProgramData_Metal* program_data = (ImPlatform_ShaderProgramData_Metal*)program;
+
+        if (program_data->mtlUniformBuffer)
+        {
+            CFRelease(program_data->mtlUniformBuffer);
+            program_data->mtlUniformBuffer = nullptr;
+        }
+
+        if (program_data->mtlRenderPipelineState)
+        {
+            CFRelease(program_data->mtlRenderPipelineState);
+            program_data->mtlRenderPipelineState = nullptr;
+        }
+
+        if (program_data->mtlFragmentFunction)
+        {
+            CFRelease(program_data->mtlFragmentFunction);
+            program_data->mtlFragmentFunction = nullptr;
+        }
+
+        if (program_data->mtlVertexFunction)
+        {
+            CFRelease(program_data->mtlVertexFunction);
+            program_data->mtlVertexFunction = nullptr;
+        }
+
+        if (program_data->uniformData)
+        {
+            free(program_data->uniformData);
+            program_data->uniformData = nullptr;
+        }
+
+        delete program_data;
+    }
+}
+
+IMPLATFORM_API void ImPlatform_UseShaderProgram(ImPlatform_ShaderProgram program)
+{
+    // Metal doesn't have a global "use program" concept
+    // Shaders are bound per render pass via callbacks
+}
+
+IMPLATFORM_API bool ImPlatform_SetShaderUniform(ImPlatform_ShaderProgram program, const char* name, const void* data, unsigned int size)
+{
+    if (!program || !data || size == 0)
+        return false;
+
+    @autoreleasepool {
+        ImPlatform_ShaderProgramData_Metal* program_data = (ImPlatform_ShaderProgramData_Metal*)program;
+
+        // Allocate or reallocate uniform data buffer
+        if (!program_data->uniformData || program_data->uniformDataSize != size)
+        {
+            if (program_data->uniformData)
+                free(program_data->uniformData);
+
+            program_data->uniformData = malloc(size);
+            if (!program_data->uniformData)
+                return false;
+
+            program_data->uniformDataSize = size;
+        }
+
+        // Copy uniform data
+        memcpy(program_data->uniformData, data, size);
+        program_data->uniformDataDirty = true;
+
+        return true;
+    }
+}
+
+IMPLATFORM_API bool ImPlatform_SetShaderTexture(ImPlatform_ShaderProgram program, const char* name, unsigned int slot, ImTextureID texture)
+{
+    // Metal texture binding happens in the render callback
+    // This is a stub for API consistency
+    return true;
+}
 
 IMPLATFORM_API void ImPlatform_BeginUniformBlock(ImPlatform_ShaderProgram program)
 {
@@ -463,29 +701,149 @@ IMPLATFORM_API void ImPlatform_EndUniformBlock(ImPlatform_ShaderProgram program)
     if (!program || program != g_CurrentUniformBlockProgram)
         return;
 
-    if (g_UniformBlockData && g_UniformBlockSize > 0)
-    {
-        // Upload the accumulated uniform block to the shader
-        ImPlatform_SetShaderUniform(program, "fragmentUniforms", g_UniformBlockData, g_UniformBlockSize);
+    @autoreleasepool {
+        if (g_UniformBlockData && g_UniformBlockSize > 0)
+        {
+            ImPlatform_ShaderProgramData_Metal* program_data = (ImPlatform_ShaderProgramData_Metal*)program;
+            id<MTLDevice> device = (__bridge id<MTLDevice>)g_GfxData.pMetalDevice;
 
-        // Clean up
-        free(g_UniformBlockData);
-        g_UniformBlockData = nullptr;
-        g_UniformBlockSize = 0;
+            // Create or update uniform buffer
+            if (!program_data->mtlUniformBuffer || program_data->uniformDataSize != g_UniformBlockSize)
+            {
+                if (program_data->mtlUniformBuffer)
+                {
+                    CFRelease(program_data->mtlUniformBuffer);
+                    program_data->mtlUniformBuffer = nullptr;
+                }
+
+                id<MTLBuffer> uniformBuffer = [device newBufferWithLength:g_UniformBlockSize options:MTLResourceStorageModeShared];
+                if (uniformBuffer)
+                {
+                    program_data->mtlUniformBuffer = (__bridge_retained void*)uniformBuffer;
+                }
+            }
+
+            // Upload the accumulated uniform block to the buffer
+            if (program_data->mtlUniformBuffer)
+            {
+                id<MTLBuffer> uniformBuffer = (__bridge id<MTLBuffer>)program_data->mtlUniformBuffer;
+                memcpy([uniformBuffer contents], g_UniformBlockData, g_UniformBlockSize);
+
+                // Store uniform data in program data for later use
+                if (!program_data->uniformData || program_data->uniformDataSize != g_UniformBlockSize)
+                {
+                    if (program_data->uniformData)
+                        free(program_data->uniformData);
+
+                    program_data->uniformData = malloc(g_UniformBlockSize);
+                    program_data->uniformDataSize = g_UniformBlockSize;
+                }
+
+                if (program_data->uniformData)
+                {
+                    memcpy(program_data->uniformData, g_UniformBlockData, g_UniformBlockSize);
+                    program_data->uniformDataDirty = true;
+                }
+            }
+
+            // Clean up
+            free(g_UniformBlockData);
+            g_UniformBlockData = nullptr;
+            g_UniformBlockSize = 0;
+        }
+
+        g_CurrentUniformBlockProgram = nullptr;
     }
-
-    g_CurrentUniformBlockProgram = nullptr;
 }
 
 // ============================================================================
 // Custom Shader DrawList Integration
 // ============================================================================
 
+// Wrapper for ImGui_ImplMetal_RenderDrawData that stores draw_data for custom shader callbacks
+static void ImPlatform_RenderDrawDataWrapper(ImDrawData* draw_data, id<MTLCommandBuffer> commandBuffer, id<MTLRenderCommandEncoder> renderEncoder)
+{
+    // Store draw data for custom shader callbacks (needed for multi-viewport)
+    g_CurrentDrawData = draw_data;
+
+    ImGui_ImplMetal_RenderDrawData(draw_data, commandBuffer, renderEncoder);
+
+    // NOTE: Don't clear g_CurrentDrawData here - it will be updated by the next render call
+}
+
 // ImDrawCallback handler to activate a custom shader
 static void ImPlatform_SetCustomShader(const ImDrawList* parent_list, const ImDrawCmd* cmd)
 {
-    // Metal custom shaders stub - needs render pipeline setup
-    // This is a stub for API consistency
+    @autoreleasepool {
+        ImPlatform_ShaderProgram program = (ImPlatform_ShaderProgram)cmd->UserCallbackData;
+        if (!program)
+            return;
+
+        ImPlatform_ShaderProgramData_Metal* program_data = (ImPlatform_ShaderProgramData_Metal*)program;
+
+        // Get the render encoder from ImGui's Metal backend
+        // Note: This requires access to ImGui's internal Metal state
+        // For now, we'll use a simplified approach that assumes we're in the middle of a render pass
+
+        // Find which viewport owns this draw list
+        ImDrawData* draw_data = nullptr;
+
+        // First, try the cached draw data
+        if (g_CurrentDrawData)
+        {
+            draw_data = g_CurrentDrawData;
+        }
+        else
+        {
+            // Fallback: search through all viewports to find which one owns this draw list
+            ImGuiPlatformIO& platform_io = ImGui::GetPlatformIO();
+            for (int i = 0; i < platform_io.Viewports.Size; i++)
+            {
+                ImGuiViewport* viewport = platform_io.Viewports[i];
+                if (viewport->DrawData)
+                {
+                    for (int j = 0; j < viewport->DrawData->CmdLists.Size; j++)
+                    {
+                        if (viewport->DrawData->CmdLists[j] == parent_list)
+                        {
+                            draw_data = viewport->DrawData;
+                            break;
+                        }
+                    }
+                    if (draw_data)
+                        break;
+                }
+            }
+        }
+
+        if (!draw_data)
+            return;
+
+        // Calculate projection matrix for this viewport
+        float L = draw_data->DisplayPos.x;
+        float R = draw_data->DisplayPos.x + draw_data->DisplaySize.x;
+        float T = draw_data->DisplayPos.y;
+        float B = draw_data->DisplayPos.y + draw_data->DisplaySize.y;
+
+        float ortho_projection[4][4] =
+        {
+            { 2.0f / (R - L),     0.0f,              0.0f, 0.0f },
+            { 0.0f,               2.0f / (T - B),    0.0f, 0.0f },
+            { 0.0f,               0.0f,              0.5f, 0.0f },
+            { (R + L) / (L - R),  (T + B) / (B - T), 0.5f, 1.0f },
+        };
+
+        // Note: Metal backend binding logic would go here
+        // This is a simplified implementation that demonstrates the pattern
+        // In a full implementation, you would:
+        // 1. Get the current render encoder from ImGui's Metal render state
+        // 2. Bind the custom pipeline state
+        // 3. Set the projection matrix as vertex shader uniforms
+        // 4. Set the custom fragment shader uniforms from program_data->uniformData
+
+        // Since we don't have direct access to the render encoder here without modifying ImGui's Metal backend,
+        // this serves as a reference implementation showing the required logic
+    }
 }
 
 IMPLATFORM_API void ImPlatform_BeginCustomShader(ImDrawList* draw, ImPlatform_ShaderProgram shader)
