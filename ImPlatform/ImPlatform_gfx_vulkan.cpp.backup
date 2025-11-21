@@ -1350,7 +1350,7 @@ IMPLATFORM_API ImPlatform_ShaderProgram ImPlatform_CreateShaderProgram(ImPlatfor
     // - Binding 0: Combined image sampler (texture)
     // - Binding 1: Uniform buffer (our custom parameters)
     {
-        VkDescriptorSetLayoutBinding bindings[1] = {};
+        VkDescriptorSetLayoutBinding bindings[2] = {};
 
         // Binding 0: Texture sampler (compatible with ImGui)
         bindings[0].binding = 0;
@@ -1359,14 +1359,14 @@ IMPLATFORM_API ImPlatform_ShaderProgram ImPlatform_CreateShaderProgram(ImPlatfor
         bindings[0].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 
         // Binding 1: Uniform buffer for custom parameters
-        // bindings[1].binding = 1;
-        // bindings[1].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-        // bindings[1].descriptorCount = 1;
-        // bindings[1].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+        bindings[1].binding = 1;
+        bindings[1].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+        bindings[1].descriptorCount = 1;
+        bindings[1].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 
         VkDescriptorSetLayoutCreateInfo layout_info = {};
         layout_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-        layout_info.bindingCount = 1;
+        layout_info.bindingCount = 2;
         layout_info.pBindings = bindings;
 
         err = vkCreateDescriptorSetLayout(g_GfxData.device, &layout_info, g_Allocator, &program_data->descriptorSetLayout);
@@ -1384,9 +1384,9 @@ IMPLATFORM_API ImPlatform_ShaderProgram ImPlatform_CreateShaderProgram(ImPlatfor
         VkDescriptorSetLayout set_layouts[1] = { program_data->descriptorSetLayout };
 
         VkPushConstantRange push_constants = {};
-        push_constants.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
+        push_constants.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
         push_constants.offset = 0;
-        push_constants.size = 128; // Projection matrix (64 bytes) + custom uniforms (64 bytes max)
+        push_constants.size = sizeof(float) * 16; // 4x4 projection matrix
 
         VkPipelineLayoutCreateInfo layout_info = {};
         layout_info.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
@@ -1519,15 +1519,15 @@ IMPLATFORM_API ImPlatform_ShaderProgram ImPlatform_CreateShaderProgram(ImPlatfor
     // This ensures we always have a valid descriptor set even if uniforms are never set
     {
         // Create descriptor pool
-        VkDescriptorPoolSize pool_sizes[1] = {};
+        VkDescriptorPoolSize pool_sizes[2] = {};
         pool_sizes[0].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
         pool_sizes[0].descriptorCount = 1;
-        // pool_sizes[1].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-        // pool_sizes[1].descriptorCount = 1;
+        pool_sizes[1].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+        pool_sizes[1].descriptorCount = 1;
 
         VkDescriptorPoolCreateInfo pool_info = {};
         pool_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-        pool_info.poolSizeCount = 1;
+        pool_info.poolSizeCount = 2;
         pool_info.pPoolSizes = pool_sizes;
         pool_info.maxSets = 1;
 
@@ -1604,9 +1604,10 @@ IMPLATFORM_API void ImPlatform_DestroyShaderProgram(ImPlatform_ShaderProgram pro
         vkDestroyDescriptorPool(g_GfxData.device, program_data->descriptorPool, g_Allocator);
     if (program_data->descriptorSetLayout)
         vkDestroyDescriptorSetLayout(g_GfxData.device, program_data->descriptorSetLayout, g_Allocator);
-    // Free uniform data buffer (used for push constants, not Vulkan buffers)
-    if (program_data->uniformBufferMapped)
-        free(program_data->uniformBufferMapped);
+    if (program_data->uniformBuffer)
+        vkDestroyBuffer(g_GfxData.device, program_data->uniformBuffer, g_Allocator);
+    if (program_data->uniformBufferMemory)
+        vkFreeMemory(g_GfxData.device, program_data->uniformBufferMemory, g_Allocator);
 
     free(program_data);
 }
@@ -1670,25 +1671,105 @@ IMPLATFORM_API void ImPlatform_EndUniformBlock(ImPlatform_ShaderProgram program)
 
     ImPlatform_ShaderProgramData_Vulkan* program_data = (ImPlatform_ShaderProgramData_Vulkan*)program;
 
-    // Store uniform data in the program structure for later use in push constants
-    // No need to create a uniform buffer anymore - we will pass this via push constants
     if (g_UniformBlockData && g_UniformBlockSize > 0)
     {
-        // Reallocate program uniform buffer to store the data
-        if (program_data->uniformBufferSize != g_UniformBlockSize)
+        VkResult err;
+
+        // Create or recreate uniform buffer if size changed
+        if (!program_data->uniformBuffer || program_data->uniformBufferSize != g_UniformBlockSize)
         {
-            if (program_data->uniformBufferMapped)
-                free(program_data->uniformBufferMapped);
-            
-            program_data->uniformBufferMapped = malloc(g_UniformBlockSize);
+            // Clean up old buffer if it exists
+            if (program_data->uniformBuffer)
+                vkDestroyBuffer(g_GfxData.device, program_data->uniformBuffer, g_Allocator);
+            if (program_data->uniformBufferMemory)
+                vkFreeMemory(g_GfxData.device, program_data->uniformBufferMemory, g_Allocator);
+
+            // Create new uniform buffer
+            VkBufferCreateInfo buffer_info = {};
+            buffer_info.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+            buffer_info.size = g_UniformBlockSize;
+            buffer_info.usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
+            buffer_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+
+            err = vkCreateBuffer(g_GfxData.device, &buffer_info, g_Allocator, &program_data->uniformBuffer);
+            if (err != VK_SUCCESS)
+            {
+                fprintf(stderr, "[ImPlatform] Vulkan: Failed to create uniform buffer (VkResult = %d)\n", err);
+                goto cleanup;
+            }
+
+            // Allocate memory for uniform buffer
+            VkMemoryRequirements mem_req;
+            vkGetBufferMemoryRequirements(g_GfxData.device, program_data->uniformBuffer, &mem_req);
+
+            VkMemoryAllocateInfo alloc_info = {};
+            alloc_info.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+            alloc_info.allocationSize = mem_req.size;
+            alloc_info.memoryTypeIndex = ImPlatform_FindMemoryType(VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, mem_req.memoryTypeBits);
+
+            err = vkAllocateMemory(g_GfxData.device, &alloc_info, g_Allocator, &program_data->uniformBufferMemory);
+            if (err != VK_SUCCESS)
+            {
+                fprintf(stderr, "[ImPlatform] Vulkan: Failed to allocate uniform buffer memory (VkResult = %d)\n", err);
+                vkDestroyBuffer(g_GfxData.device, program_data->uniformBuffer, g_Allocator);
+                program_data->uniformBuffer = VK_NULL_HANDLE;
+                goto cleanup;
+            }
+
+            err = vkBindBufferMemory(g_GfxData.device, program_data->uniformBuffer, program_data->uniformBufferMemory, 0);
+            if (err != VK_SUCCESS)
+            {
+                fprintf(stderr, "[ImPlatform] Vulkan: Failed to bind uniform buffer memory (VkResult = %d)\n", err);
+                vkDestroyBuffer(g_GfxData.device, program_data->uniformBuffer, g_Allocator);
+                vkFreeMemory(g_GfxData.device, program_data->uniformBufferMemory, g_Allocator);
+                program_data->uniformBuffer = VK_NULL_HANDLE;
+                program_data->uniformBufferMemory = VK_NULL_HANDLE;
+                goto cleanup;
+            }
+
             program_data->uniformBufferSize = g_UniformBlockSize;
         }
 
-        if (program_data->uniformBufferMapped)
+        // Map and copy data to uniform buffer
+        void* mapped_data;
+        err = vkMapMemory(g_GfxData.device, program_data->uniformBufferMemory, 0, g_UniformBlockSize, 0, &mapped_data);
+        if (err == VK_SUCCESS)
         {
-            memcpy(program_data->uniformBufferMapped, g_UniformBlockData, g_UniformBlockSize);
+            memcpy(mapped_data, g_UniformBlockData, g_UniformBlockSize);
+            vkUnmapMemory(g_GfxData.device, program_data->uniformBufferMemory);
             program_data->uniformBufferDirty = true;
         }
+        else
+        {
+            fprintf(stderr, "[ImPlatform] Vulkan: Failed to map uniform buffer memory (VkResult = %d)\n", err);
+        }
+
+        // Update descriptor set with uniform buffer (binding 1)
+        // The descriptor set and pool were already created during shader program creation
+        // Binding 0 (texture) is already set to the default white texture
+        {
+            VkDescriptorBufferInfo buffer_info = {};
+            buffer_info.buffer = program_data->uniformBuffer;
+            buffer_info.offset = 0;
+            buffer_info.range = program_data->uniformBufferSize;
+
+            VkWriteDescriptorSet descriptor_write = {};
+            descriptor_write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            descriptor_write.dstSet = program_data->descriptorSet;
+            descriptor_write.dstBinding = 1;  // Binding 1 for uniform buffer
+            descriptor_write.dstArrayElement = 0;
+            descriptor_write.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+            descriptor_write.descriptorCount = 1;
+            descriptor_write.pBufferInfo = &buffer_info;
+
+            vkUpdateDescriptorSets(g_GfxData.device, 1, &descriptor_write, 0, nullptr);
+        }
+
+cleanup:
+        // Clean up temporary data
+        free(g_UniformBlockData);
+        g_UniformBlockData = nullptr;
+        g_UniformBlockSize = 0;
     }
 
     g_CurrentUniformBlockProgram = nullptr;
@@ -1760,21 +1841,9 @@ static void ImPlatform_SetCustomShader(const ImDrawList* parent_list, const ImDr
         { (R+L)/(L-R),  (T+B)/(B-T),    0.0f,       1.0f },
     };
 
-    // Push projection matrix (offset 0, 64 bytes)
-    vkCmdPushConstants(g_CurrentCommandBuffer, program_data->pipelineLayout,
-                      VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(float) * 16, mvp);
+    vkCmdPushConstants(g_CurrentCommandBuffer, program_data->pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(float) * 16, mvp);
 
-    // Push custom uniform data (offset 64, variable size)
-    // This data was set via BeginUniformBlock/SetUniform/EndUniformBlock
-    if (program_data->uniformBufferMapped && program_data->uniformBufferSize > 0)
-    {
-        vkCmdPushConstants(g_CurrentCommandBuffer, program_data->pipelineLayout,
-                          VK_SHADER_STAGE_FRAGMENT_BIT, 64,
-                          program_data->uniformBufferSize, program_data->uniformBufferMapped);
-    }
-
-    // Bind descriptor set (set 0) containing only the texture (binding 0)
-    // This descriptor set layout is now IDENTICAL to ImGui's layout
+    // Bind descriptor set (set 0) containing both the default texture and uniform buffer
     // Binding 0: Default white 1x1 texture (set during shader program creation)
     // Binding 1: Uniform buffer with custom shader parameters (updated via UpdateUniformBlock)
     if (program_data->descriptorSet == VK_NULL_HANDLE)

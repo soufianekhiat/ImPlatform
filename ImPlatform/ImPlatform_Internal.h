@@ -218,6 +218,10 @@ struct ImPlatform_GfxData_Vulkan {
     uint32_t imageCount;
     uint32_t currentFrameIndex;
     int minImageCount;
+    VkSampler defaultSampler;        // Default sampler for custom shaders
+    VkImageView defaultImageView;    // Default white 1x1 texture for custom shaders
+    VkImage defaultImage;            // Default white 1x1 image
+    VkDeviceMemory defaultImageMemory; // Memory for default image
 };
 #endif
 
