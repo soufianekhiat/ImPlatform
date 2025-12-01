@@ -946,8 +946,8 @@ static void ImPlatform_SetCustomShader(const ImDrawList* parent_list, const ImDr
                 program_data->pixelConstantDataDirty = false;
             }
 
-            // Bind pixel shader constant buffer to register b0
-            g_GfxData.pDevice->PSSetConstantBuffers(0, 1, &program_data->pPixelConstantBuffer);
+            // Bind pixel shader constant buffer to register b1 (b0 is used by vertex shader for projection matrix)
+            g_GfxData.pDevice->PSSetConstantBuffers(1, 1, &program_data->pPixelConstantBuffer);
         }
     }
 }
