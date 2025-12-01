@@ -201,7 +201,7 @@ IMPLATFORM_API bool ImPlatform_BeginCustomTitleBar(float fHeight)
     ImGui::SetNextWindowViewport(pViewport->ID);
 #endif
 
-    bool bRet = ImGui::Begin("##ImPlatformCustomTitleBar", 0, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoDocking);
+    bool bRet = ImGui::Begin("##ImPlatformCustomTitleBar", 0, ImGuiWindowFlags_NoDecoration);
 
     ImVec2 vPos = ImGui::GetCursorPos();
     ImGui::SetNextItemAllowOverlap();
