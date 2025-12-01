@@ -22,8 +22,8 @@ struct PS_INPUT
 };
 
 // Pixel shader constant buffer for gradient parameters
-// Note: Uses register b0 for pixel shader constants (separate from vertex shader b0)
-cbuffer PS_CONSTANT_BUFFER : register(b0)
+// Note: Uses register b1 to avoid conflict with vertex shader's projection matrix at b0
+cbuffer PS_CONSTANT_BUFFER : register(b1)
 {
 	float4 col0;        // Start color of gradient
 	float4 col1;        // End color of gradient
