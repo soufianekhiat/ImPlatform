@@ -235,6 +235,7 @@ IMPLATFORM_API void ImPlatform_EndCustomTitleBar(void)
 #if defined(IM_CURRENT_PLATFORM) && (IM_CURRENT_PLATFORM == IM_PLATFORM_WIN32)
     ImPlatform_AppData_Win32* pData = ImPlatform_App_GetData_Win32();
     ImGui::SetCursorPos(pData->vEndCustomToolBar);
+    ImGui::Dummy(ImVec2(0, 0)); // Fix ImGui assertion: provide item after SetCursorPos
     ImGui::End();
     ImGuiViewport* pViewport = ImGui::GetMainViewport();
     pViewport->WorkPos.y += pData->fCustomTitleBarHeight;
@@ -242,6 +243,7 @@ IMPLATFORM_API void ImPlatform_EndCustomTitleBar(void)
 #elif defined(IM_CURRENT_PLATFORM) && (IM_CURRENT_PLATFORM == IM_PLATFORM_GLFW)
     ImPlatform_AppData_GLFW* pData = ImPlatform_App_GetData_GLFW();
     ImGui::SetCursorPos(pData->vEndCustomToolBar);
+    ImGui::Dummy(ImVec2(0, 0)); // Fix ImGui assertion: provide item after SetCursorPos
     ImGui::End();
     ImGuiViewport* pViewport = ImGui::GetMainViewport();
     pViewport->WorkPos.y += pData->fCustomTitleBarHeight;
