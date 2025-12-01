@@ -51,7 +51,7 @@ extern "C" {
 int main()
 {
 	// Uncomment to enable custom title bar:
-	// ImPlatform_EnableCustomTitleBar();
+	ImPlatform_EnableCustomTitleBar();
 
 	// Setup for an image
 	int width;
@@ -134,7 +134,7 @@ int main()
 	io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;		// Enable Docking
 #endif
 #ifdef IMGUI_HAS_VIEWPORT
-	//io.ConfigFlags |= ImGuiConfigFlags_ViewportsEnable;		// Enable Multi-Viewport / Platform Windows
+	io.ConfigFlags |= ImGuiConfigFlags_ViewportsEnable;		// Enable Multi-Viewport / Platform Windows
 	////io.ConfigViewportsNoAutoMerge = true;
 	////io.ConfigViewportsNoTaskBarIcon = true;
 #endif

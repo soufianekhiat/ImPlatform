@@ -108,11 +108,13 @@ static int g_Height = 800;
 struct WGL_WindowData { HDC hDC; };
 static WGL_WindowData g_MainWindow;
 
+#ifdef IMGUI_HAS_VIEWPORT
 // Forward declarations for viewport hooks
 static void Hook_Renderer_CreateWindow(ImGuiViewport* viewport);
 static void Hook_Renderer_DestroyWindow(ImGuiViewport* viewport);
 static void Hook_Platform_RenderWindow(ImGuiViewport* viewport, void*);
 static void Hook_Renderer_SwapBuffers(ImGuiViewport* viewport, void*);
+#endif // IMGUI_HAS_VIEWPORT
 #endif
 
 // Internal API - Create OpenGL context
@@ -266,7 +268,7 @@ IMPLATFORM_API bool ImPlatform_InitGfx(void)
     glUniform1iv_Ptr = (PFNGLUNIFORM1IVPROC)imgl3wGetProcAddress("glUniform1iv");
     glGetTexLevelParameteriv_Ptr = (PFNGLGETTEXLEVELPARAMETERIVPROC)imgl3wGetProcAddress("glGetTexLevelParameteriv");
 
-#if defined(IM_CURRENT_PLATFORM) && (IM_CURRENT_PLATFORM == IM_PLATFORM_WIN32)
+#if defined(IM_CURRENT_PLATFORM) && (IM_CURRENT_PLATFORM == IM_PLATFORM_WIN32) && defined(IMGUI_HAS_VIEWPORT)
     // Win32+GL needs specific hooks for viewport, as there are specific things needed to tie Win32 and GL api.
     ImGuiIO& io = ImGui::GetIO();
     if (io.ConfigFlags & ImGuiConfigFlags_ViewportsEnable)
@@ -450,6 +452,7 @@ void ImPlatform_Gfx_SetSize_OpenGL3(int width, int height)
     g_Height = height;
 }
 
+#ifdef IMGUI_HAS_VIEWPORT
 // Win32+OpenGL viewport hooks
 // Unlike most other backend combinations, we need specific hooks to combine Win32+OpenGL.
 static void Hook_Renderer_CreateWindow(ImGuiViewport* viewport)
@@ -492,7 +495,8 @@ static void Hook_Renderer_SwapBuffers(ImGuiViewport* viewport, void*)
     if (WGL_WindowData* data = (WGL_WindowData*)viewport->RendererUserData)
         ::SwapBuffers(data->hDC);
 }
-#endif
+#endif // IMGUI_HAS_VIEWPORT
+#endif // IM_PLATFORM_WIN32
 
 // ============================================================================
 // Texture Creation API - OpenGL3 Implementation

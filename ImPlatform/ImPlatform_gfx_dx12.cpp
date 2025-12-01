@@ -441,6 +441,7 @@ IMPLATFORM_API bool ImPlatform_GfxAPIRender(ImVec4 const vClearColor)
 }
 
 // ImPlatform API - GfxViewportPre
+#ifdef IMGUI_HAS_VIEWPORT
 IMPLATFORM_API void ImPlatform_GfxViewportPre(void)
 {
     if (ImGui::GetIO().ConfigFlags & ImGuiConfigFlags_ViewportsEnable)
@@ -482,6 +483,7 @@ IMPLATFORM_API void ImPlatform_GfxViewportPost(void)
         ImGui::RenderPlatformWindowsDefault(NULL, (void*)g_GfxData.pCommandList);
     }
 }
+#endif
 
 // ImPlatform API - GfxAPISwapBuffer
 IMPLATFORM_API bool ImPlatform_GfxAPISwapBuffer(void)
@@ -1314,6 +1316,7 @@ static void ImPlatform_SetCustomShader(const ImDrawList* parent_list, const ImDr
     {
         draw_data = g_CurrentDrawData;
     }
+#ifdef IMGUI_HAS_VIEWPORT
     else
     {
         // Fallback: search through all viewports to find which one owns this draw list
@@ -1336,6 +1339,9 @@ static void ImPlatform_SetCustomShader(const ImDrawList* parent_list, const ImDr
             }
         }
     }
+#endif
+    if (!draw_data)
+        draw_data = ImGui::GetDrawData();
 
     if (!draw_data)
         return;
