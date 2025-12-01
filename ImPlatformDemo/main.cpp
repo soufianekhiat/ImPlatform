@@ -134,7 +134,7 @@ int main()
 	io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;		// Enable Docking
 #endif
 #ifdef IMGUI_HAS_VIEWPORT
-	io.ConfigFlags |= ImGuiConfigFlags_ViewportsEnable;		// Enable Multi-Viewport / Platform Windows
+	//io.ConfigFlags |= ImGuiConfigFlags_ViewportsEnable;		// Enable Multi-Viewport / Platform Windows
 	////io.ConfigViewportsNoAutoMerge = true;
 	////io.ConfigViewportsNoTaskBarIcon = true;
 #endif
@@ -514,24 +514,27 @@ int main()
 		// Custom Title Bar Demo (optional)
 #if IMPLATFORM_APP_SUPPORT_CUSTOM_TITLEBAR
 		// Uncomment to enable custom titlebar rendering
-		if (ImPlatform_BeginCustomTitleBar(32.0f))
+		if ( ImPlatform_CustomTitleBarEnabled() )
 		{
-			// Option 1: Use the default titlebar with min/max/close buttons
-			ImPlatform_DrawCustomMenuBarDefault();
+			if ( ImPlatform_BeginCustomTitleBar( 32.0f ) )
+			{
+				// Option 1: Use the default titlebar with min/max/close buttons
+				ImPlatform_DrawCustomMenuBarDefault();
 
-			// Option 2: Create your own custom titlebar
-			// ImGui::Text("My Custom App");
-			// ImGui::SameLine(ImGui::GetWindowWidth() - 100);
-			// if (ImGui::Button("_"))
-			// 	ImPlatform_MinimizeApp();
-			// ImGui::SameLine();
-			// if (ImGui::Button("[]"))
-			// 	ImPlatform_MaximizeApp();
-			// ImGui::SameLine();
-			// if (ImGui::Button("X"))
-			// 	ImPlatform_CloseApp();
+				// Option 2: Create your own custom titlebar
+				// ImGui::Text("My Custom App");
+				// ImGui::SameLine(ImGui::GetWindowWidth() - 100);
+				// if (ImGui::Button("_"))
+				// 	ImPlatform_MinimizeApp();
+				// ImGui::SameLine();
+				// if (ImGui::Button("[]"))
+				// 	ImPlatform_MaximizeApp();
+				// ImGui::SameLine();
+				// if (ImGui::Button("X"))
+				// 	ImPlatform_CloseApp();
+			}
+			ImPlatform_EndCustomTitleBar();
 		}
-		ImPlatform_EndCustomTitleBar();
 #endif
 
 		// ImGui Demo Code
