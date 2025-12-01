@@ -96,6 +96,9 @@ static PFNGLGETTEXLEVELPARAMETERIVPROC glGetTexLevelParameteriv_Ptr = NULL;
 // Global state
 static ImPlatform_GfxData_OpenGL3 g_GfxData = { 0 };
 
+// Cached draw data for custom shader callbacks (needed for multi-viewport support)
+static ImDrawData* g_CurrentDrawData = nullptr;
+
 #if defined(IM_CURRENT_PLATFORM) && (IM_CURRENT_PLATFORM == IM_PLATFORM_WIN32)
 static HGLRC g_hRC = NULL; // Shared GL context for main window
 static int g_Width = 1280;
@@ -322,12 +325,31 @@ IMPLATFORM_API bool ImPlatform_GfxAPIRender(ImVec4 const vClearColor)
 {
     (void)vClearColor; // Not used for OpenGL
     ImDrawData* draw_data = ImGui::GetDrawData();
+
+    // Cache draw data for custom shader callbacks
+    g_CurrentDrawData = draw_data;
+
     ImGui_ImplOpenGL3_RenderDrawData(draw_data);
     return true;
 }
 
 // ImPlatform API - GfxViewportPre
 #ifdef IMGUI_HAS_VIEWPORT
+
+// Custom viewport render callback that wraps ImGui's callback to cache draw data
+static void (*g_OriginalRendererRenderWindow)(ImGuiViewport*, void*) = nullptr;
+
+static void ImPlatform_RendererRenderWindowWrapper(ImGuiViewport* viewport, void* renderer_arg)
+{
+    // Cache the viewport's draw data before rendering
+    // This ensures custom shader callbacks have access to the correct viewport's projection
+    g_CurrentDrawData = viewport->DrawData;
+
+    // Call the original ImGui OpenGL3 renderer
+    if (g_OriginalRendererRenderWindow)
+        g_OriginalRendererRenderWindow(viewport, renderer_arg);
+}
+
 IMPLATFORM_API void ImPlatform_GfxViewportPre(void)
 {
     if (ImGui::GetIO().ConfigFlags & ImGuiConfigFlags_ViewportsEnable)
@@ -341,6 +363,14 @@ IMPLATFORM_API void ImPlatform_GfxViewportPost(void)
 {
     if (ImGui::GetIO().ConfigFlags & ImGuiConfigFlags_ViewportsEnable)
     {
+        // Replace the renderer callback with our wrapper (only once)
+        ImGuiPlatformIO& platform_io = ImGui::GetPlatformIO();
+        if (!g_OriginalRendererRenderWindow && platform_io.Renderer_RenderWindow)
+        {
+            g_OriginalRendererRenderWindow = platform_io.Renderer_RenderWindow;
+            platform_io.Renderer_RenderWindow = ImPlatform_RendererRenderWindowWrapper;
+        }
+
         ImGui::RenderPlatformWindowsDefault();
 
 #if defined(IM_CURRENT_PLATFORM) && (IM_CURRENT_PLATFORM == IM_PLATFORM_WIN32)
@@ -1243,9 +1273,8 @@ static void ImPlatform_SetCustomShader(const ImDrawList* parent_list, const ImDr
     // Bind the shader program
     ImPlatform_BindShaderProgram(program);
 
-    // Get viewport info at render time
-    // During multi-viewport rendering, GetDrawData() should return the current viewport's draw_data
-    ImDrawData* draw_data = ImGui::GetDrawData();
+    // Use cached draw data for correct viewport projection in multi-viewport mode
+    ImDrawData* draw_data = g_CurrentDrawData;
     if (!draw_data) return;
 
     float L = draw_data->DisplayPos.x;
