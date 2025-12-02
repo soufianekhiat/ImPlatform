@@ -50,6 +50,8 @@ jobs:
           Expand-Archive -Path SDL2-devel.zip -DestinationPath .
           $sdlPath = (Get-ChildItem -Directory -Filter "SDL2-*").FullName
           echo "SDL2_DIR=$sdlPath" >> $env:GITHUB_ENV
+          echo "SDL2_INCLUDE=$sdlPath\include" >> $env:GITHUB_ENV
+          echo "SDL2_LIB=$sdlPath\lib\x64" >> $env:GITHUB_ENV
           New-Item -ItemType Directory -Force -Path "ImPlatformDemo/x64/${{ matrix.config }}"
           Copy-Item "$sdlPath/lib/x64/SDL2.dll" "ImPlatformDemo/x64/${{ matrix.config }}/"
 
@@ -57,10 +59,13 @@ jobs:
         if: startsWith(matrix.config, 'SDL3')
         shell: powershell
         run: |
-          Invoke-WebRequest -Uri "https://www.libsdl.org/release/SDL3-devel-3.2.18-VC.zip" -OutFile "SDL3-devel.zip"
+          # Try latest SDL3 release
+          Invoke-WebRequest -Uri "https://github.com/libsdl-org/SDL/releases/download/release-3.2.0/SDL3-devel-3.2.0-VC.zip" -OutFile "SDL3-devel.zip"
           Expand-Archive -Path SDL3-devel.zip -DestinationPath .
           $sdlPath = (Get-ChildItem -Directory -Filter "SDL3-*").FullName
           echo "SDL3_DIR=$sdlPath" >> $env:GITHUB_ENV
+          echo "SDL3_INCLUDE=$sdlPath\include" >> $env:GITHUB_ENV
+          echo "SDL3_LIB=$sdlPath\lib\x64" >> $env:GITHUB_ENV
           New-Item -ItemType Directory -Force -Path "ImPlatformDemo/x64/${{ matrix.config }}"
           Copy-Item "$sdlPath/lib/x64/SDL3.dll" "ImPlatformDemo/x64/${{ matrix.config }}/"
 
@@ -70,7 +75,7 @@ jobs:
         run: |
           Invoke-WebRequest -Uri "https://github.com/user-attachments/files/22464296/vulkan_windows_libs_1.4.326.zip" -OutFile vulkan_libs.zip
           Expand-Archive -Path vulkan_libs.zip -DestinationPath vulkan_sdk
-          $vulkanPath = "${{ github.workspace }}/vulkan_sdk/vulkan_windows_libs_1.4.326"
+          $vulkanPath = "${{ github.workspace }}\vulkan_sdk\vulkan_windows_libs_1.4.326"
           echo "VULKAN_SDK=$vulkanPath" >> $env:GITHUB_ENV
 
       - name: Fix Project Files
@@ -84,8 +89,29 @@ jobs:
           }
 
       - name: Build ${{ matrix.config }}
-        shell: cmd
-        run: '"%MSBUILD_PATH%\MSBuild.exe" ImPlatformDemo/ImPlatformDemo.sln /p:Configuration=${{ matrix.config }} /p:Platform=x64 /m /nologo'
+        shell: powershell
+        run: |
+          $msbuildArgs = @(
+            "ImPlatformDemo/ImPlatformDemo.sln",
+            "/p:Configuration=${{ matrix.config }}",
+            "/p:Platform=x64",
+            "/m",
+            "/nologo"
+          )
+
+          # Add SDL2 paths if available
+          if ($env:SDL2_INCLUDE) {
+            $msbuildArgs += "/p:IncludePath=`"$env:SDL2_INCLUDE;`$(IncludePath)`""
+            $msbuildArgs += "/p:LibraryPath=`"$env:SDL2_LIB;`$(LibraryPath)`""
+          }
+
+          # Add SDL3 paths if available
+          if ($env:SDL3_INCLUDE) {
+            $msbuildArgs += "/p:IncludePath=`"$env:SDL3_INCLUDE;`$(IncludePath)`""
+            $msbuildArgs += "/p:LibraryPath=`"$env:SDL3_LIB;`$(LibraryPath)`""
+          }
+
+          & "$env:MSBUILD_PATH\MSBuild.exe" @msbuildArgs
 
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
@@ -166,7 +192,8 @@ jobs:
 
       - name: Install SDL3
         run: |
-          git clone --depth 1 https://github.com/libsdl-org/SDL.git -b SDL3
+          # SDL3 is now on main branch
+          git clone --depth 1 https://github.com/libsdl-org/SDL.git
           cd SDL
           cmake -B build -DCMAKE_BUILD_TYPE=Release -DSDL_SHARED=ON -DSDL_STATIC=OFF
           cmake --build build -j$(nproc)
@@ -202,13 +229,22 @@ jobs:
       - name: Install Dependencies
         run: |
           brew install glfw sdl2 || true
-          # SDL3 might not be available via brew yet
-          brew install sdl3 || true
+
+      - name: Install SDL3
+        run: |
+          # Build SDL3 from source since it might not be in brew
+          git clone --depth 1 https://github.com/libsdl-org/SDL.git
+          cd SDL
+          cmake -B build -DCMAKE_BUILD_TYPE=Release -DSDL_SHARED=ON -DSDL_STATIC=OFF
+          cmake --build build -j$(sysctl -n hw.ncpu)
+          sudo cmake --install build
+        continue-on-error: true
 
       - name: Install Vulkan SDK
         run: |
           # Install MoltenVK for Vulkan support on macOS
           brew install molten-vk || true
+        continue-on-error: true
 
       - name: Configure CMake
         run: cmake -B build -DCMAKE_BUILD_TYPE=Release -DIMPLATFORM_FETCH_DEPENDENCIES=ON
