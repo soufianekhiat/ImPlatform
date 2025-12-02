@@ -3,7 +3,7 @@
 
 #include "ImPlatform_Internal.h"
 
-#ifdef IM_PLATFORM_SDL3
+#if defined(IM_CURRENT_PLATFORM) && (IM_CURRENT_PLATFORM == IM_PLATFORM_SDL3)
 
 #include "../imgui.h"
 #include "../imgui/backends/imgui_impl_sdl3.h"
@@ -23,6 +23,16 @@ ImPlatform_AppData_SDL3* ImPlatform_App_GetData_SDL3(void)
 {
     return &g_AppData;
 }
+
+#ifdef _WIN32
+// Internal API - Get native Windows HWND from SDL3 window
+HWND ImPlatform_App_GetHWND(void)
+{
+    // SDL3 uses SDL_GetPointerProperty to get native window handles
+    SDL_PropertiesID props = SDL_GetWindowProperties(g_AppData.pWindow);
+    return (HWND)SDL_GetPointerProperty(props, SDL_PROP_WINDOW_WIN32_HWND_POINTER, NULL);
+}
+#endif
 
 // ImPlatform API - CreateWindow
 IMPLATFORM_API bool ImPlatform_CreateWindow(char const* pWindowsName, ImVec2 const vPos, unsigned int uWidth, unsigned int uHeight)
@@ -188,4 +198,4 @@ IMPLATFORM_API void ImPlatform_ShutdownPlatform(void)
     SDL_Quit();
 }
 
-#endif // IM_PLATFORM_SDL3
+#endif // IM_CURRENT_PLATFORM == IM_PLATFORM_SDL3

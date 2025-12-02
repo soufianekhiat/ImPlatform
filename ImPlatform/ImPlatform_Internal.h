@@ -270,11 +270,17 @@ struct ImPlatform_AppData_GLFW* ImPlatform_App_GetData_GLFW(void);
 #if defined(IM_CURRENT_PLATFORM) && (IM_CURRENT_PLATFORM == IM_PLATFORM_SDL2)
 SDL_Window* ImPlatform_App_GetSDL2Window(void);
 struct ImPlatform_AppData_SDL2* ImPlatform_App_GetData_SDL2(void);
+#ifdef _WIN32
+HWND ImPlatform_App_GetHWND(void);  // Get native HWND from SDL2 window
+#endif
 #endif
 
 #if defined(IM_CURRENT_PLATFORM) && (IM_CURRENT_PLATFORM == IM_PLATFORM_SDL3)
 SDL_Window* ImPlatform_App_GetSDL3Window(void);
 struct ImPlatform_AppData_SDL3* ImPlatform_App_GetData_SDL3(void);
+#ifdef _WIN32
+HWND ImPlatform_App_GetHWND(void);  // Get native HWND from SDL3 window
+#endif
 #endif
 
 #if defined(IM_CURRENT_PLATFORM) && (IM_CURRENT_PLATFORM == IM_PLATFORM_APPLE)

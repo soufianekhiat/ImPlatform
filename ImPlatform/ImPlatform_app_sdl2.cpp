@@ -3,11 +3,12 @@
 
 #include "ImPlatform_Internal.h"
 
-#ifdef IM_PLATFORM_SDL2
+#if defined(IM_CURRENT_PLATFORM) && (IM_CURRENT_PLATFORM == IM_PLATFORM_SDL2)
 
 #include "../imgui.h"
 #include "../imgui/backends/imgui_impl_sdl2.h"
 #include <SDL.h>
+#include <SDL_syswm.h>
 
 // Global state
 static ImPlatform_AppData_SDL2 g_AppData = { 0 };
@@ -23,6 +24,20 @@ ImPlatform_AppData_SDL2* ImPlatform_App_GetData_SDL2(void)
 {
     return &g_AppData;
 }
+
+#ifdef _WIN32
+// Internal API - Get native Windows HWND from SDL2 window
+HWND ImPlatform_App_GetHWND(void)
+{
+    SDL_SysWMinfo wmInfo;
+    SDL_VERSION(&wmInfo.version);
+    if (SDL_GetWindowWMInfo(g_AppData.pWindow, &wmInfo))
+    {
+        return wmInfo.info.win.window;
+    }
+    return NULL;
+}
+#endif
 
 // ImPlatform API - CreateWindow
 IMPLATFORM_API bool ImPlatform_CreateWindow(char const* pWindowsName, ImVec2 const vPos, unsigned int uWidth, unsigned int uHeight)
@@ -194,4 +209,4 @@ IMPLATFORM_API void ImPlatform_ShutdownPlatform(void)
     SDL_Quit();
 }
 
-#endif // IM_PLATFORM_SDL2
+#endif // IM_CURRENT_PLATFORM == IM_PLATFORM_SDL2

@@ -337,7 +337,7 @@ ImPlatform_GfxData_DX12* ImPlatform_Gfx_GetData_DX12(void)
 // ImPlatform API - InitGfxAPI
 IMPLATFORM_API bool ImPlatform_InitGfxAPI(void)
 {
-#ifdef IM_PLATFORM_WIN32
+#ifdef _WIN32
     HWND hWnd = ImPlatform_App_GetHWND();
     if (!ImPlatform_Gfx_CreateDevice_DX12(hWnd, &g_GfxData))
     {
