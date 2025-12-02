@@ -108,8 +108,30 @@ jobs:
       - name: Build ${{ matrix.config }}
         shell: powershell
         run: |
-          # vcxproj uses $(SDL2_INCLUDE), $(SDL2_LIB), $(SDL3_INCLUDE), $(SDL3_LIB), $(VULKAN_SDK) env vars
-          & "$env:MSBUILD_PATH\MSBuild.exe" ImPlatformDemo/ImPlatformDemo.sln /p:Configuration=${{ matrix.config }} /p:Platform=x64 /m /nologo /v:normal
+          $msbuildArgs = @(
+            "ImPlatformDemo/ImPlatformDemo.sln",
+            "/p:Configuration=${{ matrix.config }}",
+            "/p:Platform=x64",
+            "/m",
+            "/nologo",
+            "/v:normal"
+          )
+
+          # Pass SDL/Vulkan paths as MSBuild properties (more reliable than env vars)
+          if ($env:SDL2_INCLUDE) {
+            $msbuildArgs += "/p:SDL2_INCLUDE=$env:SDL2_INCLUDE"
+            $msbuildArgs += "/p:SDL2_LIB=$env:SDL2_LIB"
+          }
+          if ($env:SDL3_INCLUDE) {
+            $msbuildArgs += "/p:SDL3_INCLUDE=$env:SDL3_INCLUDE"
+            $msbuildArgs += "/p:SDL3_LIB=$env:SDL3_LIB"
+          }
+          if ($env:VULKAN_SDK) {
+            $msbuildArgs += "/p:VULKAN_SDK=$env:VULKAN_SDK"
+          }
+
+          Write-Host "MSBuild arguments: $msbuildArgs"
+          & "$env:MSBUILD_PATH\MSBuild.exe" @msbuildArgs
 
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
