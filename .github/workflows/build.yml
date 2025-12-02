@@ -46,7 +46,7 @@ jobs:
         if: startsWith(matrix.config, 'SDL2')
         shell: powershell
         run: |
-          Invoke-WebRequest -Uri "https://www.libsdl.org/release/SDL2-devel-2.32.8-VC.zip" -OutFile "SDL2-devel.zip"
+          Invoke-WebRequest -Uri "https://github.com/libsdl-org/SDL/releases/download/release-2.32.10/SDL2-devel-2.32.10-VC.zip" -OutFile "SDL2-devel.zip"
           Expand-Archive -Path SDL2-devel.zip -DestinationPath .
           $sdlPath = (Get-ChildItem -Directory -Filter "SDL2-*").FullName
           echo "SDL2_DIR=$sdlPath" >> $env:GITHUB_ENV
@@ -59,8 +59,7 @@ jobs:
         if: startsWith(matrix.config, 'SDL3')
         shell: powershell
         run: |
-          # Try latest SDL3 release
-          Invoke-WebRequest -Uri "https://github.com/libsdl-org/SDL/releases/download/release-3.2.0/SDL3-devel-3.2.0-VC.zip" -OutFile "SDL3-devel.zip"
+          Invoke-WebRequest -Uri "https://github.com/libsdl-org/SDL/releases/download/release-3.2.26/SDL3-devel-3.2.26-VC.zip" -OutFile "SDL3-devel.zip"
           Expand-Archive -Path SDL3-devel.zip -DestinationPath .
           $sdlPath = (Get-ChildItem -Directory -Filter "SDL3-*").FullName
           echo "SDL3_DIR=$sdlPath" >> $env:GITHUB_ENV
@@ -91,27 +90,8 @@ jobs:
       - name: Build ${{ matrix.config }}
         shell: powershell
         run: |
-          $msbuildArgs = @(
-            "ImPlatformDemo/ImPlatformDemo.sln",
-            "/p:Configuration=${{ matrix.config }}",
-            "/p:Platform=x64",
-            "/m",
-            "/nologo"
-          )
-
-          # Add SDL2 paths if available
-          if ($env:SDL2_INCLUDE) {
-            $msbuildArgs += "/p:IncludePath=`"$env:SDL2_INCLUDE;`$(IncludePath)`""
-            $msbuildArgs += "/p:LibraryPath=`"$env:SDL2_LIB;`$(LibraryPath)`""
-          }
-
-          # Add SDL3 paths if available
-          if ($env:SDL3_INCLUDE) {
-            $msbuildArgs += "/p:IncludePath=`"$env:SDL3_INCLUDE;`$(IncludePath)`""
-            $msbuildArgs += "/p:LibraryPath=`"$env:SDL3_LIB;`$(LibraryPath)`""
-          }
-
-          & "$env:MSBUILD_PATH\MSBuild.exe" @msbuildArgs
+          # vcxproj uses $(SDL2_INCLUDE), $(SDL2_LIB), $(SDL3_INCLUDE), $(SDL3_LIB), $(VULKAN_SDK) env vars
+          & "$env:MSBUILD_PATH\MSBuild.exe" ImPlatformDemo/ImPlatformDemo.sln /p:Configuration=${{ matrix.config }} /p:Platform=x64 /m /nologo
 
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
@@ -208,7 +188,7 @@ jobs:
         continue-on-error: true
 
       - name: Configure CMake
-        run: cmake -B build -DCMAKE_BUILD_TYPE=Release -DIMPLATFORM_FETCH_DEPENDENCIES=OFF
+        run: cmake -B build -DCMAKE_BUILD_TYPE=Release -DIMPLATFORM_FETCH_DEPENDENCIES=ON
 
       - name: Build
         run: cmake --build build --parallel $(nproc)

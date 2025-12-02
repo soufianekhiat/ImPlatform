@@ -226,7 +226,10 @@ function(implatform_add_config TARGET_NAME PLATFORM GFX)
     elseif(PLATFORM STREQUAL "GLFW")
         target_link_libraries(${TARGET_NAME} PUBLIC glfw)
         # GLFW headers are needed for titlebar.cpp
-        target_include_directories(${TARGET_NAME} PUBLIC ${glfw_SOURCE_DIR}/include)
+        # Use glfw_SOURCE_DIR when fetched via FetchContent, otherwise glfw target provides includes
+        if(glfw_SOURCE_DIR)
+            target_include_directories(${TARGET_NAME} PUBLIC ${glfw_SOURCE_DIR}/include)
+        endif()
     elseif(PLATFORM STREQUAL "SDL2")
         target_link_libraries(${TARGET_NAME} PUBLIC SDL2::SDL2)
     elseif(PLATFORM STREQUAL "SDL3")
