@@ -19,7 +19,10 @@
 #endif
 
 // Global state
-static ImPlatform_GfxData_Metal g_GfxData = { 0 };
+static ImPlatform_GfxData_Metal g_GfxData = {};
+
+// Forward declaration for wrapper function
+static void ImPlatform_RenderDrawDataWrapper(ImDrawData* draw_data, id<MTLCommandBuffer> commandBuffer, id<MTLRenderCommandEncoder> renderEncoder);
 
 // Uniform block API state
 static ImPlatform_ShaderProgram g_CurrentUniformBlockProgram = nullptr;
@@ -297,8 +300,8 @@ IMPLATFORM_API ImPlatform_TextureDesc ImPlatform_TextureDesc_Default(unsigned in
 
 IMPLATFORM_API ImTextureID ImPlatform_CreateTexture(const void* pixel_data, const ImPlatform_TextureDesc* desc)
 {
-    if (!desc || !pixel_data || !g_GfxData.device)
-        return NULL;
+    if (!desc || !pixel_data || !g_GfxData.pMetalDevice)
+        return (ImTextureID)0;
 
     @autoreleasepool {
         int bytes_per_pixel;
@@ -313,9 +316,9 @@ IMPLATFORM_API ImTextureID ImPlatform_CreateTexture(const void* pixel_data, cons
         textureDescriptor.storageMode = MTLStorageModeManaged;
 
         // Create the texture
-        id<MTLTexture> texture = [(__bridge id<MTLDevice>)g_GfxData.device newTextureWithDescriptor:textureDescriptor];
+        id<MTLTexture> texture = [(__bridge id<MTLDevice>)g_GfxData.pMetalDevice newTextureWithDescriptor:textureDescriptor];
         if (!texture)
-            return NULL;
+            return (ImTextureID)0;
 
         // Upload pixel data
         NSUInteger bytesPerRow = desc->width * bytes_per_pixel;
@@ -348,7 +351,7 @@ IMPLATFORM_API ImTextureID ImPlatform_CreateTexture(const void* pixel_data, cons
         // For Metal, ImTextureID is just the texture pointer
         // We don't create a sampler object as Metal binds samplers separately
         // ImGui's Metal backend handles samplers internally
-        return (__bridge_retained void*)texture;
+        return (ImTextureID)(__bridge_retained void*)texture;
     }
 }
 
