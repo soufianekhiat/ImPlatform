@@ -11,17 +11,22 @@
 #endif
 
 #if defined(IM_CURRENT_PLATFORM) && (IM_CURRENT_PLATFORM == IM_PLATFORM_GLFW)
-    struct GLFWwindow; // Forward declaration
+    #if defined(IM_CURRENT_GFX) && (IM_CURRENT_GFX == IM_GFX_VULKAN)
+        // For Vulkan builds, include Vulkan headers through GLFW
+        #define GLFW_INCLUDE_VULKAN
+    #else
+        // Prevent GLFW from including OpenGL headers - imgui has its own loader
+        #define GLFW_INCLUDE_NONE
+    #endif
+    #include <GLFW/glfw3.h>
 #endif
 
 #if defined(IM_CURRENT_PLATFORM) && (IM_CURRENT_PLATFORM == IM_PLATFORM_SDL2)
-    struct SDL_Window; // Forward declaration
-    typedef void* SDL_GLContext; // Forward declaration
+    #include <SDL.h>
 #endif
 
 #if defined(IM_CURRENT_PLATFORM) && (IM_CURRENT_PLATFORM == IM_PLATFORM_SDL3)
-    struct SDL_Window; // Forward declaration (SDL3 uses same name)
-    typedef void* SDL_GLContext; // Forward declaration
+    #include <SDL3/SDL.h>
 #endif
 
 // Graphics API includes
