@@ -205,6 +205,15 @@ function(implatform_add_config TARGET_NAME PLATFORM GFX)
     # Create library
     add_library(${TARGET_NAME} STATIC ${SOURCES})
 
+    # Set Objective-C++ language for .mm files on macOS
+    if(APPLE)
+        foreach(SOURCE_FILE ${SOURCES})
+            if(SOURCE_FILE MATCHES "\\.mm$")
+                set_source_files_properties(${SOURCE_FILE} PROPERTIES LANGUAGE OBJCXX)
+            endif()
+        endforeach()
+    endif()
+
     target_include_directories(${TARGET_NAME} PUBLIC
         ${IMPLATFORM_DIR}
         ${IMGUI_DIR}
@@ -254,11 +263,15 @@ function(implatform_add_config TARGET_NAME PLATFORM GFX)
         find_library(METAL_FRAMEWORK Metal REQUIRED)
         find_library(METALKIT_FRAMEWORK MetalKit REQUIRED)
         find_library(QUARTZCORE_FRAMEWORK QuartzCore REQUIRED)
+        find_library(FOUNDATION_FRAMEWORK Foundation REQUIRED)
         target_link_libraries(${TARGET_NAME} PUBLIC
             ${METAL_FRAMEWORK}
             ${METALKIT_FRAMEWORK}
             ${QUARTZCORE_FRAMEWORK}
+            ${FOUNDATION_FRAMEWORK}
         )
+        # Enable ARC for Metal targets
+        target_compile_options(${TARGET_NAME} PRIVATE $<$<COMPILE_LANGUAGE:OBJCXX>:-fobjc-arc>)
     endif()
 
     # macOS frameworks
