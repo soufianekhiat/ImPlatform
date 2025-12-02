@@ -51,7 +51,7 @@ extern "C" {
 int main()
 {
 	// Uncomment to enable custom title bar:
-	ImPlatform_EnableCustomTitleBar();
+	// ImPlatform_EnableCustomTitleBar();
 
 	// Setup for an image
 	int width;
