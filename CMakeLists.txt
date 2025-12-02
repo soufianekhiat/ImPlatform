@@ -139,6 +139,16 @@ set(IMGUI_BACKEND_OPENGL3    ${IMGUI_DIR}/backends/imgui_impl_opengl3.cpp)
 set(IMGUI_BACKEND_VULKAN     ${IMGUI_DIR}/backends/imgui_impl_vulkan.cpp)
 set(IMGUI_BACKEND_METAL      ${IMGUI_DIR}/backends/imgui_impl_metal.mm)
 
+# Set Objective-C++ language for .mm files at the directory level (before targets are defined)
+if(APPLE)
+    set_source_files_properties(
+        ${IMPLATFORM_SRC_APPLE}
+        ${IMPLATFORM_SRC_METAL}
+        ${IMGUI_BACKEND_METAL}
+        PROPERTIES LANGUAGE OBJCXX
+    )
+endif()
+
 # =============================================================================
 # Helper function to create ImPlatform configurations
 # =============================================================================
@@ -204,15 +214,6 @@ function(implatform_add_config TARGET_NAME PLATFORM GFX)
 
     # Create library
     add_library(${TARGET_NAME} STATIC ${SOURCES})
-
-    # Set Objective-C++ language for .mm files on macOS
-    if(APPLE)
-        foreach(SOURCE_FILE ${SOURCES})
-            if(SOURCE_FILE MATCHES "\\.mm$")
-                set_source_files_properties(${SOURCE_FILE} PROPERTIES LANGUAGE OBJCXX)
-            endif()
-        endforeach()
-    endif()
 
     target_include_directories(${TARGET_NAME} PUBLIC
         ${IMPLATFORM_DIR}
