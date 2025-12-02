@@ -131,10 +131,10 @@ int main()
 	io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;	// Enable Keyboard Controls
 	io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;	// Enable Gamepad Controls
 #ifdef IMGUI_HAS_DOCK
-	io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;		// Enable Docking
+	//io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;		// Enable Docking
 #endif
 #ifdef IMGUI_HAS_VIEWPORT
-	io.ConfigFlags |= ImGuiConfigFlags_ViewportsEnable;		// Enable Multi-Viewport / Platform Windows
+	//io.ConfigFlags |= ImGuiConfigFlags_ViewportsEnable;		// Enable Multi-Viewport / Platform Windows
 	////io.ConfigViewportsNoAutoMerge = true;
 	////io.ConfigViewportsNoTaskBarIcon = true;
 #endif
