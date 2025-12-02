@@ -10,6 +10,13 @@
     #include <windows.h>
 #endif
 
+// Include Windows.h for SDL2/SDL3 on Windows (needed for HWND type)
+#if defined(_WIN32) && defined(IM_CURRENT_PLATFORM) && ((IM_CURRENT_PLATFORM == IM_PLATFORM_SDL2) || (IM_CURRENT_PLATFORM == IM_PLATFORM_SDL3))
+    #ifndef _WINDOWS_
+        #include <windows.h>
+    #endif
+#endif
+
 #if defined(IM_CURRENT_PLATFORM) && (IM_CURRENT_PLATFORM == IM_PLATFORM_GLFW)
     #if defined(IM_CURRENT_GFX) && (IM_CURRENT_GFX == IM_GFX_VULKAN)
         // For Vulkan builds, include Vulkan headers through GLFW
