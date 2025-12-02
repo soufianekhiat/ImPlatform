@@ -13,6 +13,8 @@ if(WIN32)
     set(IMPLATFORM_WINDOWS TRUE)
 elseif(APPLE)
     set(IMPLATFORM_MACOS TRUE)
+    # Enable Objective-C and Objective-C++ for Metal support
+    enable_language(OBJC)
     enable_language(OBJCXX)
 elseif(UNIX)
     set(IMPLATFORM_LINUX TRUE)
@@ -139,13 +141,15 @@ set(IMGUI_BACKEND_OPENGL3    ${IMGUI_DIR}/backends/imgui_impl_opengl3.cpp)
 set(IMGUI_BACKEND_VULKAN     ${IMGUI_DIR}/backends/imgui_impl_vulkan.cpp)
 set(IMGUI_BACKEND_METAL      ${IMGUI_DIR}/backends/imgui_impl_metal.mm)
 
-# Set Objective-C++ language for .mm files at the directory level (before targets are defined)
+# Set Objective-C++ language and compile flags for .mm files at the directory level
 if(APPLE)
     set_source_files_properties(
         ${IMPLATFORM_SRC_APPLE}
         ${IMPLATFORM_SRC_METAL}
         ${IMGUI_BACKEND_METAL}
-        PROPERTIES LANGUAGE OBJCXX
+        PROPERTIES
+            LANGUAGE OBJCXX
+            COMPILE_FLAGS "-fobjc-arc -x objective-c++"
     )
 endif()
 
