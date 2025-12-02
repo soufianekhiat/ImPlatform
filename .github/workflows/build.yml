@@ -188,7 +188,14 @@ jobs:
             libxkbcommon-dev \
             libglfw3-dev \
             libsdl2-dev \
-            libvulkan-dev
+            libvulkan-dev \
+            libasound2-dev \
+            libpulse-dev \
+            libudev-dev \
+            libdbus-1-dev \
+            libdrm-dev \
+            libgbm-dev \
+            libegl1-mesa-dev
 
       - name: Install SDL3
         run: |
@@ -198,6 +205,7 @@ jobs:
           cmake -B build -DCMAKE_BUILD_TYPE=Release -DSDL_SHARED=ON -DSDL_STATIC=OFF
           cmake --build build -j$(nproc)
           sudo cmake --install build
+        continue-on-error: true
 
       - name: Configure CMake
         run: cmake -B build -DCMAKE_BUILD_TYPE=Release -DIMPLATFORM_FETCH_DEPENDENCIES=OFF
