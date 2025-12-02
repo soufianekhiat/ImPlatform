@@ -125,13 +125,20 @@ jobs:
         shell: powershell
         run: |
           $exePath = "ImPlatformDemo/x64/${{ matrix.config }}/ImPlatformDemo.exe"
+          $exeDir = "ImPlatformDemo/x64/${{ matrix.config }}"
           $screenshotDir = "screenshots"
           New-Item -ItemType Directory -Force -Path $screenshotDir
+
+          # Copy imgui.ini to executable directory for correct window positions/sizes
+          if (Test-Path "ImPlatformDemo/imgui.ini") {
+            Copy-Item "ImPlatformDemo/imgui.ini" "$exeDir/imgui.ini"
+            Write-Host "Copied imgui.ini to $exeDir"
+          }
 
           Write-Host "Starting demo: $exePath"
 
           # Start the demo in background
-          $process = Start-Process -FilePath $exePath -PassThru -WindowStyle Normal
+          $process = Start-Process -FilePath $exePath -WorkingDirectory $exeDir -PassThru -WindowStyle Normal
 
           # Wait for the window to appear and render
           Start-Sleep -Seconds 3
@@ -229,10 +236,18 @@ jobs:
 
           if ($exeFiles.Count -gt 0) {
             $exePath = $exeFiles[0].FullName
+            $exeDir = $exeFiles[0].DirectoryName
             $exeName = $exeFiles[0].BaseName
+
+            # Copy imgui.ini to executable directory for correct window positions/sizes
+            if (Test-Path "ImPlatformDemo/imgui.ini") {
+              Copy-Item "ImPlatformDemo/imgui.ini" "$exeDir/imgui.ini"
+              Write-Host "Copied imgui.ini to $exeDir"
+            }
+
             Write-Host "Starting demo: $exePath"
 
-            $process = Start-Process -FilePath $exePath -PassThru -WindowStyle Normal
+            $process = Start-Process -FilePath $exePath -WorkingDirectory $exeDir -PassThru -WindowStyle Normal
             Start-Sleep -Seconds 3
 
             Add-Type -AssemblyName System.Windows.Forms
@@ -343,7 +358,14 @@ jobs:
 
           if [ -n "$DEMO" ]; then
             DEMO_NAME=$(basename "$DEMO")
+            DEMO_DIR=$(dirname "$DEMO")
             echo "Starting demo: $DEMO"
+
+            # Copy imgui.ini to executable directory for correct window positions/sizes
+            if [ -f "ImPlatformDemo/imgui.ini" ]; then
+              cp "ImPlatformDemo/imgui.ini" "$DEMO_DIR/imgui.ini"
+              echo "Copied imgui.ini to $DEMO_DIR"
+            fi
 
             # Start Xvfb (virtual framebuffer)
             export DISPLAY=:99
@@ -351,9 +373,11 @@ jobs:
             XVFB_PID=$!
             sleep 2
 
-            # Run demo in background
-            "$DEMO" &
+            # Run demo in background from its directory
+            cd "$DEMO_DIR"
+            "./$DEMO_NAME" &
             DEMO_PID=$!
+            cd - > /dev/null
             sleep 3
 
             # Capture screenshot using import (ImageMagick)
@@ -432,11 +456,20 @@ jobs:
 
           if [ -n "$DEMO" ]; then
             DEMO_NAME=$(basename "$DEMO")
+            DEMO_DIR=$(dirname "$DEMO")
             echo "Starting demo: $DEMO"
 
-            # Run demo in background
-            "$DEMO" &
+            # Copy imgui.ini to executable directory for correct window positions/sizes
+            if [ -f "ImPlatformDemo/imgui.ini" ]; then
+              cp "ImPlatformDemo/imgui.ini" "$DEMO_DIR/imgui.ini"
+              echo "Copied imgui.ini to $DEMO_DIR"
+            fi
+
+            # Run demo in background from its directory
+            cd "$DEMO_DIR"
+            "./$DEMO_NAME" &
             DEMO_PID=$!
+            cd - > /dev/null
             sleep 3
 
             # Capture screenshot using screencapture
