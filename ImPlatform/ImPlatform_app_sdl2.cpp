@@ -5,6 +5,9 @@
 
 #if defined(IM_CURRENT_PLATFORM) && (IM_CURRENT_PLATFORM == IM_PLATFORM_SDL2)
 
+// Tell SDL we handle main() ourselves - prevents conflicts with SDL2main.lib
+#define SDL_MAIN_HANDLED
+
 #include "../imgui.h"
 #include "../imgui/backends/imgui_impl_sdl2.h"
 #include <SDL.h>
@@ -190,9 +193,20 @@ IMPLATFORM_API void ImPlatform_PlatformNewFrame(void)
 // ImPlatform API - ShutdownPlatform
 IMPLATFORM_API void ImPlatform_ShutdownPlatform(void)
 {
-    ImGui_ImplSDL2_Shutdown();
+    // Note: This is kept for backwards compatibility
+    // New code should use ShutdownPostGfxAPI + DestroyWindow
+}
 
-#ifdef IM_GFX_OPENGL3
+// ImPlatform API - ShutdownPostGfxAPI
+IMPLATFORM_API void ImPlatform_ShutdownPostGfxAPI(void)
+{
+    ImGui_ImplSDL2_Shutdown();
+}
+
+// ImPlatform API - DestroyWindow
+IMPLATFORM_API void ImPlatform_DestroyWindow(void)
+{
+#if defined(IM_CURRENT_GFX) && (IM_CURRENT_GFX == IM_GFX_OPENGL3)
     if (g_AppData.glContext)
     {
         SDL_GL_DeleteContext(g_AppData.glContext);
