@@ -102,8 +102,34 @@ jobs:
           Write-Host "SDL3_INCLUDE: $env:SDL3_INCLUDE"
           Write-Host "SDL3_LIB: $env:SDL3_LIB"
           Write-Host "VULKAN_SDK: $env:VULKAN_SDK"
-          if ($env:SDL2_INCLUDE) { Get-ChildItem $env:SDL2_INCLUDE -ErrorAction SilentlyContinue | Select-Object -First 5 }
-          if ($env:SDL3_INCLUDE) { Get-ChildItem $env:SDL3_INCLUDE -ErrorAction SilentlyContinue | Select-Object -First 5 }
+
+          Write-Host "`n=== SDL2 Include Contents ==="
+          if ($env:SDL2_INCLUDE -and (Test-Path $env:SDL2_INCLUDE)) {
+            Get-ChildItem $env:SDL2_INCLUDE | ForEach-Object { Write-Host $_.Name }
+            Write-Host "`nSDL.h exists: $(Test-Path (Join-Path $env:SDL2_INCLUDE 'SDL.h'))"
+          } else {
+            Write-Host "SDL2_INCLUDE path does not exist: $env:SDL2_INCLUDE"
+          }
+
+          Write-Host "`n=== SDL2 Lib Contents ==="
+          if ($env:SDL2_LIB -and (Test-Path $env:SDL2_LIB)) {
+            Get-ChildItem $env:SDL2_LIB | ForEach-Object { Write-Host $_.Name }
+          } else {
+            Write-Host "SDL2_LIB path does not exist: $env:SDL2_LIB"
+          }
+
+          Write-Host "`n=== SDL3 Include Contents ==="
+          if ($env:SDL3_INCLUDE -and (Test-Path $env:SDL3_INCLUDE)) {
+            Get-ChildItem $env:SDL3_INCLUDE | ForEach-Object { Write-Host $_.Name }
+            # Check for SDL3 subdirectory
+            $sdl3subdir = Join-Path $env:SDL3_INCLUDE 'SDL3'
+            if (Test-Path $sdl3subdir) {
+              Write-Host "`nSDL3 subdirectory contents:"
+              Get-ChildItem $sdl3subdir | Select-Object -First 5 | ForEach-Object { Write-Host "  $($_.Name)" }
+            }
+          } else {
+            Write-Host "SDL3_INCLUDE path does not exist: $env:SDL3_INCLUDE"
+          }
 
       - name: Build ${{ matrix.config }}
         shell: powershell
@@ -114,7 +140,9 @@ jobs:
             "/p:Platform=x64",
             "/m",
             "/nologo",
-            "/v:normal"
+            "/v:detailed",
+            "/fl",
+            "/flp:logfile=build.log;verbosity=detailed"
           )
 
           # Pass SDL/Vulkan paths as MSBuild properties (more reliable than env vars)
@@ -130,8 +158,19 @@ jobs:
             $msbuildArgs += "/p:VULKAN_SDK=$env:VULKAN_SDK"
           }
 
-          Write-Host "MSBuild arguments: $msbuildArgs"
+          Write-Host "MSBuild arguments:"
+          $msbuildArgs | ForEach-Object { Write-Host "  $_" }
+
           & "$env:MSBUILD_PATH\MSBuild.exe" @msbuildArgs
+          $exitCode = $LASTEXITCODE
+
+          # Show last 100 lines of build log on failure
+          if ($exitCode -ne 0 -and (Test-Path "build.log")) {
+            Write-Host "`n=== BUILD FAILED - Last 100 lines of build.log ==="
+            Get-Content "build.log" -Tail 100
+          }
+
+          exit $exitCode
 
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
