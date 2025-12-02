@@ -94,7 +94,7 @@ static PFNGLGETTEXLEVELPARAMETERIVPROC glGetTexLevelParameteriv_Ptr = NULL;
 #endif
 
 // Global state
-static ImPlatform_GfxData_OpenGL3 g_GfxData = { 0 };
+static ImPlatform_GfxData_OpenGL3 g_GfxData = {};
 
 // Cached draw data for custom shader callbacks (needed for multi-viewport support)
 static ImDrawData* g_CurrentDrawData = nullptr;

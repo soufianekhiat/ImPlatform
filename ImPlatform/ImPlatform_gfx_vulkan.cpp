@@ -12,20 +12,20 @@
 
 #if defined(IM_CURRENT_PLATFORM) && (IM_CURRENT_PLATFORM == IM_PLATFORM_WIN32)
     #include <vulkan/vulkan_win32.h>
-#elif defined(IM_PLATFORM_GLFW)
+#elif defined(IM_CURRENT_PLATFORM) && (IM_CURRENT_PLATFORM == IM_PLATFORM_GLFW)
     #define GLFW_INCLUDE_NONE
     #define GLFW_INCLUDE_VULKAN
     #include <GLFW/glfw3.h>
-#elif defined(IM_PLATFORM_SDL2)
+#elif defined(IM_CURRENT_PLATFORM) && (IM_CURRENT_PLATFORM == IM_PLATFORM_SDL2)
     #include <SDL.h>
     #include <SDL_vulkan.h>
-#elif defined(IM_PLATFORM_SDL3)
+#elif defined(IM_CURRENT_PLATFORM) && (IM_CURRENT_PLATFORM == IM_PLATFORM_SDL3)
     #include <SDL3/SDL.h>
     #include <SDL3/SDL_vulkan.h>
 #endif
 
 // Global state
-static ImPlatform_GfxData_Vulkan g_GfxData = { 0 };
+static ImPlatform_GfxData_Vulkan g_GfxData = {};
 static VkAllocationCallbacks* g_Allocator = NULL;
 static ImGui_ImplVulkanH_Window g_MainWindowData;  // Don't use = {} - let constructor run!
 static bool g_SwapChainRebuild = false;
@@ -484,13 +484,13 @@ IMPLATFORM_API bool ImPlatform_InitGfxAPI(void)
 #if defined(IM_CURRENT_PLATFORM) && (IM_CURRENT_PLATFORM == IM_PLATFORM_WIN32)
     HWND hWnd = ImPlatform_App_GetHWND();
     return ImPlatform_Gfx_CreateDevice_Vulkan(hWnd, &g_GfxData);
-#elif defined(IM_PLATFORM_GLFW)
+#elif defined(IM_CURRENT_PLATFORM) && (IM_CURRENT_PLATFORM == IM_PLATFORM_GLFW)
     GLFWwindow* pWindow = ImPlatform_App_GetGLFWWindow();
     return ImPlatform_Gfx_CreateDevice_Vulkan(pWindow, &g_GfxData);
-#elif defined(IM_PLATFORM_SDL2)
+#elif defined(IM_CURRENT_PLATFORM) && (IM_CURRENT_PLATFORM == IM_PLATFORM_SDL2)
     SDL_Window* pWindow = ImPlatform_App_GetSDL2Window();
     return ImPlatform_Gfx_CreateDevice_Vulkan(pWindow, &g_GfxData);
-#elif defined(IM_PLATFORM_SDL3)
+#elif defined(IM_CURRENT_PLATFORM) && (IM_CURRENT_PLATFORM == IM_PLATFORM_SDL3)
     SDL_Window* pWindow = ImPlatform_App_GetSDL3Window();
     return ImPlatform_Gfx_CreateDevice_Vulkan(pWindow, &g_GfxData);
 #else
@@ -653,11 +653,11 @@ IMPLATFORM_API bool ImPlatform_GfxCheck(void)
         GetClientRect(ImPlatform_App_GetHWND(), &rect);
         width = rect.right - rect.left;
         height = rect.bottom - rect.top;
-#elif defined(IM_PLATFORM_GLFW)
+#elif defined(IM_CURRENT_PLATFORM) && (IM_CURRENT_PLATFORM == IM_PLATFORM_GLFW)
         glfwGetFramebufferSize(ImPlatform_App_GetGLFWWindow(), &width, &height);
-#elif defined(IM_PLATFORM_SDL2)
+#elif defined(IM_CURRENT_PLATFORM) && (IM_CURRENT_PLATFORM == IM_PLATFORM_SDL2)
         SDL_GetWindowSize(ImPlatform_App_GetSDL2Window(), &width, &height);
-#elif defined(IM_PLATFORM_SDL3)
+#elif defined(IM_CURRENT_PLATFORM) && (IM_CURRENT_PLATFORM == IM_PLATFORM_SDL3)
         SDL_GetWindowSize(ImPlatform_App_GetSDL3Window(), &width, &height);
 #endif
 
