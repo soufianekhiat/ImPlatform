@@ -2,6 +2,7 @@
 // This handles custom titlebar rendering and window controls
 
 #include "ImPlatform_Internal.h"
+#include <stdio.h>
 
 #if IMPLATFORM_APP_SUPPORT_CUSTOM_TITLEBAR
 
