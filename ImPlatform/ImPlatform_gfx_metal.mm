@@ -363,7 +363,8 @@ IMPLATFORM_API bool ImPlatform_UpdateTexture(ImTextureID texture_id, const void*
         return false;
 
     @autoreleasepool {
-        id<MTLTexture> texture = (__bridge id<MTLTexture>)texture_id;
+        // Cast ImTextureID (unsigned long long) -> void* -> id<MTLTexture>
+        id<MTLTexture> texture = (__bridge id<MTLTexture>)(void*)(uintptr_t)texture_id;
 
         // Determine bytes per pixel from texture format
         MTLPixelFormat format = texture.pixelFormat;
@@ -399,7 +400,8 @@ IMPLATFORM_API void ImPlatform_DestroyTexture(ImTextureID texture_id)
 
     @autoreleasepool {
         // Release the bridged texture
-        id<MTLTexture> texture = (__bridge_transfer id<MTLTexture>)texture_id;
+        // Cast ImTextureID (unsigned long long) -> void* -> id<MTLTexture>
+        id<MTLTexture> texture = (__bridge_transfer id<MTLTexture>)(void*)(uintptr_t)texture_id;
         texture = nil; // Explicitly release
     }
 }
