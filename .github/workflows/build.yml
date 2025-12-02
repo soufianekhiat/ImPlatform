@@ -72,10 +72,16 @@ jobs:
         if: contains(matrix.config, 'Vulkan')
         shell: powershell
         run: |
-          Invoke-WebRequest -Uri "https://github.com/user-attachments/files/22464296/vulkan_windows_libs_1.4.326.zip" -OutFile vulkan_libs.zip
-          Expand-Archive -Path vulkan_libs.zip -DestinationPath vulkan_sdk
-          $vulkanPath = "${{ github.workspace }}\vulkan_sdk\vulkan_windows_libs_1.4.326"
+          # Download Vulkan SDK headers and libraries
+          $vulkanVersion = "1.3.290.0"
+          $vulkanUrl = "https://sdk.lunarg.com/sdk/download/$vulkanVersion/windows/VulkanSDK-$vulkanVersion-Installer.exe"
+          Write-Host "Downloading Vulkan SDK $vulkanVersion..."
+          Invoke-WebRequest -Uri $vulkanUrl -OutFile VulkanSDK-Installer.exe
+          Write-Host "Installing Vulkan SDK (silent)..."
+          Start-Process -FilePath .\VulkanSDK-Installer.exe -ArgumentList "--accept-licenses --default-answer --confirm-command install" -Wait -NoNewWindow
+          $vulkanPath = "C:\VulkanSDK\$vulkanVersion"
           echo "VULKAN_SDK=$vulkanPath" >> $env:GITHUB_ENV
+          Write-Host "VULKAN_SDK set to: $vulkanPath"
 
       - name: Fix Project Files
         shell: powershell
@@ -87,11 +93,23 @@ jobs:
             Set-Content -Path $_.FullName -Value $content
           }
 
+      - name: Debug Environment
+        shell: powershell
+        run: |
+          Write-Host "=== Environment Variables ==="
+          Write-Host "SDL2_INCLUDE: $env:SDL2_INCLUDE"
+          Write-Host "SDL2_LIB: $env:SDL2_LIB"
+          Write-Host "SDL3_INCLUDE: $env:SDL3_INCLUDE"
+          Write-Host "SDL3_LIB: $env:SDL3_LIB"
+          Write-Host "VULKAN_SDK: $env:VULKAN_SDK"
+          if ($env:SDL2_INCLUDE) { Get-ChildItem $env:SDL2_INCLUDE -ErrorAction SilentlyContinue | Select-Object -First 5 }
+          if ($env:SDL3_INCLUDE) { Get-ChildItem $env:SDL3_INCLUDE -ErrorAction SilentlyContinue | Select-Object -First 5 }
+
       - name: Build ${{ matrix.config }}
         shell: powershell
         run: |
           # vcxproj uses $(SDL2_INCLUDE), $(SDL2_LIB), $(SDL3_INCLUDE), $(SDL3_LIB), $(VULKAN_SDK) env vars
-          & "$env:MSBUILD_PATH\MSBuild.exe" ImPlatformDemo/ImPlatformDemo.sln /p:Configuration=${{ matrix.config }} /p:Platform=x64 /m /nologo
+          & "$env:MSBUILD_PATH\MSBuild.exe" ImPlatformDemo/ImPlatformDemo.sln /p:Configuration=${{ matrix.config }} /p:Platform=x64 /m /nologo /v:normal
 
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
