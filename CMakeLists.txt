@@ -301,9 +301,18 @@ endfunction()
 # Helper function to create demo executable
 # =============================================================================
 function(implatform_add_demo TARGET_NAME IMPLATFORM_LIB)
-    add_executable(${TARGET_NAME}
-        ${CMAKE_CURRENT_SOURCE_DIR}/ImPlatformDemo/main.cpp
-    )
+    set(DEMO_MAIN ${CMAKE_CURRENT_SOURCE_DIR}/ImPlatformDemo/main.cpp)
+
+    # For Metal targets on macOS, main.cpp must be compiled as Objective-C++
+    # because ImPlatform.h includes .mm files when IMPLATFORM_IMPLEMENTATION is defined
+    if(APPLE AND IMPLATFORM_LIB MATCHES "metal")
+        set_source_files_properties(${DEMO_MAIN} PROPERTIES
+            LANGUAGE OBJCXX
+            COMPILE_FLAGS "-fobjc-arc -x objective-c++"
+        )
+    endif()
+
+    add_executable(${TARGET_NAME} ${DEMO_MAIN})
     target_link_libraries(${TARGET_NAME} PRIVATE ${IMPLATFORM_LIB})
 
     # Windows: Set subsystem to windows for non-console app
