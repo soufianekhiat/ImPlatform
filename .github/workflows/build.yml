@@ -1,0 +1,234 @@
+name: Build
+
+on:
+  push:
+    branches: [ main, master, develop ]
+  pull_request:
+    branches: [ main, master, develop ]
+  workflow_dispatch:
+
+jobs:
+  # ===========================================
+  # Windows Builds - MSBuild
+  # ===========================================
+  Build-Windows:
+    runs-on: windows-2022
+    name: Windows - ${{ matrix.config }}
+
+    strategy:
+      fail-fast: false
+      matrix:
+        config:
+          - Win32_DX9
+          - Win32_DX10
+          - Win32_DX11
+          - Win32_DX12
+          - Win32_OpenGL3
+          - GLFW_OpenGL3
+          - GLFW_Vulkan
+          - SDL2_DX11
+          - SDL2_OpenGL3
+          - SDL2_Vulkan
+          - SDL3_DX11
+          - SDL3_OpenGL3
+          - SDL3_Vulkan
+
+    env:
+      MSBUILD_PATH: C:\Program Files\Microsoft Visual Studio\2022\Enterprise\MSBuild\Current\Bin\
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install SDL2
+        if: startsWith(matrix.config, 'SDL2')
+        shell: powershell
+        run: |
+          Invoke-WebRequest -Uri "https://www.libsdl.org/release/SDL2-devel-2.32.8-VC.zip" -OutFile "SDL2-devel.zip"
+          Expand-Archive -Path SDL2-devel.zip -DestinationPath .
+          $sdlPath = (Get-ChildItem -Directory -Filter "SDL2-*").FullName
+          echo "SDL2_DIR=$sdlPath" >> $env:GITHUB_ENV
+          # Copy SDL2.dll to output directory for runtime
+          New-Item -ItemType Directory -Force -Path "ImPlatformDemo/x64/${{ matrix.config }}"
+          Copy-Item "$sdlPath/lib/x64/SDL2.dll" "ImPlatformDemo/x64/${{ matrix.config }}/"
+
+      - name: Install SDL3
+        if: startsWith(matrix.config, 'SDL3')
+        shell: powershell
+        run: |
+          Invoke-WebRequest -Uri "https://www.libsdl.org/release/SDL3-devel-3.2.18-VC.zip" -OutFile "SDL3-devel.zip"
+          Expand-Archive -Path SDL3-devel.zip -DestinationPath .
+          $sdlPath = (Get-ChildItem -Directory -Filter "SDL3-*").FullName
+          echo "SDL3_DIR=$sdlPath" >> $env:GITHUB_ENV
+          # Copy SDL3.dll to output directory for runtime
+          New-Item -ItemType Directory -Force -Path "ImPlatformDemo/x64/${{ matrix.config }}"
+          Copy-Item "$sdlPath/lib/x64/SDL3.dll" "ImPlatformDemo/x64/${{ matrix.config }}/"
+
+      - name: Install Vulkan SDK
+        if: contains(matrix.config, 'Vulkan')
+        shell: powershell
+        run: |
+          # Download pre-built Vulkan headers and libs (from imgui CI)
+          Invoke-WebRequest -Uri "https://github.com/user-attachments/files/22464296/vulkan_windows_libs_1.4.326.zip" -OutFile vulkan_libs.zip
+          Expand-Archive -Path vulkan_libs.zip -DestinationPath vulkan_sdk
+          $vulkanPath = "${{ github.workspace }}/vulkan_sdk/vulkan_windows_libs_1.4.326"
+          echo "VULKAN_SDK=$vulkanPath" >> $env:GITHUB_ENV
+
+      - name: Fix Project Files
+        shell: powershell
+        run: |
+          # Ensure projects use latest available toolset and SDK
+          Get-ChildItem -Recurse -Filter "*.vcxproj" | ForEach-Object {
+            $content = Get-Content $_.FullName
+            $content = $content -Replace "<PlatformToolset>v\d{3}</PlatformToolset>", "<PlatformToolset>v143</PlatformToolset>"
+            $content = $content -Replace "<WindowsTargetPlatformVersion>[\d\.]+</WindowsTargetPlatformVersion>", '<WindowsTargetPlatformVersion>$(LatestTargetPlatformVersion)</WindowsTargetPlatformVersion>'
+            Set-Content -Path $_.FullName -Value $content
+          }
+
+      - name: Build ${{ matrix.config }}
+        shell: cmd
+        run: '"%MSBUILD_PATH%\MSBuild.exe" ImPlatformDemo/ImPlatformDemo.sln /p:Configuration=${{ matrix.config }} /p:Platform=x64 /m /nologo'
+
+      - name: Upload Artifacts
+        uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: ImPlatformDemo-${{ matrix.config }}
+          path: ImPlatformDemo/x64/${{ matrix.config }}/*.exe
+          retention-days: 7
+
+  # ===========================================
+  # Linux Builds - Sharpmake
+  # ===========================================
+  Build-Linux:
+    runs-on: ubuntu-latest
+    name: Linux - ${{ matrix.platform }}_${{ matrix.gfx }}
+
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: [GLFW, SDL2, SDL3]
+        gfx: [OpenGL3, Vulkan]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            libgl1-mesa-dev \
+            libxrandr-dev \
+            libxinerama-dev \
+            libxcursor-dev \
+            libxi-dev \
+            libxext-dev \
+            libwayland-dev \
+            libxkbcommon-dev
+
+      - name: Install GLFW
+        if: matrix.platform == 'GLFW'
+        run: sudo apt-get install -y libglfw3-dev
+
+      - name: Install SDL2
+        if: matrix.platform == 'SDL2'
+        run: sudo apt-get install -y libsdl2-dev
+
+      - name: Install SDL3
+        if: matrix.platform == 'SDL3'
+        run: |
+          # SDL3 may not be in apt yet, build from source
+          sudo apt-get install -y cmake
+          git clone --depth 1 https://github.com/libsdl-org/SDL.git -b SDL3
+          cd SDL
+          cmake -B build -DCMAKE_BUILD_TYPE=Release
+          cmake --build build -j$(nproc)
+          sudo cmake --install build
+
+      - name: Install Vulkan SDK
+        if: matrix.gfx == 'Vulkan'
+        run: |
+          sudo apt-get install -y libvulkan-dev vulkan-tools
+
+      - name: Setup .NET for Sharpmake
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Install Sharpmake
+        run: |
+          dotnet tool install -g Sharpmake.Application || true
+          echo "$HOME/.dotnet/tools" >> $GITHUB_PATH
+
+      - name: Generate Makefiles with Sharpmake
+        run: |
+          export PATH="$HOME/.dotnet/tools:$PATH"
+          cd sharpmake
+          sharpmake "/sources(@'main.sharpmake.cs')" "/outputDir(@'../generated')"
+
+      - name: Build ${{ matrix.platform }}_${{ matrix.gfx }}
+        run: |
+          CONFIG="${{ matrix.platform }}_${{ matrix.gfx }}_Debug"
+          if [ -f "generated/linux/Makefile" ]; then
+            make -C generated/linux -j$(nproc) config=$(echo $CONFIG | tr '[:upper:]' '[:lower:]')
+          else
+            echo "Generated Makefile not found. Sharpmake may have failed."
+            ls -la generated/ || echo "No generated directory"
+            exit 1
+          fi
+
+  # ===========================================
+  # macOS Builds - Sharpmake
+  # ===========================================
+  Build-MacOS:
+    runs-on: macos-latest
+    name: macOS - ${{ matrix.platform }}_${{ matrix.gfx }}
+
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: [GLFW, SDL2, SDL3]
+        gfx: [OpenGL3, Metal]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install Dependencies
+        run: |
+          brew install glfw sdl2 sdl3 || true
+
+      - name: Setup .NET for Sharpmake
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Install Sharpmake
+        run: |
+          dotnet tool install -g Sharpmake.Application || true
+          echo "$HOME/.dotnet/tools" >> $GITHUB_PATH
+
+      - name: Generate Makefiles with Sharpmake
+        run: |
+          export PATH="$HOME/.dotnet/tools:$PATH"
+          cd sharpmake
+          sharpmake "/sources(@'main.sharpmake.cs')" "/outputDir(@'../generated')"
+
+      - name: Build ${{ matrix.platform }}_${{ matrix.gfx }}
+        run: |
+          CONFIG="${{ matrix.platform }}_${{ matrix.gfx }}_Debug"
+          if [ -f "generated/mac/Makefile" ]; then
+            make -C generated/mac -j$(sysctl -n hw.ncpu) config=$(echo $CONFIG | tr '[:upper:]' '[:lower:]')
+          else
+            echo "Generated Makefile not found. Sharpmake may have failed."
+            ls -la generated/ || echo "No generated directory"
+            exit 1
+          fi
