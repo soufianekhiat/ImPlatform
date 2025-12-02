@@ -93,44 +93,6 @@ jobs:
             Set-Content -Path $_.FullName -Value $content
           }
 
-      - name: Debug Environment
-        shell: powershell
-        run: |
-          Write-Host "=== Environment Variables ==="
-          Write-Host "SDL2_INCLUDE: $env:SDL2_INCLUDE"
-          Write-Host "SDL2_LIB: $env:SDL2_LIB"
-          Write-Host "SDL3_INCLUDE: $env:SDL3_INCLUDE"
-          Write-Host "SDL3_LIB: $env:SDL3_LIB"
-          Write-Host "VULKAN_SDK: $env:VULKAN_SDK"
-
-          Write-Host "`n=== SDL2 Include Contents ==="
-          if ($env:SDL2_INCLUDE -and (Test-Path $env:SDL2_INCLUDE)) {
-            Get-ChildItem $env:SDL2_INCLUDE | ForEach-Object { Write-Host $_.Name }
-            Write-Host "`nSDL.h exists: $(Test-Path (Join-Path $env:SDL2_INCLUDE 'SDL.h'))"
-          } else {
-            Write-Host "SDL2_INCLUDE path does not exist: $env:SDL2_INCLUDE"
-          }
-
-          Write-Host "`n=== SDL2 Lib Contents ==="
-          if ($env:SDL2_LIB -and (Test-Path $env:SDL2_LIB)) {
-            Get-ChildItem $env:SDL2_LIB | ForEach-Object { Write-Host $_.Name }
-          } else {
-            Write-Host "SDL2_LIB path does not exist: $env:SDL2_LIB"
-          }
-
-          Write-Host "`n=== SDL3 Include Contents ==="
-          if ($env:SDL3_INCLUDE -and (Test-Path $env:SDL3_INCLUDE)) {
-            Get-ChildItem $env:SDL3_INCLUDE | ForEach-Object { Write-Host $_.Name }
-            # Check for SDL3 subdirectory
-            $sdl3subdir = Join-Path $env:SDL3_INCLUDE 'SDL3'
-            if (Test-Path $sdl3subdir) {
-              Write-Host "`nSDL3 subdirectory contents:"
-              Get-ChildItem $sdl3subdir | Select-Object -First 5 | ForEach-Object { Write-Host "  $($_.Name)" }
-            }
-          } else {
-            Write-Host "SDL3_INCLUDE path does not exist: $env:SDL3_INCLUDE"
-          }
-
       - name: Build ${{ matrix.config }}
         shell: powershell
         run: |
@@ -140,9 +102,7 @@ jobs:
             "/p:Platform=x64",
             "/m",
             "/nologo",
-            "/v:detailed",
-            "/fl",
-            "/flp:logfile=build.log;verbosity=detailed"
+            "/v:minimal"
           )
 
           # Pass SDL/Vulkan paths as MSBuild properties (more reliable than env vars)
@@ -158,27 +118,71 @@ jobs:
             $msbuildArgs += "/p:VULKAN_SDK=$env:VULKAN_SDK"
           }
 
-          Write-Host "MSBuild arguments:"
-          $msbuildArgs | ForEach-Object { Write-Host "  $_" }
-
           & "$env:MSBUILD_PATH\MSBuild.exe" @msbuildArgs
-          $exitCode = $LASTEXITCODE
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-          # Show last 100 lines of build log on failure
-          if ($exitCode -ne 0 -and (Test-Path "build.log")) {
-            Write-Host "`n=== BUILD FAILED - Last 100 lines of build.log ==="
-            Get-Content "build.log" -Tail 100
+      - name: Run Demo and Capture Screenshot
+        shell: powershell
+        run: |
+          $exePath = "ImPlatformDemo/x64/${{ matrix.config }}/ImPlatformDemo.exe"
+          $screenshotDir = "screenshots"
+          New-Item -ItemType Directory -Force -Path $screenshotDir
+
+          Write-Host "Starting demo: $exePath"
+
+          # Start the demo in background
+          $process = Start-Process -FilePath $exePath -PassThru -WindowStyle Normal
+
+          # Wait for the window to appear and render
+          Start-Sleep -Seconds 3
+
+          # Take screenshot using PowerShell
+          Add-Type -AssemblyName System.Windows.Forms
+          Add-Type -AssemblyName System.Drawing
+
+          # Get screen bounds
+          $screen = [System.Windows.Forms.Screen]::PrimaryScreen
+          $bounds = $screen.Bounds
+
+          # Create bitmap and capture
+          $bitmap = New-Object System.Drawing.Bitmap($bounds.Width, $bounds.Height)
+          $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
+          $graphics.CopyFromScreen($bounds.Location, [System.Drawing.Point]::Empty, $bounds.Size)
+
+          # Save screenshot
+          $screenshotPath = "$screenshotDir/screenshot_${{ matrix.config }}.png"
+          $bitmap.Save($screenshotPath, [System.Drawing.Imaging.ImageFormat]::Png)
+          Write-Host "Screenshot saved to: $screenshotPath"
+
+          # Cleanup
+          $graphics.Dispose()
+          $bitmap.Dispose()
+
+          # Stop the demo
+          if (!$process.HasExited) {
+            $process.Kill()
+            $process.WaitForExit(5000)
           }
 
-          exit $exitCode
+          Write-Host "Demo stopped"
+        continue-on-error: true
 
-      - name: Upload Artifacts
+      - name: Upload Executable
         uses: actions/upload-artifact@v4
         if: success()
         with:
           name: ImPlatformDemo-MSBuild-${{ matrix.config }}
           path: ImPlatformDemo/x64/${{ matrix.config }}/*.exe
           retention-days: 7
+
+      - name: Upload Screenshot
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: Screenshot-MSBuild-${{ matrix.config }}
+          path: screenshots/*.png
+          retention-days: 7
+          if-no-files-found: ignore
 
   # ===========================================
   # Windows Builds - CMake
@@ -196,18 +200,65 @@ jobs:
       - name: Install Vulkan SDK
         shell: powershell
         run: |
-          Invoke-WebRequest -Uri "https://github.com/user-attachments/files/22464296/vulkan_windows_libs_1.4.326.zip" -OutFile vulkan_libs.zip
-          Expand-Archive -Path vulkan_libs.zip -DestinationPath vulkan_sdk
-          $vulkanPath = "${{ github.workspace }}\vulkan_sdk\vulkan_windows_libs_1.4.326"
+          $vulkanVersion = "1.3.290.0"
+          $vulkanUrl = "https://sdk.lunarg.com/sdk/download/$vulkanVersion/windows/VulkanSDK-$vulkanVersion-Installer.exe"
+          Write-Host "Downloading Vulkan SDK $vulkanVersion..."
+          Invoke-WebRequest -Uri $vulkanUrl -OutFile VulkanSDK-Installer.exe
+          Write-Host "Installing Vulkan SDK (silent)..."
+          Start-Process -FilePath .\VulkanSDK-Installer.exe -ArgumentList "--accept-licenses --default-answer --confirm-command install" -Wait -NoNewWindow
+          $vulkanPath = "C:\VulkanSDK\$vulkanVersion"
           echo "VULKAN_SDK=$vulkanPath" >> $env:GITHUB_ENV
-          echo "Vulkan_INCLUDE_DIR=$vulkanPath\Include" >> $env:GITHUB_ENV
-          echo "Vulkan_LIBRARY=$vulkanPath\Lib\vulkan-1.lib" >> $env:GITHUB_ENV
 
       - name: Configure CMake
         run: cmake -B build -DCMAKE_BUILD_TYPE=Release -DIMPLATFORM_FETCH_DEPENDENCIES=ON
 
       - name: Build
         run: cmake --build build --config Release --parallel
+
+      - name: Run Demo and Capture Screenshot
+        shell: powershell
+        run: |
+          $screenshotDir = "screenshots"
+          New-Item -ItemType Directory -Force -Path $screenshotDir
+
+          # Find first available demo executable
+          $exeFiles = Get-ChildItem -Path "build/Release" -Filter "ImPlatformDemo_*.exe" -ErrorAction SilentlyContinue
+          if ($exeFiles.Count -eq 0) {
+            $exeFiles = Get-ChildItem -Path "build" -Filter "ImPlatformDemo_*.exe" -Recurse -ErrorAction SilentlyContinue
+          }
+
+          if ($exeFiles.Count -gt 0) {
+            $exePath = $exeFiles[0].FullName
+            $exeName = $exeFiles[0].BaseName
+            Write-Host "Starting demo: $exePath"
+
+            $process = Start-Process -FilePath $exePath -PassThru -WindowStyle Normal
+            Start-Sleep -Seconds 3
+
+            Add-Type -AssemblyName System.Windows.Forms
+            Add-Type -AssemblyName System.Drawing
+
+            $screen = [System.Windows.Forms.Screen]::PrimaryScreen
+            $bounds = $screen.Bounds
+            $bitmap = New-Object System.Drawing.Bitmap($bounds.Width, $bounds.Height)
+            $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
+            $graphics.CopyFromScreen($bounds.Location, [System.Drawing.Point]::Empty, $bounds.Size)
+
+            $screenshotPath = "$screenshotDir/screenshot_CMake_$exeName.png"
+            $bitmap.Save($screenshotPath, [System.Drawing.Imaging.ImageFormat]::Png)
+            Write-Host "Screenshot saved to: $screenshotPath"
+
+            $graphics.Dispose()
+            $bitmap.Dispose()
+
+            if (!$process.HasExited) {
+              $process.Kill()
+              $process.WaitForExit(5000)
+            }
+          } else {
+            Write-Host "No demo executables found"
+          }
+        continue-on-error: true
 
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
@@ -216,6 +267,15 @@ jobs:
           name: ImPlatformDemo-CMake-Windows
           path: build/Release/*.exe
           retention-days: 7
+
+      - name: Upload Screenshot
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: Screenshot-CMake-Windows
+          path: screenshots/*.png
+          retention-days: 7
+          if-no-files-found: ignore
 
   # ===========================================
   # Linux Builds - CMake
@@ -254,11 +314,13 @@ jobs:
             libdbus-1-dev \
             libdrm-dev \
             libgbm-dev \
-            libegl1-mesa-dev
+            libegl1-mesa-dev \
+            xvfb \
+            x11-utils \
+            imagemagick
 
       - name: Install SDL3
         run: |
-          # SDL3 is now on main branch
           git clone --depth 1 https://github.com/libsdl-org/SDL.git
           cd SDL
           cmake -B build -DCMAKE_BUILD_TYPE=Release -DSDL_SHARED=ON -DSDL_STATIC=OFF
@@ -272,6 +334,41 @@ jobs:
       - name: Build
         run: cmake --build build --parallel $(nproc)
 
+      - name: Run Demo and Capture Screenshot
+        run: |
+          mkdir -p screenshots
+
+          # Find first available demo executable
+          DEMO=$(find build -name "ImPlatformDemo_*" -type f -executable | head -1)
+
+          if [ -n "$DEMO" ]; then
+            DEMO_NAME=$(basename "$DEMO")
+            echo "Starting demo: $DEMO"
+
+            # Start Xvfb (virtual framebuffer)
+            export DISPLAY=:99
+            Xvfb :99 -screen 0 1280x720x24 &
+            XVFB_PID=$!
+            sleep 2
+
+            # Run demo in background
+            "$DEMO" &
+            DEMO_PID=$!
+            sleep 3
+
+            # Capture screenshot using import (ImageMagick)
+            import -window root "screenshots/screenshot_Linux_${DEMO_NAME}.png" || true
+
+            # Cleanup
+            kill $DEMO_PID 2>/dev/null || true
+            kill $XVFB_PID 2>/dev/null || true
+
+            echo "Screenshot captured"
+          else
+            echo "No demo executables found"
+          fi
+        continue-on-error: true
+
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         if: success()
@@ -279,6 +376,15 @@ jobs:
           name: ImPlatformDemo-CMake-Linux
           path: build/ImPlatformDemo_*
           retention-days: 7
+
+      - name: Upload Screenshot
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: Screenshot-CMake-Linux
+          path: screenshots/*.png
+          retention-days: 7
+          if-no-files-found: ignore
 
   # ===========================================
   # macOS Builds - CMake
@@ -299,7 +405,6 @@ jobs:
 
       - name: Install SDL3
         run: |
-          # Build SDL3 from source since it might not be in brew
           git clone --depth 1 https://github.com/libsdl-org/SDL.git
           cd SDL
           cmake -B build -DCMAKE_BUILD_TYPE=Release -DSDL_SHARED=ON -DSDL_STATIC=OFF
@@ -309,7 +414,6 @@ jobs:
 
       - name: Install Vulkan SDK
         run: |
-          # Install MoltenVK for Vulkan support on macOS
           brew install molten-vk || true
         continue-on-error: true
 
@@ -319,6 +423,34 @@ jobs:
       - name: Build
         run: cmake --build build --parallel $(sysctl -n hw.ncpu)
 
+      - name: Run Demo and Capture Screenshot
+        run: |
+          mkdir -p screenshots
+
+          # Find first available demo executable
+          DEMO=$(find build -name "ImPlatformDemo_*" -type f -perm +111 | head -1)
+
+          if [ -n "$DEMO" ]; then
+            DEMO_NAME=$(basename "$DEMO")
+            echo "Starting demo: $DEMO"
+
+            # Run demo in background
+            "$DEMO" &
+            DEMO_PID=$!
+            sleep 3
+
+            # Capture screenshot using screencapture
+            screencapture -x "screenshots/screenshot_macOS_${DEMO_NAME}.png" || true
+
+            # Cleanup
+            kill $DEMO_PID 2>/dev/null || true
+
+            echo "Screenshot captured"
+          else
+            echo "No demo executables found"
+          fi
+        continue-on-error: true
+
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         if: success()
@@ -326,3 +458,12 @@ jobs:
           name: ImPlatformDemo-CMake-macOS
           path: build/ImPlatformDemo_*
           retention-days: 7
+
+      - name: Upload Screenshot
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: Screenshot-CMake-macOS
+          path: screenshots/*.png
+          retention-days: 7
+          if-no-files-found: ignore
