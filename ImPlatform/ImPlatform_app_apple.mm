@@ -28,6 +28,7 @@ static struct ImPlatform_AppData_Apple {
     UIView* pView;
     UIViewController* pViewController;
 #endif
+    float fDpiScale;
 } g_AppData = { 0 };
 
 #if TARGET_OS_OSX
@@ -84,6 +85,9 @@ IMPLATFORM_API bool ImPlatform_CreateWindow(char const* pWindowsName, ImVec2 con
         // Create content view
         g_AppData.pView = g_AppData.pWindow.contentView;
 
+        // Query backing scale factor for DPI
+        g_AppData.fDpiScale = (float)[[g_AppData.pWindow screen] backingScaleFactor];
+
         return true;
 
 #elif TARGET_OS_IOS
@@ -103,6 +107,9 @@ IMPLATFORM_API bool ImPlatform_CreateWindow(char const* pWindowsName, ImVec2 con
         g_AppData.pViewController.view = g_AppData.pView;
 
         [g_AppData.pWindow makeKeyAndVisible];
+
+        // Query screen scale for DPI (2.0 for Retina, 3.0 for Plus models)
+        g_AppData.fDpiScale = (float)[[UIScreen mainScreen] scale];
 
         return true;
 #else
@@ -207,6 +214,12 @@ IMPLATFORM_API void ImPlatform_ShutdownPlatform(void)
         }
 #endif
     }
+}
+
+// Internal API - Get DPI scale
+float ImPlatform_App_GetDpiScale_Apple(void)
+{
+    return g_AppData.fDpiScale > 0.0f ? g_AppData.fDpiScale : 1.0f;
 }
 
 #endif // IM_PLATFORM_APPLE

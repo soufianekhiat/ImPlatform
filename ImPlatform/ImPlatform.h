@@ -623,6 +623,31 @@ IMPLATFORM_API void ImPlatform_EndCustomTitleBar(void);
 #endif // IMPLATFORM_APP_SUPPORT_CUSTOM_TITLEBAR
 
 // ============================================================================
+// DPI / High-DPI Support
+// ============================================================================
+
+// Get the current DPI scale factor for the application window.
+// Returns 1.0f at 96 DPI (100%), 1.25f at 120 DPI (125%), 1.5f at 144 DPI (150%), etc.
+// Works on all platforms: Win32, GLFW, SDL2, SDL3, Apple.
+IMPLATFORM_API float ImPlatform_GetDpiScale(void);
+
+// Get a pixel size for a given number of Em lines.
+// 1 Em = the current font size (ImGui::GetFontSize()).
+// Equivalent to: lines * ImGui::GetFontSize()
+IMPLATFORM_API float ImPlatform_EmSize(float lines);
+
+// Convert a pixel value back to Em units.
+// Inverse of ImPlatform_EmSize.
+IMPLATFORM_API float ImPlatform_PixelsToEm(float pixels);
+
+// DPI change callback.
+// Register a callback that fires when the DPI scale changes at runtime
+// (e.g., window moved to a different monitor).
+// Set callback to NULL to unregister.
+typedef void (*ImPlatform_DpiChangeCallback)(float new_scale, void* user_data);
+IMPLATFORM_API void ImPlatform_SetDpiChangeCallback(ImPlatform_DpiChangeCallback callback, void* user_data);
+
+// ============================================================================
 // Shutdown functions (call in this order)
 // ============================================================================
 
@@ -640,6 +665,12 @@ IMPLATFORM_API void ImPlatform_DestroyWindow(void);
 
 #ifdef __cplusplus
 }
+
+// C++ only: Em-based utility that returns ImVec2 (not C-compatible)
+// Convert Em units to pixel coordinates.
+// Example: ImPlatform_EmToVec2(10.0f, 5.0f) returns a 10-Em x 5-Em rectangle in pixels.
+IMPLATFORM_API ImVec2 ImPlatform_EmToVec2(float em_x, float em_y);
+
 #endif
 
 #ifdef IMPLATFORM_IMPLEMENTATION
@@ -657,6 +688,9 @@ IMPLATFORM_API int ImPlatform_GetVersionNum(void)
 {
     return IMPLATFORM_VERSION_NUM;
 }
+
+// Forward declaration: DPI change notification (defined below, after backend includes)
+static void ImPlatform_NotifyDpiChange(float new_scale);
 
 // Include graphics backend implementation
 #if IM_CURRENT_GFX == IM_GFX_OPENGL3
@@ -698,6 +732,68 @@ IMPLATFORM_API int ImPlatform_GetVersionNum(void)
 #if IMPLATFORM_APP_SUPPORT_CUSTOM_TITLEBAR
     #include "ImPlatform_titlebar.cpp"
 #endif
+
+// ============================================================================
+// DPI Support Implementation
+// ============================================================================
+
+IMPLATFORM_API float ImPlatform_GetDpiScale(void)
+{
+#if defined(IM_CURRENT_PLATFORM) && (IM_CURRENT_PLATFORM == IM_PLATFORM_WIN32)
+    return ImPlatform_App_GetDpiScale_Win32();
+#elif defined(IM_CURRENT_PLATFORM) && (IM_CURRENT_PLATFORM == IM_PLATFORM_GLFW)
+    return ImPlatform_App_GetDpiScale_GLFW();
+#elif defined(IM_CURRENT_PLATFORM) && (IM_CURRENT_PLATFORM == IM_PLATFORM_SDL2)
+    return ImPlatform_App_GetDpiScale_SDL2();
+#elif defined(IM_CURRENT_PLATFORM) && (IM_CURRENT_PLATFORM == IM_PLATFORM_SDL3)
+    return ImPlatform_App_GetDpiScale_SDL3();
+#elif defined(IM_CURRENT_PLATFORM) && (IM_CURRENT_PLATFORM == IM_PLATFORM_APPLE)
+    return ImPlatform_App_GetDpiScale_Apple();
+#else
+    return 1.0f;
+#endif
+}
+
+// ============================================================================
+// Em-based DPI Utilities Implementation
+// ============================================================================
+
+IMPLATFORM_API ImVec2 ImPlatform_EmToVec2(float em_x, float em_y)
+{
+    float fontSize = ImGui::GetFontSize();
+    return ImVec2(em_x * fontSize, em_y * fontSize);
+}
+
+IMPLATFORM_API float ImPlatform_EmSize(float lines)
+{
+    return lines * ImGui::GetFontSize();
+}
+
+IMPLATFORM_API float ImPlatform_PixelsToEm(float pixels)
+{
+    float fontSize = ImGui::GetFontSize();
+    return (fontSize > 0.0f) ? (pixels / fontSize) : 0.0f;
+}
+
+// ============================================================================
+// DPI Change Callback Implementation
+// ============================================================================
+
+static ImPlatform_DpiChangeCallback g_DpiChangeCallback = NULL;
+static void* g_DpiChangeCallbackUserData = NULL;
+
+IMPLATFORM_API void ImPlatform_SetDpiChangeCallback(ImPlatform_DpiChangeCallback callback, void* user_data)
+{
+    g_DpiChangeCallback = callback;
+    g_DpiChangeCallbackUserData = user_data;
+}
+
+// Internal helper: call the user's DPI change callback (if set)
+static void ImPlatform_NotifyDpiChange(float new_scale)
+{
+    if (g_DpiChangeCallback)
+        g_DpiChangeCallback(new_scale, g_DpiChangeCallbackUserData);
+}
 
 // ============================================================================
 // Common Helper Functions (C++ inline implementations)

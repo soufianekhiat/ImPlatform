@@ -103,6 +103,7 @@ struct ImPlatform_AppData_Win32 {
 #if defined(IM_CURRENT_PLATFORM) && (IM_CURRENT_PLATFORM == IM_PLATFORM_GLFW)
 struct ImPlatform_AppData_GLFW {
     GLFWwindow* pWindow;
+    float fDpiScale;
 
     // Custom TitleBar support
     bool bCustomTitleBar;
@@ -117,6 +118,7 @@ struct ImPlatform_AppData_SDL2 {
     SDL_Window* pWindow;
     SDL_GLContext glContext;
     bool bDone;
+    float fDpiScale;
 };
 #endif
 
@@ -125,6 +127,7 @@ struct ImPlatform_AppData_SDL3 {
     SDL_Window* pWindow;
     SDL_GLContext glContext;
     bool bDone;
+    float fDpiScale;
 };
 #endif
 
@@ -271,11 +274,13 @@ struct ImPlatform_AppData_Win32* ImPlatform_App_GetData_Win32(void);
 
 #if defined(IM_CURRENT_PLATFORM) && (IM_CURRENT_PLATFORM == IM_PLATFORM_GLFW)
 GLFWwindow* ImPlatform_App_GetGLFWWindow(void);
+float ImPlatform_App_GetDpiScale_GLFW(void);
 struct ImPlatform_AppData_GLFW* ImPlatform_App_GetData_GLFW(void);
 #endif
 
 #if defined(IM_CURRENT_PLATFORM) && (IM_CURRENT_PLATFORM == IM_PLATFORM_SDL2)
 SDL_Window* ImPlatform_App_GetSDL2Window(void);
+float ImPlatform_App_GetDpiScale_SDL2(void);
 struct ImPlatform_AppData_SDL2* ImPlatform_App_GetData_SDL2(void);
 #ifdef _WIN32
 HWND ImPlatform_App_GetHWND(void);  // Get native HWND from SDL2 window
@@ -284,6 +289,7 @@ HWND ImPlatform_App_GetHWND(void);  // Get native HWND from SDL2 window
 
 #if defined(IM_CURRENT_PLATFORM) && (IM_CURRENT_PLATFORM == IM_PLATFORM_SDL3)
 SDL_Window* ImPlatform_App_GetSDL3Window(void);
+float ImPlatform_App_GetDpiScale_SDL3(void);
 struct ImPlatform_AppData_SDL3* ImPlatform_App_GetData_SDL3(void);
 #ifdef _WIN32
 HWND ImPlatform_App_GetHWND(void);  // Get native HWND from SDL3 window
@@ -295,6 +301,7 @@ void* ImPlatform_App_GetNSWindow(void);     // Returns NSWindow* on macOS
 void* ImPlatform_App_GetNSView(void);       // Returns NSView* on macOS
 void* ImPlatform_App_GetUIWindow(void);     // Returns UIWindow* on iOS
 void* ImPlatform_App_GetUIView(void);       // Returns UIView* on iOS
+float ImPlatform_App_GetDpiScale_Apple(void);
 #endif
 
 // ============================================================================

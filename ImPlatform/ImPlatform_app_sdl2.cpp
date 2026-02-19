@@ -28,6 +28,12 @@ ImPlatform_AppData_SDL2* ImPlatform_App_GetData_SDL2(void)
     return &g_AppData;
 }
 
+// Internal API - Get DPI scale
+float ImPlatform_App_GetDpiScale_SDL2(void)
+{
+    return g_AppData.fDpiScale > 0.0f ? g_AppData.fDpiScale : 1.0f;
+}
+
 #ifdef _WIN32
 // Internal API - Get native Windows HWND from SDL2 window
 HWND ImPlatform_App_GetHWND(void)
@@ -107,6 +113,16 @@ IMPLATFORM_API bool ImPlatform_CreateWindow(char const* pWindowsName, ImVec2 con
     {
         SDL_Quit();
         return false;
+    }
+
+    // Query DPI scale
+    {
+        float ddpi = 0.0f;
+        int displayIndex = SDL_GetWindowDisplayIndex(g_AppData.pWindow);
+        if (SDL_GetDisplayDPI(displayIndex, &ddpi, NULL, NULL) == 0 && ddpi > 0.0f)
+            g_AppData.fDpiScale = ddpi / 96.0f;
+        else
+            g_AppData.fDpiScale = 1.0f;
     }
 
 #ifdef IM_GFX_OPENGL3

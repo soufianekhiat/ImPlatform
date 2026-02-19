@@ -145,10 +145,9 @@ int main()
 
 	//io.Fonts->AddFontFromFileTTF( "../extern/FiraCode/distr/ttf/FiraCode-Medium.ttf", 16.0f );
 
-	// Setup DPI scaling (Win32 only)
+	// Setup DPI scaling (cross-platform)
 	ImGuiStyle& style = ImGui::GetStyle();
-#if defined(IM_CURRENT_PLATFORM) && (IM_CURRENT_PLATFORM == IM_PLATFORM_WIN32)
-	float dpi_scale = ImPlatform_App_GetDpiScale_Win32();
+	float dpi_scale = ImPlatform_GetDpiScale();
 	style.ScaleAllSizes(dpi_scale);
 	style.FontScaleDpi = dpi_scale;
 #ifdef IMGUI_HAS_DOCK
@@ -156,7 +155,6 @@ int main()
 #endif
 #ifdef IMGUI_HAS_VIEWPORT
 	io.ConfigDpiScaleViewports = true;
-#endif
 #endif
 
 	// When viewports are enabled we tweak WindowRounding/WindowBg so platform windows can look identical to regular ones.

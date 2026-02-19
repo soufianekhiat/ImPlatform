@@ -57,6 +57,20 @@ static LRESULT WINAPI WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
             return 0;
         break;
 
+    case WM_DPICHANGED:
+        {
+            UINT dpi = HIWORD(wParam);
+            g_AppData.fDpiScale = (float)dpi / 96.0f;
+            RECT* const prcNewWindow = (RECT*)lParam;
+            ::SetWindowPos(hWnd, NULL,
+                prcNewWindow->left, prcNewWindow->top,
+                prcNewWindow->right - prcNewWindow->left,
+                prcNewWindow->bottom - prcNewWindow->top,
+                SWP_NOZORDER | SWP_NOACTIVATE);
+            ImPlatform_NotifyDpiChange(g_AppData.fDpiScale);
+        }
+        return 0;
+
 #if IMPLATFORM_APP_SUPPORT_CUSTOM_TITLEBAR
     case WM_NCCALCSIZE:
         if (g_AppData.bCustomTitleBar && lParam)
@@ -146,13 +160,7 @@ static LRESULT WINAPI WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
 IMPLATFORM_API bool ImPlatform_CreateWindow(char const* pWindowsName, ImVec2 const vPos, unsigned int uWidth, unsigned int uHeight)
 {
     // Make process DPI aware and obtain main monitor scale
-    // NOTE: DPI awareness is disabled for OpenGL3 - the official ImGui example has it commented out
-    //       with "FIXME: This somehow doesn't work in the Win32+OpenGL example. Why?"
-#if defined(IM_CURRENT_GFX) && (IM_CURRENT_GFX == IM_GFX_OPENGL3)
-    //ImGui_ImplWin32_EnableDpiAwareness(); // Disabled for OpenGL3
-#else
     ImGui_ImplWin32_EnableDpiAwareness();
-#endif
     float main_scale = ImGui_ImplWin32_GetDpiScaleForMonitor(::MonitorFromPoint({0, 0}, MONITOR_DEFAULTTOPRIMARY));
 
     // Store scale for later use in ImPlatform_InitPlatform
