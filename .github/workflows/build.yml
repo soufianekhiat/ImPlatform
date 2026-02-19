@@ -42,31 +42,26 @@ jobs:
         with:
           submodules: recursive
 
-      - name: Install SDL2
-        if: startsWith(matrix.config, 'SDL2')
+      - name: Install SDL via vcpkg
+        if: startsWith(matrix.config, 'SDL2') || startsWith(matrix.config, 'SDL3')
         shell: powershell
         run: |
-          Invoke-WebRequest -Uri "https://github.com/libsdl-org/SDL/releases/download/release-2.32.10/SDL2-devel-2.32.10-VC.zip" -OutFile "SDL2-devel.zip"
-          Expand-Archive -Path SDL2-devel.zip -DestinationPath .
-          $sdlPath = (Get-ChildItem -Directory -Filter "SDL2-*").FullName
-          echo "SDL2_DIR=$sdlPath" >> $env:GITHUB_ENV
-          echo "SDL2_INCLUDE=$sdlPath\include" >> $env:GITHUB_ENV
-          echo "SDL2_LIB=$sdlPath\lib\x64" >> $env:GITHUB_ENV
-          New-Item -ItemType Directory -Force -Path "ImPlatformDemo/x64/${{ matrix.config }}"
-          Copy-Item "$sdlPath/lib/x64/SDL2.dll" "ImPlatformDemo/x64/${{ matrix.config }}/"
+          $vcpkgRoot = $env:VCPKG_INSTALLATION_ROOT
+          if (-not $vcpkgRoot) { $vcpkgRoot = "C:\vcpkg" }
 
-      - name: Install SDL3
-        if: startsWith(matrix.config, 'SDL3')
-        shell: powershell
-        run: |
-          Invoke-WebRequest -Uri "https://github.com/libsdl-org/SDL/releases/download/release-3.2.26/SDL3-devel-3.2.26-VC.zip" -OutFile "SDL3-devel.zip"
-          Expand-Archive -Path SDL3-devel.zip -DestinationPath .
-          $sdlPath = (Get-ChildItem -Directory -Filter "SDL3-*").FullName
-          echo "SDL3_DIR=$sdlPath" >> $env:GITHUB_ENV
-          echo "SDL3_INCLUDE=$sdlPath\include" >> $env:GITHUB_ENV
-          echo "SDL3_LIB=$sdlPath\lib\x64" >> $env:GITHUB_ENV
-          New-Item -ItemType Directory -Force -Path "ImPlatformDemo/x64/${{ matrix.config }}"
-          Copy-Item "$sdlPath/lib/x64/SDL3.dll" "ImPlatformDemo/x64/${{ matrix.config }}/"
+          if ("${{ matrix.config }}".StartsWith("SDL2")) {
+            & "$vcpkgRoot\vcpkg.exe" install sdl2:x64-windows
+            echo "SDL2_INCLUDE=$vcpkgRoot\installed\x64-windows\include\SDL2" >> $env:GITHUB_ENV
+            echo "SDL2_LIB=$vcpkgRoot\installed\x64-windows\lib" >> $env:GITHUB_ENV
+            New-Item -ItemType Directory -Force -Path "ImPlatformDemo/x64/${{ matrix.config }}"
+            Copy-Item "$vcpkgRoot\installed\x64-windows\bin\SDL2.dll" "ImPlatformDemo/x64/${{ matrix.config }}/"
+          } else {
+            & "$vcpkgRoot\vcpkg.exe" install sdl3:x64-windows
+            echo "SDL3_INCLUDE=$vcpkgRoot\installed\x64-windows\include" >> $env:GITHUB_ENV
+            echo "SDL3_LIB=$vcpkgRoot\installed\x64-windows\lib" >> $env:GITHUB_ENV
+            New-Item -ItemType Directory -Force -Path "ImPlatformDemo/x64/${{ matrix.config }}"
+            Copy-Item "$vcpkgRoot\installed\x64-windows\bin\SDL3.dll" "ImPlatformDemo/x64/${{ matrix.config }}/"
+          }
 
       - name: Install Vulkan SDK
         if: contains(matrix.config, 'Vulkan')
@@ -90,6 +85,18 @@ jobs:
           $vulkanPath = (Get-ChildItem "C:\VulkanSDK" -Directory | Sort-Object Name -Descending | Select-Object -First 1).FullName
           echo "VULKAN_SDK=$vulkanPath" >> $env:GITHUB_ENV
           Write-Host "VULKAN_SDK set to: $vulkanPath"
+
+      - name: Install SwiftShader (Software Vulkan)
+        if: contains(matrix.config, 'Vulkan')
+        shell: powershell
+        run: |
+          $swiftshaderUrl = "https://github.com/jakoch/rasterizers/releases/download/20260113/swiftshader-x64-5.0.0.1.zip"
+          Write-Host "Downloading SwiftShader..."
+          Invoke-WebRequest -Uri $swiftshaderUrl -OutFile swiftshader.zip
+          Expand-Archive -Path swiftshader.zip -DestinationPath swiftshader
+          $icdJson = (Get-ChildItem -Path swiftshader -Recurse -Filter "vk_swiftshader_icd.json").FullName
+          Write-Host "SwiftShader ICD: $icdJson"
+          echo "VK_ICD_FILENAMES=$icdJson" >> $env:GITHUB_ENV
 
       - name: Fix Project Files
         shell: powershell
@@ -232,6 +239,17 @@ jobs:
           Start-Process -FilePath .\VulkanSDK-Installer.exe -ArgumentList "--accept-licenses --default-answer --confirm-command install" -Wait -NoNewWindow
           $vulkanPath = (Get-ChildItem "C:\VulkanSDK" -Directory | Sort-Object Name -Descending | Select-Object -First 1).FullName
           echo "VULKAN_SDK=$vulkanPath" >> $env:GITHUB_ENV
+
+      - name: Install SwiftShader (Software Vulkan)
+        shell: powershell
+        run: |
+          $swiftshaderUrl = "https://github.com/jakoch/rasterizers/releases/download/20260113/swiftshader-x64-5.0.0.1.zip"
+          Write-Host "Downloading SwiftShader..."
+          Invoke-WebRequest -Uri $swiftshaderUrl -OutFile swiftshader.zip
+          Expand-Archive -Path swiftshader.zip -DestinationPath swiftshader
+          $icdJson = (Get-ChildItem -Path swiftshader -Recurse -Filter "vk_swiftshader_icd.json").FullName
+          Write-Host "SwiftShader ICD: $icdJson"
+          echo "VK_ICD_FILENAMES=$icdJson" >> $env:GITHUB_ENV
 
       - name: Configure CMake
         run: cmake -B build -DCMAKE_BUILD_TYPE=Release -DIMPLATFORM_FETCH_DEPENDENCIES=ON
