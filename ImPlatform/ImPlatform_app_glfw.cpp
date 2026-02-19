@@ -19,6 +19,17 @@ static void glfw_error_callback(int error, const char* description)
     fprintf(stderr, "GLFW Error %d: %s\n", error, description);
 }
 
+// DPI change callback (GLFW 3.3+)
+#if GLFW_VERSION_MAJOR > 3 || (GLFW_VERSION_MAJOR == 3 && GLFW_VERSION_MINOR >= 3)
+static void glfw_content_scale_callback(GLFWwindow* window, float xscale, float yscale)
+{
+    (void)window;
+    (void)yscale;
+    g_AppData.fDpiScale = xscale;
+    ImPlatform_NotifyDpiChange(xscale);
+}
+#endif
+
 // ImPlatform API - CreateWindow
 IMPLATFORM_API bool ImPlatform_CreateWindow(char const* pWindowsName, ImVec2 const vPos, unsigned int uWidth, unsigned int uHeight)
 {
@@ -88,6 +99,18 @@ IMPLATFORM_API bool ImPlatform_CreateWindow(char const* pWindowsName, ImVec2 con
     // Set window position (GLFW doesn't support this in creation, so we set it after)
     glfwSetWindowPos(g_AppData.pWindow, (int)vPos.x, (int)vPos.y);
 
+    // Query DPI scale and register callback for runtime changes (GLFW 3.3+)
+#if GLFW_VERSION_MAJOR > 3 || (GLFW_VERSION_MAJOR == 3 && GLFW_VERSION_MINOR >= 3)
+    {
+        float xscale = 1.0f, yscale = 1.0f;
+        glfwGetWindowContentScale(g_AppData.pWindow, &xscale, &yscale);
+        g_AppData.fDpiScale = xscale;
+        glfwSetWindowContentScaleCallback(g_AppData.pWindow, glfw_content_scale_callback);
+    }
+#else
+    g_AppData.fDpiScale = 1.0f;
+#endif
+
 #if IM_CURRENT_GFX == IM_GFX_OPENGL3
     glfwMakeContextCurrent(g_AppData.pWindow);
     glfwSwapInterval(1); // Enable vsync
@@ -155,6 +178,12 @@ IMPLATFORM_API void ImPlatform_ShutdownPostGfxAPI(void)
 IMPLATFORM_API void ImPlatform_DestroyWindow(void)
 {
     // Already handled in ShutdownPostGfxAPI
+}
+
+// Internal API - Get DPI scale
+float ImPlatform_App_GetDpiScale_GLFW(void)
+{
+    return g_AppData.fDpiScale > 0.0f ? g_AppData.fDpiScale : 1.0f;
 }
 
 // Internal API - Get GLFW window
