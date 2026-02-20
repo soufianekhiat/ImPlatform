@@ -15,6 +15,42 @@
 // Global state
 static ImPlatform_AppData_SDL3 g_AppData = { 0 };
 
+#if IMPLATFORM_APP_SUPPORT_CUSTOM_TITLEBAR
+// Hit test callback for borderless window dragging and resizing
+static SDL_HitTestResult SDLCALL sdl3_hit_test_callback(SDL_Window* window, const SDL_Point* area, void* data)
+{
+    ImPlatform_AppData_SDL3* app = (ImPlatform_AppData_SDL3*)data;
+
+    int w, h;
+    SDL_GetWindowSize(window, &w, &h);
+
+    // Check resize edges first (when not maximized and resize is allowed)
+    if (g_BorderlessParams.allowResize && !(SDL_GetWindowFlags(window) & SDL_WINDOW_MAXIMIZED))
+    {
+        const int border = g_BorderlessParams.resizeBorderSize;
+        bool left = area->x < border;
+        bool right = area->x >= w - border;
+        bool top = area->y < border;
+        bool bottom = area->y >= h - border;
+
+        if (top && left) return SDL_HITTEST_RESIZE_TOPLEFT;
+        if (top && right) return SDL_HITTEST_RESIZE_TOPRIGHT;
+        if (bottom && left) return SDL_HITTEST_RESIZE_BOTTOMLEFT;
+        if (bottom && right) return SDL_HITTEST_RESIZE_BOTTOMRIGHT;
+        if (left) return SDL_HITTEST_RESIZE_LEFT;
+        if (right) return SDL_HITTEST_RESIZE_RIGHT;
+        if (top) return SDL_HITTEST_RESIZE_TOP;
+        if (bottom) return SDL_HITTEST_RESIZE_BOTTOM;
+    }
+
+    // Check titlebar drag
+    if (g_BorderlessParams.allowMove && app->bTitleBarHovered)
+        return SDL_HITTEST_DRAGGABLE;
+
+    return SDL_HITTEST_NORMAL;
+}
+#endif
+
 // Internal API - Get SDL3 window
 SDL_Window* ImPlatform_App_GetSDL3Window(void)
 {
@@ -88,6 +124,11 @@ IMPLATFORM_API bool ImPlatform_CreateWindow(char const* pWindowsName, ImVec2 con
 #endif
         SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIDDEN;
 
+#if IMPLATFORM_APP_SUPPORT_CUSTOM_TITLEBAR
+    if (g_AppData.bCustomTitleBar)
+        window_flags |= SDL_WINDOW_BORDERLESS;
+#endif
+
     g_AppData.pWindow = SDL_CreateWindow(
         pWindowsName,
         (int)uWidth,
@@ -99,6 +140,15 @@ IMPLATFORM_API bool ImPlatform_CreateWindow(char const* pWindowsName, ImVec2 con
         SDL_Quit();
         return false;
     }
+
+#if IMPLATFORM_APP_SUPPORT_CUSTOM_TITLEBAR
+    if (g_AppData.bCustomTitleBar)
+    {
+        SDL_SetWindowHitTest(g_AppData.pWindow, sdl3_hit_test_callback, &g_AppData);
+        if (g_BorderlessParams.minWidth > 0 || g_BorderlessParams.minHeight > 0)
+            SDL_SetWindowMinimumSize(g_AppData.pWindow, g_BorderlessParams.minWidth, g_BorderlessParams.minHeight);
+    }
+#endif
 
     // SDL3 requires setting position after window creation
     int posX = (vPos.x == 0.0f) ? SDL_WINDOWPOS_CENTERED : (int)vPos.x;
@@ -158,7 +208,7 @@ IMPLATFORM_API bool ImPlatform_InitPlatform(void)
 // ImPlatform API - PlatformContinue
 IMPLATFORM_API bool ImPlatform_PlatformContinue(void)
 {
-    return true; // SDL3 doesn't track a "done" state in the platform layer
+    return !g_AppData.bDone;
 }
 
 // ImPlatform API - PlatformEvents
@@ -169,10 +219,16 @@ IMPLATFORM_API bool ImPlatform_PlatformEvents(void)
     {
         ImGui_ImplSDL3_ProcessEvent(&event);
         if (event.type == SDL_EVENT_QUIT)
+        {
+            g_AppData.bDone = true;
             return false;
+        }
         if (event.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED &&
             event.window.windowID == SDL_GetWindowID(g_AppData.pWindow))
+        {
+            g_AppData.bDone = true;
             return false;
+        }
     }
 
     // Skip rendering when minimized
