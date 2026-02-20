@@ -66,11 +66,15 @@ IMPLATFORM_API bool ImPlatform_CreateWindow(char const* pWindowsName, ImVec2 con
 #endif
 
 #if IMPLATFORM_APP_SUPPORT_CUSTOM_TITLEBAR
-    // Custom titlebar support (requires TheCherno's GLFW fork)
+    // Custom titlebar support
     if (g_AppData.bCustomTitleBar)
     {
 #ifdef IM_THE_CHERNO_GLFW3
+        // TheCherno's GLFW fork: native titlebar removal with hit-test support
         glfwWindowHint(GLFW_TITLEBAR, false);
+#else
+        // Standard GLFW: remove window decorations for borderless
+        glfwWindowHint(GLFW_DECORATED, GLFW_FALSE);
 #endif
         glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE);
     }
@@ -109,6 +113,15 @@ IMPLATFORM_API bool ImPlatform_CreateWindow(char const* pWindowsName, ImVec2 con
     }
 #else
     g_AppData.fDpiScale = 1.0f;
+#endif
+
+#if IMPLATFORM_APP_SUPPORT_CUSTOM_TITLEBAR
+    if (g_AppData.bCustomTitleBar && (g_BorderlessParams.minWidth > 0 || g_BorderlessParams.minHeight > 0))
+    {
+        int minW = g_BorderlessParams.minWidth > 0 ? g_BorderlessParams.minWidth : GLFW_DONT_CARE;
+        int minH = g_BorderlessParams.minHeight > 0 ? g_BorderlessParams.minHeight : GLFW_DONT_CARE;
+        glfwSetWindowSizeLimits(g_AppData.pWindow, minW, minH, GLFW_DONT_CARE, GLFW_DONT_CARE);
+    }
 #endif
 
 #if IM_CURRENT_GFX == IM_GFX_OPENGL3
@@ -156,6 +169,32 @@ IMPLATFORM_API bool ImPlatform_PlatformEvents(void)
         ImGui_ImplGlfw_Sleep(10);
         return false; // Skip frame
     }
+
+#if IMPLATFORM_APP_SUPPORT_CUSTOM_TITLEBAR && !defined(IM_THE_CHERNO_GLFW3)
+    // Software drag for borderless window (when TheCherno's fork is not available)
+    if (g_AppData.bCustomTitleBar && g_BorderlessParams.allowMove)
+    {
+        int mouse_state = glfwGetMouseButton(g_AppData.pWindow, GLFW_MOUSE_BUTTON_LEFT);
+        if (mouse_state == GLFW_PRESS && g_AppData.bTitleBarHovered && !g_AppData.bDragging)
+        {
+            g_AppData.bDragging = true;
+            glfwGetCursorPos(g_AppData.pWindow, &g_AppData.fDragStartX, &g_AppData.fDragStartY);
+            glfwGetWindowPos(g_AppData.pWindow, &g_AppData.iWinStartX, &g_AppData.iWinStartY);
+        }
+        else if (mouse_state == GLFW_PRESS && g_AppData.bDragging)
+        {
+            double curX, curY;
+            glfwGetCursorPos(g_AppData.pWindow, &curX, &curY);
+            int newX = g_AppData.iWinStartX + (int)(curX - g_AppData.fDragStartX);
+            int newY = g_AppData.iWinStartY + (int)(curY - g_AppData.fDragStartY);
+            glfwSetWindowPos(g_AppData.pWindow, newX, newY);
+        }
+        else
+        {
+            g_AppData.bDragging = false;
+        }
+    }
+#endif
 
     return true;
 }

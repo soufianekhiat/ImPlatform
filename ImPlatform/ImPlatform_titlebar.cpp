@@ -49,10 +49,12 @@ IMPLATFORM_API bool ImPlatform_CustomTitleBarEnabled(void)
     return pData->bCustomTitleBar;
 
 #elif defined(IM_CURRENT_PLATFORM) && (IM_CURRENT_PLATFORM == IM_PLATFORM_SDL2)
-    return false;  // Not yet supported
+    ImPlatform_AppData_SDL2* pData = ImPlatform_App_GetData_SDL2();
+    return pData->bCustomTitleBar;
 
 #elif defined(IM_CURRENT_PLATFORM) && (IM_CURRENT_PLATFORM == IM_PLATFORM_SDL3)
-    return false;  // Not yet supported
+    ImPlatform_AppData_SDL3* pData = ImPlatform_App_GetData_SDL3();
+    return pData->bCustomTitleBar;
 
 #else
     return false;
@@ -68,15 +70,14 @@ IMPLATFORM_API void ImPlatform_EnableCustomTitleBar(void)
 #elif defined(IM_CURRENT_PLATFORM) && (IM_CURRENT_PLATFORM == IM_PLATFORM_GLFW)
     ImPlatform_AppData_GLFW* pData = ImPlatform_App_GetData_GLFW();
     pData->bCustomTitleBar = true;
-#ifndef IM_THE_CHERNO_GLFW3
-    fprintf(stderr, "To have the support of Custom Title Bar on GLFW3, need CHERNO dev version of GLFW3 (https://github.com/TheCherno/glfw/tree/dev).\n");
-#endif
 
 #elif defined(IM_CURRENT_PLATFORM) && (IM_CURRENT_PLATFORM == IM_PLATFORM_SDL2)
-    fprintf(stderr, "Custom Title Bar not yet supported on SDL2.\n");
+    ImPlatform_AppData_SDL2* pData = ImPlatform_App_GetData_SDL2();
+    pData->bCustomTitleBar = true;
 
 #elif defined(IM_CURRENT_PLATFORM) && (IM_CURRENT_PLATFORM == IM_PLATFORM_SDL3)
-    fprintf(stderr, "Custom Title Bar not yet supported on SDL3.\n");
+    ImPlatform_AppData_SDL3* pData = ImPlatform_App_GetData_SDL3();
+    pData->bCustomTitleBar = true;
 
 #endif
 }
@@ -89,6 +90,14 @@ IMPLATFORM_API void ImPlatform_DisableCustomTitleBar(void)
 
 #elif defined(IM_CURRENT_PLATFORM) && (IM_CURRENT_PLATFORM == IM_PLATFORM_GLFW)
     ImPlatform_AppData_GLFW* pData = ImPlatform_App_GetData_GLFW();
+    pData->bCustomTitleBar = false;
+
+#elif defined(IM_CURRENT_PLATFORM) && (IM_CURRENT_PLATFORM == IM_PLATFORM_SDL2)
+    ImPlatform_AppData_SDL2* pData = ImPlatform_App_GetData_SDL2();
+    pData->bCustomTitleBar = false;
+
+#elif defined(IM_CURRENT_PLATFORM) && (IM_CURRENT_PLATFORM == IM_PLATFORM_SDL3)
+    ImPlatform_AppData_SDL3* pData = ImPlatform_App_GetData_SDL3();
     pData->bCustomTitleBar = false;
 
 #endif
@@ -221,6 +230,18 @@ IMPLATFORM_API bool ImPlatform_BeginCustomTitleBar(float fHeight)
     pData->vEndCustomToolBar = ImGui::GetCursorPos();
     pData->fCustomTitleBarHeight = fHeight;
 
+#elif defined(IM_CURRENT_PLATFORM) && (IM_CURRENT_PLATFORM == IM_PLATFORM_SDL2)
+    ImPlatform_AppData_SDL2* pData = ImPlatform_App_GetData_SDL2();
+    pData->bTitleBarHovered = ImGui::IsItemHovered();
+    pData->vEndCustomToolBar = ImGui::GetCursorPos();
+    pData->fCustomTitleBarHeight = fHeight;
+
+#elif defined(IM_CURRENT_PLATFORM) && (IM_CURRENT_PLATFORM == IM_PLATFORM_SDL3)
+    ImPlatform_AppData_SDL3* pData = ImPlatform_App_GetData_SDL3();
+    pData->bTitleBarHovered = ImGui::IsItemHovered();
+    pData->vEndCustomToolBar = ImGui::GetCursorPos();
+    pData->fCustomTitleBarHeight = fHeight;
+
 #endif
 
     ImGui::SetCursorPos(vPos);
@@ -243,6 +264,22 @@ IMPLATFORM_API void ImPlatform_EndCustomTitleBar(void)
 
 #elif defined(IM_CURRENT_PLATFORM) && (IM_CURRENT_PLATFORM == IM_PLATFORM_GLFW)
     ImPlatform_AppData_GLFW* pData = ImPlatform_App_GetData_GLFW();
+    ImGui::SetCursorPos(pData->vEndCustomToolBar);
+    ImGui::Dummy(ImVec2(0, 0)); // Fix ImGui assertion: provide item after SetCursorPos
+    ImGui::End();
+    ImGuiViewport* pViewport = ImGui::GetMainViewport();
+    pViewport->WorkPos.y += pData->fCustomTitleBarHeight;
+
+#elif defined(IM_CURRENT_PLATFORM) && (IM_CURRENT_PLATFORM == IM_PLATFORM_SDL2)
+    ImPlatform_AppData_SDL2* pData = ImPlatform_App_GetData_SDL2();
+    ImGui::SetCursorPos(pData->vEndCustomToolBar);
+    ImGui::Dummy(ImVec2(0, 0)); // Fix ImGui assertion: provide item after SetCursorPos
+    ImGui::End();
+    ImGuiViewport* pViewport = ImGui::GetMainViewport();
+    pViewport->WorkPos.y += pData->fCustomTitleBarHeight;
+
+#elif defined(IM_CURRENT_PLATFORM) && (IM_CURRENT_PLATFORM == IM_PLATFORM_SDL3)
+    ImPlatform_AppData_SDL3* pData = ImPlatform_App_GetData_SDL3();
     ImGui::SetCursorPos(pData->vEndCustomToolBar);
     ImGui::Dummy(ImVec2(0, 0)); // Fix ImGui assertion: provide item after SetCursorPos
     ImGui::End();

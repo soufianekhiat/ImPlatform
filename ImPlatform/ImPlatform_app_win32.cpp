@@ -148,6 +148,20 @@ static LRESULT WINAPI WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
         break;
 #endif // IMPLATFORM_APP_SUPPORT_CUSTOM_TITLEBAR
 
+#if IMPLATFORM_APP_SUPPORT_CUSTOM_TITLEBAR
+    case WM_GETMINMAXINFO:
+        if (g_AppData.bCustomTitleBar)
+        {
+            MINMAXINFO* mmi = (MINMAXINFO*)lParam;
+            if (g_BorderlessParams.minWidth > 0)
+                mmi->ptMinTrackSize.x = g_BorderlessParams.minWidth;
+            if (g_BorderlessParams.minHeight > 0)
+                mmi->ptMinTrackSize.y = g_BorderlessParams.minHeight;
+            return 0;
+        }
+        break;
+#endif
+
     case WM_DESTROY:
         ::PostQuitMessage(0);
         return 0;

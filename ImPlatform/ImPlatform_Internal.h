@@ -110,6 +110,11 @@ struct ImPlatform_AppData_GLFW {
     bool bTitleBarHovered;
     ImVec2 vEndCustomToolBar;
     float fCustomTitleBarHeight;
+
+    // Software drag state (for borderless without TheCherno's GLFW fork)
+    bool bDragging;
+    double fDragStartX, fDragStartY;
+    int iWinStartX, iWinStartY;
 };
 #endif
 
@@ -119,6 +124,12 @@ struct ImPlatform_AppData_SDL2 {
     SDL_GLContext glContext;
     bool bDone;
     float fDpiScale;
+
+    // Custom TitleBar support
+    bool bCustomTitleBar;
+    bool bTitleBarHovered;
+    ImVec2 vEndCustomToolBar;
+    float fCustomTitleBarHeight;
 };
 #endif
 
@@ -128,6 +139,12 @@ struct ImPlatform_AppData_SDL3 {
     SDL_GLContext glContext;
     bool bDone;
     float fDpiScale;
+
+    // Custom TitleBar support
+    bool bCustomTitleBar;
+    bool bTitleBarHovered;
+    ImVec2 vEndCustomToolBar;
+    float fCustomTitleBarHeight;
 };
 #endif
 

@@ -99,16 +99,11 @@
 // These indicate which features are supported by each platform
 #ifndef IMPLATFORM_APP_SUPPORT_CUSTOM_TITLEBAR
     #if defined(IM_CURRENT_PLATFORM)
-        #if (IM_CURRENT_PLATFORM == IM_PLATFORM_WIN32)
-            // Win32: Full custom titlebar support
+        #if (IM_CURRENT_PLATFORM == IM_PLATFORM_WIN32) || \
+            (IM_CURRENT_PLATFORM == IM_PLATFORM_GLFW) || \
+            (IM_CURRENT_PLATFORM == IM_PLATFORM_SDL2) || \
+            (IM_CURRENT_PLATFORM == IM_PLATFORM_SDL3)
             #define IMPLATFORM_APP_SUPPORT_CUSTOM_TITLEBAR 1
-        #elif (IM_CURRENT_PLATFORM == IM_PLATFORM_GLFW)
-            // GLFW: Requires TheCherno's GLFW fork, disabled by default
-            #define IMPLATFORM_APP_SUPPORT_CUSTOM_TITLEBAR 0
-        #elif (IM_CURRENT_PLATFORM == IM_PLATFORM_SDL2) || \
-              (IM_CURRENT_PLATFORM == IM_PLATFORM_SDL3)
-            // SDL: Not yet supported
-            #define IMPLATFORM_APP_SUPPORT_CUSTOM_TITLEBAR 0
         #else
             #define IMPLATFORM_APP_SUPPORT_CUSTOM_TITLEBAR 0
         #endif
@@ -620,6 +615,27 @@ IMPLATFORM_API void ImPlatform_CloseApp(void);
 IMPLATFORM_API bool ImPlatform_BeginCustomTitleBar(float height);
 IMPLATFORM_API void ImPlatform_EndCustomTitleBar(void);
 
+// Borderless window configuration
+// Controls resize border size, minimum window dimensions, and drag/resize behavior.
+// Call ImPlatform_SetBorderlessParams() before or after ImPlatform_CreateWindow().
+// Changes take effect immediately (minimum size is applied to the current window).
+typedef struct ImPlatform_BorderlessParams {
+    int   resizeBorderSize;     // Resize edge thickness in pixels (default: 5). Used by SDL2/SDL3 hit-test; Win32 uses system metrics.
+    int   minWidth;             // Minimum window width in pixels (default: 100, 0 = no limit)
+    int   minHeight;            // Minimum window height in pixels (default: 100, 0 = no limit)
+    bool  allowResize;          // Allow window resizing from edges (default: true)
+    bool  allowMove;            // Allow window dragging from titlebar (default: true)
+} ImPlatform_BorderlessParams;
+
+// Get default borderless params (resizeBorderSize=5, min 100x100, resize+move enabled)
+IMPLATFORM_API ImPlatform_BorderlessParams ImPlatform_BorderlessParams_Default(void);
+
+// Set borderless params. If called after window creation, minimum size is applied immediately.
+IMPLATFORM_API void ImPlatform_SetBorderlessParams(const ImPlatform_BorderlessParams* params);
+
+// Get current borderless params
+IMPLATFORM_API ImPlatform_BorderlessParams ImPlatform_GetBorderlessParams(void);
+
 #endif // IMPLATFORM_APP_SUPPORT_CUSTOM_TITLEBAR
 
 // ============================================================================
@@ -692,6 +708,11 @@ IMPLATFORM_API int ImPlatform_GetVersionNum(void)
 // Forward declaration: DPI change notification (defined below, after backend includes)
 static void ImPlatform_NotifyDpiChange(float new_scale);
 
+// Borderless params storage (read by platform backends in hit-test callbacks)
+#if IMPLATFORM_APP_SUPPORT_CUSTOM_TITLEBAR
+static ImPlatform_BorderlessParams g_BorderlessParams = { 5, 100, 100, true, true };
+#endif
+
 // Include graphics backend implementation
 #if IM_CURRENT_GFX == IM_GFX_OPENGL3
     #include "ImPlatform_gfx_opengl3.cpp"
@@ -732,6 +753,63 @@ static void ImPlatform_NotifyDpiChange(float new_scale);
 #if IMPLATFORM_APP_SUPPORT_CUSTOM_TITLEBAR
     #include "ImPlatform_titlebar.cpp"
 #endif
+
+// ============================================================================
+// Borderless Params Implementation
+// ============================================================================
+
+#if IMPLATFORM_APP_SUPPORT_CUSTOM_TITLEBAR
+IMPLATFORM_API ImPlatform_BorderlessParams ImPlatform_BorderlessParams_Default(void)
+{
+    ImPlatform_BorderlessParams params;
+    params.resizeBorderSize = 5;
+    params.minWidth = 100;
+    params.minHeight = 100;
+    params.allowResize = true;
+    params.allowMove = true;
+    return params;
+}
+
+IMPLATFORM_API ImPlatform_BorderlessParams ImPlatform_GetBorderlessParams(void)
+{
+    return g_BorderlessParams;
+}
+
+IMPLATFORM_API void ImPlatform_SetBorderlessParams(const ImPlatform_BorderlessParams* params)
+{
+    if (!params)
+        return;
+    g_BorderlessParams = *params;
+
+    // Apply minimum size to the current window (if it exists and custom titlebar is active)
+#if defined(IM_CURRENT_PLATFORM) && (IM_CURRENT_PLATFORM == IM_PLATFORM_WIN32)
+    // Win32: Enforced via WM_GETMINMAXINFO which reads g_BorderlessParams each time
+    (void)0;
+#elif defined(IM_CURRENT_PLATFORM) && (IM_CURRENT_PLATFORM == IM_PLATFORM_GLFW)
+    {
+        ImPlatform_AppData_GLFW* pData = ImPlatform_App_GetData_GLFW();
+        if (pData->pWindow && pData->bCustomTitleBar)
+        {
+            int minW = g_BorderlessParams.minWidth > 0 ? g_BorderlessParams.minWidth : GLFW_DONT_CARE;
+            int minH = g_BorderlessParams.minHeight > 0 ? g_BorderlessParams.minHeight : GLFW_DONT_CARE;
+            glfwSetWindowSizeLimits(pData->pWindow, minW, minH, GLFW_DONT_CARE, GLFW_DONT_CARE);
+        }
+    }
+#elif defined(IM_CURRENT_PLATFORM) && (IM_CURRENT_PLATFORM == IM_PLATFORM_SDL2)
+    {
+        ImPlatform_AppData_SDL2* pData = ImPlatform_App_GetData_SDL2();
+        if (pData->pWindow && pData->bCustomTitleBar)
+            SDL_SetWindowMinimumSize(pData->pWindow, g_BorderlessParams.minWidth, g_BorderlessParams.minHeight);
+    }
+#elif defined(IM_CURRENT_PLATFORM) && (IM_CURRENT_PLATFORM == IM_PLATFORM_SDL3)
+    {
+        ImPlatform_AppData_SDL3* pData = ImPlatform_App_GetData_SDL3();
+        if (pData->pWindow && pData->bCustomTitleBar)
+            SDL_SetWindowMinimumSize(pData->pWindow, g_BorderlessParams.minWidth, g_BorderlessParams.minHeight);
+    }
+#endif
+}
+#endif // IMPLATFORM_APP_SUPPORT_CUSTOM_TITLEBAR
 
 // ============================================================================
 // DPI Support Implementation
