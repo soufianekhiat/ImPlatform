@@ -41,6 +41,15 @@ extern "C" {
 #include <stdio.h>
 #include <math.h>
 
+// DPI change callback - rescale ImGui style when DPI changes at runtime
+static void OnDpiChanged(float new_scale, void* /*user_data*/)
+{
+	ImGuiStyle& style = ImGui::GetStyle();
+	style = ImGuiStyle(); // Reset to defaults
+	style.ScaleAllSizes(new_scale);
+	style.FontScaleDpi = new_scale;
+}
+
 #define IM_HAS_STBI 0
 
 #if IM_HAS_STBI
@@ -50,8 +59,17 @@ extern "C" {
 
 int main()
 {
-	// Uncomment to enable custom title bar:
-	// ImPlatform_EnableCustomTitleBar();
+	// Configure borderless window with custom titlebar
+	ImPlatform_EnableCustomTitleBar();
+	{
+		ImPlatform_BorderlessParams params = ImPlatform_BorderlessParams_Default();
+		params.resizeBorderSize = 6;
+		params.minWidth = 400;
+		params.minHeight = 300;
+		params.allowResize = true;
+		params.allowMove = true;
+		ImPlatform_SetBorderlessParams(&params);
+	}
 
 	// Setup for an image
 	int width;
@@ -89,13 +107,6 @@ int main()
 
 	// Using the new C API
 	bool bGood;
-
-	// Optional: Enable custom titlebar (must be called before CreateWindow)
-	// Note: Only supported on Win32 by default. For GLFW, requires TheCherno's GLFW fork
-	//       and define IM_THE_CHERNO_GLFW3, then set IMPLATFORM_APP_SUPPORT_CUSTOM_TITLEBAR=1
-#if IMPLATFORM_APP_SUPPORT_CUSTOM_TITLEBAR
-	// ImPlatform_EnableCustomTitleBar();
-#endif
 
 	bGood = ImPlatform_CreateWindow( "ImPlatform Demo", ImVec2( 100, 100 ), 1024, 764 );
 	if ( !bGood )
@@ -156,6 +167,9 @@ int main()
 #ifdef IMGUI_HAS_VIEWPORT
 	io.ConfigDpiScaleViewports = true;
 #endif
+
+	// Register DPI change callback for runtime monitor changes
+	ImPlatform_SetDpiChangeCallback(OnDpiChanged, nullptr);
 
 	// When viewports are enabled we tweak WindowRounding/WindowBg so platform windows can look identical to regular ones.
 #ifdef IMGUI_HAS_VIEWPORT
@@ -509,27 +523,25 @@ int main()
 
 		ImGui::NewFrame();
 
-		// Custom Title Bar Demo (optional)
+		// Custom Title Bar (using Em-based sizing for DPI independence)
 #if IMPLATFORM_APP_SUPPORT_CUSTOM_TITLEBAR
-		// Uncomment to enable custom titlebar rendering
 		if ( ImPlatform_CustomTitleBarEnabled() )
 		{
-			if ( ImPlatform_BeginCustomTitleBar( 32.0f ) )
+			float titleBarHeight = ImPlatform_EmSize(2.0f);
+			if ( ImPlatform_BeginCustomTitleBar( titleBarHeight ) )
 			{
-				// Option 1: Use the default titlebar with min/max/close buttons
-				ImPlatform_DrawCustomMenuBarDefault();
-
-				// Option 2: Create your own custom titlebar
-				// ImGui::Text("My Custom App");
-				// ImGui::SameLine(ImGui::GetWindowWidth() - 100);
-				// if (ImGui::Button("_"))
-				// 	ImPlatform_MinimizeApp();
-				// ImGui::SameLine();
-				// if (ImGui::Button("[]"))
-				// 	ImPlatform_MaximizeApp();
-				// ImGui::SameLine();
-				// if (ImGui::Button("X"))
-				// 	ImPlatform_CloseApp();
+				ImGui::Text("ImPlatform Demo");
+				ImVec2 buttonSize = ImPlatform_EmToVec2(2.0f, 1.5f);
+				float buttonsWidth = buttonSize.x * 3.0f + ImGui::GetStyle().ItemSpacing.x * 2.0f;
+				ImGui::SameLine(ImGui::GetWindowWidth() - buttonsWidth);
+				if (ImGui::Button("_", buttonSize))
+					ImPlatform_MinimizeApp();
+				ImGui::SameLine();
+				if (ImGui::Button("[]", buttonSize))
+					ImPlatform_MaximizeApp();
+				ImGui::SameLine();
+				if (ImGui::Button("X", buttonSize))
+					ImPlatform_CloseApp();
 			}
 			ImPlatform_EndCustomTitleBar();
 		}
@@ -554,11 +566,11 @@ int main()
 			ImGui::SetNextWindowSize(ImVec2(half_width, half_height), ImGuiCond_Always);
 			ImGui::Begin("ImPlatform Texture API Demo", nullptr, ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove);
 			ImGui::Text("Checkerboard texture created with ImPlatform_CreateTexture:");
-			ImGui::Image(img, ImVec2(256, 256));
+			ImGui::Image(img, ImPlatform_EmToVec2(16.0f, 16.0f));
 
 			ImGui::Separator();
 			ImGui::Text("White texture:");
-			ImGui::Image(img_white, ImVec2(128, 128));
+			ImGui::Image(img_white, ImPlatform_EmToVec2(8.0f, 8.0f));
 
 			ImGui::Separator();
 			ImGui::Text("This demonstrates the new Texture Creation API:");
