@@ -20,6 +20,7 @@ extern "C" {
 //   Win32_OpenGL3    - Windows + OpenGL 3
 //   GLFW_OpenGL3     - GLFW + OpenGL 3
 //   GLFW_Vulkan      - GLFW + Vulkan
+//   GLFW_WebGPU      - GLFW + WebGPU (Dawn/wgpu-native)
 
 #ifndef IM_CONFIG_PLATFORM
 #error "IM_CONFIG_PLATFORM must be defined by project configuration"
@@ -306,6 +307,55 @@ int main()
 	#include "shaders/arrow_sdf.vert.h"
 	#include "shaders/arrow_sdf.frag.h"
 	// Note: For Vulkan, we'll use bytecode fields instead of source_code
+
+#elif (IM_CURRENT_GFX == IM_GFX_WGPU)
+	// WGSL for WebGPU
+	arrow_format = ImPlatform_ShaderFormat_WGSL;
+	arrow_vs_source =
+		"struct Uniforms {\n"
+		"    projMtx: mat4x4<f32>,\n"
+		"};\n"
+		"@group(0) @binding(0) var<uniform> uniforms: Uniforms;\n"
+		"\n"
+		"struct VertexInput {\n"
+		"    @location(0) pos: vec2<f32>,\n"
+		"    @location(1) uv: vec2<f32>,\n"
+		"    @location(2) col: vec4<f32>,\n"
+		"};\n"
+		"\n"
+		"struct VertexOutput {\n"
+		"    @builtin(position) position: vec4<f32>,\n"
+		"    @location(0) uv: vec2<f32>,\n"
+		"};\n"
+		"\n"
+		"@vertex\n"
+		"fn main(input: VertexInput) -> VertexOutput {\n"
+		"    var output: VertexOutput;\n"
+		"    output.position = uniforms.projMtx * vec4<f32>(input.pos, 0.0, 1.0);\n"
+		"    output.uv = input.uv;\n"
+		"    return output;\n"
+		"}\n";
+
+	arrow_ps_source =
+		"struct FragInput {\n"
+		"    @location(0) uv: vec2<f32>,\n"
+		"};\n"
+		"\n"
+		"fn sdArrow(p: vec2<f32>) -> f32 {\n"
+		"    let head = p - vec2<f32>(0.5, 0.0);\n"
+		"    let dHead = max(abs(head.y) + head.x * 0.5 - 0.25, -head.x - 0.3);\n"
+		"    let shaft = p - vec2<f32>(-0.1, 0.0);\n"
+		"    let dShaft = max(abs(shaft.y) - 0.1, max(shaft.x - 0.4, -shaft.x - 0.6));\n"
+		"    return min(dHead, dShaft);\n"
+		"}\n"
+		"\n"
+		"@fragment\n"
+		"fn main(input: FragInput) -> @location(0) vec4<f32> {\n"
+		"    let uv = input.uv * 2.0 - 1.0;\n"
+		"    let d = sdArrow(uv);\n"
+		"    let alpha = 1.0 - smoothstep(0.0, 0.02, d);\n"
+		"    return vec4<f32>(1.0, 0.5, 0.2, 1.0) * alpha;\n"
+		"}\n";
 #endif
 
 	// ========================================================================
@@ -388,6 +438,53 @@ int main()
 	#include "shaders/gradient.vert.h"
 	#include "shaders/gradient.frag.h"
 	// Note: For Vulkan, we'll use bytecode fields instead of source_code
+
+#elif (IM_CURRENT_GFX == IM_GFX_WGPU)
+	// WGSL for WebGPU
+	gradient_format = ImPlatform_ShaderFormat_WGSL;
+	gradient_vs_source =
+		"struct Uniforms {\n"
+		"    projMtx: mat4x4<f32>,\n"
+		"    colorStart: vec4<f32>,\n"
+		"    colorEnd: vec4<f32>,\n"
+		"};\n"
+		"@group(0) @binding(0) var<uniform> uniforms: Uniforms;\n"
+		"\n"
+		"struct VertexInput {\n"
+		"    @location(0) pos: vec2<f32>,\n"
+		"    @location(1) uv: vec2<f32>,\n"
+		"    @location(2) col: vec4<f32>,\n"
+		"};\n"
+		"\n"
+		"struct VertexOutput {\n"
+		"    @builtin(position) position: vec4<f32>,\n"
+		"    @location(0) uv: vec2<f32>,\n"
+		"};\n"
+		"\n"
+		"@vertex\n"
+		"fn main(input: VertexInput) -> VertexOutput {\n"
+		"    var output: VertexOutput;\n"
+		"    output.position = uniforms.projMtx * vec4<f32>(input.pos, 0.0, 1.0);\n"
+		"    output.uv = input.uv;\n"
+		"    return output;\n"
+		"}\n";
+
+	gradient_ps_source =
+		"struct Uniforms {\n"
+		"    projMtx: mat4x4<f32>,\n"
+		"    colorStart: vec4<f32>,\n"
+		"    colorEnd: vec4<f32>,\n"
+		"};\n"
+		"@group(0) @binding(0) var<uniform> uniforms: Uniforms;\n"
+		"\n"
+		"struct FragInput {\n"
+		"    @location(0) uv: vec2<f32>,\n"
+		"};\n"
+		"\n"
+		"@fragment\n"
+		"fn main(input: FragInput) -> @location(0) vec4<f32> {\n"
+		"    return mix(uniforms.colorStart, uniforms.colorEnd, input.uv.y);\n"
+		"}\n";
 #endif
 
 	// Create shaders and programs
@@ -601,6 +698,8 @@ int main()
 			ImGui::BulletText("HLSL Shader Model 4.0 (DirectX 11)");
 #elif (IM_CURRENT_GFX == IM_GFX_DIRECTX12)
 			ImGui::BulletText("HLSL Shader Model 5.0 (DirectX 12)");
+#elif (IM_CURRENT_GFX == IM_GFX_WGPU)
+			ImGui::BulletText("WGSL (WebGPU Shading Language)");
 #endif
 			ImGui::BulletText("Custom pixel shader with SDF function");
 			ImGui::BulletText("No custom vertex buffer (uses ImGui's default)");
@@ -634,6 +733,8 @@ int main()
 			ImGui::BulletText("HLSL Shader Model 4.0");
 #elif (IM_CURRENT_GFX == IM_GFX_DIRECTX12)
 			ImGui::BulletText("HLSL Shader Model 5.0");
+#elif (IM_CURRENT_GFX == IM_GFX_WGPU)
+			ImGui::BulletText("WGSL (WebGPU Shading Language)");
 #endif
 			ImGui::BulletText("Uniforms: ColorStart, ColorEnd");
 			ImGui::BulletText("Using ImPlatform Uniform Block API");
@@ -672,7 +773,7 @@ int main()
 			ImGui::BulletText("DirectX 12 (stub)");
 			ImGui::BulletText("Vulkan (stub)");
 			ImGui::BulletText("Metal (stub)");
-			ImGui::BulletText("WebGPU (stub)");
+			ImGui::BulletText("WebGPU");
 			ImGui::End();
 		}
 #endif // IMPLATFORM_GFX_SUPPORT_CUSTOM_SHADER

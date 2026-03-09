@@ -83,6 +83,17 @@ else()
     message(STATUS "OpenGL not found - OpenGL configurations will be skipped")
 endif()
 
+# Find WebGPU (Dawn or wgpu-native)
+# To enable, provide a webgpu_dawn or wgpu_native target before configuring ImPlatform,
+# or set WEBGPU_INCLUDE_DIR and WEBGPU_LIBRARIES manually.
+if(TARGET webgpu_dawn OR TARGET wgpu_native)
+    set(WEBGPU_AVAILABLE TRUE)
+else()
+    set(WEBGPU_AVAILABLE FALSE)
+    message(STATUS "WebGPU not found - WebGPU configurations will be skipped")
+    message(STATUS "  Provide webgpu_dawn or wgpu_native target to enable WebGPU support")
+endif()
+
 # =============================================================================
 # ImGui Library
 # =============================================================================
@@ -140,6 +151,7 @@ set(IMGUI_BACKEND_DX12       ${IMGUI_DIR}/backends/imgui_impl_dx12.cpp)
 set(IMGUI_BACKEND_OPENGL3    ${IMGUI_DIR}/backends/imgui_impl_opengl3.cpp)
 set(IMGUI_BACKEND_VULKAN     ${IMGUI_DIR}/backends/imgui_impl_vulkan.cpp)
 set(IMGUI_BACKEND_METAL      ${IMGUI_DIR}/backends/imgui_impl_metal.mm)
+set(IMGUI_BACKEND_WGPU       ${IMGUI_DIR}/backends/imgui_impl_wgpu.cpp)
 
 # Set Objective-C++ language and compile flags for .mm files at the directory level
 if(APPLE)
@@ -214,6 +226,10 @@ function(implatform_add_config TARGET_NAME PLATFORM GFX)
         list(APPEND SOURCES ${IMPLATFORM_SRC_METAL} ${IMGUI_BACKEND_METAL})
         set(GFX_DEFINE "IM_CURRENT_GFX=IM_GFX_METAL")
         set(CONFIG_GFX_DEFINE "IM_CONFIG_GFX=IM_GFX_METAL")
+    elseif(GFX STREQUAL "WGPU")
+        list(APPEND SOURCES ${IMPLATFORM_SRC_WGPU} ${IMGUI_BACKEND_WGPU})
+        set(GFX_DEFINE "IM_CURRENT_GFX=IM_GFX_WGPU")
+        set(CONFIG_GFX_DEFINE "IM_CONFIG_GFX=IM_GFX_WGPU")
     endif()
 
     # Create library
@@ -277,6 +293,14 @@ function(implatform_add_config TARGET_NAME PLATFORM GFX)
         )
         # Enable ARC for Metal targets
         target_compile_options(${TARGET_NAME} PRIVATE $<$<COMPILE_LANGUAGE:OBJCXX>:-fobjc-arc>)
+    elseif(GFX STREQUAL "WGPU")
+        if(TARGET webgpu_dawn)
+            target_link_libraries(${TARGET_NAME} PUBLIC webgpu_dawn)
+            target_compile_definitions(${TARGET_NAME} PUBLIC IMGUI_IMPL_WEBGPU_BACKEND_DAWN)
+        elseif(TARGET wgpu_native)
+            target_link_libraries(${TARGET_NAME} PUBLIC wgpu_native)
+            target_compile_definitions(${TARGET_NAME} PUBLIC IMGUI_IMPL_WEBGPU_BACKEND_WGPU)
+        endif()
     endif()
 
     # macOS frameworks
@@ -438,6 +462,37 @@ if(SDL3_AVAILABLE)
     endif()
 endif()
 
+# WebGPU configurations (cross-platform)
+if(WEBGPU_AVAILABLE)
+    if(GLFW_AVAILABLE)
+        implatform_add_config(implatform_glfw_wgpu GLFW WGPU)
+        if(IMPLATFORM_BUILD_DEMO)
+            implatform_add_demo(ImPlatformDemo_GLFW_WebGPU implatform_glfw_wgpu)
+        endif()
+    endif()
+
+    if(SDL2_AVAILABLE)
+        implatform_add_config(implatform_sdl2_wgpu SDL2 WGPU)
+        if(IMPLATFORM_BUILD_DEMO)
+            implatform_add_demo(ImPlatformDemo_SDL2_WebGPU implatform_sdl2_wgpu)
+        endif()
+    endif()
+
+    if(SDL3_AVAILABLE)
+        implatform_add_config(implatform_sdl3_wgpu SDL3 WGPU)
+        if(IMPLATFORM_BUILD_DEMO)
+            implatform_add_demo(ImPlatformDemo_SDL3_WebGPU implatform_sdl3_wgpu)
+        endif()
+    endif()
+
+    if(IMPLATFORM_WINDOWS)
+        implatform_add_config(implatform_win32_wgpu WIN32 WGPU)
+        if(IMPLATFORM_BUILD_DEMO)
+            implatform_add_demo(ImPlatformDemo_Win32_WebGPU implatform_win32_wgpu)
+        endif()
+    endif()
+endif()
+
 # =============================================================================
 # Print configuration summary
 # =============================================================================
@@ -451,4 +506,5 @@ message(STATUS "  SDL2:    ${SDL2_AVAILABLE}")
 message(STATUS "  SDL3:    ${SDL3_AVAILABLE}")
 message(STATUS "  OpenGL:  ${OPENGL_AVAILABLE}")
 message(STATUS "  Vulkan:  ${VULKAN_AVAILABLE}")
+message(STATUS "  WebGPU:  ${WEBGPU_AVAILABLE}")
 message(STATUS "")
