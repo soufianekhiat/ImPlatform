@@ -60,8 +60,8 @@ IMPLATFORM_API bool ImPlatform_CreateWindow(char const* pWindowsName, ImVec2 con
         glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
         glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 0);
     #endif
-#elif IM_CURRENT_GFX == IM_GFX_VULKAN
-    // Vulkan doesn't use OpenGL context
+#elif (IM_CURRENT_GFX == IM_GFX_VULKAN) || (IM_CURRENT_GFX == IM_GFX_WGPU)
+    // Vulkan/WebGPU don't use OpenGL context
     glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
 #endif
 

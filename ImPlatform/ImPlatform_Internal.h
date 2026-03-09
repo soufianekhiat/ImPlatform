@@ -275,7 +275,8 @@ struct ImPlatform_GfxData_WebGPU {
     WGPUSurface surface;
     WGPUSwapChain swapChain;
     WGPUTextureFormat swapChainFormat;
-    WGPURenderPassDescriptor renderPassDesc;
+    unsigned int uSurfaceWidth;
+    unsigned int uSurfaceHeight;
 };
 #endif
 

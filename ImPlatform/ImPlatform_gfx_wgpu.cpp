@@ -1,7 +1,8 @@
 // dear imgui: Graphics API Abstraction - WebGPU Backend
 // This handles WebGPU device creation, rendering, and presentation
 //
-// NOTE: WebGPU implementation requires Dawn/Emscripten WebGPU support
+// Supports Dawn and wgpu-native via IMGUI_IMPL_WEBGPU_BACKEND_DAWN / _WGPU defines.
+// Platform surface creation: GLFW (native), SDL2, SDL3, Win32.
 
 #include "ImPlatform_Internal.h"
 
@@ -10,62 +11,384 @@
 #include "../imgui.h"
 #include "../imgui/backends/imgui_impl_wgpu.h"
 
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <stdint.h>
+
+// Platform-specific includes for surface creation
 #ifdef IM_PLATFORM_GLFW
     #include <GLFW/glfw3.h>
+    #if defined(_WIN32)
+        #define GLFW_EXPOSE_NATIVE_WIN32
+    #elif defined(__APPLE__)
+        #define GLFW_EXPOSE_NATIVE_COCOA
+    #elif defined(__linux__)
+        #define GLFW_EXPOSE_NATIVE_X11
+    #endif
     #include <GLFW/glfw3native.h>
 #endif
 
+#ifdef IM_PLATFORM_SDL2
+    #include <SDL.h>
+    #include <SDL_syswm.h>
+#endif
+
+#ifdef IM_PLATFORM_SDL3
+    #include <SDL3/SDL.h>
+#endif
+
+// Dawn-specific: wgpuDeviceTick for processing async operations
+#if defined(IMGUI_IMPL_WEBGPU_BACKEND_DAWN)
+    // Dawn exposes wgpuDeviceTick
+    extern "C" void wgpuDeviceTick(WGPUDevice device);
+#endif
+
+#ifndef WGPU_DEPTH_SLICE_UNDEFINED
+#define WGPU_DEPTH_SLICE_UNDEFINED 0xffffffffu
+#endif
+
 // Global state
-static ImPlatform_GfxData_WebGPU g_GfxData = { 0 };
+static ImPlatform_GfxData_WebGPU g_GfxData = {};
 
 // Uniform block API state
 static ImPlatform_ShaderProgram g_CurrentUniformBlockProgram = nullptr;
 static void* g_UniformBlockData = nullptr;
 static size_t g_UniformBlockSize = 0;
 
+// Current draw data for custom shader rendering (needed for multi-viewport)
+static ImDrawData* g_CurrentDrawData = nullptr;
+
+// ============================================================================
+// Texture Resource Tracking
+// ============================================================================
+
+struct ImPlatform_TextureTracking_WebGPU
+{
+    WGPUTexture texture;
+    WGPUTextureView textureView;
+    WGPUSampler sampler;
+    unsigned int width;
+    unsigned int height;
+    ImPlatform_PixelFormat format;
+    ImPlatform_TextureTracking_WebGPU* next;
+};
+
+static ImPlatform_TextureTracking_WebGPU* g_TextureTrackingHead = nullptr;
+
+static void ImPlatform_TrackTexture(WGPUTexture texture, WGPUTextureView view, WGPUSampler sampler,
+                                     unsigned int width, unsigned int height, ImPlatform_PixelFormat format)
+{
+    ImPlatform_TextureTracking_WebGPU* entry = new ImPlatform_TextureTracking_WebGPU();
+    entry->texture = texture;
+    entry->textureView = view;
+    entry->sampler = sampler;
+    entry->width = width;
+    entry->height = height;
+    entry->format = format;
+    entry->next = g_TextureTrackingHead;
+    g_TextureTrackingHead = entry;
+}
+
+static ImPlatform_TextureTracking_WebGPU* ImPlatform_FindTrackedTexture(WGPUTextureView view)
+{
+    for (ImPlatform_TextureTracking_WebGPU* entry = g_TextureTrackingHead; entry; entry = entry->next)
+    {
+        if (entry->textureView == view)
+            return entry;
+    }
+    return nullptr;
+}
+
+static void ImPlatform_UntrackTexture(WGPUTextureView view)
+{
+    ImPlatform_TextureTracking_WebGPU** prev = &g_TextureTrackingHead;
+    for (ImPlatform_TextureTracking_WebGPU* entry = g_TextureTrackingHead; entry; entry = entry->next)
+    {
+        if (entry->textureView == view)
+        {
+            *prev = entry->next;
+            delete entry;
+            return;
+        }
+        prev = &entry->next;
+    }
+}
+
+static void ImPlatform_ReleaseAllTrackedTextures()
+{
+    ImPlatform_TextureTracking_WebGPU* entry = g_TextureTrackingHead;
+    while (entry)
+    {
+        ImPlatform_TextureTracking_WebGPU* next = entry->next;
+        if (entry->sampler) wgpuSamplerRelease(entry->sampler);
+        if (entry->textureView) wgpuTextureViewRelease(entry->textureView);
+        if (entry->texture) wgpuTextureRelease(entry->texture);
+        delete entry;
+        entry = next;
+    }
+    g_TextureTrackingHead = nullptr;
+}
+
+// ============================================================================
 // Internal API - Get WebGPU gfx data
+// ============================================================================
+
 ImPlatform_GfxData_WebGPU* ImPlatform_Gfx_GetData_WebGPU(void)
 {
     return &g_GfxData;
 }
 
+// ============================================================================
+// SwapChain Management
+// ============================================================================
+
+static void ImPlatform_CreateSwapChain(unsigned int width, unsigned int height)
+{
+    if (g_GfxData.swapChain)
+        wgpuSwapChainRelease(g_GfxData.swapChain);
+
+    g_GfxData.uSurfaceWidth = width;
+    g_GfxData.uSurfaceHeight = height;
+
+    WGPUSwapChainDescriptor swap_chain_desc = {};
+    swap_chain_desc.usage = WGPUTextureUsage_RenderAttachment;
+    swap_chain_desc.format = g_GfxData.swapChainFormat;
+    swap_chain_desc.width = width;
+    swap_chain_desc.height = height;
+    swap_chain_desc.presentMode = WGPUPresentMode_Fifo;
+
+    g_GfxData.swapChain = wgpuDeviceCreateSwapChain(g_GfxData.device, g_GfxData.surface, &swap_chain_desc);
+}
+
+// ============================================================================
 // Internal API - Create WebGPU device
+// ============================================================================
+
+static void wgpu_error_callback(WGPUErrorType error_type, const char* message, void*)
+{
+    const char* error_type_lbl = "Unknown";
+    switch (error_type)
+    {
+    case WGPUErrorType_Validation:  error_type_lbl = "Validation"; break;
+    case WGPUErrorType_OutOfMemory: error_type_lbl = "Out of memory"; break;
+    case WGPUErrorType_DeviceLost:  error_type_lbl = "Device lost"; break;
+    default: break;
+    }
+    fprintf(stderr, "WebGPU %s error: %s\n", error_type_lbl, message);
+}
+
 bool ImPlatform_Gfx_CreateDevice_WebGPU(void* pWindow, ImPlatform_GfxData_WebGPU* pData)
 {
-    // NOTE: WebGPU device creation requires:
     // 1. Create WGPUInstance
-    // 2. Request WGPUAdapter
-    // 3. Request WGPUDevice
-    // 4. Create surface from window
-    // 5. Create swapchain
-    // 6. Setup preferred format
-    //
-    // This is platform-dependent and requires async operations.
-    // See examples/example_glfw_wgpu/main.cpp for complete implementation.
+    WGPUInstanceDescriptor instance_desc = {};
+    pData->instance = wgpuCreateInstance(&instance_desc);
+    if (!pData->instance)
+    {
+        fprintf(stderr, "WebGPU: Failed to create instance\n");
+        return false;
+    }
 
-    (void)pWindow;
-    (void)pData;
+    // 2. Create surface from platform window
+#if defined(IM_PLATFORM_GLFW)
+    #if defined(_WIN32)
+    {
+        HWND hwnd = glfwGetWin32Window((GLFWwindow*)pWindow);
+        WGPUSurfaceDescriptorFromWindowsHWND hwnd_desc = {};
+        hwnd_desc.chain.sType = WGPUSType_SurfaceDescriptorFromWindowsHWND;
+        hwnd_desc.hwnd = hwnd;
+        hwnd_desc.hinstance = GetModuleHandle(NULL);
 
-    // TODO: Implement WebGPU device creation
-    // Example outline:
-    // WGPUInstanceDescriptor instance_desc = {};
-    // pData->instance = wgpuCreateInstance(&instance_desc);
-    //
-    // WGPURequestAdapterOptions adapter_opts = {};
-    // // Request adapter (async)
-    //
-    // WGPUDeviceDescriptor device_desc = {};
-    // // Request device (async)
-    //
-    // Create surface from window...
-    // Create swapchain...
+        WGPUSurfaceDescriptor surface_desc = {};
+        surface_desc.nextInChain = (const WGPUChainedStruct*)&hwnd_desc;
 
-    return false; // Not implemented
+        pData->surface = wgpuInstanceCreateSurface(pData->instance, &surface_desc);
+    }
+    #elif defined(__APPLE__)
+    {
+        // macOS: Need Metal layer from NSWindow
+        id ns_window = glfwGetCocoaWindow((GLFWwindow*)pWindow);
+        // Create a CAMetalLayer and set it on the window's content view
+        // This requires Objective-C; for now, use Dawn's GLFW helper if available
+        // TODO: Implement macOS surface creation
+        fprintf(stderr, "WebGPU: macOS surface creation not yet implemented for GLFW\n");
+        return false;
+    }
+    #elif defined(__linux__)
+    {
+        // Linux: X11 surface
+        Display* display = glfwGetX11Display();
+        Window x11_window = glfwGetX11Window((GLFWwindow*)pWindow);
+
+        WGPUSurfaceDescriptorFromXlibWindow x11_desc = {};
+        x11_desc.chain.sType = WGPUSType_SurfaceDescriptorFromXlibWindow;
+        x11_desc.display = display;
+        x11_desc.window = x11_window;
+
+        WGPUSurfaceDescriptor surface_desc = {};
+        surface_desc.nextInChain = (const WGPUChainedStruct*)&x11_desc;
+
+        pData->surface = wgpuInstanceCreateSurface(pData->instance, &surface_desc);
+    }
+    #endif
+
+#elif defined(IM_PLATFORM_WIN32)
+    {
+        HWND hwnd = (HWND)pWindow;
+        WGPUSurfaceDescriptorFromWindowsHWND hwnd_desc = {};
+        hwnd_desc.chain.sType = WGPUSType_SurfaceDescriptorFromWindowsHWND;
+        hwnd_desc.hwnd = hwnd;
+        hwnd_desc.hinstance = GetModuleHandle(NULL);
+
+        WGPUSurfaceDescriptor surface_desc = {};
+        surface_desc.nextInChain = (const WGPUChainedStruct*)&hwnd_desc;
+
+        pData->surface = wgpuInstanceCreateSurface(pData->instance, &surface_desc);
+    }
+
+#elif defined(IM_PLATFORM_SDL2)
+    {
+        SDL_SysWMinfo wmInfo;
+        SDL_VERSION(&wmInfo.version);
+        SDL_GetWindowWMInfo((SDL_Window*)pWindow, &wmInfo);
+
+        #if defined(_WIN32)
+        {
+            WGPUSurfaceDescriptorFromWindowsHWND hwnd_desc = {};
+            hwnd_desc.chain.sType = WGPUSType_SurfaceDescriptorFromWindowsHWND;
+            hwnd_desc.hwnd = wmInfo.info.win.window;
+            hwnd_desc.hinstance = GetModuleHandle(NULL);
+
+            WGPUSurfaceDescriptor surface_desc = {};
+            surface_desc.nextInChain = (const WGPUChainedStruct*)&hwnd_desc;
+
+            pData->surface = wgpuInstanceCreateSurface(pData->instance, &surface_desc);
+        }
+        #elif defined(__linux__)
+        {
+            WGPUSurfaceDescriptorFromXlibWindow x11_desc = {};
+            x11_desc.chain.sType = WGPUSType_SurfaceDescriptorFromXlibWindow;
+            x11_desc.display = wmInfo.info.x11.display;
+            x11_desc.window = wmInfo.info.x11.window;
+
+            WGPUSurfaceDescriptor surface_desc = {};
+            surface_desc.nextInChain = (const WGPUChainedStruct*)&x11_desc;
+
+            pData->surface = wgpuInstanceCreateSurface(pData->instance, &surface_desc);
+        }
+        #endif
+    }
+
+#elif defined(IM_PLATFORM_SDL3)
+    {
+        #if defined(_WIN32)
+        {
+            HWND hwnd = (HWND)SDL_GetPointerProperty(
+                SDL_GetWindowProperties((SDL_Window*)pWindow),
+                SDL_PROP_WINDOW_WIN32_HWND_POINTER, NULL);
+
+            WGPUSurfaceDescriptorFromWindowsHWND hwnd_desc = {};
+            hwnd_desc.chain.sType = WGPUSType_SurfaceDescriptorFromWindowsHWND;
+            hwnd_desc.hwnd = hwnd;
+            hwnd_desc.hinstance = GetModuleHandle(NULL);
+
+            WGPUSurfaceDescriptor surface_desc = {};
+            surface_desc.nextInChain = (const WGPUChainedStruct*)&hwnd_desc;
+
+            pData->surface = wgpuInstanceCreateSurface(pData->instance, &surface_desc);
+        }
+        #endif
+    }
+#endif
+
+    if (!pData->surface)
+    {
+        fprintf(stderr, "WebGPU: Failed to create surface\n");
+        return false;
+    }
+
+    // 3. Request adapter (synchronous via callback)
+    {
+        struct AdapterUserData { WGPUAdapter adapter; bool done; } user_data = { nullptr, false };
+
+        WGPURequestAdapterOptions adapter_opts = {};
+        adapter_opts.compatibleSurface = pData->surface;
+        adapter_opts.powerPreference = WGPUPowerPreference_HighPerformance;
+
+        wgpuInstanceRequestAdapter(pData->instance, &adapter_opts,
+            [](WGPURequestAdapterStatus status, WGPUAdapter adapter, const char* message, void* pUserData)
+            {
+                auto* data = (AdapterUserData*)pUserData;
+                if (status == WGPURequestAdapterStatus_Success)
+                    data->adapter = adapter;
+                else
+                    fprintf(stderr, "WebGPU: Failed to get adapter: %s\n", message ? message : "unknown error");
+                data->done = true;
+            }, &user_data);
+
+        // Dawn processes events synchronously in the callback, but we may need to tick
+#if defined(IMGUI_IMPL_WEBGPU_BACKEND_DAWN)
+        while (!user_data.done)
+            wgpuInstanceProcessEvents(pData->instance);
+#endif
+
+        pData->adapter = user_data.adapter;
+        if (!pData->adapter)
+        {
+            fprintf(stderr, "WebGPU: No suitable adapter found\n");
+            return false;
+        }
+    }
+
+    // 4. Request device (synchronous via callback)
+    {
+        struct DeviceUserData { WGPUDevice device; bool done; } user_data = { nullptr, false };
+
+        WGPUDeviceDescriptor device_desc = {};
+        device_desc.label = "ImPlatform Device";
+
+        wgpuAdapterRequestDevice(pData->adapter, &device_desc,
+            [](WGPURequestDeviceStatus status, WGPUDevice device, const char* message, void* pUserData)
+            {
+                auto* data = (DeviceUserData*)pUserData;
+                if (status == WGPURequestDeviceStatus_Success)
+                    data->device = device;
+                else
+                    fprintf(stderr, "WebGPU: Failed to get device: %s\n", message ? message : "unknown error");
+                data->done = true;
+            }, &user_data);
+
+#if defined(IMGUI_IMPL_WEBGPU_BACKEND_DAWN)
+        while (!user_data.done)
+            wgpuInstanceProcessEvents(pData->instance);
+#endif
+
+        pData->device = user_data.device;
+        if (!pData->device)
+        {
+            fprintf(stderr, "WebGPU: Failed to create device\n");
+            return false;
+        }
+    }
+
+    // 5. Get queue
+    pData->queue = wgpuDeviceGetQueue(pData->device);
+
+    // 6. Set error callback
+    wgpuDeviceSetUncapturedErrorCallback(pData->device, wgpu_error_callback, nullptr);
+
+    // 7. Determine preferred format
+    // BGRA8Unorm is the preferred format on most platforms
+    pData->swapChainFormat = WGPUTextureFormat_BGRA8Unorm;
+
+    return true;
 }
 
 // Internal API - Cleanup WebGPU device
 void ImPlatform_Gfx_CleanupDevice_WebGPU(ImPlatform_GfxData_WebGPU* pData)
 {
+    ImPlatform_ReleaseAllTrackedTextures();
+
     if (pData->swapChain)
     {
         wgpuSwapChainRelease(pData->swapChain);
@@ -103,26 +426,69 @@ void ImPlatform_Gfx_CleanupDevice_WebGPU(ImPlatform_GfxData_WebGPU* pData)
     }
 }
 
+// ============================================================================
+// ImPlatform API - Core Functions
+// ============================================================================
+
 // ImPlatform API - InitGfxAPI
 IMPLATFORM_API bool ImPlatform_InitGfxAPI(void)
 {
-#ifdef IM_PLATFORM_GLFW
-    GLFWwindow* pWindow = ImPlatform_App_GetGLFWWindow();
-    return ImPlatform_Gfx_CreateDevice_WebGPU(pWindow, &g_GfxData);
-#else
-    // WebGPU is primarily used with GLFW or Emscripten
-    return false;
+    void* pWindow = nullptr;
+    unsigned int width = 0, height = 0;
+
+#if defined(IM_PLATFORM_GLFW)
+    GLFWwindow* glfwWindow = ImPlatform_App_GetGLFWWindow();
+    pWindow = glfwWindow;
+    int w, h;
+    glfwGetFramebufferSize(glfwWindow, &w, &h);
+    width = (unsigned int)w;
+    height = (unsigned int)h;
+#elif defined(IM_PLATFORM_WIN32)
+    HWND hWnd = ImPlatform_App_GetHWND();
+    pWindow = hWnd;
+    RECT rect;
+    GetClientRect(hWnd, &rect);
+    width = (unsigned int)(rect.right - rect.left);
+    height = (unsigned int)(rect.bottom - rect.top);
+#elif defined(IM_PLATFORM_SDL2)
+    SDL_Window* sdlWindow = ImPlatform_App_GetSDL2Window();
+    pWindow = sdlWindow;
+    int w, h;
+    SDL_GetWindowSize(sdlWindow, &w, &h);
+    width = (unsigned int)w;
+    height = (unsigned int)h;
+#elif defined(IM_PLATFORM_SDL3)
+    SDL_Window* sdlWindow = ImPlatform_App_GetSDL3Window();
+    pWindow = sdlWindow;
+    int w, h;
+    SDL_GetWindowSize(sdlWindow, &w, &h);
+    width = (unsigned int)w;
+    height = (unsigned int)h;
 #endif
+
+    if (!pWindow)
+        return false;
+
+    if (!ImPlatform_Gfx_CreateDevice_WebGPU(pWindow, &g_GfxData))
+    {
+        ImPlatform_Gfx_CleanupDevice_WebGPU(&g_GfxData);
+        return false;
+    }
+
+    // Create initial swapchain
+    ImPlatform_CreateSwapChain(width, height);
+
+    return true;
 }
 
 // ImPlatform API - InitGfx
 IMPLATFORM_API bool ImPlatform_InitGfx(void)
 {
-    // Initialize ImGui WebGPU backend
     ImGui_ImplWGPU_InitInfo init_info = {};
     init_info.Device = g_GfxData.device;
-    init_info.NumFramesInFlight = 3; // Typically 3 for WebGPU
+    init_info.NumFramesInFlight = 3;
     init_info.RenderTargetFormat = g_GfxData.swapChainFormat;
+    init_info.DepthStencilFormat = WGPUTextureFormat_Undefined;
 
     if (!ImGui_ImplWGPU_Init(&init_info))
         return false;
@@ -133,7 +499,53 @@ IMPLATFORM_API bool ImPlatform_InitGfx(void)
 // ImPlatform API - GfxCheck
 IMPLATFORM_API bool ImPlatform_GfxCheck(void)
 {
-    // WebGPU doesn't have device loss like D3D9
+    // Process Dawn async events
+#if defined(IMGUI_IMPL_WEBGPU_BACKEND_DAWN)
+    wgpuDeviceTick(g_GfxData.device);
+#endif
+
+    // Check for framebuffer resize
+    unsigned int width = 0, height = 0;
+#if defined(IM_PLATFORM_GLFW)
+    {
+        int w, h;
+        glfwGetFramebufferSize(ImPlatform_App_GetGLFWWindow(), &w, &h);
+        width = (unsigned int)w;
+        height = (unsigned int)h;
+    }
+#elif defined(IM_PLATFORM_WIN32)
+    {
+        RECT rect;
+        GetClientRect(ImPlatform_App_GetHWND(), &rect);
+        width = (unsigned int)(rect.right - rect.left);
+        height = (unsigned int)(rect.bottom - rect.top);
+    }
+#elif defined(IM_PLATFORM_SDL2)
+    {
+        int w, h;
+        SDL_GetWindowSize(ImPlatform_App_GetSDL2Window(), &w, &h);
+        width = (unsigned int)w;
+        height = (unsigned int)h;
+    }
+#elif defined(IM_PLATFORM_SDL3)
+    {
+        int w, h;
+        SDL_GetWindowSize(ImPlatform_App_GetSDL3Window(), &w, &h);
+        width = (unsigned int)w;
+        height = (unsigned int)h;
+    }
+#endif
+
+    if (width > 0 && height > 0 &&
+        (width != g_GfxData.uSurfaceWidth || height != g_GfxData.uSurfaceHeight))
+    {
+        ImPlatform_CreateSwapChain(width, height);
+    }
+
+    // Skip rendering if minimized
+    if (width == 0 || height == 0)
+        return false;
+
     return true;
 }
 
@@ -146,14 +558,27 @@ IMPLATFORM_API void ImPlatform_GfxAPINewFrame(void)
 // ImPlatform API - GfxAPIClear
 IMPLATFORM_API bool ImPlatform_GfxAPIClear(ImVec4 const vClearColor)
 {
+    // Clear is handled as part of the render pass in GfxAPIRender
+    (void)vClearColor;
+    return true;
+}
+
+// ImPlatform API - GfxAPIRender
+IMPLATFORM_API bool ImPlatform_GfxAPIRender(ImVec4 const vClearColor)
+{
     // Get current texture from swapchain
     WGPUTextureView backbuffer = wgpuSwapChainGetCurrentTextureView(g_GfxData.swapChain);
     if (!backbuffer)
         return false;
 
-    // Setup render pass descriptor
+    // Create command encoder
+    WGPUCommandEncoderDescriptor enc_desc = {};
+    WGPUCommandEncoder encoder = wgpuDeviceCreateCommandEncoder(g_GfxData.device, &enc_desc);
+
+    // Begin render pass with clear
     WGPURenderPassColorAttachment color_attachment = {};
     color_attachment.view = backbuffer;
+    color_attachment.depthSlice = WGPU_DEPTH_SLICE_UNDEFINED;
     color_attachment.loadOp = WGPULoadOp_Clear;
     color_attachment.storeOp = WGPUStoreOp_Store;
     color_attachment.clearValue.r = vClearColor.x * vClearColor.w;
@@ -161,32 +586,32 @@ IMPLATFORM_API bool ImPlatform_GfxAPIClear(ImVec4 const vClearColor)
     color_attachment.clearValue.b = vClearColor.z * vClearColor.w;
     color_attachment.clearValue.a = vClearColor.w;
 
-    // Store in render pass descriptor (would need to be in GfxData)
-    // This is simplified - actual implementation needs command encoder
+    WGPURenderPassDescriptor render_pass_desc = {};
+    render_pass_desc.colorAttachmentCount = 1;
+    render_pass_desc.colorAttachments = &color_attachment;
+    render_pass_desc.depthStencilAttachment = nullptr;
 
+    WGPURenderPassEncoder pass = wgpuCommandEncoderBeginRenderPass(encoder, &render_pass_desc);
+
+    // Render ImGui
+    ImDrawData* draw_data = ImGui::GetDrawData();
+    g_CurrentDrawData = draw_data;
+    ImGui_ImplWGPU_RenderDrawData(draw_data, pass);
+
+    wgpuRenderPassEncoderEnd(pass);
+
+    // Submit commands
+    WGPUCommandBufferDescriptor cmd_desc = {};
+    WGPUCommandBuffer cmd = wgpuCommandEncoderFinish(encoder, &cmd_desc);
+    wgpuQueueSubmit(g_GfxData.queue, 1, &cmd);
+
+    // Cleanup per-frame resources
+    wgpuCommandBufferRelease(cmd);
+    wgpuRenderPassEncoderRelease(pass);
+    wgpuCommandEncoderRelease(encoder);
     wgpuTextureViewRelease(backbuffer);
+
     return true;
-}
-
-// ImPlatform API - GfxAPIRender
-IMPLATFORM_API bool ImPlatform_GfxAPIRender(ImVec4 const vClearColor)
-{
-    (void)vClearColor;
-
-    // NOTE: WebGPU rendering requires:
-    // 1. Get current texture view from swapchain
-    // 2. Create command encoder
-    // 3. Begin render pass
-    // 4. Call ImGui_ImplWGPU_RenderDrawData
-    // 5. End render pass
-    // 6. Finish command encoder
-    // 7. Submit commands to queue
-    //
-    // This requires maintaining command encoder state in GfxData
-
-    // ImGui_ImplWGPU_RenderDrawData(ImGui::GetDrawData(), pass_encoder);
-
-    return false; // Not fully implemented
 }
 
 // ImPlatform API - GfxViewportPre
@@ -212,9 +637,9 @@ IMPLATFORM_API void ImPlatform_GfxViewportPost(void)
 // ImPlatform API - GfxAPISwapBuffer
 IMPLATFORM_API bool ImPlatform_GfxAPISwapBuffer(void)
 {
-    // Present is implicit in WebGPU - swapchain automatically presents
-    // when you release the texture view
+#ifndef __EMSCRIPTEN__
     wgpuSwapChainPresent(g_GfxData.swapChain);
+#endif
     return true;
 }
 
@@ -277,6 +702,23 @@ static WGPUTextureFormat ImPlatform_GetWebGPUFormat(ImPlatform_PixelFormat forma
     }
 }
 
+static int ImPlatform_GetBytesPerPixelFromWGPUFormat(WGPUTextureFormat format)
+{
+    switch (format)
+    {
+    case WGPUTextureFormat_R8Unorm:           return 1;
+    case WGPUTextureFormat_RG8Unorm:          return 2;
+    case WGPUTextureFormat_RGBA8Unorm:        return 4;
+    case WGPUTextureFormat_R16Unorm:          return 2;
+    case WGPUTextureFormat_RG16Unorm:         return 4;
+    case WGPUTextureFormat_RGBA16Unorm:       return 8;
+    case WGPUTextureFormat_R32Float:          return 4;
+    case WGPUTextureFormat_RG32Float:         return 8;
+    case WGPUTextureFormat_RGBA32Float:       return 16;
+    default:                                  return 4;
+    }
+}
+
 IMPLATFORM_API ImPlatform_TextureDesc ImPlatform_TextureDesc_Default(unsigned int width, unsigned int height)
 {
     ImPlatform_TextureDesc desc;
@@ -298,6 +740,25 @@ IMPLATFORM_API ImTextureID ImPlatform_CreateTexture(const void* pixel_data, cons
     int bytes_per_pixel;
     WGPUTextureFormat format = ImPlatform_GetWebGPUFormat(desc->format, &bytes_per_pixel);
 
+    // Handle RGB8 → RGBA8 conversion
+    const void* upload_data = pixel_data;
+    unsigned char* converted_data = nullptr;
+
+    if (desc->format == ImPlatform_PixelFormat_RGB8)
+    {
+        size_t pixel_count = (size_t)desc->width * desc->height;
+        converted_data = (unsigned char*)malloc(pixel_count * 4);
+        const unsigned char* src = (const unsigned char*)pixel_data;
+        for (size_t i = 0; i < pixel_count; i++)
+        {
+            converted_data[i * 4 + 0] = src[i * 3 + 0];
+            converted_data[i * 4 + 1] = src[i * 3 + 1];
+            converted_data[i * 4 + 2] = src[i * 3 + 2];
+            converted_data[i * 4 + 3] = 255;
+        }
+        upload_data = converted_data;
+    }
+
     // Create texture
     WGPUTextureDescriptor tex_desc = {};
     tex_desc.label = "ImPlatform Texture";
@@ -312,7 +773,10 @@ IMPLATFORM_API ImTextureID ImPlatform_CreateTexture(const void* pixel_data, cons
 
     WGPUTexture texture = wgpuDeviceCreateTexture(g_GfxData.device, &tex_desc);
     if (!texture)
+    {
+        free(converted_data);
         return NULL;
+    }
 
     // Upload texture data
     WGPUImageCopyTexture dst = {};
@@ -331,8 +795,10 @@ IMPLATFORM_API ImTextureID ImPlatform_CreateTexture(const void* pixel_data, cons
     writeSize.height = desc->height;
     writeSize.depthOrArrayLayers = 1;
 
-    wgpuQueueWriteTexture(g_GfxData.queue, &dst, pixel_data,
-                          desc->width * desc->height * bytes_per_pixel, &layout, &writeSize);
+    size_t data_size = (size_t)desc->width * desc->height * bytes_per_pixel;
+    wgpuQueueWriteTexture(g_GfxData.queue, &dst, upload_data, data_size, &layout, &writeSize);
+
+    free(converted_data);
 
     // Create texture view
     WGPUTextureViewDescriptor view_desc = {};
@@ -382,9 +848,9 @@ IMPLATFORM_API ImTextureID ImPlatform_CreateTexture(const void* pixel_data, cons
         return NULL;
     }
 
-    // Note: We're leaking texture, texture_view, and sampler here
-    // A production implementation would need proper resource tracking
-    // For WebGPU, ImTextureID is typically the texture view
+    // Track for proper cleanup
+    ImPlatform_TrackTexture(texture, texture_view, sampler, desc->width, desc->height, desc->format);
+
     return (ImTextureID)texture_view;
 }
 
@@ -392,10 +858,57 @@ IMPLATFORM_API bool ImPlatform_UpdateTexture(ImTextureID texture_id, const void*
                                               unsigned int x, unsigned int y,
                                               unsigned int width, unsigned int height)
 {
-    // WebGPU texture updates would require tracking the original texture
-    // from the texture view, which we don't currently do
-    // Not implemented
-    return false;
+    if (!texture_id || !pixel_data || !g_GfxData.queue)
+        return false;
+
+    WGPUTextureView view = (WGPUTextureView)texture_id;
+    ImPlatform_TextureTracking_WebGPU* tracking = ImPlatform_FindTrackedTexture(view);
+    if (!tracking)
+        return false;
+
+    int bytes_per_pixel;
+    WGPUTextureFormat format = ImPlatform_GetWebGPUFormat(tracking->format, &bytes_per_pixel);
+
+    // Handle RGB8 → RGBA8 conversion
+    const void* upload_data = pixel_data;
+    unsigned char* converted_data = nullptr;
+
+    if (tracking->format == ImPlatform_PixelFormat_RGB8)
+    {
+        size_t pixel_count = (size_t)width * height;
+        converted_data = (unsigned char*)malloc(pixel_count * 4);
+        const unsigned char* src = (const unsigned char*)pixel_data;
+        for (size_t i = 0; i < pixel_count; i++)
+        {
+            converted_data[i * 4 + 0] = src[i * 3 + 0];
+            converted_data[i * 4 + 1] = src[i * 3 + 1];
+            converted_data[i * 4 + 2] = src[i * 3 + 2];
+            converted_data[i * 4 + 3] = 255;
+        }
+        upload_data = converted_data;
+    }
+
+    WGPUImageCopyTexture dst = {};
+    dst.texture = tracking->texture;
+    dst.mipLevel = 0;
+    dst.origin = {x, y, 0};
+    dst.aspect = WGPUTextureAspect_All;
+
+    WGPUTextureDataLayout layout = {};
+    layout.offset = 0;
+    layout.bytesPerRow = width * bytes_per_pixel;
+    layout.rowsPerImage = height;
+
+    WGPUExtent3D writeSize = {};
+    writeSize.width = width;
+    writeSize.height = height;
+    writeSize.depthOrArrayLayers = 1;
+
+    size_t data_size = (size_t)width * height * bytes_per_pixel;
+    wgpuQueueWriteTexture(g_GfxData.queue, &dst, upload_data, data_size, &layout, &writeSize);
+
+    free(converted_data);
+    return true;
 }
 
 IMPLATFORM_API void ImPlatform_DestroyTexture(ImTextureID texture_id)
@@ -403,27 +916,208 @@ IMPLATFORM_API void ImPlatform_DestroyTexture(ImTextureID texture_id)
     if (!texture_id)
         return;
 
-    // Release the texture view
-    WGPUTextureView texture_view = (WGPUTextureView)texture_id;
-    wgpuTextureViewRelease(texture_view);
-
-    // Note: We're not cleaning up the texture or sampler because we don't track them
-    // A production implementation would need proper resource tracking
+    WGPUTextureView view = (WGPUTextureView)texture_id;
+    ImPlatform_TextureTracking_WebGPU* tracking = ImPlatform_FindTrackedTexture(view);
+    if (tracking)
+    {
+        wgpuSamplerRelease(tracking->sampler);
+        wgpuTextureViewRelease(tracking->textureView);
+        wgpuTextureRelease(tracking->texture);
+        ImPlatform_UntrackTexture(view);
+    }
+    else
+    {
+        // Fallback: just release the view
+        wgpuTextureViewRelease(view);
+    }
 }
 
 // ============================================================================
-// Custom Vertex/Index Buffer Management API - WebGPU (Stubs)
+// Custom Vertex/Index Buffer Management API - WebGPU
 // ============================================================================
 
-IMPLATFORM_API ImPlatform_VertexBuffer ImPlatform_CreateVertexBuffer(const void* vertex_data, const ImPlatform_VertexBufferDesc* desc) { return NULL; }
-IMPLATFORM_API bool ImPlatform_UpdateVertexBuffer(ImPlatform_VertexBuffer vertex_buffer, const void* vertex_data, unsigned int vertex_count, unsigned int offset) { return false; }
-IMPLATFORM_API void ImPlatform_DestroyVertexBuffer(ImPlatform_VertexBuffer vertex_buffer) {}
-IMPLATFORM_API ImPlatform_IndexBuffer ImPlatform_CreateIndexBuffer(const void* index_data, const ImPlatform_IndexBufferDesc* desc) { return NULL; }
-IMPLATFORM_API bool ImPlatform_UpdateIndexBuffer(ImPlatform_IndexBuffer index_buffer, const void* index_data, unsigned int index_count, unsigned int offset) { return false; }
-IMPLATFORM_API void ImPlatform_DestroyIndexBuffer(ImPlatform_IndexBuffer index_buffer) {}
-IMPLATFORM_API void ImPlatform_BindVertexBuffer(ImPlatform_VertexBuffer vertex_buffer) {}
-IMPLATFORM_API void ImPlatform_BindIndexBuffer(ImPlatform_IndexBuffer index_buffer) {}
-IMPLATFORM_API void ImPlatform_DrawIndexed(unsigned int primitive_type, unsigned int index_count, unsigned int start_index) {}
+struct ImPlatform_VertexBufferData_WebGPU
+{
+    WGPUBuffer buffer;
+    ImPlatform_VertexBufferDesc desc;
+    ImPlatform_VertexAttribute* attributes;
+};
+
+struct ImPlatform_IndexBufferData_WebGPU
+{
+    WGPUBuffer buffer;
+    ImPlatform_IndexBufferDesc desc;
+};
+
+// Currently bound buffers (for DrawIndexed)
+static ImPlatform_VertexBufferData_WebGPU* g_BoundVertexBuffer = nullptr;
+static ImPlatform_IndexBufferData_WebGPU* g_BoundIndexBuffer = nullptr;
+
+static WGPUBufferUsageFlags ImPlatform_GetWGPUBufferUsage(ImPlatform_BufferUsage usage, WGPUBufferUsageFlags bind)
+{
+    WGPUBufferUsageFlags flags = bind | WGPUBufferUsage_CopyDst;
+    (void)usage; // WebGPU doesn't distinguish Static/Dynamic/Stream in buffer creation
+    return flags;
+}
+
+IMPLATFORM_API ImPlatform_VertexBuffer ImPlatform_CreateVertexBuffer(const void* vertex_data, const ImPlatform_VertexBufferDesc* desc)
+{
+    if (!desc || !vertex_data || !g_GfxData.device)
+        return NULL;
+
+    ImPlatform_VertexBufferData_WebGPU* vb = new ImPlatform_VertexBufferData_WebGPU();
+    memset(vb, 0, sizeof(*vb));
+    vb->desc = *desc;
+
+    // Copy attribute array
+    if (desc->attribute_count > 0 && desc->attributes)
+    {
+        vb->attributes = new ImPlatform_VertexAttribute[desc->attribute_count];
+        memcpy(vb->attributes, desc->attributes, sizeof(ImPlatform_VertexAttribute) * desc->attribute_count);
+        vb->desc.attributes = vb->attributes;
+    }
+
+    size_t byte_size = (size_t)desc->vertex_count * desc->vertex_stride;
+
+    WGPUBufferDescriptor buf_desc = {};
+    buf_desc.usage = ImPlatform_GetWGPUBufferUsage(desc->usage, WGPUBufferUsage_Vertex);
+    buf_desc.size = byte_size;
+    buf_desc.mappedAtCreation = true;
+
+    vb->buffer = wgpuDeviceCreateBuffer(g_GfxData.device, &buf_desc);
+    if (!vb->buffer)
+    {
+        delete[] vb->attributes;
+        delete vb;
+        return NULL;
+    }
+
+    // Copy initial data
+    void* mapped = wgpuBufferGetMappedRange(vb->buffer, 0, byte_size);
+    if (mapped)
+        memcpy(mapped, vertex_data, byte_size);
+    wgpuBufferUnmap(vb->buffer);
+
+    return (ImPlatform_VertexBuffer)vb;
+}
+
+IMPLATFORM_API bool ImPlatform_UpdateVertexBuffer(ImPlatform_VertexBuffer vertex_buffer, const void* vertex_data, unsigned int vertex_count, unsigned int offset)
+{
+    if (!vertex_buffer || !vertex_data || !g_GfxData.queue)
+        return false;
+
+    ImPlatform_VertexBufferData_WebGPU* vb = (ImPlatform_VertexBufferData_WebGPU*)vertex_buffer;
+    size_t byte_offset = (size_t)offset * vb->desc.vertex_stride;
+    size_t byte_size = (size_t)vertex_count * vb->desc.vertex_stride;
+
+    wgpuQueueWriteBuffer(g_GfxData.queue, vb->buffer, byte_offset, vertex_data, byte_size);
+    return true;
+}
+
+IMPLATFORM_API void ImPlatform_DestroyVertexBuffer(ImPlatform_VertexBuffer vertex_buffer)
+{
+    if (!vertex_buffer)
+        return;
+
+    ImPlatform_VertexBufferData_WebGPU* vb = (ImPlatform_VertexBufferData_WebGPU*)vertex_buffer;
+    if (vb->buffer) wgpuBufferRelease(vb->buffer);
+    delete[] vb->attributes;
+    delete vb;
+}
+
+IMPLATFORM_API ImPlatform_IndexBuffer ImPlatform_CreateIndexBuffer(const void* index_data, const ImPlatform_IndexBufferDesc* desc)
+{
+    if (!desc || !index_data || !g_GfxData.device)
+        return NULL;
+
+    ImPlatform_IndexBufferData_WebGPU* ib = new ImPlatform_IndexBufferData_WebGPU();
+    memset(ib, 0, sizeof(*ib));
+    ib->desc = *desc;
+
+    unsigned int index_size = (desc->format == ImPlatform_IndexFormat_UInt16) ? sizeof(uint16_t) : sizeof(uint32_t);
+    size_t byte_size = (size_t)desc->index_count * index_size;
+
+    WGPUBufferDescriptor buf_desc = {};
+    buf_desc.usage = ImPlatform_GetWGPUBufferUsage(desc->usage, WGPUBufferUsage_Index);
+    buf_desc.size = byte_size;
+    buf_desc.mappedAtCreation = true;
+
+    ib->buffer = wgpuDeviceCreateBuffer(g_GfxData.device, &buf_desc);
+    if (!ib->buffer)
+    {
+        delete ib;
+        return NULL;
+    }
+
+    void* mapped = wgpuBufferGetMappedRange(ib->buffer, 0, byte_size);
+    if (mapped)
+        memcpy(mapped, index_data, byte_size);
+    wgpuBufferUnmap(ib->buffer);
+
+    return (ImPlatform_IndexBuffer)ib;
+}
+
+IMPLATFORM_API bool ImPlatform_UpdateIndexBuffer(ImPlatform_IndexBuffer index_buffer, const void* index_data, unsigned int index_count, unsigned int offset)
+{
+    if (!index_buffer || !index_data || !g_GfxData.queue)
+        return false;
+
+    ImPlatform_IndexBufferData_WebGPU* ib = (ImPlatform_IndexBufferData_WebGPU*)index_buffer;
+    unsigned int index_size = (ib->desc.format == ImPlatform_IndexFormat_UInt16) ? sizeof(uint16_t) : sizeof(uint32_t);
+    size_t byte_offset = (size_t)offset * index_size;
+    size_t byte_size = (size_t)index_count * index_size;
+
+    wgpuQueueWriteBuffer(g_GfxData.queue, ib->buffer, byte_offset, index_data, byte_size);
+    return true;
+}
+
+IMPLATFORM_API void ImPlatform_DestroyIndexBuffer(ImPlatform_IndexBuffer index_buffer)
+{
+    if (!index_buffer)
+        return;
+
+    ImPlatform_IndexBufferData_WebGPU* ib = (ImPlatform_IndexBufferData_WebGPU*)index_buffer;
+    if (ib->buffer) wgpuBufferRelease(ib->buffer);
+    delete ib;
+}
+
+IMPLATFORM_API void ImPlatform_BindVertexBuffer(ImPlatform_VertexBuffer vertex_buffer)
+{
+    g_BoundVertexBuffer = vertex_buffer ? (ImPlatform_VertexBufferData_WebGPU*)vertex_buffer : nullptr;
+}
+
+IMPLATFORM_API void ImPlatform_BindIndexBuffer(ImPlatform_IndexBuffer index_buffer)
+{
+    g_BoundIndexBuffer = index_buffer ? (ImPlatform_IndexBufferData_WebGPU*)index_buffer : nullptr;
+}
+
+IMPLATFORM_API void ImPlatform_DrawIndexed(unsigned int primitive_type, unsigned int index_count, unsigned int start_index)
+{
+    // WebGPU draw commands require a render pass encoder.
+    // Get the current render pass from ImGui's render state (available during draw callbacks).
+    ImGuiPlatformIO& platform_io = ImGui::GetPlatformIO();
+    ImGui_ImplWGPU_RenderState* render_state = (ImGui_ImplWGPU_RenderState*)platform_io.Renderer_RenderState;
+    if (!render_state || !render_state->RenderPassEncoder)
+        return;
+
+    WGPURenderPassEncoder pass = render_state->RenderPassEncoder;
+
+    if (g_BoundVertexBuffer && g_BoundVertexBuffer->buffer)
+    {
+        size_t vb_size = (size_t)g_BoundVertexBuffer->desc.vertex_count * g_BoundVertexBuffer->desc.vertex_stride;
+        wgpuRenderPassEncoderSetVertexBuffer(pass, 0, g_BoundVertexBuffer->buffer, 0, vb_size);
+    }
+
+    if (g_BoundIndexBuffer && g_BoundIndexBuffer->buffer)
+    {
+        WGPUIndexFormat fmt = (g_BoundIndexBuffer->desc.format == ImPlatform_IndexFormat_UInt16)
+            ? WGPUIndexFormat_Uint16 : WGPUIndexFormat_Uint32;
+        unsigned int index_size = (g_BoundIndexBuffer->desc.format == ImPlatform_IndexFormat_UInt16) ? 2 : 4;
+        size_t ib_size = (size_t)g_BoundIndexBuffer->desc.index_count * index_size;
+        wgpuRenderPassEncoderSetIndexBuffer(pass, g_BoundIndexBuffer->buffer, fmt, 0, ib_size);
+        wgpuRenderPassEncoderDrawIndexed(pass, index_count, 1, start_index, 0, 0);
+    }
+}
 
 // ============================================================================
 // Custom Shader System API - WebGPU Implementation
@@ -445,15 +1139,12 @@ struct ImPlatform_ShaderProgramData_WebGPU
     WGPUBindGroupLayout bindGroupLayout;
     WGPUBindGroup bindGroup;
     WGPUBuffer uniformBuffer;
-    void* uniformData;
+    void* uniformData;       // Custom uniforms (not including projection matrix)
     size_t uniformDataSize;
     bool uniformDataDirty;
     char* vertexEntryPoint;
     char* fragmentEntryPoint;
 };
-
-// Current draw data for custom shader rendering (needed for multi-viewport)
-static ImDrawData* g_CurrentDrawData = nullptr;
 
 IMPLATFORM_API ImPlatform_Shader ImPlatform_CreateShader(const ImPlatform_ShaderDesc* desc)
 {
@@ -473,12 +1164,10 @@ IMPLATFORM_API ImPlatform_Shader ImPlatform_CreateShader(const ImPlatform_Shader
     if (!shader_module)
         return NULL;
 
-    // Create shader data
     ImPlatform_ShaderData_WebGPU* shader_data = new ImPlatform_ShaderData_WebGPU();
     shader_data->shaderModule = shader_module;
     shader_data->stage = desc->stage;
 
-    // Copy entry point
     const char* entry = desc->entry_point ? desc->entry_point : "main";
     shader_data->entryPoint = (char*)malloc(strlen(entry) + 1);
     strcpy(shader_data->entryPoint, entry);
@@ -494,16 +1183,9 @@ IMPLATFORM_API void ImPlatform_DestroyShader(ImPlatform_Shader shader)
     ImPlatform_ShaderData_WebGPU* shader_data = (ImPlatform_ShaderData_WebGPU*)shader;
 
     if (shader_data->shaderModule)
-    {
         wgpuShaderModuleRelease(shader_data->shaderModule);
-        shader_data->shaderModule = nullptr;
-    }
-
     if (shader_data->entryPoint)
-    {
         free(shader_data->entryPoint);
-        shader_data->entryPoint = nullptr;
-    }
 
     delete shader_data;
 }
@@ -516,23 +1198,28 @@ IMPLATFORM_API ImPlatform_ShaderProgram ImPlatform_CreateShaderProgram(ImPlatfor
     ImPlatform_ShaderData_WebGPU* vs_data = (ImPlatform_ShaderData_WebGPU*)vertex_shader;
     ImPlatform_ShaderData_WebGPU* fs_data = (ImPlatform_ShaderData_WebGPU*)fragment_shader;
 
-    // Create bind group layout for uniforms
-    WGPUBindGroupLayoutEntry bg_layout_entries[2] = {};
+    // Create bind group layout:
+    // binding 0: uniform buffer (VS+FS) - projection matrix + custom uniforms
+    // binding 1: sampler (FS)
+    // binding 2: texture (FS)
+    WGPUBindGroupLayoutEntry bg_layout_entries[3] = {};
 
-    // Uniform buffer binding
     bg_layout_entries[0].binding = 0;
     bg_layout_entries[0].visibility = WGPUShaderStage_Vertex | WGPUShaderStage_Fragment;
     bg_layout_entries[0].buffer.type = WGPUBufferBindingType_Uniform;
-    bg_layout_entries[0].buffer.minBindingSize = 256; // Minimum uniform buffer size
+    bg_layout_entries[0].buffer.minBindingSize = 0;
 
-    // Texture binding
     bg_layout_entries[1].binding = 1;
     bg_layout_entries[1].visibility = WGPUShaderStage_Fragment;
-    bg_layout_entries[1].texture.sampleType = WGPUTextureSampleType_Float;
-    bg_layout_entries[1].texture.viewDimension = WGPUTextureViewDimension_2D;
+    bg_layout_entries[1].sampler.type = WGPUSamplerBindingType_Filtering;
+
+    bg_layout_entries[2].binding = 2;
+    bg_layout_entries[2].visibility = WGPUShaderStage_Fragment;
+    bg_layout_entries[2].texture.sampleType = WGPUTextureSampleType_Float;
+    bg_layout_entries[2].texture.viewDimension = WGPUTextureViewDimension_2D;
 
     WGPUBindGroupLayoutDescriptor bg_layout_desc = {};
-    bg_layout_desc.entryCount = 2;
+    bg_layout_desc.entryCount = 3;
     bg_layout_desc.entries = bg_layout_entries;
 
     WGPUBindGroupLayout bind_group_layout = wgpuDeviceCreateBindGroupLayout(g_GfxData.device, &bg_layout_desc);
@@ -551,20 +1238,20 @@ IMPLATFORM_API ImPlatform_ShaderProgram ImPlatform_CreateShaderProgram(ImPlatfor
         return NULL;
     }
 
-    // Create vertex state
+    // Create vertex state matching ImDrawVert layout
     WGPUVertexAttribute vertex_attributes[3] = {};
 
-    // Position (float2)
+    // Position (float2) - offset 0
     vertex_attributes[0].format = WGPUVertexFormat_Float32x2;
     vertex_attributes[0].offset = 0;
     vertex_attributes[0].shaderLocation = 0;
 
-    // UV (float2)
+    // UV (float2) - offset 8
     vertex_attributes[1].format = WGPUVertexFormat_Float32x2;
     vertex_attributes[1].offset = 8;
     vertex_attributes[1].shaderLocation = 1;
 
-    // Color (unorm8x4)
+    // Color (unorm8x4) - offset 16
     vertex_attributes[2].format = WGPUVertexFormat_Unorm8x4;
     vertex_attributes[2].offset = 16;
     vertex_attributes[2].shaderLocation = 2;
@@ -623,15 +1310,11 @@ IMPLATFORM_API ImPlatform_ShaderProgram ImPlatform_CreateShaderProgram(ImPlatfor
 
     // Create program data
     ImPlatform_ShaderProgramData_WebGPU* program_data = new ImPlatform_ShaderProgramData_WebGPU();
+    memset(program_data, 0, sizeof(*program_data));
     program_data->vertexModule = vs_data->shaderModule;
     program_data->fragmentModule = fs_data->shaderModule;
     program_data->renderPipeline = render_pipeline;
     program_data->bindGroupLayout = bind_group_layout;
-    program_data->bindGroup = nullptr;
-    program_data->uniformBuffer = nullptr;
-    program_data->uniformData = nullptr;
-    program_data->uniformDataSize = 0;
-    program_data->uniformDataDirty = false;
 
     // Copy entry points
     program_data->vertexEntryPoint = (char*)malloc(strlen(vs_data->entryPoint) + 1);
@@ -649,47 +1332,13 @@ IMPLATFORM_API void ImPlatform_DestroyShaderProgram(ImPlatform_ShaderProgram pro
 
     ImPlatform_ShaderProgramData_WebGPU* program_data = (ImPlatform_ShaderProgramData_WebGPU*)program;
 
-    if (program_data->bindGroup)
-    {
-        wgpuBindGroupRelease(program_data->bindGroup);
-        program_data->bindGroup = nullptr;
-    }
-
-    if (program_data->uniformBuffer)
-    {
-        wgpuBufferRelease(program_data->uniformBuffer);
-        program_data->uniformBuffer = nullptr;
-    }
-
-    if (program_data->bindGroupLayout)
-    {
-        wgpuBindGroupLayoutRelease(program_data->bindGroupLayout);
-        program_data->bindGroupLayout = nullptr;
-    }
-
-    if (program_data->renderPipeline)
-    {
-        wgpuRenderPipelineRelease(program_data->renderPipeline);
-        program_data->renderPipeline = nullptr;
-    }
-
-    if (program_data->uniformData)
-    {
-        free(program_data->uniformData);
-        program_data->uniformData = nullptr;
-    }
-
-    if (program_data->vertexEntryPoint)
-    {
-        free(program_data->vertexEntryPoint);
-        program_data->vertexEntryPoint = nullptr;
-    }
-
-    if (program_data->fragmentEntryPoint)
-    {
-        free(program_data->fragmentEntryPoint);
-        program_data->fragmentEntryPoint = nullptr;
-    }
+    if (program_data->bindGroup) wgpuBindGroupRelease(program_data->bindGroup);
+    if (program_data->uniformBuffer) wgpuBufferRelease(program_data->uniformBuffer);
+    if (program_data->bindGroupLayout) wgpuBindGroupLayoutRelease(program_data->bindGroupLayout);
+    if (program_data->renderPipeline) wgpuRenderPipelineRelease(program_data->renderPipeline);
+    if (program_data->uniformData) free(program_data->uniformData);
+    if (program_data->vertexEntryPoint) free(program_data->vertexEntryPoint);
+    if (program_data->fragmentEntryPoint) free(program_data->fragmentEntryPoint);
 
     delete program_data;
 }
@@ -698,6 +1347,7 @@ IMPLATFORM_API void ImPlatform_UseShaderProgram(ImPlatform_ShaderProgram program
 {
     // WebGPU doesn't have a global "use program" concept
     // Shaders are bound per render pass via callbacks
+    (void)program;
 }
 
 IMPLATFORM_API bool ImPlatform_SetShaderUniform(ImPlatform_ShaderProgram program, const char* name, const void* data, unsigned int size)
@@ -707,30 +1357,25 @@ IMPLATFORM_API bool ImPlatform_SetShaderUniform(ImPlatform_ShaderProgram program
 
     ImPlatform_ShaderProgramData_WebGPU* program_data = (ImPlatform_ShaderProgramData_WebGPU*)program;
 
-    // Allocate or reallocate uniform data buffer
     if (!program_data->uniformData || program_data->uniformDataSize != size)
     {
         if (program_data->uniformData)
             free(program_data->uniformData);
-
         program_data->uniformData = malloc(size);
         if (!program_data->uniformData)
             return false;
-
         program_data->uniformDataSize = size;
     }
 
-    // Copy uniform data
     memcpy(program_data->uniformData, data, size);
     program_data->uniformDataDirty = true;
-
     return true;
 }
 
 IMPLATFORM_API bool ImPlatform_SetShaderTexture(ImPlatform_ShaderProgram program, const char* name, unsigned int slot, ImTextureID texture)
 {
-    // WebGPU texture binding happens via bind groups in the render callback
-    // This is a stub for API consistency
+    // Texture binding happens via bind groups in the render callback
+    (void)program; (void)name; (void)slot; (void)texture;
     return true;
 }
 
@@ -741,7 +1386,6 @@ IMPLATFORM_API void ImPlatform_BeginUniformBlock(ImPlatform_ShaderProgram progra
 
     g_CurrentUniformBlockProgram = program;
 
-    // Free any previous block data
     if (g_UniformBlockData)
     {
         free(g_UniformBlockData);
@@ -755,8 +1399,6 @@ IMPLATFORM_API bool ImPlatform_SetUniform(const char* name, const void* data, un
     if (!g_CurrentUniformBlockProgram || !data || size == 0)
         return false;
 
-    // Accumulate all uniforms into a single buffer
-    // Allocate or expand the buffer
     size_t new_size = g_UniformBlockSize + size;
     void* new_data = realloc(g_UniformBlockData, new_size);
     if (!new_data)
@@ -778,49 +1420,22 @@ IMPLATFORM_API void ImPlatform_EndUniformBlock(ImPlatform_ShaderProgram program)
     {
         ImPlatform_ShaderProgramData_WebGPU* program_data = (ImPlatform_ShaderProgramData_WebGPU*)program;
 
-        // Create or update uniform buffer
-        if (!program_data->uniformBuffer || program_data->uniformDataSize != g_UniformBlockSize)
+        // Store custom uniform data for later use in the render callback
+        // The projection matrix will be prepended in the callback
+        if (!program_data->uniformData || program_data->uniformDataSize != g_UniformBlockSize)
         {
-            if (program_data->uniformBuffer)
-            {
-                wgpuBufferRelease(program_data->uniformBuffer);
-                program_data->uniformBuffer = nullptr;
-            }
-
-            // Align size to 256 bytes (WebGPU uniform buffer alignment requirement)
-            size_t aligned_size = (g_UniformBlockSize + 255) & ~255;
-
-            WGPUBufferDescriptor buffer_desc = {};
-            buffer_desc.usage = WGPUBufferUsage_Uniform | WGPUBufferUsage_CopyDst;
-            buffer_desc.size = aligned_size;
-            buffer_desc.mappedAtCreation = false;
-
-            program_data->uniformBuffer = wgpuDeviceCreateBuffer(g_GfxData.device, &buffer_desc);
-        }
-
-        // Upload the accumulated uniform block to the buffer
-        if (program_data->uniformBuffer)
-        {
-            wgpuQueueWriteBuffer(g_GfxData.queue, program_data->uniformBuffer, 0, g_UniformBlockData, g_UniformBlockSize);
-
-            // Store uniform data in program data for later use
-            if (!program_data->uniformData || program_data->uniformDataSize != g_UniformBlockSize)
-            {
-                if (program_data->uniformData)
-                    free(program_data->uniformData);
-
-                program_data->uniformData = malloc(g_UniformBlockSize);
-                program_data->uniformDataSize = g_UniformBlockSize;
-            }
-
             if (program_data->uniformData)
-            {
-                memcpy(program_data->uniformData, g_UniformBlockData, g_UniformBlockSize);
-                program_data->uniformDataDirty = true;
-            }
+                free(program_data->uniformData);
+            program_data->uniformData = malloc(g_UniformBlockSize);
+            program_data->uniformDataSize = g_UniformBlockSize;
         }
 
-        // Clean up
+        if (program_data->uniformData)
+        {
+            memcpy(program_data->uniformData, g_UniformBlockData, g_UniformBlockSize);
+            program_data->uniformDataDirty = true;
+        }
+
         free(g_UniformBlockData);
         g_UniformBlockData = nullptr;
         g_UniformBlockSize = 0;
@@ -833,18 +1448,7 @@ IMPLATFORM_API void ImPlatform_EndUniformBlock(ImPlatform_ShaderProgram program)
 // Custom Shader DrawList Integration
 // ============================================================================
 
-// Wrapper for ImGui_ImplWGPU_RenderDrawData that stores draw_data for custom shader callbacks
-static void ImPlatform_RenderDrawDataWrapper(ImDrawData* draw_data, WGPURenderPassEncoder pass_encoder)
-{
-    // Store draw data for custom shader callbacks (needed for multi-viewport)
-    g_CurrentDrawData = draw_data;
-
-    ImGui_ImplWGPU_RenderDrawData(draw_data, pass_encoder);
-
-    // NOTE: Don't clear g_CurrentDrawData here - it will be updated by the next render call
-}
-
-// ImDrawCallback handler to activate a custom shader
+// ImDrawCallback handler to activate a custom shader during rendering
 static void ImPlatform_SetCustomShader(const ImDrawList* parent_list, const ImDrawCmd* cmd)
 {
     ImPlatform_ShaderProgram program = (ImPlatform_ShaderProgram)cmd->UserCallbackData;
@@ -853,21 +1457,22 @@ static void ImPlatform_SetCustomShader(const ImDrawList* parent_list, const ImDr
 
     ImPlatform_ShaderProgramData_WebGPU* program_data = (ImPlatform_ShaderProgramData_WebGPU*)program;
 
-    // Find which viewport owns this draw list
-    ImDrawData* draw_data = nullptr;
+    // Get the current render pass encoder from ImGui's render state
+    ImGuiPlatformIO& platform_io = ImGui::GetPlatformIO();
+    ImGui_ImplWGPU_RenderState* render_state = (ImGui_ImplWGPU_RenderState*)platform_io.Renderer_RenderState;
+    if (!render_state || !render_state->RenderPassEncoder)
+        return;
 
-    // First, try the cached draw data
-    if (g_CurrentDrawData)
+    WGPURenderPassEncoder pass = render_state->RenderPassEncoder;
+
+    // Find draw data for projection matrix calculation
+    ImDrawData* draw_data = g_CurrentDrawData;
+    if (!draw_data)
     {
-        draw_data = g_CurrentDrawData;
-    }
-    else
-    {
-        // Fallback: search through all viewports to find which one owns this draw list
-        ImGuiPlatformIO& platform_io = ImGui::GetPlatformIO();
-        for (int i = 0; i < platform_io.Viewports.Size; i++)
+        ImGuiPlatformIO& pio = ImGui::GetPlatformIO();
+        for (int i = 0; i < pio.Viewports.Size && !draw_data; i++)
         {
-            ImGuiViewport* viewport = platform_io.Viewports[i];
+            ImGuiViewport* viewport = pio.Viewports[i];
             if (viewport->DrawData)
             {
                 for (int j = 0; j < viewport->DrawData->CmdLists.Size; j++)
@@ -878,8 +1483,6 @@ static void ImPlatform_SetCustomShader(const ImDrawList* parent_list, const ImDr
                         break;
                     }
                 }
-                if (draw_data)
-                    break;
             }
         }
     }
@@ -887,13 +1490,13 @@ static void ImPlatform_SetCustomShader(const ImDrawList* parent_list, const ImDr
     if (!draw_data)
         return;
 
-    // Calculate projection matrix for this viewport
+    // Calculate projection matrix
     float L = draw_data->DisplayPos.x;
     float R = draw_data->DisplayPos.x + draw_data->DisplaySize.x;
     float T = draw_data->DisplayPos.y;
     float B = draw_data->DisplayPos.y + draw_data->DisplaySize.y;
 
-    float ortho_projection[4][4] =
+    float mvp[4][4] =
     {
         { 2.0f / (R - L),     0.0f,              0.0f, 0.0f },
         { 0.0f,               2.0f / (T - B),    0.0f, 0.0f },
@@ -901,17 +1504,85 @@ static void ImPlatform_SetCustomShader(const ImDrawList* parent_list, const ImDr
         { (R + L) / (L - R),  (T + B) / (B - T), 0.5f, 1.0f },
     };
 
-    // Note: WebGPU backend binding logic would go here
-    // This is a simplified implementation that demonstrates the pattern
-    // In a full implementation, you would:
-    // 1. Get the current render pass encoder from ImGui's WebGPU render state
-    // 2. Bind the custom pipeline
-    // 3. Create/update bind group with uniform buffer and texture
-    // 4. Set the bind group on the render pass encoder
-    // 5. The actual draw commands will use this pipeline
+    // Build combined uniform data: [projection_matrix | custom_uniforms]
+    size_t mvp_size = sizeof(mvp);
+    size_t custom_size = program_data->uniformData ? program_data->uniformDataSize : 0;
+    size_t total_size = mvp_size + custom_size;
 
-    // Since we don't have direct access to the render pass encoder here without modifying ImGui's WebGPU backend,
-    // this serves as a reference implementation showing the required logic
+    // Align to 256 bytes (WebGPU requirement)
+    size_t aligned_size = (total_size + 255) & ~(size_t)255;
+
+    // Create or recreate uniform buffer if needed
+    if (!program_data->uniformBuffer)
+    {
+        WGPUBufferDescriptor buf_desc = {};
+        buf_desc.usage = WGPUBufferUsage_Uniform | WGPUBufferUsage_CopyDst;
+        buf_desc.size = aligned_size < 256 ? 256 : aligned_size;
+        program_data->uniformBuffer = wgpuDeviceCreateBuffer(g_GfxData.device, &buf_desc);
+    }
+
+    if (!program_data->uniformBuffer)
+        return;
+
+    // Upload projection matrix
+    wgpuQueueWriteBuffer(g_GfxData.queue, program_data->uniformBuffer, 0, mvp, mvp_size);
+
+    // Upload custom uniforms (if any)
+    if (program_data->uniformData && custom_size > 0)
+    {
+        wgpuQueueWriteBuffer(g_GfxData.queue, program_data->uniformBuffer, mvp_size, program_data->uniformData, custom_size);
+    }
+
+    // Get default texture/sampler from ImGui's font atlas for shaders that don't use textures
+    ImTextureRef font_tex = ImGui::GetIO().Fonts->TexRef;
+    WGPUTextureView default_view = (WGPUTextureView)(ImTextureID)font_tex;
+
+    // Create a default sampler if we haven't yet
+    static WGPUSampler s_DefaultSampler = nullptr;
+    if (!s_DefaultSampler)
+    {
+        WGPUSamplerDescriptor sampler_desc = {};
+        sampler_desc.addressModeU = WGPUAddressMode_ClampToEdge;
+        sampler_desc.addressModeV = WGPUAddressMode_ClampToEdge;
+        sampler_desc.addressModeW = WGPUAddressMode_ClampToEdge;
+        sampler_desc.magFilter = WGPUFilterMode_Linear;
+        sampler_desc.minFilter = WGPUFilterMode_Linear;
+        sampler_desc.mipmapFilter = WGPUMipmapFilterMode_Linear;
+        sampler_desc.maxAnisotropy = 1;
+        s_DefaultSampler = wgpuDeviceCreateSampler(g_GfxData.device, &sampler_desc);
+    }
+
+    // Create bind group
+    WGPUBindGroupEntry bg_entries[3] = {};
+
+    bg_entries[0].binding = 0;
+    bg_entries[0].buffer = program_data->uniformBuffer;
+    bg_entries[0].offset = 0;
+    bg_entries[0].size = aligned_size < 256 ? 256 : aligned_size;
+
+    bg_entries[1].binding = 1;
+    bg_entries[1].sampler = s_DefaultSampler;
+
+    bg_entries[2].binding = 2;
+    bg_entries[2].textureView = default_view;
+
+    WGPUBindGroupDescriptor bg_desc = {};
+    bg_desc.layout = program_data->bindGroupLayout;
+    bg_desc.entryCount = 3;
+    bg_desc.entries = bg_entries;
+
+    // Release previous bind group
+    if (program_data->bindGroup)
+        wgpuBindGroupRelease(program_data->bindGroup);
+
+    program_data->bindGroup = wgpuDeviceCreateBindGroup(g_GfxData.device, &bg_desc);
+
+    if (!program_data->bindGroup)
+        return;
+
+    // Set the custom pipeline and bind group on the render pass
+    wgpuRenderPassEncoderSetPipeline(pass, program_data->renderPipeline);
+    wgpuRenderPassEncoderSetBindGroup(pass, 0, program_data->bindGroup, 0, nullptr);
 }
 
 IMPLATFORM_API void ImPlatform_BeginCustomShader(ImDrawList* draw, ImPlatform_ShaderProgram shader)
