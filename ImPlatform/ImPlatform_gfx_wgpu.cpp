@@ -19,29 +19,61 @@
 // Platform-specific includes for surface creation
 #ifdef IM_PLATFORM_GLFW
     #include <GLFW/glfw3.h>
-    #if defined(_WIN32)
-        #define GLFW_EXPOSE_NATIVE_WIN32
-    #elif defined(__APPLE__)
-        #define GLFW_EXPOSE_NATIVE_COCOA
-    #elif defined(__linux__)
-        #define GLFW_EXPOSE_NATIVE_X11
+    #ifndef __EMSCRIPTEN__
+        #if defined(_WIN32)
+            #define GLFW_EXPOSE_NATIVE_WIN32
+        #elif defined(__APPLE__)
+            #define GLFW_EXPOSE_NATIVE_COCOA
+        #elif defined(__linux__)
+            #define GLFW_EXPOSE_NATIVE_X11
+        #endif
+        #include <GLFW/glfw3native.h>
     #endif
-    #include <GLFW/glfw3native.h>
 #endif
 
-#ifdef IM_PLATFORM_SDL2
+#if defined(IM_CURRENT_PLATFORM) && (IM_CURRENT_PLATFORM == IM_PLATFORM_SDL2)
     #include <SDL.h>
     #include <SDL_syswm.h>
 #endif
 
-#ifdef IM_PLATFORM_SDL3
+#if defined(IM_CURRENT_PLATFORM) && (IM_CURRENT_PLATFORM == IM_PLATFORM_SDL3)
     #include <SDL3/SDL.h>
 #endif
 
+#ifdef __EMSCRIPTEN__
+    #include <emscripten.h>
+    #include <emscripten/html5.h>
+    #if !defined(IMGUI_IMPL_WEBGPU_BACKEND_DAWN)
+        #include <emscripten/html5_webgpu.h>
+    #endif
+#endif
+
 // Dawn-specific: wgpuDeviceTick for processing async operations
-#if defined(IMGUI_IMPL_WEBGPU_BACKEND_DAWN)
-    // Dawn exposes wgpuDeviceTick
+#if defined(IMGUI_IMPL_WEBGPU_BACKEND_DAWN) && !defined(__EMSCRIPTEN__)
     extern "C" void wgpuDeviceTick(WGPUDevice device);
+#endif
+
+// Detect new WebGPU API (emdawnwebgpu replaces WGPUSwapChain with surface configure, renames types)
+#if defined(__EMSCRIPTEN__) && defined(IMGUI_IMPL_WEBGPU_BACKEND_DAWN)
+    #define IMPLATFORM_WGPU_SURFACE_API 1
+#endif
+
+// Compatibility shims for new WebGPU API (emdawnwebgpu / webgpu.h v2)
+#ifdef IMPLATFORM_WGPU_SURFACE_API
+    // Type renames
+    #define WGPUImageCopyTexture         WGPUTexelCopyTextureInfo
+    #define WGPUTextureDataLayout        WGPUTexelCopyBufferLayout
+    #define WGPUShaderModuleWGSLDescriptor WGPUShaderSourceWGSL
+    #define WGPUSType_ShaderModuleWGSLDescriptor WGPUSType_ShaderSourceWGSL
+    // Enum renames
+    #define WGPUSurfaceGetCurrentTextureStatus_Success WGPUSurfaceGetCurrentTextureStatus_SuccessOptimal
+    // Flag type renames
+    #define WGPUBufferUsageFlags WGPUBufferUsage
+    // String view helper (new API uses WGPUStringView instead of const char*)
+    static inline WGPUStringView _wgpu_str(const char* s) { WGPUStringView sv; sv.data = s; sv.length = WGPU_STRLEN; return sv; }
+    #define WGPU_STR(s) _wgpu_str(s)
+#else
+    #define WGPU_STR(s) s
 #endif
 
 #ifndef WGPU_DEPTH_SLICE_UNDEFINED
@@ -145,11 +177,24 @@ ImPlatform_GfxData_WebGPU* ImPlatform_Gfx_GetData_WebGPU(void)
 
 static void ImPlatform_CreateSwapChain(unsigned int width, unsigned int height)
 {
-    if (g_GfxData.swapChain)
-        wgpuSwapChainRelease(g_GfxData.swapChain);
-
     g_GfxData.uSurfaceWidth = width;
     g_GfxData.uSurfaceHeight = height;
+
+#ifdef IMPLATFORM_WGPU_SURFACE_API
+    // New WebGPU API: configure surface directly
+    WGPUSurfaceConfiguration config = {};
+    config.device = g_GfxData.device;
+    config.format = g_GfxData.swapChainFormat;
+    config.usage = WGPUTextureUsage_RenderAttachment;
+    config.width = width;
+    config.height = height;
+    config.presentMode = WGPUPresentMode_Fifo;
+    config.alphaMode = WGPUCompositeAlphaMode_Auto;
+    wgpuSurfaceConfigure(g_GfxData.surface, &config);
+#else
+    // Legacy API: create swapchain
+    if (g_GfxData.swapChain)
+        wgpuSwapChainRelease(g_GfxData.swapChain);
 
     WGPUSwapChainDescriptor swap_chain_desc = {};
     swap_chain_desc.usage = WGPUTextureUsage_RenderAttachment;
@@ -159,12 +204,26 @@ static void ImPlatform_CreateSwapChain(unsigned int width, unsigned int height)
     swap_chain_desc.presentMode = WGPUPresentMode_Fifo;
 
     g_GfxData.swapChain = wgpuDeviceCreateSwapChain(g_GfxData.device, g_GfxData.surface, &swap_chain_desc);
+#endif
 }
 
 // ============================================================================
 // Internal API - Create WebGPU device
 // ============================================================================
 
+#ifdef IMPLATFORM_WGPU_SURFACE_API
+static void wgpu_error_callback(WGPUDevice const*, WGPUErrorType error_type, WGPUStringView message, void*, void*)
+{
+    const char* error_type_lbl = "Unknown";
+    switch (error_type)
+    {
+    case WGPUErrorType_Validation:  error_type_lbl = "Validation"; break;
+    case WGPUErrorType_OutOfMemory: error_type_lbl = "Out of memory"; break;
+    default: break;
+    }
+    fprintf(stderr, "WebGPU %s error: %.*s\n", error_type_lbl, (int)message.length, message.data);
+}
+#else
 static void wgpu_error_callback(WGPUErrorType error_type, const char* message, void*)
 {
     const char* error_type_lbl = "Unknown";
@@ -177,6 +236,7 @@ static void wgpu_error_callback(WGPUErrorType error_type, const char* message, v
     }
     fprintf(stderr, "WebGPU %s error: %s\n", error_type_lbl, message);
 }
+#endif
 
 bool ImPlatform_Gfx_CreateDevice_WebGPU(void* pWindow, ImPlatform_GfxData_WebGPU* pData)
 {
@@ -190,7 +250,25 @@ bool ImPlatform_Gfx_CreateDevice_WebGPU(void* pWindow, ImPlatform_GfxData_WebGPU
     }
 
     // 2. Create surface from platform window
-#if defined(IM_PLATFORM_GLFW)
+#if defined(__EMSCRIPTEN__)
+    {
+        // Emscripten: surface from HTML canvas element
+#ifdef IMPLATFORM_WGPU_SURFACE_API
+        WGPUEmscriptenSurfaceSourceCanvasHTMLSelector canvas_desc = {};
+        canvas_desc.chain.sType = WGPUSType_EmscriptenSurfaceSourceCanvasHTMLSelector;
+        canvas_desc.selector = WGPU_STR("#canvas");
+#else
+        WGPUSurfaceDescriptorFromCanvasHTMLSelector canvas_desc = {};
+        canvas_desc.chain.sType = WGPUSType_SurfaceDescriptorFromCanvasHTMLSelector;
+        canvas_desc.selector = "#canvas";
+#endif
+        WGPUSurfaceDescriptor surface_desc = {};
+        surface_desc.nextInChain = (WGPUChainedStruct*)&canvas_desc;
+
+        pData->surface = wgpuInstanceCreateSurface(pData->instance, &surface_desc);
+    }
+
+#elif defined(IM_PLATFORM_GLFW)
     #if defined(_WIN32)
     {
         HWND hwnd = glfwGetWin32Window((GLFWwindow*)pWindow);
@@ -200,7 +278,7 @@ bool ImPlatform_Gfx_CreateDevice_WebGPU(void* pWindow, ImPlatform_GfxData_WebGPU
         hwnd_desc.hinstance = GetModuleHandle(NULL);
 
         WGPUSurfaceDescriptor surface_desc = {};
-        surface_desc.nextInChain = (const WGPUChainedStruct*)&hwnd_desc;
+        surface_desc.nextInChain = (WGPUChainedStruct*)&hwnd_desc;
 
         pData->surface = wgpuInstanceCreateSurface(pData->instance, &surface_desc);
     }
@@ -226,7 +304,7 @@ bool ImPlatform_Gfx_CreateDevice_WebGPU(void* pWindow, ImPlatform_GfxData_WebGPU
         x11_desc.window = x11_window;
 
         WGPUSurfaceDescriptor surface_desc = {};
-        surface_desc.nextInChain = (const WGPUChainedStruct*)&x11_desc;
+        surface_desc.nextInChain = (WGPUChainedStruct*)&x11_desc;
 
         pData->surface = wgpuInstanceCreateSurface(pData->instance, &surface_desc);
     }
@@ -241,7 +319,7 @@ bool ImPlatform_Gfx_CreateDevice_WebGPU(void* pWindow, ImPlatform_GfxData_WebGPU
         hwnd_desc.hinstance = GetModuleHandle(NULL);
 
         WGPUSurfaceDescriptor surface_desc = {};
-        surface_desc.nextInChain = (const WGPUChainedStruct*)&hwnd_desc;
+        surface_desc.nextInChain = (WGPUChainedStruct*)&hwnd_desc;
 
         pData->surface = wgpuInstanceCreateSurface(pData->instance, &surface_desc);
     }
@@ -260,7 +338,7 @@ bool ImPlatform_Gfx_CreateDevice_WebGPU(void* pWindow, ImPlatform_GfxData_WebGPU
             hwnd_desc.hinstance = GetModuleHandle(NULL);
 
             WGPUSurfaceDescriptor surface_desc = {};
-            surface_desc.nextInChain = (const WGPUChainedStruct*)&hwnd_desc;
+            surface_desc.nextInChain = (WGPUChainedStruct*)&hwnd_desc;
 
             pData->surface = wgpuInstanceCreateSurface(pData->instance, &surface_desc);
         }
@@ -272,7 +350,7 @@ bool ImPlatform_Gfx_CreateDevice_WebGPU(void* pWindow, ImPlatform_GfxData_WebGPU
             x11_desc.window = wmInfo.info.x11.window;
 
             WGPUSurfaceDescriptor surface_desc = {};
-            surface_desc.nextInChain = (const WGPUChainedStruct*)&x11_desc;
+            surface_desc.nextInChain = (WGPUChainedStruct*)&x11_desc;
 
             pData->surface = wgpuInstanceCreateSurface(pData->instance, &surface_desc);
         }
@@ -293,7 +371,7 @@ bool ImPlatform_Gfx_CreateDevice_WebGPU(void* pWindow, ImPlatform_GfxData_WebGPU
             hwnd_desc.hinstance = GetModuleHandle(NULL);
 
             WGPUSurfaceDescriptor surface_desc = {};
-            surface_desc.nextInChain = (const WGPUChainedStruct*)&hwnd_desc;
+            surface_desc.nextInChain = (WGPUChainedStruct*)&hwnd_desc;
 
             pData->surface = wgpuInstanceCreateSurface(pData->instance, &surface_desc);
         }
@@ -307,7 +385,86 @@ bool ImPlatform_Gfx_CreateDevice_WebGPU(void* pWindow, ImPlatform_GfxData_WebGPU
         return false;
     }
 
-    // 3. Request adapter (synchronous via callback)
+    // 3. Request adapter and device
+#if defined(__EMSCRIPTEN__) && !defined(IMGUI_IMPL_WEBGPU_BACKEND_DAWN)
+    // Legacy Emscripten: device provided by browser
+    pData->device = emscripten_webgpu_get_device();
+    if (!pData->device)
+    {
+        fprintf(stderr, "WebGPU: emscripten_webgpu_get_device() failed\n");
+        return false;
+    }
+#elif defined(IMPLATFORM_WGPU_SURFACE_API)
+    // New WebGPU API (emdawnwebgpu): callback info structs
+    {
+        struct AdapterUserData { WGPUAdapter adapter; bool done; } user_data = { nullptr, false };
+
+        WGPURequestAdapterOptions adapter_opts = {};
+        adapter_opts.compatibleSurface = pData->surface;
+        adapter_opts.powerPreference = WGPUPowerPreference_HighPerformance;
+
+        WGPURequestAdapterCallbackInfo cb_info = {};
+        cb_info.mode = WGPUCallbackMode_AllowSpontaneous;
+        cb_info.callback = [](WGPURequestAdapterStatus status, WGPUAdapter adapter, WGPUStringView message, void* ud1, void*)
+        {
+            auto* data = (AdapterUserData*)ud1;
+            if (status == WGPURequestAdapterStatus_Success)
+                data->adapter = adapter;
+            else
+                fprintf(stderr, "WebGPU: Failed to get adapter: %.*s\n", (int)message.length, message.data);
+            data->done = true;
+        };
+        cb_info.userdata1 = &user_data;
+
+        wgpuInstanceRequestAdapter(pData->instance, &adapter_opts, cb_info);
+
+        // Must yield to browser event loop for JS promises to resolve
+        while (!user_data.done)
+            emscripten_sleep(0);
+
+        pData->adapter = user_data.adapter;
+        if (!pData->adapter)
+        {
+            fprintf(stderr, "WebGPU: No suitable adapter found\n");
+            return false;
+        }
+    }
+
+    {
+        struct DeviceUserData { WGPUDevice device; bool done; } user_data = { nullptr, false };
+
+        WGPUDeviceDescriptor device_desc = {};
+        device_desc.label = WGPU_STR("ImPlatform Device");
+        device_desc.uncapturedErrorCallbackInfo.callback = wgpu_error_callback;
+
+        WGPURequestDeviceCallbackInfo cb_info = {};
+        cb_info.mode = WGPUCallbackMode_AllowSpontaneous;
+        cb_info.callback = [](WGPURequestDeviceStatus status, WGPUDevice device, WGPUStringView message, void* ud1, void*)
+        {
+            auto* data = (DeviceUserData*)ud1;
+            if (status == WGPURequestDeviceStatus_Success)
+                data->device = device;
+            else
+                fprintf(stderr, "WebGPU: Failed to get device: %.*s\n", (int)message.length, message.data);
+            data->done = true;
+        };
+        cb_info.userdata1 = &user_data;
+
+        wgpuAdapterRequestDevice(pData->adapter, &device_desc, cb_info);
+
+        // Must yield to browser event loop for JS promises to resolve
+        while (!user_data.done)
+            emscripten_sleep(0);
+
+        pData->device = user_data.device;
+        if (!pData->device)
+        {
+            fprintf(stderr, "WebGPU: Failed to create device\n");
+            return false;
+        }
+    }
+#else
+    // Old WebGPU API: callback function + userdata
     {
         struct AdapterUserData { WGPUAdapter adapter; bool done; } user_data = { nullptr, false };
 
@@ -326,7 +483,6 @@ bool ImPlatform_Gfx_CreateDevice_WebGPU(void* pWindow, ImPlatform_GfxData_WebGPU
                 data->done = true;
             }, &user_data);
 
-        // Dawn processes events synchronously in the callback, but we may need to tick
 #if defined(IMGUI_IMPL_WEBGPU_BACKEND_DAWN)
         while (!user_data.done)
             wgpuInstanceProcessEvents(pData->instance);
@@ -340,7 +496,6 @@ bool ImPlatform_Gfx_CreateDevice_WebGPU(void* pWindow, ImPlatform_GfxData_WebGPU
         }
     }
 
-    // 4. Request device (synchronous via callback)
     {
         struct DeviceUserData { WGPUDevice device; bool done; } user_data = { nullptr, false };
 
@@ -370,16 +525,22 @@ bool ImPlatform_Gfx_CreateDevice_WebGPU(void* pWindow, ImPlatform_GfxData_WebGPU
             return false;
         }
     }
+#endif
 
-    // 5. Get queue
+    // 4. Get queue
     pData->queue = wgpuDeviceGetQueue(pData->device);
 
-    // 6. Set error callback
+    // 5. Set error callback
+#ifndef IMPLATFORM_WGPU_SURFACE_API
     wgpuDeviceSetUncapturedErrorCallback(pData->device, wgpu_error_callback, nullptr);
+#endif
 
-    // 7. Determine preferred format
-    // BGRA8Unorm is the preferred format on most platforms
+    // 6. Determine preferred format
+#if defined(__EMSCRIPTEN__)
+    pData->swapChainFormat = WGPUTextureFormat_RGBA8Unorm;
+#else
     pData->swapChainFormat = WGPUTextureFormat_BGRA8Unorm;
+#endif
 
     return true;
 }
@@ -389,11 +550,15 @@ void ImPlatform_Gfx_CleanupDevice_WebGPU(ImPlatform_GfxData_WebGPU* pData)
 {
     ImPlatform_ReleaseAllTrackedTextures();
 
+#ifdef IMPLATFORM_WGPU_SURFACE_API
+    wgpuSurfaceUnconfigure(pData->surface);
+#else
     if (pData->swapChain)
     {
         wgpuSwapChainRelease(pData->swapChain);
         pData->swapChain = nullptr;
     }
+#endif
 
     if (pData->surface)
     {
@@ -499,8 +664,8 @@ IMPLATFORM_API bool ImPlatform_InitGfx(void)
 // ImPlatform API - GfxCheck
 IMPLATFORM_API bool ImPlatform_GfxCheck(void)
 {
-    // Process Dawn async events
-#if defined(IMGUI_IMPL_WEBGPU_BACKEND_DAWN)
+    // Process Dawn async events (not needed on Emscripten - browser handles this)
+#if defined(IMGUI_IMPL_WEBGPU_BACKEND_DAWN) && !defined(__EMSCRIPTEN__)
     wgpuDeviceTick(g_GfxData.device);
 #endif
 
@@ -566,8 +731,16 @@ IMPLATFORM_API bool ImPlatform_GfxAPIClear(ImVec4 const vClearColor)
 // ImPlatform API - GfxAPIRender
 IMPLATFORM_API bool ImPlatform_GfxAPIRender(ImVec4 const vClearColor)
 {
-    // Get current texture from swapchain
+    // Get current texture for rendering
+#ifdef IMPLATFORM_WGPU_SURFACE_API
+    WGPUSurfaceTexture surfaceTexture;
+    wgpuSurfaceGetCurrentTexture(g_GfxData.surface, &surfaceTexture);
+    if (surfaceTexture.status != WGPUSurfaceGetCurrentTextureStatus_Success)
+        return false;
+    WGPUTextureView backbuffer = wgpuTextureCreateView(surfaceTexture.texture, nullptr);
+#else
     WGPUTextureView backbuffer = wgpuSwapChainGetCurrentTextureView(g_GfxData.swapChain);
+#endif
     if (!backbuffer)
         return false;
 
@@ -610,6 +783,9 @@ IMPLATFORM_API bool ImPlatform_GfxAPIRender(ImVec4 const vClearColor)
     wgpuRenderPassEncoderRelease(pass);
     wgpuCommandEncoderRelease(encoder);
     wgpuTextureViewRelease(backbuffer);
+#ifdef IMPLATFORM_WGPU_SURFACE_API
+    wgpuTextureRelease(surfaceTexture.texture);
+#endif
 
     return true;
 }
@@ -637,8 +813,12 @@ IMPLATFORM_API void ImPlatform_GfxViewportPost(void)
 // ImPlatform API - GfxAPISwapBuffer
 IMPLATFORM_API bool ImPlatform_GfxAPISwapBuffer(void)
 {
-#ifndef __EMSCRIPTEN__
-    wgpuSwapChainPresent(g_GfxData.swapChain);
+#if !defined(__EMSCRIPTEN__)
+    #ifdef IMPLATFORM_WGPU_SURFACE_API
+        wgpuSurfacePresent(g_GfxData.surface);
+    #else
+        wgpuSwapChainPresent(g_GfxData.swapChain);
+    #endif
 #endif
     return true;
 }
@@ -761,7 +941,7 @@ IMPLATFORM_API ImTextureID ImPlatform_CreateTexture(const void* pixel_data, cons
 
     // Create texture
     WGPUTextureDescriptor tex_desc = {};
-    tex_desc.label = "ImPlatform Texture";
+    tex_desc.label = WGPU_STR("ImPlatform Texture");
     tex_desc.dimension = WGPUTextureDimension_2D;
     tex_desc.size.width = desc->width;
     tex_desc.size.height = desc->height;
@@ -1154,11 +1334,11 @@ IMPLATFORM_API ImPlatform_Shader ImPlatform_CreateShader(const ImPlatform_Shader
     // Create WGSL shader module
     WGPUShaderModuleWGSLDescriptor wgsl_desc = {};
     wgsl_desc.chain.sType = WGPUSType_ShaderModuleWGSLDescriptor;
-    wgsl_desc.code = desc->source_code;
+    wgsl_desc.code = WGPU_STR(desc->source_code);
 
     WGPUShaderModuleDescriptor module_desc = {};
-    module_desc.nextInChain = (const WGPUChainedStruct*)&wgsl_desc;
-    module_desc.label = "ImPlatform Custom Shader";
+    module_desc.nextInChain = (WGPUChainedStruct*)&wgsl_desc;
+    module_desc.label = WGPU_STR("ImPlatform Custom Shader");
 
     WGPUShaderModule shader_module = wgpuDeviceCreateShaderModule(g_GfxData.device, &module_desc);
     if (!shader_module)
@@ -1264,7 +1444,7 @@ IMPLATFORM_API ImPlatform_ShaderProgram ImPlatform_CreateShaderProgram(ImPlatfor
 
     WGPUVertexState vertex_state = {};
     vertex_state.module = vs_data->shaderModule;
-    vertex_state.entryPoint = vs_data->entryPoint;
+    vertex_state.entryPoint = WGPU_STR(vs_data->entryPoint);
     vertex_state.bufferCount = 1;
     vertex_state.buffers = &vertex_buffer_layout;
 
@@ -1284,7 +1464,7 @@ IMPLATFORM_API ImPlatform_ShaderProgram ImPlatform_CreateShaderProgram(ImPlatfor
 
     WGPUFragmentState fragment_state = {};
     fragment_state.module = fs_data->shaderModule;
-    fragment_state.entryPoint = fs_data->entryPoint;
+    fragment_state.entryPoint = WGPU_STR(fs_data->entryPoint);
     fragment_state.targetCount = 1;
     fragment_state.targets = &color_target;
 
@@ -1535,7 +1715,7 @@ static void ImPlatform_SetCustomShader(const ImDrawList* parent_list, const ImDr
 
     // Get default texture/sampler from ImGui's font atlas for shaders that don't use textures
     ImTextureRef font_tex = ImGui::GetIO().Fonts->TexRef;
-    WGPUTextureView default_view = (WGPUTextureView)(ImTextureID)font_tex;
+    WGPUTextureView default_view = (WGPUTextureView)(void*)(intptr_t)font_tex.GetTexID();
 
     // Create a default sampler if we haven't yet
     static WGPUSampler s_DefaultSampler = nullptr;

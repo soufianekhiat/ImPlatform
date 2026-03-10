@@ -39,6 +39,10 @@ extern "C" {
 
 #include <ImPlatform.h>
 
+#ifdef __EMSCRIPTEN__
+#include "../imgui/examples/libs/emscripten/emscripten_mainloop_stub.h"
+#endif
+
 #include <stdio.h>
 #include <math.h>
 
@@ -606,7 +610,12 @@ int main()
 #endif
 
 	ImVec4 clear_color = ImVec4( 0.461f, 0.461f, 0.461f, 1.0f );
+#ifdef __EMSCRIPTEN__
+	io.IniFilename = nullptr;
+	EMSCRIPTEN_MAINLOOP_BEGIN
+#else
 	while ( ImPlatform_PlatformContinue() )
+#endif
 	{
 		ImPlatform_PlatformEvents();
 
@@ -793,6 +802,9 @@ int main()
 
 		ImPlatform_GfxAPISwapBuffer();
 	}
+#ifdef __EMSCRIPTEN__
+	EMSCRIPTEN_MAINLOOP_END;
+#endif
 
 	// Cleanup textures
 #ifdef IMGUI_HAS_TEXTURES

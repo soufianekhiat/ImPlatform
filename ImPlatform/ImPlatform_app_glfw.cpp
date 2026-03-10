@@ -65,8 +65,8 @@ IMPLATFORM_API bool ImPlatform_CreateWindow(char const* pWindowsName, ImVec2 con
     glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
 #endif
 
-#if IMPLATFORM_APP_SUPPORT_CUSTOM_TITLEBAR
-    // Custom titlebar support
+#if IMPLATFORM_APP_SUPPORT_CUSTOM_TITLEBAR && !defined(__EMSCRIPTEN__)
+    // Custom titlebar support (not applicable on web)
     if (g_AppData.bCustomTitleBar)
     {
 #ifdef IM_THE_CHERNO_GLFW3
@@ -100,8 +100,10 @@ IMPLATFORM_API bool ImPlatform_CreateWindow(char const* pWindowsName, ImVec2 con
     }
 #endif
 
+#ifndef __EMSCRIPTEN__
     // Set window position (GLFW doesn't support this in creation, so we set it after)
     glfwSetWindowPos(g_AppData.pWindow, (int)vPos.x, (int)vPos.y);
+#endif
 
     // Query DPI scale and register callback for runtime changes (GLFW 3.3+)
 #if GLFW_VERSION_MAJOR > 3 || (GLFW_VERSION_MAJOR == 3 && GLFW_VERSION_MINOR >= 3)
@@ -143,13 +145,20 @@ IMPLATFORM_API bool ImPlatform_ShowWindow(void)
 // ImPlatform API - InitPlatform
 IMPLATFORM_API bool ImPlatform_InitPlatform(void)
 {
+    bool result;
 #ifdef IM_GFX_OPENGL3
-    return ImGui_ImplGlfw_InitForOpenGL(g_AppData.pWindow, true);
+    result = ImGui_ImplGlfw_InitForOpenGL(g_AppData.pWindow, true);
 #elif defined(IM_GFX_VULKAN)
-    return ImGui_ImplGlfw_InitForVulkan(g_AppData.pWindow, true);
+    result = ImGui_ImplGlfw_InitForVulkan(g_AppData.pWindow, true);
 #else
-    return ImGui_ImplGlfw_InitForOther(g_AppData.pWindow, true);
+    result = ImGui_ImplGlfw_InitForOther(g_AppData.pWindow, true);
 #endif
+
+#ifdef __EMSCRIPTEN__
+    ImGui_ImplGlfw_InstallEmscriptenCallbacks(g_AppData.pWindow, "#canvas");
+#endif
+
+    return result;
 }
 
 // ImPlatform API - PlatformContinue
@@ -163,12 +172,14 @@ IMPLATFORM_API bool ImPlatform_PlatformEvents(void)
 {
     glfwPollEvents();
 
+#ifndef __EMSCRIPTEN__
     // Handle minimize
     if (glfwGetWindowAttrib(g_AppData.pWindow, GLFW_ICONIFIED) != 0)
     {
         ImGui_ImplGlfw_Sleep(10);
         return false; // Skip frame
     }
+#endif
 
 #if IMPLATFORM_APP_SUPPORT_CUSTOM_TITLEBAR && !defined(IM_THE_CHERNO_GLFW3)
     // Software drag for borderless window (when TheCherno's fork is not available)
