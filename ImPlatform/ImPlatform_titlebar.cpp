@@ -17,7 +17,7 @@ bool ImPlatform_IsMaximized(void)
     ImPlatform_AppData_Win32* pData = ImPlatform_App_GetData_Win32();
     return (((( DWORD )GetWindowLong(pData->hWnd, GWL_STYLE)) & (WS_MAXIMIZE)) != 0L);
 
-#elif defined(IM_CURRENT_PLATFORM) && (IM_CURRENT_PLATFORM == IM_PLATFORM_GLFW)
+#elif defined(IM_CURRENT_PLATFORM) && (IM_CURRENT_PLATFORM == IM_PLATFORM_GLFW) && !defined(__EMSCRIPTEN__)
     ImPlatform_AppData_GLFW* pData = ImPlatform_App_GetData_GLFW();
     return (bool)glfwGetWindowAttrib(pData->pWindow, GLFW_MAXIMIZED);
 

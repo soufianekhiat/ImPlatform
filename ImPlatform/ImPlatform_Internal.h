@@ -273,7 +273,9 @@ struct ImPlatform_GfxData_WebGPU {
     WGPUDevice device;
     WGPUQueue queue;
     WGPUSurface surface;
+#if !(defined(__EMSCRIPTEN__) && defined(IMGUI_IMPL_WEBGPU_BACKEND_DAWN))
     WGPUSwapChain swapChain;
+#endif
     WGPUTextureFormat swapChainFormat;
     unsigned int uSurfaceWidth;
     unsigned int uSurfaceHeight;
