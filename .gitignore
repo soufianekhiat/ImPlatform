@@ -41,3 +41,5 @@
 ImPlatformDemo/.vs
 ImPlatformDemo/ImPlatformDemo/x64
 ImPlatformDemo/x64
+*.ini
+build
