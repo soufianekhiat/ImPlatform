@@ -876,6 +876,71 @@ static WGPUTextureFormat ImPlatform_GetWebGPUFormat(ImPlatform_PixelFormat forma
     case ImPlatform_PixelFormat_RGBA32F:
         *out_bytes_per_pixel = 16;
         return WGPUTextureFormat_RGBA32Float;
+#if IMPLATFORM_GFX_SUPPORT_BGRA_FORMATS
+    case ImPlatform_PixelFormat_BGRA8:
+        *out_bytes_per_pixel = 4;
+        return WGPUTextureFormat_BGRA8Unorm;
+#endif
+#if IMPLATFORM_GFX_SUPPORT_HALF_FLOAT_FORMATS
+    case ImPlatform_PixelFormat_R16F:
+        *out_bytes_per_pixel = 2;
+        return WGPUTextureFormat_R16Float;
+    case ImPlatform_PixelFormat_RG16F:
+        *out_bytes_per_pixel = 4;
+        return WGPUTextureFormat_RG16Float;
+    case ImPlatform_PixelFormat_RGBA16F:
+        *out_bytes_per_pixel = 8;
+        return WGPUTextureFormat_RGBA16Float;
+#endif
+    // No IMPLATFORM_GFX_SUPPORT_RGB_EXTENDED — WebGPU has no 3-channel texture formats
+#if IMPLATFORM_GFX_SUPPORT_SRGB_FORMATS
+    case ImPlatform_PixelFormat_RGB8_SRGB:
+        // WebGPU has no 3-channel sRGB — use RGBA8 sRGB
+        *out_bytes_per_pixel = 4;
+        return WGPUTextureFormat_RGBA8UnormSrgb;
+    case ImPlatform_PixelFormat_RGBA8_SRGB:
+        *out_bytes_per_pixel = 4;
+        return WGPUTextureFormat_RGBA8UnormSrgb;
+#endif
+#if IMPLATFORM_GFX_SUPPORT_PACKED_FORMATS
+    case ImPlatform_PixelFormat_RGB10A2:
+        *out_bytes_per_pixel = 4;
+        return WGPUTextureFormat_RGB10A2Unorm;
+#endif
+#if IMPLATFORM_GFX_SUPPORT_DEPTH_FORMATS
+    case ImPlatform_PixelFormat_D16:
+        *out_bytes_per_pixel = 2;
+        return WGPUTextureFormat_Depth16Unorm;
+    case ImPlatform_PixelFormat_D32F:
+        *out_bytes_per_pixel = 4;
+        return WGPUTextureFormat_Depth32Float;
+    case ImPlatform_PixelFormat_D24S8:
+        *out_bytes_per_pixel = 4;
+        return WGPUTextureFormat_Depth24PlusStencil8;
+    case ImPlatform_PixelFormat_D32FS8:
+        *out_bytes_per_pixel = 8;
+        return WGPUTextureFormat_Depth32FloatStencil8;
+#endif
+#if IMPLATFORM_GFX_SUPPORT_INTEGER_FORMATS
+    case ImPlatform_PixelFormat_R8UI:
+        *out_bytes_per_pixel = 1;
+        return WGPUTextureFormat_R8Uint;
+    case ImPlatform_PixelFormat_R8I:
+        *out_bytes_per_pixel = 1;
+        return WGPUTextureFormat_R8Sint;
+    case ImPlatform_PixelFormat_R16UI:
+        *out_bytes_per_pixel = 2;
+        return WGPUTextureFormat_R16Uint;
+    case ImPlatform_PixelFormat_R16I:
+        *out_bytes_per_pixel = 2;
+        return WGPUTextureFormat_R16Sint;
+    case ImPlatform_PixelFormat_R32UI:
+        *out_bytes_per_pixel = 4;
+        return WGPUTextureFormat_R32Uint;
+    case ImPlatform_PixelFormat_R32I:
+        *out_bytes_per_pixel = 4;
+        return WGPUTextureFormat_R32Sint;
+#endif
     default:
         *out_bytes_per_pixel = 4;
         return WGPUTextureFormat_RGBA8Unorm;
@@ -895,6 +960,22 @@ static int ImPlatform_GetBytesPerPixelFromWGPUFormat(WGPUTextureFormat format)
     case WGPUTextureFormat_R32Float:          return 4;
     case WGPUTextureFormat_RG32Float:         return 8;
     case WGPUTextureFormat_RGBA32Float:       return 16;
+    case WGPUTextureFormat_BGRA8Unorm:        return 4;
+    case WGPUTextureFormat_R16Float:          return 2;
+    case WGPUTextureFormat_RG16Float:         return 4;
+    case WGPUTextureFormat_RGBA16Float:       return 8;
+    case WGPUTextureFormat_RGBA8UnormSrgb:    return 4;
+    case WGPUTextureFormat_RGB10A2Unorm:      return 4;
+    case WGPUTextureFormat_Depth16Unorm:      return 2;
+    case WGPUTextureFormat_Depth32Float:      return 4;
+    case WGPUTextureFormat_Depth24PlusStencil8:  return 4;
+    case WGPUTextureFormat_Depth32FloatStencil8: return 8;
+    case WGPUTextureFormat_R8Uint:            return 1;
+    case WGPUTextureFormat_R8Sint:            return 1;
+    case WGPUTextureFormat_R16Uint:           return 2;
+    case WGPUTextureFormat_R16Sint:           return 2;
+    case WGPUTextureFormat_R32Uint:           return 4;
+    case WGPUTextureFormat_R32Sint:           return 4;
     default:                                  return 4;
     }
 }

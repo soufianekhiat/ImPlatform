@@ -566,6 +566,83 @@ static DXGI_FORMAT ImPlatform_GetD3D12Format(ImPlatform_PixelFormat format, int*
     case ImPlatform_PixelFormat_RGBA32F:
         *out_bytes_per_pixel = 16;
         return DXGI_FORMAT_R32G32B32A32_FLOAT;
+#if IMPLATFORM_GFX_SUPPORT_BGRA_FORMATS
+    case ImPlatform_PixelFormat_BGRA8:
+        *out_bytes_per_pixel = 4;
+        return DXGI_FORMAT_B8G8R8A8_UNORM;
+#endif
+#if IMPLATFORM_GFX_SUPPORT_HALF_FLOAT_FORMATS
+    case ImPlatform_PixelFormat_R16F:
+        *out_bytes_per_pixel = 2;
+        return DXGI_FORMAT_R16_FLOAT;
+    case ImPlatform_PixelFormat_RG16F:
+        *out_bytes_per_pixel = 4;
+        return DXGI_FORMAT_R16G16_FLOAT;
+    case ImPlatform_PixelFormat_RGBA16F:
+        *out_bytes_per_pixel = 8;
+        return DXGI_FORMAT_R16G16B16A16_FLOAT;
+#endif
+#if IMPLATFORM_GFX_SUPPORT_RGB_EXTENDED
+    case ImPlatform_PixelFormat_RGB16:
+        // No DXGI 3-channel 16-bit unorm — expand to RGBA16
+        *out_bytes_per_pixel = 8;
+        return DXGI_FORMAT_R16G16B16A16_UNORM;
+    case ImPlatform_PixelFormat_RGB16F:
+        // No DXGI 3-channel 16F — expand to RGBA16F
+        *out_bytes_per_pixel = 8;
+        return DXGI_FORMAT_R16G16B16A16_FLOAT;
+    case ImPlatform_PixelFormat_RGB32F:
+        *out_bytes_per_pixel = 12;
+        return DXGI_FORMAT_R32G32B32_FLOAT;
+#endif
+#if IMPLATFORM_GFX_SUPPORT_SRGB_FORMATS
+    case ImPlatform_PixelFormat_RGB8_SRGB:
+        // No DXGI 3-channel sRGB — expand to RGBA8_SRGB
+        *out_bytes_per_pixel = 4;
+        return DXGI_FORMAT_R8G8B8A8_UNORM_SRGB;
+    case ImPlatform_PixelFormat_RGBA8_SRGB:
+        *out_bytes_per_pixel = 4;
+        return DXGI_FORMAT_R8G8B8A8_UNORM_SRGB;
+#endif
+#if IMPLATFORM_GFX_SUPPORT_PACKED_FORMATS
+    case ImPlatform_PixelFormat_RGB10A2:
+        *out_bytes_per_pixel = 4;
+        return DXGI_FORMAT_R10G10B10A2_UNORM;
+#endif
+#if IMPLATFORM_GFX_SUPPORT_DEPTH_FORMATS
+    case ImPlatform_PixelFormat_D16:
+        *out_bytes_per_pixel = 2;
+        return DXGI_FORMAT_D16_UNORM;
+    case ImPlatform_PixelFormat_D32F:
+        *out_bytes_per_pixel = 4;
+        return DXGI_FORMAT_D32_FLOAT;
+    case ImPlatform_PixelFormat_D24S8:
+        *out_bytes_per_pixel = 4;
+        return DXGI_FORMAT_D24_UNORM_S8_UINT;
+    case ImPlatform_PixelFormat_D32FS8:
+        *out_bytes_per_pixel = 8;
+        return DXGI_FORMAT_D32_FLOAT_S8X24_UINT;
+#endif
+#if IMPLATFORM_GFX_SUPPORT_INTEGER_FORMATS
+    case ImPlatform_PixelFormat_R8UI:
+        *out_bytes_per_pixel = 1;
+        return DXGI_FORMAT_R8_UINT;
+    case ImPlatform_PixelFormat_R8I:
+        *out_bytes_per_pixel = 1;
+        return DXGI_FORMAT_R8_SINT;
+    case ImPlatform_PixelFormat_R16UI:
+        *out_bytes_per_pixel = 2;
+        return DXGI_FORMAT_R16_UINT;
+    case ImPlatform_PixelFormat_R16I:
+        *out_bytes_per_pixel = 2;
+        return DXGI_FORMAT_R16_SINT;
+    case ImPlatform_PixelFormat_R32UI:
+        *out_bytes_per_pixel = 4;
+        return DXGI_FORMAT_R32_UINT;
+    case ImPlatform_PixelFormat_R32I:
+        *out_bytes_per_pixel = 4;
+        return DXGI_FORMAT_R32_SINT;
+#endif
     default:
         *out_bytes_per_pixel = 4;
         return DXGI_FORMAT_R8G8B8A8_UNORM;

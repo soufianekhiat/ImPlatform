@@ -93,6 +93,95 @@
     #else
         #define IMPLATFORM_GFX_SUPPORT_CUSTOM_SHADER 0
     #endif
+
+    // BGRA byte-order format — native on DX/Metal/Vulkan/WGPU, supported via GL_BGRA on OpenGL3
+    // Supported by all backends
+    #define IMPLATFORM_GFX_SUPPORT_BGRA_FORMATS 1
+
+    // 16-bit float (half-float) texture formats: R16F, RG16F, RGBA16F
+    // Not supported by DirectX 9 (no D3DFMT half-float texture support)
+    #if (IM_CURRENT_GFX == IM_GFX_OPENGL3) || \
+        (IM_CURRENT_GFX == IM_GFX_DIRECTX10) || \
+        (IM_CURRENT_GFX == IM_GFX_DIRECTX11) || \
+        (IM_CURRENT_GFX == IM_GFX_DIRECTX12) || \
+        (IM_CURRENT_GFX == IM_GFX_VULKAN) || \
+        (IM_CURRENT_GFX == IM_GFX_METAL) || \
+        (IM_CURRENT_GFX == IM_GFX_WGPU)
+        #define IMPLATFORM_GFX_SUPPORT_HALF_FLOAT_FORMATS 1
+    #else
+        #define IMPLATFORM_GFX_SUPPORT_HALF_FLOAT_FORMATS 0
+    #endif
+
+    // Extended 3-channel (RGB) formats: RGB16, RGB16F, RGB32F
+    // DX and Metal have no native 3-channel texture types; WGPU omits them entirely.
+    // On DX10+, only RGB32F (DXGI_FORMAT_R32G32B32_FLOAT) is natively available.
+    // On Metal and WGPU these formats are not available at all.
+    // Supported natively by: OpenGL3, Vulkan; partially by DX10/11/12 (RGB32F only)
+    #if (IM_CURRENT_GFX == IM_GFX_OPENGL3) || \
+        (IM_CURRENT_GFX == IM_GFX_DIRECTX10) || \
+        (IM_CURRENT_GFX == IM_GFX_DIRECTX11) || \
+        (IM_CURRENT_GFX == IM_GFX_DIRECTX12) || \
+        (IM_CURRENT_GFX == IM_GFX_VULKAN)
+        #define IMPLATFORM_GFX_SUPPORT_RGB_EXTENDED 1
+    #else
+        #define IMPLATFORM_GFX_SUPPORT_RGB_EXTENDED 0
+    #endif
+
+    // sRGB gamma-encoded variants: RGB8_SRGB, RGBA8_SRGB
+    // DirectX 9 has no explicit sRGB texture format flag (gamma handled via sampler state)
+    #if (IM_CURRENT_GFX == IM_GFX_OPENGL3) || \
+        (IM_CURRENT_GFX == IM_GFX_DIRECTX10) || \
+        (IM_CURRENT_GFX == IM_GFX_DIRECTX11) || \
+        (IM_CURRENT_GFX == IM_GFX_DIRECTX12) || \
+        (IM_CURRENT_GFX == IM_GFX_VULKAN) || \
+        (IM_CURRENT_GFX == IM_GFX_METAL) || \
+        (IM_CURRENT_GFX == IM_GFX_WGPU)
+        #define IMPLATFORM_GFX_SUPPORT_SRGB_FORMATS 1
+    #else
+        #define IMPLATFORM_GFX_SUPPORT_SRGB_FORMATS 0
+    #endif
+
+    // Packed HDR format: RGB10A2 (10-bit RGB + 2-bit alpha)
+    // DirectX 9 has D3DFMT_A2B10G10R10 but it is rarely supported across hardware
+    #if (IM_CURRENT_GFX == IM_GFX_OPENGL3) || \
+        (IM_CURRENT_GFX == IM_GFX_DIRECTX10) || \
+        (IM_CURRENT_GFX == IM_GFX_DIRECTX11) || \
+        (IM_CURRENT_GFX == IM_GFX_DIRECTX12) || \
+        (IM_CURRENT_GFX == IM_GFX_VULKAN) || \
+        (IM_CURRENT_GFX == IM_GFX_METAL) || \
+        (IM_CURRENT_GFX == IM_GFX_WGPU)
+        #define IMPLATFORM_GFX_SUPPORT_PACKED_FORMATS 1
+    #else
+        #define IMPLATFORM_GFX_SUPPORT_PACKED_FORMATS 0
+    #endif
+
+    // Depth/stencil formats: D16, D32F, D24S8, D32FS8 (for render targets)
+    // DirectX 9 only exposes D16 and D24S8 via fixed D3DFMT values, not as texture formats
+    #if (IM_CURRENT_GFX == IM_GFX_OPENGL3) || \
+        (IM_CURRENT_GFX == IM_GFX_DIRECTX10) || \
+        (IM_CURRENT_GFX == IM_GFX_DIRECTX11) || \
+        (IM_CURRENT_GFX == IM_GFX_DIRECTX12) || \
+        (IM_CURRENT_GFX == IM_GFX_VULKAN) || \
+        (IM_CURRENT_GFX == IM_GFX_METAL) || \
+        (IM_CURRENT_GFX == IM_GFX_WGPU)
+        #define IMPLATFORM_GFX_SUPPORT_DEPTH_FORMATS 1
+    #else
+        #define IMPLATFORM_GFX_SUPPORT_DEPTH_FORMATS 0
+    #endif
+
+    // Integer texture formats: R8UI/I, R16UI/I, R32UI/I (label maps, index textures, etc.)
+    // DirectX 9 has no integer texture support
+    #if (IM_CURRENT_GFX == IM_GFX_OPENGL3) || \
+        (IM_CURRENT_GFX == IM_GFX_DIRECTX10) || \
+        (IM_CURRENT_GFX == IM_GFX_DIRECTX11) || \
+        (IM_CURRENT_GFX == IM_GFX_DIRECTX12) || \
+        (IM_CURRENT_GFX == IM_GFX_VULKAN) || \
+        (IM_CURRENT_GFX == IM_GFX_METAL) || \
+        (IM_CURRENT_GFX == IM_GFX_WGPU)
+        #define IMPLATFORM_GFX_SUPPORT_INTEGER_FORMATS 1
+    #else
+        #define IMPLATFORM_GFX_SUPPORT_INTEGER_FORMATS 0
+    #endif
 #endif
 
 // Platform feature support flags
@@ -159,16 +248,71 @@ IMPLATFORM_API int ImPlatform_GetVersionNum(void);
 
 // Pixel format enums
 typedef enum ImPlatform_PixelFormat {
+    // 8-bit unsigned
     ImPlatform_PixelFormat_R8,           // Single channel, 8-bit unsigned
     ImPlatform_PixelFormat_RG8,          // Two channel, 8-bit unsigned per channel
     ImPlatform_PixelFormat_RGB8,         // Three channel, 8-bit unsigned per channel
     ImPlatform_PixelFormat_RGBA8,        // Four channel, 8-bit unsigned per channel (most common)
+
+    // 16-bit unsigned
     ImPlatform_PixelFormat_R16,          // Single channel, 16-bit unsigned
     ImPlatform_PixelFormat_RG16,         // Two channel, 16-bit unsigned per channel
     ImPlatform_PixelFormat_RGBA16,       // Four channel, 16-bit unsigned per channel
+
+    // 32-bit float
     ImPlatform_PixelFormat_R32F,         // Single channel, 32-bit float
     ImPlatform_PixelFormat_RG32F,        // Two channel, 32-bit float per channel
     ImPlatform_PixelFormat_RGBA32F,      // Four channel, 32-bit float per channel
+
+#if IMPLATFORM_GFX_SUPPORT_BGRA_FORMATS
+    // BGRA byte-order (native on DX/Metal/Vulkan/WGPU, avoids swizzle on those backends)
+    ImPlatform_PixelFormat_BGRA8,        // Four channel, 8-bit unsigned, BGRA order
+#endif
+
+#if IMPLATFORM_GFX_SUPPORT_HALF_FLOAT_FORMATS
+    // 16-bit float (half-float) — common in HDR/compute pipelines
+    // Not available on DirectX 9
+    ImPlatform_PixelFormat_R16F,         // Single channel, 16-bit float
+    ImPlatform_PixelFormat_RG16F,        // Two channel, 16-bit float per channel
+    ImPlatform_PixelFormat_RGBA16F,      // Four channel, 16-bit float per channel
+#endif
+
+#if IMPLATFORM_GFX_SUPPORT_RGB_EXTENDED
+    // Extended 3-channel formats — no native support on Metal or WGPU; DX10+ supports RGB32F only
+    ImPlatform_PixelFormat_RGB16,        // Three channel, 16-bit unsigned per channel
+    ImPlatform_PixelFormat_RGB16F,       // Three channel, 16-bit float per channel
+    ImPlatform_PixelFormat_RGB32F,       // Three channel, 32-bit float per channel
+#endif
+
+#if IMPLATFORM_GFX_SUPPORT_SRGB_FORMATS
+    // sRGB gamma-encoded variants — not available on DirectX 9
+    ImPlatform_PixelFormat_RGB8_SRGB,    // Three channel, 8-bit unsigned, sRGB encoded
+    ImPlatform_PixelFormat_RGBA8_SRGB,   // Four channel, 8-bit unsigned, sRGB encoded
+#endif
+
+#if IMPLATFORM_GFX_SUPPORT_PACKED_FORMATS
+    // Packed HDR format — not reliably available on DirectX 9
+    ImPlatform_PixelFormat_RGB10A2,      // 10-bit RGB + 2-bit alpha, packed 32-bit
+#endif
+
+#if IMPLATFORM_GFX_SUPPORT_DEPTH_FORMATS
+    // Depth/stencil formats for render targets — not available as textures on DirectX 9
+    ImPlatform_PixelFormat_D16,          // 16-bit depth
+    ImPlatform_PixelFormat_D32F,         // 32-bit float depth
+    ImPlatform_PixelFormat_D24S8,        // 24-bit depth + 8-bit stencil (packed 32-bit)
+    ImPlatform_PixelFormat_D32FS8,       // 32-bit float depth + 8-bit stencil
+#endif
+
+#if IMPLATFORM_GFX_SUPPORT_INTEGER_FORMATS
+    // Integer texture formats (label maps, index textures, picking buffers, etc.)
+    // Not available on DirectX 9
+    ImPlatform_PixelFormat_R8UI,         // Single channel, 8-bit unsigned integer
+    ImPlatform_PixelFormat_R8I,          // Single channel, 8-bit signed integer
+    ImPlatform_PixelFormat_R16UI,        // Single channel, 16-bit unsigned integer
+    ImPlatform_PixelFormat_R16I,         // Single channel, 16-bit signed integer
+    ImPlatform_PixelFormat_R32UI,        // Single channel, 32-bit unsigned integer
+    ImPlatform_PixelFormat_R32I,         // Single channel, 32-bit signed integer
+#endif
 } ImPlatform_PixelFormat;
 
 // Texture filtering modes

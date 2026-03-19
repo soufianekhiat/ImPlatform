@@ -619,6 +619,140 @@ static void ImPlatform_GetOpenGLFormat(ImPlatform_PixelFormat format, GLint* out
         *out_type = GL_FLOAT;
         *out_channels = 4;
         break;
+#if IMPLATFORM_GFX_SUPPORT_BGRA_FORMATS
+    case ImPlatform_PixelFormat_BGRA8:
+        *out_internal_format = GL_RGBA8;
+        *out_format = GL_BGRA;
+        *out_type = GL_UNSIGNED_BYTE;
+        *out_channels = 4;
+        break;
+#endif
+#if IMPLATFORM_GFX_SUPPORT_HALF_FLOAT_FORMATS
+    case ImPlatform_PixelFormat_R16F:
+        *out_internal_format = GL_R16F;
+        *out_format = GL_RED;
+        *out_type = GL_HALF_FLOAT;
+        *out_channels = 1;
+        break;
+    case ImPlatform_PixelFormat_RG16F:
+        *out_internal_format = GL_RG16F;
+        *out_format = GL_RG;
+        *out_type = GL_HALF_FLOAT;
+        *out_channels = 2;
+        break;
+    case ImPlatform_PixelFormat_RGBA16F:
+        *out_internal_format = GL_RGBA16F;
+        *out_format = GL_RGBA;
+        *out_type = GL_HALF_FLOAT;
+        *out_channels = 4;
+        break;
+#endif
+#if IMPLATFORM_GFX_SUPPORT_RGB_EXTENDED
+    case ImPlatform_PixelFormat_RGB16:
+        *out_internal_format = GL_RGB16;
+        *out_format = GL_RGB;
+        *out_type = GL_UNSIGNED_SHORT;
+        *out_channels = 3;
+        break;
+    case ImPlatform_PixelFormat_RGB16F:
+        *out_internal_format = GL_RGB16F;
+        *out_format = GL_RGB;
+        *out_type = GL_HALF_FLOAT;
+        *out_channels = 3;
+        break;
+    case ImPlatform_PixelFormat_RGB32F:
+        *out_internal_format = GL_RGB32F;
+        *out_format = GL_RGB;
+        *out_type = GL_FLOAT;
+        *out_channels = 3;
+        break;
+#endif
+#if IMPLATFORM_GFX_SUPPORT_SRGB_FORMATS
+    case ImPlatform_PixelFormat_RGB8_SRGB:
+        *out_internal_format = GL_SRGB8;
+        *out_format = GL_RGB;
+        *out_type = GL_UNSIGNED_BYTE;
+        *out_channels = 3;
+        break;
+    case ImPlatform_PixelFormat_RGBA8_SRGB:
+        *out_internal_format = GL_SRGB8_ALPHA8;
+        *out_format = GL_RGBA;
+        *out_type = GL_UNSIGNED_BYTE;
+        *out_channels = 4;
+        break;
+#endif
+#if IMPLATFORM_GFX_SUPPORT_PACKED_FORMATS
+    case ImPlatform_PixelFormat_RGB10A2:
+        *out_internal_format = GL_RGB10_A2;
+        *out_format = GL_RGBA;
+        *out_type = GL_UNSIGNED_INT_2_10_10_10_REV;
+        *out_channels = 4;
+        break;
+#endif
+#if IMPLATFORM_GFX_SUPPORT_DEPTH_FORMATS
+    case ImPlatform_PixelFormat_D16:
+        *out_internal_format = GL_DEPTH_COMPONENT16;
+        *out_format = GL_DEPTH_COMPONENT;
+        *out_type = GL_UNSIGNED_SHORT;
+        *out_channels = 1;
+        break;
+    case ImPlatform_PixelFormat_D32F:
+        *out_internal_format = GL_DEPTH_COMPONENT32F;
+        *out_format = GL_DEPTH_COMPONENT;
+        *out_type = GL_FLOAT;
+        *out_channels = 1;
+        break;
+    case ImPlatform_PixelFormat_D24S8:
+        *out_internal_format = GL_DEPTH24_STENCIL8;
+        *out_format = GL_DEPTH_STENCIL;
+        *out_type = GL_UNSIGNED_INT_24_8;
+        *out_channels = 1;
+        break;
+    case ImPlatform_PixelFormat_D32FS8:
+        *out_internal_format = GL_DEPTH32F_STENCIL8;
+        *out_format = GL_DEPTH_STENCIL;
+        *out_type = GL_FLOAT_32_UNSIGNED_INT_24_8_REV;
+        *out_channels = 1;
+        break;
+#endif
+#if IMPLATFORM_GFX_SUPPORT_INTEGER_FORMATS
+    case ImPlatform_PixelFormat_R8UI:
+        *out_internal_format = GL_R8UI;
+        *out_format = GL_RED_INTEGER;
+        *out_type = GL_UNSIGNED_BYTE;
+        *out_channels = 1;
+        break;
+    case ImPlatform_PixelFormat_R8I:
+        *out_internal_format = GL_R8I;
+        *out_format = GL_RED_INTEGER;
+        *out_type = GL_BYTE;
+        *out_channels = 1;
+        break;
+    case ImPlatform_PixelFormat_R16UI:
+        *out_internal_format = GL_R16UI;
+        *out_format = GL_RED_INTEGER;
+        *out_type = GL_UNSIGNED_SHORT;
+        *out_channels = 1;
+        break;
+    case ImPlatform_PixelFormat_R16I:
+        *out_internal_format = GL_R16I;
+        *out_format = GL_RED_INTEGER;
+        *out_type = GL_SHORT;
+        *out_channels = 1;
+        break;
+    case ImPlatform_PixelFormat_R32UI:
+        *out_internal_format = GL_R32UI;
+        *out_format = GL_RED_INTEGER;
+        *out_type = GL_UNSIGNED_INT;
+        *out_channels = 1;
+        break;
+    case ImPlatform_PixelFormat_R32I:
+        *out_internal_format = GL_R32I;
+        *out_format = GL_RED_INTEGER;
+        *out_type = GL_INT;
+        *out_channels = 1;
+        break;
+#endif
     default:
         *out_internal_format = GL_RGBA8;
         *out_format = GL_RGBA;
