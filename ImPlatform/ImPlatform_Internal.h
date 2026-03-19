@@ -97,6 +97,9 @@ struct ImPlatform_AppData_Win32 {
     bool bTitleBarHovered;
     ImVec2 vEndCustomToolBar;
     float fCustomTitleBarHeight;
+
+    // File drop support
+    bool bDropFileEnabled;
 };
 #endif
 
@@ -115,6 +118,9 @@ struct ImPlatform_AppData_GLFW {
     bool bDragging;
     double fDragStartX, fDragStartY;
     int iWinStartX, iWinStartY;
+
+    // File drop support
+    bool bDropFileEnabled;
 };
 #endif
 
@@ -290,6 +296,24 @@ struct ImPlatform_GfxData_WebGPU {
 HWND ImPlatform_App_GetHWND(void);
 float ImPlatform_App_GetDpiScale_Win32(void);
 struct ImPlatform_AppData_Win32* ImPlatform_App_GetData_Win32(void);
+#endif
+
+// Internal helpers defined in ImPlatform.h (IMPLATFORM_IMPLEMENTATION section).
+// Declared here so standalone-compiled platform backend .cpp files can call them.
+void ImPlatform_NotifyDpiChange(float new_scale);
+
+#if IMPLATFORM_APP_SUPPORT_CUSTOM_TITLEBAR
+extern ImPlatform_BorderlessParams g_BorderlessParams;
+#endif
+
+#if IMPLATFORM_APP_SUPPORT_DROP_FILE
+void ImPlatform_NotifyFileDrop(const char* utf8_path, ImVec2 client_pos);
+#endif
+
+// Called when the drop file callback is registered or cleared.
+// Platform backends use this to enable/disable OS drop acceptance.
+#if IMPLATFORM_APP_SUPPORT_DROP_FILE
+void ImPlatform_App_OnDropFileCallbackChanged(bool has_callback);
 #endif
 
 #if defined(IM_CURRENT_PLATFORM) && (IM_CURRENT_PLATFORM == IM_PLATFORM_GLFW)

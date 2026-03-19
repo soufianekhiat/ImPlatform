@@ -229,6 +229,13 @@ IMPLATFORM_API bool ImPlatform_PlatformEvents(void)
             g_AppData.bDone = true;
             return false;
         }
+#if IMPLATFORM_APP_SUPPORT_DROP_FILE
+        if (event.type == SDL_EVENT_DROP_FILE && event.drop.data)
+        {
+            // SDL3 provides drop position directly in the event (window-local coordinates)
+            ImPlatform_NotifyFileDrop(event.drop.data, ImVec2(event.drop.x, event.drop.y));
+        }
+#endif
     }
 
     // Skip rendering when minimized
@@ -279,5 +286,12 @@ IMPLATFORM_API void ImPlatform_DestroyWindow(void)
 
     SDL_Quit();
 }
+
+#if IMPLATFORM_APP_SUPPORT_DROP_FILE
+void ImPlatform_App_OnDropFileCallbackChanged(bool has_callback)
+{
+    SDL_SetEventEnabled(SDL_EVENT_DROP_FILE, has_callback);
+}
+#endif // IMPLATFORM_APP_SUPPORT_DROP_FILE
 
 #endif // IM_CURRENT_PLATFORM == IM_PLATFORM_SDL3

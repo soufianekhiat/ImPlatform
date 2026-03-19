@@ -244,6 +244,15 @@ IMPLATFORM_API bool ImPlatform_PlatformEvents(void)
             g_AppData.bDone = true;
             return false;
         }
+#if IMPLATFORM_APP_SUPPORT_DROP_FILE
+        if (event.type == SDL_DROPFILE && event.drop.file)
+        {
+            int mx = 0, my = 0;
+            SDL_GetMouseState(&mx, &my);
+            ImPlatform_NotifyFileDrop(event.drop.file, ImVec2((float)mx, (float)my));
+            SDL_free(event.drop.file);
+        }
+#endif
     }
 
     // Skip rendering when minimized
@@ -294,5 +303,12 @@ IMPLATFORM_API void ImPlatform_DestroyWindow(void)
 
     SDL_Quit();
 }
+
+#if IMPLATFORM_APP_SUPPORT_DROP_FILE
+void ImPlatform_App_OnDropFileCallbackChanged(bool has_callback)
+{
+    SDL_EventState(SDL_DROPFILE, has_callback ? SDL_ENABLE : SDL_DISABLE);
+}
+#endif // IMPLATFORM_APP_SUPPORT_DROP_FILE
 
 #endif // IM_CURRENT_PLATFORM == IM_PLATFORM_SDL2

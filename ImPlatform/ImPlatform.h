@@ -199,6 +199,19 @@
     #endif
 #endif
 
+#ifndef IMPLATFORM_APP_SUPPORT_DROP_FILE
+    #if defined(IM_CURRENT_PLATFORM)
+        #if (IM_CURRENT_PLATFORM == IM_PLATFORM_WIN32) || \
+            (IM_CURRENT_PLATFORM == IM_PLATFORM_GLFW)  || \
+            (IM_CURRENT_PLATFORM == IM_PLATFORM_SDL2)  || \
+            (IM_CURRENT_PLATFORM == IM_PLATFORM_SDL3)
+            #define IMPLATFORM_APP_SUPPORT_DROP_FILE 1
+        #else
+            #define IMPLATFORM_APP_SUPPORT_DROP_FILE 0
+        #endif
+    #endif
+#endif
+
 #define IM_PLATFORM_WIN32   ( ( 1u << 0u ) << 16u )
 #define IM_PLATFORM_GLFW    ( ( 1u << 1u ) << 16u )
 #define IM_PLATFORM_SDL2    ( ( 1u << 2u ) << 16u )
@@ -572,6 +585,17 @@ IMPLATFORM_API void ImPlatform_DestroyShaderProgram(
     ImPlatform_ShaderProgram program
 );
 
+// Create a vertex input layout for a vertex buffer using the VS bytecode from a shader program.
+// Must be called after both ImPlatform_CreateVertexBuffer and ImPlatform_CreateShaderProgram.
+// The layout is derived from the vertex buffer's ImPlatform_VertexAttribute array.
+// Duplicate semantic names are disambiguated by auto-incrementing SemanticIndex.
+// After this call, ImPlatform_BindBuffers will activate the custom layout automatically.
+// Returns: true on success, false on failure
+IMPLATFORM_API bool ImPlatform_CreateVertexInputLayout(
+    ImPlatform_VertexBuffer vertex_buffer,
+    ImPlatform_ShaderProgram program
+);
+
 // Bind a shader program for rendering
 // program: Shader program to bind (or NULL to unbind)
 IMPLATFORM_API void ImPlatform_BindShaderProgram(
@@ -783,6 +807,25 @@ IMPLATFORM_API ImPlatform_BorderlessParams ImPlatform_GetBorderlessParams(void);
 #endif // IMPLATFORM_APP_SUPPORT_CUSTOM_TITLEBAR
 
 // ============================================================================
+// File Drag-and-Drop API
+// ============================================================================
+
+#if IMPLATFORM_APP_SUPPORT_DROP_FILE
+
+// Callback fired once per dropped file.
+// path:      UTF-8 encoded file path.
+// pos:       Drop position in client/window coordinates (same space as ImGui::GetMousePos()).
+// user_data: Opaque pointer passed to ImPlatform_SetDropFileCallback.
+typedef void (*ImPlatform_DropFileCallback)(const char* path, ImVec2 pos, void* user_data);
+
+// Register a callback for OS file-drop events.
+// Enables OS drop acceptance on the window when a non-NULL callback is set.
+// Pass NULL to unregister and disable drop acceptance.
+IMPLATFORM_API void ImPlatform_SetDropFileCallback(ImPlatform_DropFileCallback callback, void* user_data);
+
+#endif // IMPLATFORM_APP_SUPPORT_DROP_FILE
+
+// ============================================================================
 // DPI / High-DPI Support
 // ============================================================================
 
@@ -849,12 +892,9 @@ IMPLATFORM_API int ImPlatform_GetVersionNum(void)
     return IMPLATFORM_VERSION_NUM;
 }
 
-// Forward declaration: DPI change notification (defined below, after backend includes)
-static void ImPlatform_NotifyDpiChange(float new_scale);
-
 // Borderless params storage (read by platform backends in hit-test callbacks)
 #if IMPLATFORM_APP_SUPPORT_CUSTOM_TITLEBAR
-static ImPlatform_BorderlessParams g_BorderlessParams = { 5, 100, 100, true, true };
+ImPlatform_BorderlessParams g_BorderlessParams = { 5, 100, 100, true, true };
 #endif
 
 // Include graphics backend implementation
@@ -1011,11 +1051,34 @@ IMPLATFORM_API void ImPlatform_SetDpiChangeCallback(ImPlatform_DpiChangeCallback
 }
 
 // Internal helper: call the user's DPI change callback (if set)
-static void ImPlatform_NotifyDpiChange(float new_scale)
+void ImPlatform_NotifyDpiChange(float new_scale)
 {
     if (g_DpiChangeCallback)
         g_DpiChangeCallback(new_scale, g_DpiChangeCallbackUserData);
 }
+
+// ============================================================================
+// File Drop Callback Implementation
+// ============================================================================
+
+#if IMPLATFORM_APP_SUPPORT_DROP_FILE
+static ImPlatform_DropFileCallback g_DropFileCallback = NULL;
+static void* g_DropFileCallbackUserData = NULL;
+
+IMPLATFORM_API void ImPlatform_SetDropFileCallback(ImPlatform_DropFileCallback callback, void* user_data)
+{
+    g_DropFileCallback = callback;
+    g_DropFileCallbackUserData = user_data;
+    ImPlatform_App_OnDropFileCallbackChanged(callback != NULL);
+}
+
+// Internal helper: fire the user's drop callback (called from platform backends)
+void ImPlatform_NotifyFileDrop(const char* utf8_path, ImVec2 client_pos)
+{
+    if (g_DropFileCallback)
+        g_DropFileCallback(utf8_path, client_pos, g_DropFileCallbackUserData);
+}
+#endif // IMPLATFORM_APP_SUPPORT_DROP_FILE
 
 // ============================================================================
 // Common Helper Functions (C++ inline implementations)
