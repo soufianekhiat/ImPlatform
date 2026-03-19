@@ -279,6 +279,72 @@ static MTLPixelFormat ImPlatform_GetMetalFormat(ImPlatform_PixelFormat format, i
     case ImPlatform_PixelFormat_RGBA32F:
         *out_bytes_per_pixel = 16;
         return MTLPixelFormatRGBA32Float;
+#if IMPLATFORM_GFX_SUPPORT_BGRA_FORMATS
+    case ImPlatform_PixelFormat_BGRA8:
+        *out_bytes_per_pixel = 4;
+        return MTLPixelFormatBGRA8Unorm;
+#endif
+#if IMPLATFORM_GFX_SUPPORT_HALF_FLOAT_FORMATS
+    case ImPlatform_PixelFormat_R16F:
+        *out_bytes_per_pixel = 2;
+        return MTLPixelFormatR16Float;
+    case ImPlatform_PixelFormat_RG16F:
+        *out_bytes_per_pixel = 4;
+        return MTLPixelFormatRG16Float;
+    case ImPlatform_PixelFormat_RGBA16F:
+        *out_bytes_per_pixel = 8;
+        return MTLPixelFormatRGBA16Float;
+#endif
+    // No IMPLATFORM_GFX_SUPPORT_RGB_EXTENDED — Metal has no 3-channel texture formats
+#if IMPLATFORM_GFX_SUPPORT_SRGB_FORMATS
+    case ImPlatform_PixelFormat_RGB8_SRGB:
+        // Metal has no 3-channel sRGB — use RGBA8 sRGB
+        *out_bytes_per_pixel = 4;
+        return MTLPixelFormatRGBA8Unorm_sRGB;
+    case ImPlatform_PixelFormat_RGBA8_SRGB:
+        *out_bytes_per_pixel = 4;
+        return MTLPixelFormatRGBA8Unorm_sRGB;
+#endif
+#if IMPLATFORM_GFX_SUPPORT_PACKED_FORMATS
+    case ImPlatform_PixelFormat_RGB10A2:
+        *out_bytes_per_pixel = 4;
+        return MTLPixelFormatRGB10A2Unorm;
+#endif
+#if IMPLATFORM_GFX_SUPPORT_DEPTH_FORMATS
+    case ImPlatform_PixelFormat_D16:
+        *out_bytes_per_pixel = 2;
+        return MTLPixelFormatDepth16Unorm;
+    case ImPlatform_PixelFormat_D32F:
+        *out_bytes_per_pixel = 4;
+        return MTLPixelFormatDepth32Float;
+    case ImPlatform_PixelFormat_D24S8:
+        // MTLPixelFormatDepth24Unorm_Stencil8 is macOS-only and unsupported on Apple Silicon
+        *out_bytes_per_pixel = 4;
+        return MTLPixelFormatDepth24Unorm_Stencil8;
+    case ImPlatform_PixelFormat_D32FS8:
+        *out_bytes_per_pixel = 8;
+        return MTLPixelFormatDepth32Float_Stencil8;
+#endif
+#if IMPLATFORM_GFX_SUPPORT_INTEGER_FORMATS
+    case ImPlatform_PixelFormat_R8UI:
+        *out_bytes_per_pixel = 1;
+        return MTLPixelFormatR8Uint;
+    case ImPlatform_PixelFormat_R8I:
+        *out_bytes_per_pixel = 1;
+        return MTLPixelFormatR8Sint;
+    case ImPlatform_PixelFormat_R16UI:
+        *out_bytes_per_pixel = 2;
+        return MTLPixelFormatR16Uint;
+    case ImPlatform_PixelFormat_R16I:
+        *out_bytes_per_pixel = 2;
+        return MTLPixelFormatR16Sint;
+    case ImPlatform_PixelFormat_R32UI:
+        *out_bytes_per_pixel = 4;
+        return MTLPixelFormatR32Uint;
+    case ImPlatform_PixelFormat_R32I:
+        *out_bytes_per_pixel = 4;
+        return MTLPixelFormatR32Sint;
+#endif
     default:
         *out_bytes_per_pixel = 4;
         return MTLPixelFormatRGBA8Unorm;
@@ -381,6 +447,22 @@ IMPLATFORM_API bool ImPlatform_UpdateTexture(ImTextureID texture_id, const void*
             case MTLPixelFormatR32Float: bytes_per_pixel = 4; break;
             case MTLPixelFormatRG32Float: bytes_per_pixel = 8; break;
             case MTLPixelFormatRGBA32Float: bytes_per_pixel = 16; break;
+            case MTLPixelFormatBGRA8Unorm: bytes_per_pixel = 4; break;
+            case MTLPixelFormatR16Float: bytes_per_pixel = 2; break;
+            case MTLPixelFormatRG16Float: bytes_per_pixel = 4; break;
+            case MTLPixelFormatRGBA16Float: bytes_per_pixel = 8; break;
+            case MTLPixelFormatRGBA8Unorm_sRGB: bytes_per_pixel = 4; break;
+            case MTLPixelFormatRGB10A2Unorm: bytes_per_pixel = 4; break;
+            case MTLPixelFormatDepth16Unorm: bytes_per_pixel = 2; break;
+            case MTLPixelFormatDepth32Float: bytes_per_pixel = 4; break;
+            case MTLPixelFormatDepth24Unorm_Stencil8: bytes_per_pixel = 4; break;
+            case MTLPixelFormatDepth32Float_Stencil8: bytes_per_pixel = 8; break;
+            case MTLPixelFormatR8Uint: bytes_per_pixel = 1; break;
+            case MTLPixelFormatR8Sint: bytes_per_pixel = 1; break;
+            case MTLPixelFormatR16Uint: bytes_per_pixel = 2; break;
+            case MTLPixelFormatR16Sint: bytes_per_pixel = 2; break;
+            case MTLPixelFormatR32Uint: bytes_per_pixel = 4; break;
+            case MTLPixelFormatR32Sint: bytes_per_pixel = 4; break;
             default: break;
         }
 

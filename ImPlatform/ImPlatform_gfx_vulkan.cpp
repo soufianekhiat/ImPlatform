@@ -899,6 +899,81 @@ static VkFormat ImPlatform_GetVulkanFormat(ImPlatform_PixelFormat format, int* o
     case ImPlatform_PixelFormat_RGBA32F:
         *out_bytes_per_pixel = 16;
         return VK_FORMAT_R32G32B32A32_SFLOAT;
+#if IMPLATFORM_GFX_SUPPORT_BGRA_FORMATS
+    case ImPlatform_PixelFormat_BGRA8:
+        *out_bytes_per_pixel = 4;
+        return VK_FORMAT_B8G8R8A8_UNORM;
+#endif
+#if IMPLATFORM_GFX_SUPPORT_HALF_FLOAT_FORMATS
+    case ImPlatform_PixelFormat_R16F:
+        *out_bytes_per_pixel = 2;
+        return VK_FORMAT_R16_SFLOAT;
+    case ImPlatform_PixelFormat_RG16F:
+        *out_bytes_per_pixel = 4;
+        return VK_FORMAT_R16G16_SFLOAT;
+    case ImPlatform_PixelFormat_RGBA16F:
+        *out_bytes_per_pixel = 8;
+        return VK_FORMAT_R16G16B16A16_SFLOAT;
+#endif
+#if IMPLATFORM_GFX_SUPPORT_RGB_EXTENDED
+    case ImPlatform_PixelFormat_RGB16:
+        *out_bytes_per_pixel = 6;
+        return VK_FORMAT_R16G16B16_UNORM;
+    case ImPlatform_PixelFormat_RGB16F:
+        *out_bytes_per_pixel = 6;
+        return VK_FORMAT_R16G16B16_SFLOAT;
+    case ImPlatform_PixelFormat_RGB32F:
+        *out_bytes_per_pixel = 12;
+        return VK_FORMAT_R32G32B32_SFLOAT;
+#endif
+#if IMPLATFORM_GFX_SUPPORT_SRGB_FORMATS
+    case ImPlatform_PixelFormat_RGB8_SRGB:
+        // VK_FORMAT_R8G8B8_SRGB has limited optimal-tiling support; use RGBA8_SRGB
+        *out_bytes_per_pixel = 4;
+        return VK_FORMAT_R8G8B8A8_SRGB;
+    case ImPlatform_PixelFormat_RGBA8_SRGB:
+        *out_bytes_per_pixel = 4;
+        return VK_FORMAT_R8G8B8A8_SRGB;
+#endif
+#if IMPLATFORM_GFX_SUPPORT_PACKED_FORMATS
+    case ImPlatform_PixelFormat_RGB10A2:
+        *out_bytes_per_pixel = 4;
+        return VK_FORMAT_A2B10G10R10_UNORM_PACK32;
+#endif
+#if IMPLATFORM_GFX_SUPPORT_DEPTH_FORMATS
+    case ImPlatform_PixelFormat_D16:
+        *out_bytes_per_pixel = 2;
+        return VK_FORMAT_D16_UNORM;
+    case ImPlatform_PixelFormat_D32F:
+        *out_bytes_per_pixel = 4;
+        return VK_FORMAT_D32_SFLOAT;
+    case ImPlatform_PixelFormat_D24S8:
+        *out_bytes_per_pixel = 4;
+        return VK_FORMAT_D24_UNORM_S8_UINT;
+    case ImPlatform_PixelFormat_D32FS8:
+        *out_bytes_per_pixel = 8;
+        return VK_FORMAT_D32_SFLOAT_S8_UINT;
+#endif
+#if IMPLATFORM_GFX_SUPPORT_INTEGER_FORMATS
+    case ImPlatform_PixelFormat_R8UI:
+        *out_bytes_per_pixel = 1;
+        return VK_FORMAT_R8_UINT;
+    case ImPlatform_PixelFormat_R8I:
+        *out_bytes_per_pixel = 1;
+        return VK_FORMAT_R8_SINT;
+    case ImPlatform_PixelFormat_R16UI:
+        *out_bytes_per_pixel = 2;
+        return VK_FORMAT_R16_UINT;
+    case ImPlatform_PixelFormat_R16I:
+        *out_bytes_per_pixel = 2;
+        return VK_FORMAT_R16_SINT;
+    case ImPlatform_PixelFormat_R32UI:
+        *out_bytes_per_pixel = 4;
+        return VK_FORMAT_R32_UINT;
+    case ImPlatform_PixelFormat_R32I:
+        *out_bytes_per_pixel = 4;
+        return VK_FORMAT_R32_SINT;
+#endif
     default:
         *out_bytes_per_pixel = 4;
         return VK_FORMAT_R8G8B8A8_UNORM;
