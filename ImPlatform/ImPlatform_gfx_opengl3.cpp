@@ -64,6 +64,102 @@
 #ifndef GL_UNSIGNED_SHORT
 #define GL_UNSIGNED_SHORT                 0x1403
 #endif
+#ifndef GL_BYTE
+#define GL_BYTE                           0x1400
+#endif
+#ifndef GL_SHORT
+#define GL_SHORT                          0x1402
+#endif
+#ifndef GL_INT
+#define GL_INT                            0x1404
+#endif
+#ifndef GL_DEPTH_STENCIL
+#define GL_DEPTH_STENCIL                  0x84F9
+#endif
+#ifndef GL_FLOAT_32_UNSIGNED_INT_24_8_REV
+#define GL_FLOAT_32_UNSIGNED_INT_24_8_REV 0x8DAD
+#endif
+#ifndef GL_RED_INTEGER
+#define GL_RED_INTEGER                    0x8D94
+#endif
+#ifndef GL_R8I
+#define GL_R8I                            0x8231
+#endif
+#ifndef GL_R8UI
+#define GL_R8UI                           0x8232
+#endif
+#ifndef GL_R16I
+#define GL_R16I                           0x8233
+#endif
+#ifndef GL_R16UI
+#define GL_R16UI                          0x8234
+#endif
+#ifndef GL_R32I
+#define GL_R32I                           0x8235
+#endif
+#ifndef GL_R32UI
+#define GL_R32UI                          0x8236
+#endif
+// BGRA format
+#ifndef GL_BGRA
+#define GL_BGRA                           0x80E1
+#endif
+// Extended RGB formats
+#ifndef GL_RGB16
+#define GL_RGB16                          0x8054
+#endif
+// Half-float formats
+#ifndef GL_HALF_FLOAT
+#define GL_HALF_FLOAT                     0x140B
+#endif
+#ifndef GL_R16F
+#define GL_R16F                           0x822D
+#endif
+#ifndef GL_RG16F
+#define GL_RG16F                          0x822F
+#endif
+#ifndef GL_RGBA16F
+#define GL_RGBA16F                        0x881A
+#endif
+#ifndef GL_RGB16F
+#define GL_RGB16F                         0x881B
+#endif
+#ifndef GL_RGB32F
+#define GL_RGB32F                         0x8815
+#endif
+// sRGB formats
+#ifndef GL_SRGB8
+#define GL_SRGB8                          0x8C41
+#endif
+#ifndef GL_SRGB8_ALPHA8
+#define GL_SRGB8_ALPHA8                   0x8C43
+#endif
+// Packed formats
+#ifndef GL_RGB10_A2
+#define GL_RGB10_A2                       0x8059
+#endif
+#ifndef GL_UNSIGNED_INT_2_10_10_10_REV
+#define GL_UNSIGNED_INT_2_10_10_10_REV    0x8368
+#endif
+// Depth/stencil formats
+#ifndef GL_DEPTH_COMPONENT
+#define GL_DEPTH_COMPONENT                0x1902
+#endif
+#ifndef GL_DEPTH_COMPONENT16
+#define GL_DEPTH_COMPONENT16              0x81A5
+#endif
+#ifndef GL_DEPTH_COMPONENT32F
+#define GL_DEPTH_COMPONENT32F             0x8CAC
+#endif
+#ifndef GL_UNSIGNED_INT_24_8
+#define GL_UNSIGNED_INT_24_8              0x84FA
+#endif
+#ifndef GL_DEPTH24_STENCIL8
+#define GL_DEPTH24_STENCIL8               0x88F0
+#endif
+#ifndef GL_DEPTH32F_STENCIL8
+#define GL_DEPTH32F_STENCIL8              0x8CAD
+#endif
 
 // Load additional GL function pointers not in the stripped loader
 typedef void (APIENTRYP PFNGLUNIFORM1FVPROC) (GLint location, GLsizei count, const GLfloat *value);

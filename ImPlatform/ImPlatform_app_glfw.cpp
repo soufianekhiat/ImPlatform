@@ -30,6 +30,18 @@ static void glfw_content_scale_callback(GLFWwindow* window, float xscale, float 
 }
 #endif
 
+#if IMPLATFORM_APP_SUPPORT_DROP_FILE
+// File drop callback: paths are already UTF-8, position taken from current cursor
+static void glfw_drop_callback(GLFWwindow* window, int count, const char** paths)
+{
+    double cx = 0.0, cy = 0.0;
+    glfwGetCursorPos(window, &cx, &cy);
+    ImVec2 pos((float)cx, (float)cy);
+    for (int i = 0; i < count; ++i)
+        ImPlatform_NotifyFileDrop(paths[i], pos);
+}
+#endif
+
 // ImPlatform API - CreateWindow
 IMPLATFORM_API bool ImPlatform_CreateWindow(char const* pWindowsName, ImVec2 const vPos, unsigned int uWidth, unsigned int uHeight)
 {
@@ -103,6 +115,11 @@ IMPLATFORM_API bool ImPlatform_CreateWindow(char const* pWindowsName, ImVec2 con
 #ifndef __EMSCRIPTEN__
     // Set window position (GLFW doesn't support this in creation, so we set it after)
     glfwSetWindowPos(g_AppData.pWindow, (int)vPos.x, (int)vPos.y);
+#endif
+
+#if IMPLATFORM_APP_SUPPORT_DROP_FILE
+    if (g_AppData.bDropFileEnabled)
+        glfwSetDropCallback(g_AppData.pWindow, glfw_drop_callback);
 #endif
 
     // Query DPI scale and register callback for runtime changes (GLFW 3.3+)
@@ -247,5 +264,14 @@ ImPlatform_AppData_GLFW* ImPlatform_App_GetData_GLFW(void)
 {
     return &g_AppData;
 }
+
+#if IMPLATFORM_APP_SUPPORT_DROP_FILE
+void ImPlatform_App_OnDropFileCallbackChanged(bool has_callback)
+{
+    g_AppData.bDropFileEnabled = has_callback;
+    if (g_AppData.pWindow)
+        glfwSetDropCallback(g_AppData.pWindow, has_callback ? glfw_drop_callback : NULL);
+}
+#endif // IMPLATFORM_APP_SUPPORT_DROP_FILE
 
 #endif // IM_PLATFORM_GLFW

@@ -8,6 +8,9 @@
 #include "../imgui/backends/imgui_impl_win32.h"
 #include <tchar.h>
 #include <windowsx.h>  // For GET_X_LPARAM, GET_Y_LPARAM
+#if IMPLATFORM_APP_SUPPORT_DROP_FILE
+#include <shellapi.h>  // For DragAcceptFiles, DragQueryFileW, DragFinish
+#endif
 
 // Global state
 static ImPlatform_AppData_Win32 g_AppData = { 0 };
@@ -162,6 +165,26 @@ static LRESULT WINAPI WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
         break;
 #endif
 
+#if IMPLATFORM_APP_SUPPORT_DROP_FILE
+    case WM_DROPFILES:
+        {
+            HDROP hDrop = (HDROP)wParam;
+            UINT count = ::DragQueryFileW(hDrop, 0xFFFFFFFF, NULL, 0);
+            POINT pt = {};
+            ::DragQueryPoint(hDrop, &pt);  // client-space coordinates
+            for (UINT i = 0; i < count; ++i)
+            {
+                wchar_t wpath[32767];
+                ::DragQueryFileW(hDrop, i, wpath, 32767);
+                char utf8path[32767 * 3];
+                ::WideCharToMultiByte(CP_UTF8, 0, wpath, -1, utf8path, sizeof(utf8path), NULL, NULL);
+                ImPlatform_NotifyFileDrop(utf8path, ImVec2((float)pt.x, (float)pt.y));
+            }
+            ::DragFinish(hDrop);
+            return 0;
+        }
+#endif // IMPLATFORM_APP_SUPPORT_DROP_FILE
+
     case WM_DESTROY:
         ::PostQuitMessage(0);
         return 0;
@@ -249,6 +272,10 @@ IMPLATFORM_API bool ImPlatform_ShowWindow(void)
 {
     ::ShowWindow(g_AppData.hWnd, SW_SHOWDEFAULT);
     ::UpdateWindow(g_AppData.hWnd);
+#if IMPLATFORM_APP_SUPPORT_DROP_FILE
+    if (g_AppData.bDropFileEnabled)
+        ::DragAcceptFiles(g_AppData.hWnd, TRUE);
+#endif
     return true;
 }
 
@@ -322,5 +349,14 @@ ImPlatform_AppData_Win32* ImPlatform_App_GetData_Win32(void)
 {
     return &g_AppData;
 }
+
+#if IMPLATFORM_APP_SUPPORT_DROP_FILE
+void ImPlatform_App_OnDropFileCallbackChanged(bool has_callback)
+{
+    g_AppData.bDropFileEnabled = has_callback;
+    if (g_AppData.hWnd)
+        ::DragAcceptFiles(g_AppData.hWnd, has_callback ? TRUE : FALSE);
+}
+#endif // IMPLATFORM_APP_SUPPORT_DROP_FILE
 
 #endif // IM_CURRENT_PLATFORM == IM_PLATFORM_WIN32

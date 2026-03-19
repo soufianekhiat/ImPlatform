@@ -757,6 +757,12 @@ IMPLATFORM_API void ImPlatform_BindIndexBuffer(ImPlatform_IndexBuffer index_buff
     g_GfxData.pDeviceContext->IASetIndexBuffer(buffer->pIndexBuffer, format, 0);
 }
 
+IMPLATFORM_API void ImPlatform_BindBuffers(ImPlatform_VertexBuffer vertex_buffer, ImPlatform_IndexBuffer index_buffer)
+{
+    ImPlatform_BindVertexBuffer(vertex_buffer);
+    ImPlatform_BindIndexBuffer(index_buffer);
+}
+
 IMPLATFORM_API void ImPlatform_DrawIndexed(unsigned int primitive_type, unsigned int index_count, unsigned int start_index)
 {
     D3D11_PRIMITIVE_TOPOLOGY topology;
@@ -801,6 +807,61 @@ struct ImPlatform_ShaderProgramData_DX11
     size_t pixelConstantDataSize;
     bool pixelConstantDataDirty;
 };
+
+IMPLATFORM_API bool ImPlatform_CreateVertexInputLayout(ImPlatform_VertexBuffer vertex_buffer, ImPlatform_ShaderProgram program)
+{
+    if (!vertex_buffer || !program)
+        return false;
+
+    ImPlatform_BufferData_DX11*        vb   = (ImPlatform_BufferData_DX11*)vertex_buffer;
+    ImPlatform_ShaderProgramData_DX11* prog = (ImPlatform_ShaderProgramData_DX11*)program;
+
+    if (!prog->pVSBlob || !vb->vb_desc.attributes || vb->vb_desc.attribute_count == 0)
+        return false;
+
+    // Release any previously created layout
+    if (vb->pInputLayout)
+    {
+        vb->pInputLayout->Release();
+        vb->pInputLayout = nullptr;
+    }
+
+    unsigned int count = vb->vb_desc.attribute_count;
+
+    // Build D3D11_INPUT_ELEMENT_DESC array.
+    // Auto-increment SemanticIndex for attributes sharing the same semantic name
+    // (e.g., two "TEXCOORD" entries get indices 0 and 1).
+    D3D11_INPUT_ELEMENT_DESC* layout = new D3D11_INPUT_ELEMENT_DESC[count];
+    for (unsigned int i = 0; i < count; i++)
+    {
+        const ImPlatform_VertexAttribute& attr = vb->vb_desc.attributes[i];
+
+        // Count how many earlier attributes share this semantic name
+        unsigned int semantic_index = 0;
+        for (unsigned int j = 0; j < i; j++)
+        {
+            if (strcmp(vb->vb_desc.attributes[j].semantic_name, attr.semantic_name) == 0)
+                semantic_index++;
+        }
+
+        layout[i].SemanticName         = attr.semantic_name;
+        layout[i].SemanticIndex        = semantic_index;
+        layout[i].Format               = ImPlatform_GetDXGIFormat(attr.format);
+        layout[i].InputSlot            = 0;
+        layout[i].AlignedByteOffset    = attr.offset;
+        layout[i].InputSlotClass       = D3D11_INPUT_PER_VERTEX_DATA;
+        layout[i].InstanceDataStepRate = 0;
+    }
+
+    HRESULT hr = g_GfxData.pDevice->CreateInputLayout(
+        layout, count,
+        prog->pVSBlob->GetBufferPointer(),
+        prog->pVSBlob->GetBufferSize(),
+        &vb->pInputLayout);
+
+    delete[] layout;
+    return SUCCEEDED(hr);
+}
 
 // Global state for uniform block batching
 static ImPlatform_ShaderProgram g_CurrentUniformBlockProgram = nullptr;
