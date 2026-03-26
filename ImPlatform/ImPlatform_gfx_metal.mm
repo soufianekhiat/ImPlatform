@@ -527,6 +527,9 @@ struct ImPlatform_ShaderProgramData_Metal
 // Current draw data for custom shader rendering (needed for multi-viewport)
 static ImDrawData* g_CurrentDrawData = nullptr;
 
+// Current render encoder for custom shader rendering (set during render pass)
+static void* g_CurrentRenderEncoder = nullptr; // id<MTLRenderCommandEncoder>
+
 IMPLATFORM_API ImPlatform_Shader ImPlatform_CreateShader(const ImPlatform_ShaderDesc* desc)
 {
     if (!desc || !desc->source_code || !g_GfxData.pMetalDevice)
@@ -850,11 +853,13 @@ IMPLATFORM_API void ImPlatform_EndUniformBlock(ImPlatform_ShaderProgram program)
 // Wrapper for ImGui_ImplMetal_RenderDrawData that stores draw_data for custom shader callbacks
 static void ImPlatform_RenderDrawDataWrapper(ImDrawData* draw_data, id<MTLCommandBuffer> commandBuffer, id<MTLRenderCommandEncoder> renderEncoder)
 {
-    // Store draw data for custom shader callbacks (needed for multi-viewport)
+    // Store draw data and render encoder for custom shader callbacks (needed for multi-viewport)
     g_CurrentDrawData = draw_data;
+    g_CurrentRenderEncoder = (__bridge void*)renderEncoder;
 
     ImGui_ImplMetal_RenderDrawData(draw_data, commandBuffer, renderEncoder);
 
+    g_CurrentRenderEncoder = nullptr;
     // NOTE: Don't clear g_CurrentDrawData here - it will be updated by the next render call
 }
 
@@ -930,6 +935,61 @@ static void ImPlatform_SetCustomShader(const ImDrawList* parent_list, const ImDr
 
         // Since we don't have direct access to the render encoder here without modifying ImGui's Metal backend,
         // this serves as a reference implementation showing the required logic
+    }
+}
+
+// Activate a custom shader immediately (for use inside draw callbacks).
+IMPLATFORM_API void ImPlatform_BeginCustomShader_Render(ImPlatform_ShaderProgram program)
+{
+    @autoreleasepool {
+        if (!program || !g_CurrentRenderEncoder)
+            return;
+
+        ImPlatform_ShaderProgramData_Metal* program_data = (ImPlatform_ShaderProgramData_Metal*)program;
+        id<MTLRenderCommandEncoder> renderEncoder = (__bridge id<MTLRenderCommandEncoder>)g_CurrentRenderEncoder;
+
+        // Find draw data for projection matrix calculation
+        ImDrawData* draw_data = g_CurrentDrawData;
+        if (!draw_data)
+            draw_data = ImGui::GetDrawData();
+        if (!draw_data)
+            return;
+
+        // Calculate projection matrix for this viewport
+        float L = draw_data->DisplayPos.x;
+        float R = draw_data->DisplayPos.x + draw_data->DisplaySize.x;
+        float T = draw_data->DisplayPos.y;
+        float B = draw_data->DisplayPos.y + draw_data->DisplaySize.y;
+
+        float ortho_projection[4][4] =
+        {
+            { 2.0f / (R - L),     0.0f,              0.0f, 0.0f },
+            { 0.0f,               2.0f / (T - B),    0.0f, 0.0f },
+            { 0.0f,               0.0f,              0.5f, 0.0f },
+            { (R + L) / (L - R),  (T + B) / (B - T), 0.5f, 1.0f },
+        };
+
+        // Bind custom pipeline state
+        id<MTLRenderPipelineState> pipelineState = (__bridge id<MTLRenderPipelineState>)program_data->mtlRenderPipelineState;
+        if (pipelineState)
+            [renderEncoder setRenderPipelineState:pipelineState];
+
+        // Set projection matrix as vertex shader uniforms (buffer index 1, matching ImGui's Metal backend)
+        [renderEncoder setVertexBytes:&ortho_projection length:sizeof(ortho_projection) atIndex:1];
+
+        // Set custom fragment shader uniforms
+        if (program_data->uniformData && program_data->uniformDataSize > 0)
+        {
+            id<MTLBuffer> uniformBuffer = (__bridge id<MTLBuffer>)program_data->mtlUniformBuffer;
+            if (uniformBuffer && program_data->uniformDataDirty)
+            {
+                memcpy([uniformBuffer contents], program_data->uniformData, program_data->uniformDataSize);
+                program_data->uniformDataDirty = false;
+            }
+
+            if (uniformBuffer)
+                [renderEncoder setFragmentBuffer:uniformBuffer offset:0 atIndex:1];
+        }
     }
 }
 

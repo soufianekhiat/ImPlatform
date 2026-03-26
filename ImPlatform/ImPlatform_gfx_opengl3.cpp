@@ -1477,17 +1477,17 @@ IMPLATFORM_API bool ImPlatform_SetShaderTexture(ImPlatform_ShaderProgram program
         return false;
 
     ImPlatform_ShaderProgramData_GL* program_data = (ImPlatform_ShaderProgramData_GL*)program;
-    GLint location = glGetUniformLocation(program_data->program_id, name);
 
-    if (location == -1)
-        return false; // Uniform not found
-
-    // Activate texture unit and bind texture
+    // Bind texture to the requested unit unconditionally.
+    // Shaders using explicit layout(binding=N) qualifiers don't need a uniform set,
+    // but still require the texture to be bound to the correct texture unit.
     glActiveTexture(GL_TEXTURE0 + slot);
     glBindTexture(GL_TEXTURE_2D, (GLuint)(intptr_t)texture);
 
-    // Set the sampler uniform to the texture slot
-    glUniform1i(location, slot);
+    // For shaders without explicit binding (legacy sampler uniforms), set the unit.
+    GLint location = glGetUniformLocation(program_data->program_id, name);
+    if (location != -1)
+        glUniform1i(location, slot);
 
     return true;
 }
@@ -1509,6 +1509,63 @@ static void ImPlatform_SetCustomShader(const ImDrawList* parent_list, const ImDr
 
     // Use cached draw data for correct viewport projection in multi-viewport mode
     ImDrawData* draw_data = g_CurrentDrawData;
+    if (!draw_data) return;
+
+    float L = draw_data->DisplayPos.x;
+    float R = draw_data->DisplayPos.x + draw_data->DisplaySize.x;
+    float T = draw_data->DisplayPos.y;
+    float B = draw_data->DisplayPos.y + draw_data->DisplaySize.y;
+
+    const float ortho_projection[4][4] = {
+        { 2.0f/(R-L),   0.0f,         0.0f,   0.0f },
+        { 0.0f,         2.0f/(T-B),   0.0f,   0.0f },
+        { 0.0f,         0.0f,        -1.0f,   0.0f },
+        { (R+L)/(L-R),  (T+B)/(B-T),  0.0f,   1.0f },
+    };
+
+    // Apply projection matrix
+    GLint proj_loc = glGetUniformLocation(program_data->program_id, "ProjMtx");
+    if (proj_loc != -1)
+        glUniformMatrix4fv(proj_loc, 1, GL_FALSE, &ortho_projection[0][0]);
+
+    // Apply all stored uniforms
+    for (int i = 0; i < program_data->uniform_count; i++)
+    {
+        ImPlatform_UniformData_GL* uniform = &program_data->uniforms[i];
+        GLint location = glGetUniformLocation(program_data->program_id, uniform->name);
+
+        if (location == -1)
+            continue;
+
+        unsigned int size = uniform->size;
+        const float* data = uniform->data;
+
+        if (size == sizeof(float) * 1)
+            glUniform1fv_Ptr(location, 1, data);
+        else if (size == sizeof(float) * 2)
+            glUniform2fv_Ptr(location, 1, data);
+        else if (size == sizeof(float) * 3)
+            glUniform3fv_Ptr(location, 1, data);
+        else if (size == sizeof(float) * 4)
+            glUniform4fv_Ptr(location, 1, data);
+        else if (size == sizeof(float) * 16)
+            glUniformMatrix4fv(location, 1, GL_FALSE, data);
+    }
+}
+
+// Activate a custom shader immediately (for use inside draw callbacks).
+IMPLATFORM_API void ImPlatform_BeginCustomShader_Render(ImPlatform_ShaderProgram program)
+{
+    if (!program) return;
+    ImPlatform_ShaderProgramData_GL* program_data = (ImPlatform_ShaderProgramData_GL*)program;
+
+    // Bind the shader program
+    ImPlatform_BindShaderProgram(program);
+
+    // Use cached draw data for correct viewport projection in multi-viewport mode
+    ImDrawData* draw_data = g_CurrentDrawData;
+    if (!draw_data)
+        draw_data = ImGui::GetDrawData();
     if (!draw_data) return;
 
     float L = draw_data->DisplayPos.x;

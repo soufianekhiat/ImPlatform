@@ -1460,6 +1460,78 @@ static void ImPlatform_SetCustomShader(const ImDrawList* parent_list, const ImDr
     }
 }
 
+// Activate a custom shader immediately (for use inside draw callbacks).
+IMPLATFORM_API void ImPlatform_BeginCustomShader_Render(ImPlatform_ShaderProgram program)
+{
+    if (!program)
+        return;
+
+    ImPlatform_ShaderProgramData_DX12* program_data = (ImPlatform_ShaderProgramData_DX12*)program;
+
+    // Get the command list from ImGui's render state (works for all viewports)
+    ImGuiPlatformIO& platform_io = ImGui::GetPlatformIO();
+    ImGui_ImplDX12_RenderState* render_state = (ImGui_ImplDX12_RenderState*)platform_io.Renderer_RenderState;
+    if (!render_state || !render_state->CommandList)
+        return;
+
+    ID3D12GraphicsCommandList* cmdList = render_state->CommandList;
+
+    // Set Pipeline State Object and Root Signature
+    cmdList->SetPipelineState(program_data->pPSO);
+    cmdList->SetGraphicsRootSignature(program_data->pRootSignature);
+
+    // IMPORTANT: SetGraphicsRootSignature() invalidates ALL root parameter bindings!
+    // We must rebind everything, even though our root signature is compatible with ImGui's.
+
+    // Rebind root parameter 0: projection matrix (32-bit constants)
+    ImDrawData* draw_data = g_CurrentDrawData;
+    if (!draw_data)
+        draw_data = ImGui::GetDrawData();
+    if (!draw_data)
+        return;
+
+    float L = draw_data->DisplayPos.x;
+    float R = draw_data->DisplayPos.x + draw_data->DisplaySize.x;
+    float T = draw_data->DisplayPos.y;
+    float B = draw_data->DisplayPos.y + draw_data->DisplaySize.y;
+    float mvp[4][4] =
+    {
+        { 2.0f/(R-L),   0.0f,           0.0f,       0.0f },
+        { 0.0f,         2.0f/(T-B),     0.0f,       0.0f },
+        { 0.0f,         0.0f,           0.5f,       0.0f },
+        { (R+L)/(L-R),  (T+B)/(B-T),    0.5f,       1.0f },
+    };
+    cmdList->SetGraphicsRoot32BitConstants(0, 16, mvp, 0);
+
+    // Note: Texture descriptor table (root parameter 1) is NOT rebound here
+    // because we don't have access to the current texture ID outside a draw command.
+    // The caller is responsible for binding textures if needed.
+
+    // Upload and bind pixel shader constant buffer if dirty (root parameter 2)
+    if (program_data->pPixelConstantBuffer && program_data->pixelConstantDataDirty && program_data->pPixelConstantData)
+    {
+        // Map and upload constant buffer data
+        void* pMappedData = nullptr;
+        D3D12_RANGE readRange = { 0, 0 }; // We don't read from this resource on the CPU
+        if (SUCCEEDED(program_data->pPixelConstantBuffer->Map(0, &readRange, &pMappedData)))
+        {
+            memcpy(pMappedData, program_data->pPixelConstantData, program_data->pixelConstantDataSize);
+            program_data->pPixelConstantBuffer->Unmap(0, nullptr);
+            program_data->pixelConstantDataDirty = false;
+        }
+
+        // Bind pixel shader constant buffer to root parameter 2 (our custom uniforms)
+        D3D12_GPU_VIRTUAL_ADDRESS cbAddress = program_data->pPixelConstantBuffer->GetGPUVirtualAddress();
+        cmdList->SetGraphicsRootConstantBufferView(2, cbAddress);
+    }
+    else if (program_data->pPixelConstantBuffer)
+    {
+        // Even if not dirty, ensure the constant buffer is bound
+        D3D12_GPU_VIRTUAL_ADDRESS cbAddress = program_data->pPixelConstantBuffer->GetGPUVirtualAddress();
+        cmdList->SetGraphicsRootConstantBufferView(2, cbAddress);
+    }
+}
+
 IMPLATFORM_API void ImPlatform_BeginCustomShader(ImDrawList* draw, ImPlatform_ShaderProgram shader)
 {
     if (!draw || !shader)

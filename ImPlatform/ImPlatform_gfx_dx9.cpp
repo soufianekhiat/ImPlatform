@@ -774,6 +774,13 @@ static void ImPlatform_SetCustomShader(const ImDrawList* parent_list, const ImDr
     // This is a stub for API consistency
 }
 
+// Activate a custom shader immediately (for use inside draw callbacks).
+IMPLATFORM_API void ImPlatform_BeginCustomShader_Render(ImPlatform_ShaderProgram program)
+{
+    // DX9 custom shaders not supported (D3DX deprecated)
+    // This is a stub for API consistency
+}
+
 IMPLATFORM_API void ImPlatform_BeginCustomShader(ImDrawList* draw, ImPlatform_ShaderProgram shader)
 {
     if (!draw || !shader)

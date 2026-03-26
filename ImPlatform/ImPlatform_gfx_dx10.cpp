@@ -1029,6 +1029,44 @@ static void ImPlatform_SetCustomShader(const ImDrawList* parent_list, const ImDr
     }
 }
 
+// Activate a custom shader immediately (for use inside draw callbacks).
+IMPLATFORM_API void ImPlatform_BeginCustomShader_Render(ImPlatform_ShaderProgram program)
+{
+    if (!program) return;
+    ImPlatform_ShaderProgramData_DX10* program_data = (ImPlatform_ShaderProgramData_DX10*)program;
+
+    // Set custom shaders
+    ImPlatform_UseShaderProgram(program);
+
+    // Set the input layout for the custom shader
+    if (program_data->pInputLayout)
+    {
+        g_GfxData.pDevice->IASetInputLayout(program_data->pInputLayout);
+    }
+
+    // Note: Vertex constant buffer (b0) is already set by ImGui's backend with projection matrix
+
+    // Update pixel shader constant buffer if dirty
+    if (program_data->pPixelConstantBuffer && program_data->pixelConstantDataDirty && program_data->pPixelConstantData)
+    {
+        void* mapped_resource = nullptr;
+        if (program_data->pPixelConstantBuffer->Map(D3D10_MAP_WRITE_DISCARD, 0, &mapped_resource) == S_OK)
+        {
+            memcpy(mapped_resource, program_data->pPixelConstantData, program_data->pixelConstantDataSize);
+            program_data->pPixelConstantBuffer->Unmap();
+            program_data->pixelConstantDataDirty = false;
+        }
+
+        // Bind pixel shader constant buffer to register b1 (b0 is used by vertex shader for projection matrix)
+        g_GfxData.pDevice->PSSetConstantBuffers(1, 1, &program_data->pPixelConstantBuffer);
+    }
+    else if (program_data->pPixelConstantBuffer)
+    {
+        // Even if not dirty, ensure the constant buffer is bound
+        g_GfxData.pDevice->PSSetConstantBuffers(1, 1, &program_data->pPixelConstantBuffer);
+    }
+}
+
 IMPLATFORM_API void ImPlatform_BeginCustomShader(ImDrawList* draw, ImPlatform_ShaderProgram shader)
 {
     if (!draw || !shader)

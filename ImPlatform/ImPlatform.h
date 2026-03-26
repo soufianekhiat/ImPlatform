@@ -666,6 +666,8 @@ IMPLATFORM_API void ImPlatform_BeginCustomShader(
     ImDrawList* draw,
     ImPlatform_ShaderProgram shader
 );
+// Activate a custom shader immediately (for use inside draw callbacks)
+IMPLATFORM_API void ImPlatform_BeginCustomShader_Render(ImPlatform_ShaderProgram program);
 
 // End custom shader usage and restore default ImGui rendering state
 // Adds a callback to reset render state to ImGui defaults

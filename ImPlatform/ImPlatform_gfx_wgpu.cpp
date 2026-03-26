@@ -91,6 +91,9 @@ static size_t g_UniformBlockSize = 0;
 // Current draw data for custom shader rendering (needed for multi-viewport)
 static ImDrawData* g_CurrentDrawData = nullptr;
 
+// Default sampler for custom shader bind groups (created on first use)
+static WGPUSampler g_DefaultSampler = nullptr;
+
 // ============================================================================
 // Texture Resource Tracking
 // ============================================================================
@@ -826,7 +829,11 @@ IMPLATFORM_API bool ImPlatform_GfxAPISwapBuffer(void)
 // ImPlatform API - ShutdownGfxAPI
 IMPLATFORM_API void ImPlatform_ShutdownGfxAPI(void)
 {
-    // Nothing special needed
+    if (g_DefaultSampler)
+    {
+        wgpuSamplerRelease(g_DefaultSampler);
+        g_DefaultSampler = nullptr;
+    }
 }
 
 // ImPlatform API - ShutdownWindow
@@ -1400,6 +1407,7 @@ struct ImPlatform_ShaderProgramData_WebGPU
     WGPUBindGroupLayout bindGroupLayout;
     WGPUBindGroup bindGroup;
     WGPUBuffer uniformBuffer;
+    size_t uniformBufferCapacity; // Allocated size of uniformBuffer (aligned)
     void* uniformData;       // Custom uniforms (not including projection matrix)
     size_t uniformDataSize;
     bool uniformDataDirty;
@@ -1773,13 +1781,17 @@ static void ImPlatform_SetCustomShader(const ImDrawList* parent_list, const ImDr
     // Align to 256 bytes (WebGPU requirement)
     size_t aligned_size = (total_size + 255) & ~(size_t)255;
 
-    // Create or recreate uniform buffer if needed
-    if (!program_data->uniformBuffer)
+    // Create or recreate uniform buffer if needed (grow if too small)
+    size_t required_capacity = aligned_size < 256 ? 256 : aligned_size;
+    if (!program_data->uniformBuffer || program_data->uniformBufferCapacity < required_capacity)
     {
+        if (program_data->uniformBuffer)
+            wgpuBufferRelease(program_data->uniformBuffer);
         WGPUBufferDescriptor buf_desc = {};
         buf_desc.usage = WGPUBufferUsage_Uniform | WGPUBufferUsage_CopyDst;
-        buf_desc.size = aligned_size < 256 ? 256 : aligned_size;
+        buf_desc.size = required_capacity;
         program_data->uniformBuffer = wgpuDeviceCreateBuffer(g_GfxData.device, &buf_desc);
+        program_data->uniformBufferCapacity = program_data->uniformBuffer ? required_capacity : 0;
     }
 
     if (!program_data->uniformBuffer)
@@ -1799,8 +1811,7 @@ static void ImPlatform_SetCustomShader(const ImDrawList* parent_list, const ImDr
     WGPUTextureView default_view = (WGPUTextureView)(void*)(intptr_t)font_tex.GetTexID();
 
     // Create a default sampler if we haven't yet
-    static WGPUSampler s_DefaultSampler = nullptr;
-    if (!s_DefaultSampler)
+    if (!g_DefaultSampler)
     {
         WGPUSamplerDescriptor sampler_desc = {};
         sampler_desc.addressModeU = WGPUAddressMode_ClampToEdge;
@@ -1810,7 +1821,7 @@ static void ImPlatform_SetCustomShader(const ImDrawList* parent_list, const ImDr
         sampler_desc.minFilter = WGPUFilterMode_Linear;
         sampler_desc.mipmapFilter = WGPUMipmapFilterMode_Linear;
         sampler_desc.maxAnisotropy = 1;
-        s_DefaultSampler = wgpuDeviceCreateSampler(g_GfxData.device, &sampler_desc);
+        g_DefaultSampler = wgpuDeviceCreateSampler(g_GfxData.device, &sampler_desc);
     }
 
     // Create bind group
@@ -1819,10 +1830,131 @@ static void ImPlatform_SetCustomShader(const ImDrawList* parent_list, const ImDr
     bg_entries[0].binding = 0;
     bg_entries[0].buffer = program_data->uniformBuffer;
     bg_entries[0].offset = 0;
-    bg_entries[0].size = aligned_size < 256 ? 256 : aligned_size;
+    bg_entries[0].size = program_data->uniformBufferCapacity;
 
     bg_entries[1].binding = 1;
-    bg_entries[1].sampler = s_DefaultSampler;
+    bg_entries[1].sampler = g_DefaultSampler;
+
+    bg_entries[2].binding = 2;
+    bg_entries[2].textureView = default_view;
+
+    WGPUBindGroupDescriptor bg_desc = {};
+    bg_desc.layout = program_data->bindGroupLayout;
+    bg_desc.entryCount = 3;
+    bg_desc.entries = bg_entries;
+
+    // Release previous bind group
+    if (program_data->bindGroup)
+        wgpuBindGroupRelease(program_data->bindGroup);
+
+    program_data->bindGroup = wgpuDeviceCreateBindGroup(g_GfxData.device, &bg_desc);
+
+    if (!program_data->bindGroup)
+        return;
+
+    // Set the custom pipeline and bind group on the render pass
+    wgpuRenderPassEncoderSetPipeline(pass, program_data->renderPipeline);
+    wgpuRenderPassEncoderSetBindGroup(pass, 0, program_data->bindGroup, 0, nullptr);
+}
+
+// Activate a custom shader immediately (for use inside draw callbacks).
+IMPLATFORM_API void ImPlatform_BeginCustomShader_Render(ImPlatform_ShaderProgram program)
+{
+    if (!program)
+        return;
+
+    ImPlatform_ShaderProgramData_WebGPU* program_data = (ImPlatform_ShaderProgramData_WebGPU*)program;
+
+    // Get the current render pass encoder from ImGui's render state
+    ImGuiPlatformIO& platform_io = ImGui::GetPlatformIO();
+    ImGui_ImplWGPU_RenderState* render_state = (ImGui_ImplWGPU_RenderState*)platform_io.Renderer_RenderState;
+    if (!render_state || !render_state->RenderPassEncoder)
+        return;
+
+    WGPURenderPassEncoder pass = render_state->RenderPassEncoder;
+
+    // Find draw data for projection matrix calculation
+    ImDrawData* draw_data = g_CurrentDrawData;
+    if (!draw_data)
+        draw_data = ImGui::GetDrawData();
+    if (!draw_data)
+        return;
+
+    // Calculate projection matrix
+    float L = draw_data->DisplayPos.x;
+    float R = draw_data->DisplayPos.x + draw_data->DisplaySize.x;
+    float T = draw_data->DisplayPos.y;
+    float B = draw_data->DisplayPos.y + draw_data->DisplaySize.y;
+
+    float mvp[4][4] =
+    {
+        { 2.0f / (R - L),     0.0f,              0.0f, 0.0f },
+        { 0.0f,               2.0f / (T - B),    0.0f, 0.0f },
+        { 0.0f,               0.0f,              0.5f, 0.0f },
+        { (R + L) / (L - R),  (T + B) / (B - T), 0.5f, 1.0f },
+    };
+
+    // Build combined uniform data: [projection_matrix | custom_uniforms]
+    size_t mvp_size = sizeof(mvp);
+    size_t custom_size = program_data->uniformData ? program_data->uniformDataSize : 0;
+    size_t total_size = mvp_size + custom_size;
+
+    // Align to 256 bytes (WebGPU requirement)
+    size_t aligned_size = (total_size + 255) & ~(size_t)255;
+
+    // Create or recreate uniform buffer if needed (grow if too small)
+    size_t required_capacity = aligned_size < 256 ? 256 : aligned_size;
+    if (!program_data->uniformBuffer || program_data->uniformBufferCapacity < required_capacity)
+    {
+        if (program_data->uniformBuffer)
+            wgpuBufferRelease(program_data->uniformBuffer);
+        WGPUBufferDescriptor buf_desc = {};
+        buf_desc.usage = WGPUBufferUsage_Uniform | WGPUBufferUsage_CopyDst;
+        buf_desc.size = required_capacity;
+        program_data->uniformBuffer = wgpuDeviceCreateBuffer(g_GfxData.device, &buf_desc);
+        program_data->uniformBufferCapacity = program_data->uniformBuffer ? required_capacity : 0;
+    }
+
+    if (!program_data->uniformBuffer)
+        return;
+
+    // Upload projection matrix
+    wgpuQueueWriteBuffer(g_GfxData.queue, program_data->uniformBuffer, 0, mvp, mvp_size);
+
+    // Upload custom uniforms (if any)
+    if (program_data->uniformData && custom_size > 0)
+    {
+        wgpuQueueWriteBuffer(g_GfxData.queue, program_data->uniformBuffer, mvp_size, program_data->uniformData, custom_size);
+    }
+
+    // Get default texture/sampler from ImGui's font atlas for shaders that don't use textures
+    ImTextureRef font_tex = ImGui::GetIO().Fonts->TexRef;
+    WGPUTextureView default_view = (WGPUTextureView)(void*)(intptr_t)font_tex.GetTexID();
+
+    // Create a default sampler if we haven't yet
+    if (!g_DefaultSampler)
+    {
+        WGPUSamplerDescriptor sampler_desc = {};
+        sampler_desc.addressModeU = WGPUAddressMode_ClampToEdge;
+        sampler_desc.addressModeV = WGPUAddressMode_ClampToEdge;
+        sampler_desc.addressModeW = WGPUAddressMode_ClampToEdge;
+        sampler_desc.magFilter = WGPUFilterMode_Linear;
+        sampler_desc.minFilter = WGPUFilterMode_Linear;
+        sampler_desc.mipmapFilter = WGPUMipmapFilterMode_Linear;
+        sampler_desc.maxAnisotropy = 1;
+        g_DefaultSampler = wgpuDeviceCreateSampler(g_GfxData.device, &sampler_desc);
+    }
+
+    // Create bind group
+    WGPUBindGroupEntry bg_entries[3] = {};
+
+    bg_entries[0].binding = 0;
+    bg_entries[0].buffer = program_data->uniformBuffer;
+    bg_entries[0].offset = 0;
+    bg_entries[0].size = program_data->uniformBufferCapacity;
+
+    bg_entries[1].binding = 1;
+    bg_entries[1].sampler = g_DefaultSampler;
 
     bg_entries[2].binding = 2;
     bg_entries[2].textureView = default_view;
