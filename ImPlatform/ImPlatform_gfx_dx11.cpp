@@ -1201,6 +1201,32 @@ static void ImPlatform_SetCustomShader(const ImDrawList* parent_list, const ImDr
     }
 }
 
+// Activate a custom shader immediately (for use inside draw callbacks).
+IMPLATFORM_API void ImPlatform_BeginCustomShader_Render(ImPlatform_ShaderProgram program)
+{
+    if (!program) return;
+    ImPlatform_ShaderProgramData_DX11* program_data = (ImPlatform_ShaderProgramData_DX11*)program;
+    ImPlatform_UseShaderProgram(program);
+    if (program_data->pInputLayout)
+        g_GfxData.pDeviceContext->IASetInputLayout(program_data->pInputLayout);
+    if (program_data->pPixelConstantBuffer && program_data->pixelConstantDataDirty && program_data->pPixelConstantData)
+    {
+        D3D11_MAPPED_SUBRESOURCE mapped_resource;
+        if (g_GfxData.pDeviceContext->Map(program_data->pPixelConstantBuffer, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped_resource) == S_OK)
+        {
+            memcpy(mapped_resource.pData, program_data->pPixelConstantData, program_data->pixelConstantDataSize);
+            g_GfxData.pDeviceContext->Unmap(program_data->pPixelConstantBuffer, 0);
+            program_data->pixelConstantDataDirty = false;
+        }
+        g_GfxData.pDeviceContext->PSSetConstantBuffers(1, 1, &program_data->pPixelConstantBuffer);
+    }
+    else if (program_data->pPixelConstantBuffer)
+    {
+        // Even if not dirty, ensure the constant buffer is bound
+        g_GfxData.pDeviceContext->PSSetConstantBuffers(1, 1, &program_data->pPixelConstantBuffer);
+    }
+}
+
 IMPLATFORM_API void ImPlatform_BeginCustomShader(ImDrawList* draw, ImPlatform_ShaderProgram shader)
 {
     if (!draw || !shader)

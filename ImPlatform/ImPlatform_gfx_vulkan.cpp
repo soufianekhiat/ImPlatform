@@ -1873,6 +1873,59 @@ static void ImPlatform_SetCustomShader(const ImDrawList* parent_list, const ImDr
     }
 }
 
+// Activate a custom shader immediately (for use inside draw callbacks).
+IMPLATFORM_API void ImPlatform_BeginCustomShader_Render(ImPlatform_ShaderProgram program)
+{
+    if (!program || g_CurrentCommandBuffer == VK_NULL_HANDLE)
+        return;
+
+    ImPlatform_ShaderProgramData_Vulkan* program_data = (ImPlatform_ShaderProgramData_Vulkan*)program;
+
+    // Bind custom pipeline
+    vkCmdBindPipeline(g_CurrentCommandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, program_data->pipeline);
+
+    // Rebind push constants (scale and translate for projection)
+    ImDrawData* draw_data = g_CurrentDrawData;
+    if (!draw_data)
+        draw_data = ImGui::GetDrawData();
+    if (!draw_data)
+        return;
+
+    // Build projection matrix (same as ImGui's approach)
+    float L = draw_data->DisplayPos.x;
+    float R = draw_data->DisplayPos.x + draw_data->DisplaySize.x;
+    float T = draw_data->DisplayPos.y;
+    float B = draw_data->DisplayPos.y + draw_data->DisplaySize.y;
+
+    // Create orthographic projection matrix
+    float mvp[4][4] =
+    {
+        { 2.0f/(R-L),   0.0f,           0.0f,       0.0f },
+        { 0.0f,         2.0f/(T-B),     0.0f,       0.0f },
+        { 0.0f,         0.0f,          -1.0f,       0.0f },
+        { (R+L)/(L-R),  (T+B)/(B-T),    0.0f,       1.0f },
+    };
+
+    // Push projection matrix (offset 0, 64 bytes)
+    vkCmdPushConstants(g_CurrentCommandBuffer, program_data->pipelineLayout,
+                      VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(float) * 16, mvp);
+
+    // Push custom uniform data (offset 64, variable size)
+    // This data was set via BeginUniformBlock/SetUniform/EndUniformBlock
+    if (program_data->uniformBufferMapped && program_data->uniformBufferSize > 0)
+    {
+        vkCmdPushConstants(g_CurrentCommandBuffer, program_data->pipelineLayout,
+                          VK_SHADER_STAGE_FRAGMENT_BIT, 64,
+                          program_data->uniformBufferSize, program_data->uniformBufferMapped);
+    }
+
+    // Bind descriptor set (set 0) containing only the texture (binding 0)
+    if (program_data->descriptorSet != VK_NULL_HANDLE)
+    {
+        vkCmdBindDescriptorSets(g_CurrentCommandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, program_data->pipelineLayout, 0, 1, &program_data->descriptorSet, 0, nullptr);
+    }
+}
+
 IMPLATFORM_API void ImPlatform_BeginCustomShader(ImDrawList* draw, ImPlatform_ShaderProgram shader)
 {
     if (!draw || !shader)
