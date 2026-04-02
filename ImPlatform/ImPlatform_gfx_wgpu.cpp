@@ -1179,6 +1179,46 @@ IMPLATFORM_API bool ImPlatform_UpdateTexture(ImTextureID texture_id, const void*
     return true;
 }
 
+IMPLATFORM_API bool ImPlatform_CopyTexture(ImTextureID dst, ImTextureID src)
+{
+    if (!dst || !src || !g_GfxData.device)
+        return false;
+
+    WGPUTextureView dstView = (WGPUTextureView)dst;
+    WGPUTextureView srcView = (WGPUTextureView)src;
+
+    ImPlatform_TextureTracking_WebGPU* dstTracking = ImPlatform_FindTrackedTexture(dstView);
+    ImPlatform_TextureTracking_WebGPU* srcTracking = ImPlatform_FindTrackedTexture(srcView);
+    if (!dstTracking || !srcTracking)
+        return false;
+
+    WGPUCommandEncoderDescriptor encDesc = {};
+    WGPUCommandEncoder encoder = wgpuDeviceCreateCommandEncoder(g_GfxData.device, &encDesc);
+    if (!encoder)
+        return false;
+
+    WGPUImageCopyTexture srcCopy = {};
+    srcCopy.texture = srcTracking->texture;
+    srcCopy.mipLevel = 0;
+    srcCopy.origin = { 0, 0, 0 };
+
+    WGPUImageCopyTexture dstCopy = {};
+    dstCopy.texture = dstTracking->texture;
+    dstCopy.mipLevel = 0;
+    dstCopy.origin = { 0, 0, 0 };
+
+    WGPUExtent3D extent = { srcTracking->width, srcTracking->height, 1 };
+    wgpuCommandEncoderCopyTextureToTexture(encoder, &srcCopy, &dstCopy, &extent);
+
+    WGPUCommandBufferDescriptor cbDesc = {};
+    WGPUCommandBuffer cmdBuf = wgpuCommandEncoderFinish(encoder, &cbDesc);
+    wgpuQueueSubmit(g_GfxData.queue, 1, &cmdBuf);
+
+    wgpuCommandBufferRelease(cmdBuf);
+    wgpuCommandEncoderRelease(encoder);
+    return true;
+}
+
 IMPLATFORM_API void ImPlatform_DestroyTexture(ImTextureID texture_id)
 {
     if (!texture_id)
@@ -1992,6 +2032,17 @@ IMPLATFORM_API void ImPlatform_EndCustomShader(ImDrawList* draw)
         return;
 
     draw->AddCallback(ImDrawCallback_ResetRenderState, NULL);
+}
+
+IMPLATFORM_API void* ImPlatform_PushShaderConstants(const void* data, unsigned int size)
+{
+    (void)data; (void)size;
+    return nullptr;
+}
+
+IMPLATFORM_API void ImPlatform_PopShaderConstants(void* handle)
+{
+    (void)handle;
 }
 
 #endif // IM_GFX_WGPU
