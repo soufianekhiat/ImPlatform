@@ -849,6 +849,14 @@ IMPLATFORM_API bool ImPlatform_UpdateTexture(ImTextureID texture_id, const void*
     return false;
 }
 
+IMPLATFORM_API bool ImPlatform_CopyTexture(ImTextureID dst, ImTextureID src)
+{
+    // DX12 texture copy requires proper command list management and resource tracking
+    // which is not yet implemented in this backend.
+    (void)dst; (void)src;
+    return false;
+}
+
 IMPLATFORM_API void ImPlatform_DestroyTexture(ImTextureID texture_id)
 {
     if (!texture_id || !g_GfxData.pSrvDescHeapAlloc)
@@ -1546,6 +1554,17 @@ IMPLATFORM_API void ImPlatform_EndCustomShader(ImDrawList* draw)
         return;
 
     draw->AddCallback(ImDrawCallback_ResetRenderState, NULL);
+}
+
+IMPLATFORM_API void* ImPlatform_PushShaderConstants(const void* data, unsigned int size)
+{
+    (void)data; (void)size;
+    return nullptr;
+}
+
+IMPLATFORM_API void ImPlatform_PopShaderConstants(void* handle)
+{
+    (void)handle;
 }
 
 #endif // IM_GFX_DIRECTX12

@@ -520,6 +520,33 @@ IMPLATFORM_API bool ImPlatform_UpdateTexture(ImTextureID texture_id, const void*
     return true;
 }
 
+IMPLATFORM_API bool ImPlatform_CopyTexture(ImTextureID dst, ImTextureID src)
+{
+    if (!dst || !src || !g_GfxData.pDeviceContext)
+        return false;
+
+    ID3D11ShaderResourceView* pDstSRV = (ID3D11ShaderResourceView*)dst;
+    ID3D11ShaderResourceView* pSrcSRV = (ID3D11ShaderResourceView*)src;
+
+    ID3D11Resource* pDstRes = NULL;
+    ID3D11Resource* pSrcRes = NULL;
+    pDstSRV->GetResource(&pDstRes);
+    pSrcSRV->GetResource(&pSrcRes);
+
+    if (!pDstRes || !pSrcRes)
+    {
+        if (pDstRes) pDstRes->Release();
+        if (pSrcRes) pSrcRes->Release();
+        return false;
+    }
+
+    g_GfxData.pDeviceContext->CopyResource(pDstRes, pSrcRes);
+
+    pDstRes->Release();
+    pSrcRes->Release();
+    return true;
+}
+
 IMPLATFORM_API void ImPlatform_DestroyTexture(ImTextureID texture_id)
 {
     if (!texture_id)
@@ -1195,7 +1222,7 @@ static void ImPlatform_SetCustomShader(const ImDrawList* parent_list, const ImDr
                 program_data->pixelConstantDataDirty = false;
             }
 
-            // Bind pixel shader constant buffer to register b1 (b0 is used by vertex shader for projection matrix)
+            // Bind pixel shader constant buffer to register b1
             g_GfxData.pDeviceContext->PSSetConstantBuffers(1, 1, &program_data->pPixelConstantBuffer);
         }
     }
@@ -1225,6 +1252,32 @@ IMPLATFORM_API void ImPlatform_BeginCustomShader_Render(ImPlatform_ShaderProgram
         // Even if not dirty, ensure the constant buffer is bound
         g_GfxData.pDeviceContext->PSSetConstantBuffers(1, 1, &program_data->pPixelConstantBuffer);
     }
+}
+
+IMPLATFORM_API void* ImPlatform_PushShaderConstants(const void* data, unsigned int size)
+{
+    if (!data || size == 0) return nullptr;
+
+    D3D11_BUFFER_DESC cbDesc = {};
+    cbDesc.ByteWidth = (size + 15) & ~15;
+    cbDesc.Usage = D3D11_USAGE_IMMUTABLE;
+    cbDesc.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
+
+    D3D11_SUBRESOURCE_DATA initData = {};
+    initData.pSysMem = data;
+
+    ID3D11Buffer* pBuffer = nullptr;
+    HRESULT hr = g_GfxData.pDevice->CreateBuffer(&cbDesc, &initData, &pBuffer);
+    if (FAILED(hr) || !pBuffer) return nullptr;
+
+    g_GfxData.pDeviceContext->PSSetConstantBuffers(1, 1, &pBuffer);
+    return (void*)pBuffer;
+}
+
+IMPLATFORM_API void ImPlatform_PopShaderConstants(void* handle)
+{
+    if (handle)
+        ((ID3D11Buffer*)handle)->Release();
 }
 
 IMPLATFORM_API void ImPlatform_BeginCustomShader(ImDrawList* draw, ImPlatform_ShaderProgram shader)

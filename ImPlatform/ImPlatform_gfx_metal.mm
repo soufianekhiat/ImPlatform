@@ -475,6 +475,41 @@ IMPLATFORM_API bool ImPlatform_UpdateTexture(ImTextureID texture_id, const void*
     }
 }
 
+IMPLATFORM_API bool ImPlatform_CopyTexture(ImTextureID dst, ImTextureID src)
+{
+    if (!dst || !src || !g_GfxData.pCommandQueue)
+        return false;
+
+    @autoreleasepool {
+        id<MTLTexture> srcTex = (__bridge id<MTLTexture>)(void*)(uintptr_t)src;
+        id<MTLTexture> dstTex = (__bridge id<MTLTexture>)(void*)(uintptr_t)dst;
+        id<MTLCommandQueue> queue = (__bridge id<MTLCommandQueue>)g_GfxData.pCommandQueue;
+
+        id<MTLCommandBuffer> cmdBuf = [queue commandBuffer];
+        if (!cmdBuf)
+            return false;
+
+        id<MTLBlitCommandEncoder> blit = [cmdBuf blitCommandEncoder];
+        if (!blit)
+            return false;
+
+        [blit copyFromTexture:srcTex
+                  sourceSlice:0
+                  sourceLevel:0
+                 sourceOrigin:MTLOriginMake(0, 0, 0)
+                   sourceSize:MTLSizeMake(srcTex.width, srcTex.height, 1)
+                    toTexture:dstTex
+             destinationSlice:0
+             destinationLevel:0
+            destinationOrigin:MTLOriginMake(0, 0, 0)];
+
+        [blit endEncoding];
+        [cmdBuf commit];
+        [cmdBuf waitUntilCompleted];
+        return true;
+    }
+}
+
 IMPLATFORM_API void ImPlatform_DestroyTexture(ImTextureID texture_id)
 {
     if (!texture_id)
@@ -1007,6 +1042,17 @@ IMPLATFORM_API void ImPlatform_EndCustomShader(ImDrawList* draw)
         return;
 
     draw->AddCallback(ImDrawCallback_ResetRenderState, NULL);
+}
+
+IMPLATFORM_API void* ImPlatform_PushShaderConstants(const void* data, unsigned int size)
+{
+    (void)data; (void)size;
+    return nullptr;
+}
+
+IMPLATFORM_API void ImPlatform_PopShaderConstants(void* handle)
+{
+    (void)handle;
 }
 
 #endif // IM_GFX_METAL

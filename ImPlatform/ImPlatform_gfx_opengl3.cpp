@@ -963,6 +963,73 @@ IMPLATFORM_API bool ImPlatform_UpdateTexture(ImTextureID texture_id, const void*
     return true;
 }
 
+IMPLATFORM_API bool ImPlatform_CopyTexture(ImTextureID dst, ImTextureID src)
+{
+    if (!dst || !src)
+        return false;
+
+    GLuint srcTex = (GLuint)(intptr_t)src;
+    GLuint dstTex = (GLuint)(intptr_t)dst;
+
+    // Get source texture dimensions
+    GLint width = 0, height = 0;
+    glBindTexture(GL_TEXTURE_2D, srcTex);
+    glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_WIDTH, &width);
+    glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_HEIGHT, &height);
+    glBindTexture(GL_TEXTURE_2D, 0);
+
+    if (width <= 0 || height <= 0)
+        return false;
+
+    // Use FBO blit: attach src to READ, dst to DRAW, then blit
+#ifndef GL_FRAMEBUFFER
+#define GL_FRAMEBUFFER 0x8D40
+#endif
+#ifndef GL_READ_FRAMEBUFFER
+#define GL_READ_FRAMEBUFFER 0x8CA8
+#endif
+#ifndef GL_DRAW_FRAMEBUFFER
+#define GL_DRAW_FRAMEBUFFER 0x8CA9
+#endif
+#ifndef GL_COLOR_ATTACHMENT0
+#define GL_COLOR_ATTACHMENT0 0x8CE0
+#endif
+#ifndef GL_COLOR_BUFFER_BIT
+#define GL_COLOR_BUFFER_BIT 0x00004000
+#endif
+
+    typedef void (APIENTRYP PFNGLGENFRAMEBUFFERSPROC)(GLsizei n, GLuint* framebuffers);
+    typedef void (APIENTRYP PFNGLBINDFRAMEBUFFERPROC)(GLenum target, GLuint framebuffer);
+    typedef void (APIENTRYP PFNGLFRAMEBUFFERTEXTURE2DPROC)(GLenum target, GLenum attachment, GLenum textarget, GLuint texture, GLint level);
+    typedef void (APIENTRYP PFNGLBLITFRAMEBUFFERPROC)(GLint srcX0, GLint srcY0, GLint srcX1, GLint srcY1, GLint dstX0, GLint dstY0, GLint dstX1, GLint dstY1, GLbitfield mask, GLenum filter);
+    typedef void (APIENTRYP PFNGLDELETEFRAMEBUFFERSPROC)(GLsizei n, const GLuint* framebuffers);
+
+    static PFNGLGENFRAMEBUFFERSPROC glGenFramebuffers_fn = (PFNGLGENFRAMEBUFFERSPROC)ImGui_ImplOpenGL3_GetProcAddress("glGenFramebuffers");
+    static PFNGLBINDFRAMEBUFFERPROC glBindFramebuffer_fn = (PFNGLBINDFRAMEBUFFERPROC)ImGui_ImplOpenGL3_GetProcAddress("glBindFramebuffer");
+    static PFNGLFRAMEBUFFERTEXTURE2DPROC glFramebufferTexture2D_fn = (PFNGLFRAMEBUFFERTEXTURE2DPROC)ImGui_ImplOpenGL3_GetProcAddress("glFramebufferTexture2D");
+    static PFNGLBLITFRAMEBUFFERPROC glBlitFramebuffer_fn = (PFNGLBLITFRAMEBUFFERPROC)ImGui_ImplOpenGL3_GetProcAddress("glBlitFramebuffer");
+    static PFNGLDELETEFRAMEBUFFERSPROC glDeleteFramebuffers_fn = (PFNGLDELETEFRAMEBUFFERSPROC)ImGui_ImplOpenGL3_GetProcAddress("glDeleteFramebuffers");
+
+    if (!glGenFramebuffers_fn || !glBindFramebuffer_fn || !glFramebufferTexture2D_fn || !glBlitFramebuffer_fn || !glDeleteFramebuffers_fn)
+        return false;
+
+    GLuint fbos[2] = { 0, 0 };
+    glGenFramebuffers_fn(2, fbos);
+
+    glBindFramebuffer_fn(GL_READ_FRAMEBUFFER, fbos[0]);
+    glFramebufferTexture2D_fn(GL_READ_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, srcTex, 0);
+
+    glBindFramebuffer_fn(GL_DRAW_FRAMEBUFFER, fbos[1]);
+    glFramebufferTexture2D_fn(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, dstTex, 0);
+
+    glBlitFramebuffer_fn(0, 0, width, height, 0, 0, width, height, GL_COLOR_BUFFER_BIT, GL_NEAREST);
+
+    glBindFramebuffer_fn(GL_FRAMEBUFFER, 0);
+    glDeleteFramebuffers_fn(2, fbos);
+
+    return true;
+}
+
 IMPLATFORM_API void ImPlatform_DestroyTexture(ImTextureID texture_id)
 {
     if (!texture_id)
@@ -1625,6 +1692,17 @@ IMPLATFORM_API void ImPlatform_EndCustomShader(ImDrawList* draw)
         return;
 
     draw->AddCallback(ImDrawCallback_ResetRenderState, NULL);
+}
+
+IMPLATFORM_API void* ImPlatform_PushShaderConstants(const void* data, unsigned int size)
+{
+    (void)data; (void)size;
+    return nullptr;
+}
+
+IMPLATFORM_API void ImPlatform_PopShaderConstants(void* handle)
+{
+    (void)handle;
 }
 
 #endif // IM_GFX_OPENGL3

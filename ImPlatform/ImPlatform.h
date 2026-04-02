@@ -384,6 +384,16 @@ IMPLATFORM_API bool ImPlatform_UpdateTexture(
     unsigned int height
 );
 
+// Copy the contents of one texture into another (GPU-to-GPU copy)
+// dst: Destination texture (must have been created with ImPlatform_CreateTexture)
+// src: Source texture (must have been created with ImPlatform_CreateTexture)
+// Both textures must have the same dimensions and format.
+// Returns: true on success, false on failure or unsupported backend
+IMPLATFORM_API bool ImPlatform_CopyTexture(
+    ImTextureID dst,
+    ImTextureID src
+);
+
 // Destroy a texture and free its resources
 // texture_id: Texture to destroy
 IMPLATFORM_API void ImPlatform_DestroyTexture(
@@ -668,6 +678,13 @@ IMPLATFORM_API void ImPlatform_BeginCustomShader(
 );
 // Activate a custom shader immediately (for use inside draw callbacks)
 IMPLATFORM_API void ImPlatform_BeginCustomShader_Render(ImPlatform_ShaderProgram program);
+
+// Upload per-draw-call shader constants and bind them for the next draw.
+// data: Pointer to constant data
+// size: Size of constant data in bytes
+// Returns an opaque handle that must be freed with ImPlatform_PopShaderConstants.
+IMPLATFORM_API void* ImPlatform_PushShaderConstants(const void* data, unsigned int size);
+IMPLATFORM_API void  ImPlatform_PopShaderConstants(void* handle);
 
 // End custom shader usage and restore default ImGui rendering state
 // Adds a callback to reset render state to ImGui defaults

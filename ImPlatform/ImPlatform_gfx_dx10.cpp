@@ -467,6 +467,33 @@ IMPLATFORM_API bool ImPlatform_UpdateTexture(ImTextureID texture_id, const void*
     return true;
 }
 
+IMPLATFORM_API bool ImPlatform_CopyTexture(ImTextureID dst, ImTextureID src)
+{
+    if (!dst || !src || !g_GfxData.pDevice)
+        return false;
+
+    ID3D10ShaderResourceView* pDstSRV = (ID3D10ShaderResourceView*)dst;
+    ID3D10ShaderResourceView* pSrcSRV = (ID3D10ShaderResourceView*)src;
+
+    ID3D10Resource* pDstRes = NULL;
+    ID3D10Resource* pSrcRes = NULL;
+    pDstSRV->GetResource(&pDstRes);
+    pSrcSRV->GetResource(&pSrcRes);
+
+    if (!pDstRes || !pSrcRes)
+    {
+        if (pDstRes) pDstRes->Release();
+        if (pSrcRes) pSrcRes->Release();
+        return false;
+    }
+
+    g_GfxData.pDevice->CopyResource(pDstRes, pSrcRes);
+
+    pDstRes->Release();
+    pSrcRes->Release();
+    return true;
+}
+
 IMPLATFORM_API void ImPlatform_DestroyTexture(ImTextureID texture_id)
 {
     if (!texture_id)
@@ -1081,6 +1108,17 @@ IMPLATFORM_API void ImPlatform_EndCustomShader(ImDrawList* draw)
         return;
 
     draw->AddCallback(ImDrawCallback_ResetRenderState, NULL);
+}
+
+IMPLATFORM_API void* ImPlatform_PushShaderConstants(const void* data, unsigned int size)
+{
+    (void)data; (void)size;
+    return nullptr;
+}
+
+IMPLATFORM_API void ImPlatform_PopShaderConstants(void* handle)
+{
+    (void)handle;
 }
 
 #endif // IM_GFX_DIRECTX10
