@@ -191,6 +191,8 @@ static PFNGLGETTEXLEVELPARAMETERIVPROC glGetTexLevelParameteriv_Ptr = NULL;
 
 // Global state
 static ImPlatform_GfxData_OpenGL3 g_GfxData = {};
+unsigned int g_ImPlatform_BackbufferW = 0;
+unsigned int g_ImPlatform_BackbufferH = 0;
 
 // Cached draw data for custom shader callbacks (needed for multi-viewport support)
 static ImDrawData* g_CurrentDrawData = nullptr;
@@ -961,6 +963,13 @@ IMPLATFORM_API bool ImPlatform_UpdateTexture(ImTextureID texture_id, const void*
     glTexSubImage2D(GL_TEXTURE_2D, 0, x, y, width, height, format, type, pixel_data);
 
     return true;
+}
+
+IMPLATFORM_API bool ImPlatform_CopyBackbuffer(ImTextureID dst) { (void)dst; return false; }
+IMPLATFORM_API void ImPlatform_GetBackbufferSize(unsigned int* width, unsigned int* height)
+{
+    if (width)  *width  = g_ImPlatform_BackbufferW;
+    if (height) *height = g_ImPlatform_BackbufferH;
 }
 
 IMPLATFORM_API bool ImPlatform_CopyTexture(ImTextureID dst, ImTextureID src)

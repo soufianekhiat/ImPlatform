@@ -394,6 +394,15 @@ IMPLATFORM_API bool ImPlatform_CopyTexture(
     ImTextureID src
 );
 
+// Copy the current backbuffer contents into a user-created texture.
+// dst must have been created with ImPlatform_CreateTexture matching the backbuffer dimensions.
+// Useful for post-processing effects (blur, distortion) on the rendered scene.
+// Returns: true on success, false on failure or unsupported backend
+IMPLATFORM_API bool ImPlatform_CopyBackbuffer(ImTextureID dst);
+
+// Query the current backbuffer dimensions in pixels.
+IMPLATFORM_API void ImPlatform_GetBackbufferSize(unsigned int* width, unsigned int* height);
+
 // Destroy a texture and free its resources
 // texture_id: Texture to destroy
 IMPLATFORM_API void ImPlatform_DestroyTexture(

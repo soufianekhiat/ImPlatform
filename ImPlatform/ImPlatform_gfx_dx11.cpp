@@ -14,6 +14,8 @@
 
 // Global state
 static ImPlatform_GfxData_DX11 g_GfxData = { 0 };
+unsigned int g_ImPlatform_BackbufferW = 0;
+unsigned int g_ImPlatform_BackbufferH = 0;
 
 // Helper functions
 static void CreateRenderTarget()
@@ -23,6 +25,13 @@ static void CreateRenderTarget()
     if (pBackBuffer)
     {
         g_GfxData.pDevice->CreateRenderTargetView(pBackBuffer, NULL, &g_GfxData.pRenderTargetView);
+
+        // Update stored backbuffer size
+        D3D11_TEXTURE2D_DESC bbDesc;
+        pBackBuffer->GetDesc(&bbDesc);
+        g_ImPlatform_BackbufferW = bbDesc.Width;
+        g_ImPlatform_BackbufferH = bbDesc.Height;
+
         pBackBuffer->Release();
     }
 }
@@ -518,6 +527,39 @@ IMPLATFORM_API bool ImPlatform_UpdateTexture(ImTextureID texture_id, const void*
 
     pTexture->Release();
     return true;
+}
+
+IMPLATFORM_API bool ImPlatform_CopyBackbuffer(ImTextureID dst)
+{
+    if (!dst || !g_GfxData.pSwapChain || !g_GfxData.pDeviceContext)
+        return false;
+
+    ID3D11Texture2D* pBackBuffer = NULL;
+    HRESULT hr = g_GfxData.pSwapChain->GetBuffer(0, __uuidof(ID3D11Texture2D), (void**)&pBackBuffer);
+    if (FAILED(hr) || !pBackBuffer)
+        return false;
+
+    ID3D11ShaderResourceView* pDstSRV = (ID3D11ShaderResourceView*)dst;
+    ID3D11Resource* pDstRes = NULL;
+    pDstSRV->GetResource(&pDstRes);
+
+    if (!pDstRes)
+    {
+        pBackBuffer->Release();
+        return false;
+    }
+
+    g_GfxData.pDeviceContext->CopyResource(pDstRes, pBackBuffer);
+
+    pDstRes->Release();
+    pBackBuffer->Release();
+    return true;
+}
+
+IMPLATFORM_API void ImPlatform_GetBackbufferSize(unsigned int* width, unsigned int* height)
+{
+    if (width)  *width  = g_ImPlatform_BackbufferW;
+    if (height) *height = g_ImPlatform_BackbufferH;
 }
 
 IMPLATFORM_API bool ImPlatform_CopyTexture(ImTextureID dst, ImTextureID src)

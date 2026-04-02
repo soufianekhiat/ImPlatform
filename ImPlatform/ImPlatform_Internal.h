@@ -155,6 +155,12 @@ struct ImPlatform_AppData_SDL3 {
 #endif
 
 // ============================================================================
+// Shared backbuffer size (set by backends on create/resize, read by ImPlatform_GetBackbufferSize)
+// ============================================================================
+extern unsigned int g_ImPlatform_BackbufferW;
+extern unsigned int g_ImPlatform_BackbufferH;
+
+// ============================================================================
 // Gfx Data Structures
 // ============================================================================
 

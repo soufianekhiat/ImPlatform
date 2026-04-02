@@ -26,6 +26,8 @@
 
 // Global state
 static ImPlatform_GfxData_Vulkan g_GfxData = {};
+unsigned int g_ImPlatform_BackbufferW = 0;
+unsigned int g_ImPlatform_BackbufferH = 0;
 static VkAllocationCallbacks* g_Allocator = NULL;
 static ImGui_ImplVulkanH_Window g_MainWindowData;  // Don't use = {} - let constructor run!
 static bool g_SwapChainRebuild = false;
@@ -1288,6 +1290,13 @@ IMPLATFORM_API bool ImPlatform_UpdateTexture(ImTextureID texture_id, const void*
     // Vulkan texture updates require staging buffers and command lists
     // This is complex and not implemented yet
     return false;
+}
+
+IMPLATFORM_API bool ImPlatform_CopyBackbuffer(ImTextureID dst) { (void)dst; return false; }
+IMPLATFORM_API void ImPlatform_GetBackbufferSize(unsigned int* width, unsigned int* height)
+{
+    if (width)  *width  = g_ImPlatform_BackbufferW;
+    if (height) *height = g_ImPlatform_BackbufferH;
 }
 
 IMPLATFORM_API bool ImPlatform_CopyTexture(ImTextureID dst, ImTextureID src)

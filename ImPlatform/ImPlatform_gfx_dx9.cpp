@@ -17,6 +17,8 @@
 
 // Global state
 static ImPlatform_GfxData_DX9 g_GfxData = { 0 };
+unsigned int g_ImPlatform_BackbufferW = 0;
+unsigned int g_ImPlatform_BackbufferH = 0;
 
 // Uniform block API state
 static ImPlatform_ShaderProgram g_CurrentUniformBlockProgram = nullptr;
@@ -434,6 +436,13 @@ IMPLATFORM_API bool ImPlatform_UpdateTexture(ImTextureID texture_id, const void*
 
     pTexture->UnlockRect(0);
     return true;
+}
+
+IMPLATFORM_API bool ImPlatform_CopyBackbuffer(ImTextureID dst) { (void)dst; return false; }
+IMPLATFORM_API void ImPlatform_GetBackbufferSize(unsigned int* width, unsigned int* height)
+{
+    if (width)  *width  = g_ImPlatform_BackbufferW;
+    if (height) *height = g_ImPlatform_BackbufferH;
 }
 
 IMPLATFORM_API bool ImPlatform_CopyTexture(ImTextureID dst, ImTextureID src)

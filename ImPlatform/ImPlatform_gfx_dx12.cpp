@@ -81,6 +81,8 @@ struct ExampleDescriptorHeapAllocator
 
 // Global state
 static ImPlatform_GfxData_DX12 g_GfxData = { 0 };
+unsigned int g_ImPlatform_BackbufferW = 0;
+unsigned int g_ImPlatform_BackbufferH = 0;
 static ExampleDescriptorHeapAllocator g_SrvDescHeapAlloc;
 
 // Uniform block API state
@@ -847,6 +849,13 @@ IMPLATFORM_API bool ImPlatform_UpdateTexture(ImTextureID texture_id, const void*
     // 5. Handle resource barriers
     // This is quite involved for DX12
     return false;
+}
+
+IMPLATFORM_API bool ImPlatform_CopyBackbuffer(ImTextureID dst) { (void)dst; return false; }
+IMPLATFORM_API void ImPlatform_GetBackbufferSize(unsigned int* width, unsigned int* height)
+{
+    if (width)  *width  = g_ImPlatform_BackbufferW;
+    if (height) *height = g_ImPlatform_BackbufferH;
 }
 
 IMPLATFORM_API bool ImPlatform_CopyTexture(ImTextureID dst, ImTextureID src)
