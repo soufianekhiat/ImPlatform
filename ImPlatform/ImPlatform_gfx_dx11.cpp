@@ -15,6 +15,11 @@
 // Global state
 static ImPlatform_GfxData_DX11 g_GfxData = { 0 };
 
+// Sampler table: [filter][wrap] — filter: 0=Nearest,1=Linear  wrap: 0=Clamp,1=Repeat,2=Mirror
+static ID3D11SamplerState* g_Samplers[2][3]  = {};
+static ID3D11SamplerState* g_SamplerStack[8] = {};
+static int                 g_SamplerDepth    = 0;
+
 // Helper functions
 static void CreateRenderTarget()
 {
@@ -174,6 +179,22 @@ bool ImPlatform_InitGfx_Internal_DX11(void)
     if (!ImGui_ImplDX11_Init(g_GfxData.pDevice, g_GfxData.pDeviceContext))
         return false;
 
+    // Pre-create all filter×wrap sampler combinations
+    static const D3D11_FILTER      kFilters[2] = { D3D11_FILTER_MIN_MAG_MIP_POINT, D3D11_FILTER_MIN_MAG_MIP_LINEAR };
+    static const D3D11_TEXTURE_ADDRESS_MODE kAddr[3] = { D3D11_TEXTURE_ADDRESS_CLAMP, D3D11_TEXTURE_ADDRESS_WRAP, D3D11_TEXTURE_ADDRESS_MIRROR };
+    for (int f = 0; f < 2; ++f)
+    for (int w = 0; w < 3; ++w)
+    {
+        D3D11_SAMPLER_DESC sd = {};
+        sd.Filter         = kFilters[f];
+        sd.AddressU       = kAddr[w];
+        sd.AddressV       = kAddr[w];
+        sd.AddressW       = D3D11_TEXTURE_ADDRESS_CLAMP;
+        sd.ComparisonFunc = D3D11_COMPARISON_NEVER;
+        sd.MaxLOD         = D3D11_FLOAT32_MAX;
+        g_GfxData.pDevice->CreateSamplerState(&sd, &g_Samplers[f][w]);
+    }
+
     return true;
 }
 
@@ -272,6 +293,9 @@ IMPLATFORM_API void ImPlatform_ShutdownGfxAPI(void)
 // ImPlatform API - ShutdownWindow (gfx-specific part)
 IMPLATFORM_API void ImPlatform_ShutdownWindow(void)
 {
+    for (int f = 0; f < 2; ++f)
+        for (int w = 0; w < 3; ++w)
+            if (g_Samplers[f][w]) { g_Samplers[f][w]->Release(); g_Samplers[f][w] = nullptr; }
     ImGui_ImplDX11_Shutdown();
     ImPlatform_Gfx_CleanupDevice_DX11(&g_GfxData);
 }
@@ -527,6 +551,42 @@ IMPLATFORM_API void ImPlatform_DestroyTexture(ImTextureID texture_id)
 
     ID3D11ShaderResourceView* pSRV = (ID3D11ShaderResourceView*)texture_id;
     pSRV->Release();
+}
+
+IMPLATFORM_API void ImPlatform_PushSampler(ImPlatform_TextureFilter filter, ImPlatform_TextureWrap wrap)
+{
+    int f = (filter == ImPlatform_TextureFilter_Linear) ? 1 : 0;
+    int w = (int)wrap;
+    if (w < 0 || w > 2) w = 0;
+    ID3D11SamplerState* s = g_Samplers[f][w];
+    if (!s) return;
+
+    ImGui::GetWindowDrawList()->AddCallback(
+        [](const ImDrawList*, const ImDrawCmd* cmd) {
+            auto* rs = static_cast<ImGui_ImplDX11_RenderState*>(
+                ImGui::GetPlatformIO().Renderer_RenderState);
+            if (!rs) return;
+            ID3D11SamplerState* newS = static_cast<ID3D11SamplerState*>(cmd->UserCallbackData);
+            // Save current sampler onto the stack
+            ID3D11SamplerState* old = nullptr;
+            rs->DeviceContext->PSGetSamplers(0, 1, &old); // adds a ref
+            if (g_SamplerDepth < 8) g_SamplerStack[g_SamplerDepth++] = old;
+            else if (old) old->Release();
+            rs->DeviceContext->PSSetSamplers(0, 1, &newS);
+        }, static_cast<void*>(s));
+}
+
+IMPLATFORM_API void ImPlatform_PopSampler(void)
+{
+    ImGui::GetWindowDrawList()->AddCallback(
+        [](const ImDrawList*, const ImDrawCmd*) {
+            auto* rs = static_cast<ImGui_ImplDX11_RenderState*>(
+                ImGui::GetPlatformIO().Renderer_RenderState);
+            if (!rs || g_SamplerDepth <= 0) return;
+            ID3D11SamplerState* saved = g_SamplerStack[--g_SamplerDepth];
+            rs->DeviceContext->PSSetSamplers(0, 1, &saved);
+            if (saved) saved->Release(); // balance PSGetSamplers ref
+        }, nullptr);
 }
 
 // ============================================================================
