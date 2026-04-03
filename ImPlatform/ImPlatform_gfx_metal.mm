@@ -132,6 +132,22 @@ IMPLATFORM_API bool ImPlatform_InitGfx(void)
         if (!ImGui_ImplMetal_Init(device))
             return false;
 
+        // Create 6 sampler states for all filter/wrap combinations
+        static const MTLSamplerMinMagFilter kMinMag[2] = { MTLSamplerMinMagFilterNearest, MTLSamplerMinMagFilterLinear };
+        static const MTLSamplerAddressMode  kAddr[3]   = { MTLSamplerAddressModeClampToEdge, MTLSamplerAddressModeRepeat, MTLSamplerAddressModeMirrorRepeat };
+        for (int f = 0; f < 2; ++f)
+        for (int w = 0; w < 3; ++w)
+        {
+            MTLSamplerDescriptor* desc = [[MTLSamplerDescriptor alloc] init];
+            desc.minFilter  = kMinMag[f];
+            desc.magFilter  = kMinMag[f];
+            desc.mipFilter  = MTLSamplerMipFilterNotMipmapped;
+            desc.sAddressMode = kAddr[w];
+            desc.tAddressMode = kAddr[w];
+            id<MTLSamplerState> s = [device newSamplerStateWithDescriptor:desc];
+            g_MetalSamplers[f][w] = (__bridge_retained void*)s;
+        }
+
         return true;
     }
 }
@@ -241,6 +257,10 @@ IMPLATFORM_API void ImPlatform_ShutdownGfxAPI(void)
 // ImPlatform API - ShutdownWindow
 IMPLATFORM_API void ImPlatform_ShutdownWindow(void)
 {
+    for (int f = 0; f < 2; ++f)
+    for (int w = 0; w < 3; ++w)
+        if (g_MetalSamplers[f][w]) { CFRelease(g_MetalSamplers[f][w]); g_MetalSamplers[f][w] = nullptr; }
+
     ImGui_ImplMetal_Shutdown();
     ImPlatform_Gfx_CleanupDevice_Metal(&g_GfxData);
 }
@@ -643,6 +663,11 @@ static ImDrawData* g_CurrentDrawData = nullptr;
 
 // Current render encoder for custom shader rendering (set during render pass)
 static void* g_CurrentRenderEncoder = nullptr; // id<MTLRenderCommandEncoder>
+
+// Sampler override state - [filter][wrap]: filter 0=Nearest 1=Linear, wrap 0=Clamp 1=Wrap 2=Mirror
+static void* g_MetalSamplers[2][3]  = {};  // id<MTLSamplerState>
+static void* g_SamplerStack[8]      = {};  // id<MTLSamplerState>
+static int   g_SamplerDepth         = 0;
 
 IMPLATFORM_API ImPlatform_Shader ImPlatform_CreateShader(const ImPlatform_ShaderDesc* desc)
 {
@@ -1132,6 +1157,47 @@ IMPLATFORM_API void* ImPlatform_PushShaderConstants(const void* data, unsigned i
 IMPLATFORM_API void ImPlatform_PopShaderConstants(void* handle)
 {
     (void)handle;
+}
+
+// ============================================================================
+// Sampler Override API - Metal
+// ============================================================================
+
+IMPLATFORM_API void ImPlatform_PushSampler(ImPlatform_TextureFilter filter, ImPlatform_TextureWrap wrap)
+{
+    uintptr_t encoded = (uintptr_t)(((int)filter << 8) | (int)wrap);
+    ImGui::GetWindowDrawList()->AddCallback(
+        [](const ImDrawList*, const ImDrawCmd* cmd) {
+            @autoreleasepool {
+                id<MTLRenderCommandEncoder> encoder = (__bridge id<MTLRenderCommandEncoder>)g_CurrentRenderEncoder;
+                if (!encoder) return;
+                // Save current sampler (Metal has no query API — store nil to represent "default")
+                if (g_SamplerDepth < 8)
+                    g_SamplerStack[g_SamplerDepth++] = nullptr;
+                int enc = (int)(uintptr_t)cmd->UserCallbackData;
+                int f = (enc >> 8) & 0xFF;
+                int w = enc & 0xFF;
+                if (f < 2 && w < 3 && g_MetalSamplers[f][w])
+                {
+                    id<MTLSamplerState> s = (__bridge id<MTLSamplerState>)g_MetalSamplers[f][w];
+                    [encoder setFragmentSamplerState:s atIndex:0];
+                }
+            }
+        }, (void*)encoded);
+}
+
+IMPLATFORM_API void ImPlatform_PopSampler(void)
+{
+    ImGui::GetWindowDrawList()->AddCallback(
+        [](const ImDrawList*, const ImDrawCmd*) {
+            @autoreleasepool {
+                id<MTLRenderCommandEncoder> encoder = (__bridge id<MTLRenderCommandEncoder>)g_CurrentRenderEncoder;
+                if (!encoder || g_SamplerDepth <= 0) return;
+                void* saved = g_SamplerStack[--g_SamplerDepth];
+                id<MTLSamplerState> s = (__bridge id<MTLSamplerState>)saved;
+                [encoder setFragmentSamplerState:s atIndex:0];
+            }
+        }, nullptr);
 }
 
 #endif // IM_GFX_METAL

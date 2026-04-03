@@ -2166,4 +2166,18 @@ IMPLATFORM_API void ImPlatform_PopShaderConstants(void* handle)
     (void)handle;
 }
 
+// ============================================================================
+// Sampler Override API - WebGPU
+// ============================================================================
+// WebGPU samplers are baked into bind groups. Overriding per-draw requires
+// rebuilding the bind group, which is a non-trivial operation. Intentional no-ops.
+
+IMPLATFORM_API void ImPlatform_PushSampler(ImPlatform_TextureFilter /*filter*/, ImPlatform_TextureWrap /*wrap*/)
+{
+}
+
+IMPLATFORM_API void ImPlatform_PopSampler(void)
+{
+}
+
 #endif // IM_GFX_WGPU
