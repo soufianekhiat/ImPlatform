@@ -1548,4 +1548,19 @@ IMPLATFORM_API void ImPlatform_EndCustomShader(ImDrawList* draw)
     draw->AddCallback(ImDrawCallback_ResetRenderState, NULL);
 }
 
+// ============================================================================
+// Sampler Override API - DirectX 12
+// ============================================================================
+// DX12 uses static root-signature samplers baked into the PSO.
+// There is no per-draw sampler binding without rebuilding the PSO.
+// These are intentional no-ops.
+
+IMPLATFORM_API void ImPlatform_PushSampler(ImPlatform_TextureFilter /*filter*/, ImPlatform_TextureWrap /*wrap*/)
+{
+}
+
+IMPLATFORM_API void ImPlatform_PopSampler(void)
+{
+}
+
 #endif // IM_GFX_DIRECTX12
