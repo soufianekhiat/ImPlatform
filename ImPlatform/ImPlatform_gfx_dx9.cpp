@@ -20,6 +20,18 @@ static ImPlatform_GfxData_DX9 g_GfxData = { 0 };
 unsigned int g_ImPlatform_BackbufferW = 0;
 unsigned int g_ImPlatform_BackbufferH = 0;
 
+// Render texture tracking (texture ↔ render target surface)
+struct ImPlatform_RTTracking_DX9 {
+    LPDIRECT3DTEXTURE9  pTexture;
+    IDirect3DSurface9*  pSurface;
+    ImPlatform_RTTracking_DX9* next;
+};
+static ImPlatform_RTTracking_DX9* g_RTTrackingHead = NULL;
+
+// Saved render target for Begin/EndRenderToTexture
+static IDirect3DSurface9* g_SavedSurface  = NULL;
+static D3DVIEWPORT9       g_SavedViewport = {};
+
 // Uniform block API state
 static ImPlatform_ShaderProgram g_CurrentUniformBlockProgram = nullptr;
 static void* g_UniformBlockData = nullptr;
@@ -436,6 +448,79 @@ IMPLATFORM_API bool ImPlatform_UpdateTexture(ImTextureID texture_id, const void*
 
     pTexture->UnlockRect(0);
     return true;
+}
+
+IMPLATFORM_API ImTextureID ImPlatform_CreateRenderTexture(const ImPlatform_TextureDesc* desc)
+{
+    if (!desc || !g_GfxData.pDevice)
+        return NULL;
+
+    int bytes_per_pixel;
+    D3DFORMAT format = ImPlatform_GetD3D9Format(desc->format, &bytes_per_pixel);
+
+    // Render targets require D3DPOOL_DEFAULT
+    LPDIRECT3DTEXTURE9 pTexture = NULL;
+    HRESULT hr = g_GfxData.pDevice->CreateTexture(
+        desc->width, desc->height, 1,
+        D3DUSAGE_RENDERTARGET, format,
+        D3DPOOL_DEFAULT, &pTexture, NULL);
+    if (FAILED(hr) || !pTexture)
+        return NULL;
+
+    IDirect3DSurface9* pSurface = NULL;
+    hr = pTexture->GetSurfaceLevel(0, &pSurface);
+    if (FAILED(hr) || !pSurface) { pTexture->Release(); return NULL; }
+
+    ImPlatform_RTTracking_DX9* entry = new ImPlatform_RTTracking_DX9();
+    entry->pTexture = pTexture;
+    entry->pSurface = pSurface;
+    entry->next     = g_RTTrackingHead;
+    g_RTTrackingHead = entry;
+
+    return (ImTextureID)pTexture;
+}
+
+IMPLATFORM_API bool ImPlatform_BeginRenderToTexture(ImTextureID texture)
+{
+    if (!texture || !g_GfxData.pDevice)
+        return false;
+
+    LPDIRECT3DTEXTURE9 pTex = (LPDIRECT3DTEXTURE9)texture;
+
+    ImPlatform_RTTracking_DX9* entry = g_RTTrackingHead;
+    while (entry) { if (entry->pTexture == pTex) break; entry = entry->next; }
+    if (!entry) return false;
+
+    // Save current render target and viewport
+    g_GfxData.pDevice->GetRenderTarget(0, &g_SavedSurface);
+    g_GfxData.pDevice->GetViewport(&g_SavedViewport);
+
+    // Redirect render target to texture surface
+    g_GfxData.pDevice->SetRenderTarget(0, entry->pSurface);
+
+    D3DSURFACE_DESC surf_desc;
+    entry->pSurface->GetDesc(&surf_desc);
+
+    D3DVIEWPORT9 vp = {};
+    vp.Width  = surf_desc.Width;
+    vp.Height = surf_desc.Height;
+    vp.MaxZ   = 1.0f;
+    g_GfxData.pDevice->SetViewport(&vp);
+
+    g_GfxData.pDevice->Clear(0, NULL, D3DCLEAR_TARGET, 0x00000000, 1.0f, 0);
+
+    return true;
+}
+
+IMPLATFORM_API void ImPlatform_EndRenderToTexture(void)
+{
+    if (!g_GfxData.pDevice || !g_SavedSurface)
+        return;
+
+    g_GfxData.pDevice->SetRenderTarget(0, g_SavedSurface);
+    g_GfxData.pDevice->SetViewport(&g_SavedViewport);
+    g_SavedSurface->Release();
+    g_SavedSurface = NULL;
 }
 
 IMPLATFORM_API bool ImPlatform_CopyBackbuffer(ImTextureID dst) { (void)dst; return false; }

@@ -23,6 +23,10 @@ static ImPlatform_GfxData_Metal g_GfxData = {};
 unsigned int g_ImPlatform_BackbufferW = 0;
 unsigned int g_ImPlatform_BackbufferH = 0;
 
+// Saved state for Begin/EndRenderToTexture
+static id<MTLCommandBuffer>        g_RTCommandBuffer  = nil;
+static id<MTLRenderCommandEncoder> g_RTRenderEncoder  = nil;
+
 // Forward declaration for wrapper function
 static void ImPlatform_RenderDrawDataWrapper(ImDrawData* draw_data, id<MTLCommandBuffer> commandBuffer, id<MTLRenderCommandEncoder> renderEncoder);
 
@@ -474,6 +478,72 @@ IMPLATFORM_API bool ImPlatform_UpdateTexture(ImTextureID texture_id, const void*
         [texture replaceRegion:region mipmapLevel:0 withBytes:pixel_data bytesPerRow:bytesPerRow];
 
         return true;
+    }
+}
+
+IMPLATFORM_API ImTextureID ImPlatform_CreateRenderTexture(const ImPlatform_TextureDesc* desc)
+{
+    if (!desc || !g_GfxData.pMetalDevice)
+        return (ImTextureID)0;
+
+    @autoreleasepool {
+        int bytes_per_pixel;
+        MTLPixelFormat format = ImPlatform_GetMetalFormat(desc->format, &bytes_per_pixel);
+
+        MTLTextureDescriptor* textureDescriptor = [MTLTextureDescriptor
+            texture2DDescriptorWithPixelFormat:format
+                                         width:desc->width
+                                        height:desc->height
+                                     mipmapped:NO];
+        textureDescriptor.usage       = MTLTextureUsageShaderRead | MTLTextureUsageRenderTarget;
+        textureDescriptor.storageMode = MTLStorageModePrivate;
+
+        id<MTLTexture> texture = [(__bridge id<MTLDevice>)g_GfxData.pMetalDevice
+            newTextureWithDescriptor:textureDescriptor];
+        if (!texture)
+            return (ImTextureID)0;
+
+        return (ImTextureID)(__bridge_retained void*)texture;
+    }
+}
+
+IMPLATFORM_API bool ImPlatform_BeginRenderToTexture(ImTextureID texture)
+{
+    if (!texture || !g_GfxData.pCommandQueue)
+        return false;
+
+    @autoreleasepool {
+        id<MTLTexture> mtlTexture = (__bridge id<MTLTexture>)(void*)(uintptr_t)texture;
+
+        id<MTLCommandQueue> commandQueue = (__bridge id<MTLCommandQueue>)g_GfxData.pCommandQueue;
+        g_RTCommandBuffer = [commandQueue commandBuffer];
+
+        MTLRenderPassDescriptor* passDesc = [MTLRenderPassDescriptor renderPassDescriptor];
+        passDesc.colorAttachments[0].texture     = mtlTexture;
+        passDesc.colorAttachments[0].loadAction  = MTLLoadActionClear;
+        passDesc.colorAttachments[0].storeAction = MTLStoreActionStore;
+        passDesc.colorAttachments[0].clearColor  = MTLClearColorMake(0.0, 0.0, 0.0, 0.0);
+
+        g_RTRenderEncoder = [g_RTCommandBuffer renderCommandEncoderWithDescriptor:passDesc];
+        if (!g_RTRenderEncoder)
+        {
+            g_RTCommandBuffer = nil;
+            return false;
+        }
+
+        return true;
+    }
+}
+
+IMPLATFORM_API void ImPlatform_EndRenderToTexture(void)
+{
+    if (!g_RTRenderEncoder) return;
+
+    @autoreleasepool {
+        [g_RTRenderEncoder endEncoding];
+        [g_RTCommandBuffer commit];
+        g_RTRenderEncoder = nil;
+        g_RTCommandBuffer = nil;
     }
 }
 

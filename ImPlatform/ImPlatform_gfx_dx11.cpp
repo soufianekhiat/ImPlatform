@@ -17,6 +17,21 @@ static ImPlatform_GfxData_DX11 g_GfxData = { 0 };
 unsigned int g_ImPlatform_BackbufferW = 0;
 unsigned int g_ImPlatform_BackbufferH = 0;
 
+// Render texture tracking (SRV ↔ RTV pairs)
+struct ImPlatform_RTTracking_DX11 {
+    ID3D11ShaderResourceView*  pSRV;
+    ID3D11RenderTargetView*    pRTV;
+    unsigned int               width, height;
+    ImPlatform_RTTracking_DX11* next;
+};
+static ImPlatform_RTTracking_DX11* g_RTTrackingHead = NULL;
+
+// Saved render target for Begin/EndRenderToTexture
+static ID3D11RenderTargetView* g_SavedRTV = NULL;
+static D3D11_VIEWPORT          g_SavedViewport = {};
+static D3D11_RECT              g_SavedScissor = {};
+static UINT                    g_SavedScissorCount = 0;
+
 // Helper functions
 static void CreateRenderTarget()
 {
@@ -527,6 +542,118 @@ IMPLATFORM_API bool ImPlatform_UpdateTexture(ImTextureID texture_id, const void*
 
     pTexture->Release();
     return true;
+}
+
+IMPLATFORM_API ImTextureID ImPlatform_CreateRenderTexture(const ImPlatform_TextureDesc* desc)
+{
+    if (!desc || !g_GfxData.pDevice)
+        return NULL;
+
+    int bytes_per_pixel;
+    DXGI_FORMAT format = ImPlatform_GetD3D11Format(desc->format, &bytes_per_pixel);
+
+    D3D11_TEXTURE2D_DESC tex_desc = {};
+    tex_desc.Width = desc->width;
+    tex_desc.Height = desc->height;
+    tex_desc.MipLevels = 1;
+    tex_desc.ArraySize = 1;
+    tex_desc.Format = format;
+    tex_desc.SampleDesc.Count = 1;
+    tex_desc.Usage = D3D11_USAGE_DEFAULT;
+    tex_desc.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET;
+
+    ID3D11Texture2D* pTexture = NULL;
+    HRESULT hr = g_GfxData.pDevice->CreateTexture2D(&tex_desc, NULL, &pTexture);
+    if (FAILED(hr) || !pTexture)
+        return NULL;
+
+    D3D11_SHADER_RESOURCE_VIEW_DESC srv_desc = {};
+    srv_desc.Format = format;
+    srv_desc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
+    srv_desc.Texture2D.MipLevels = 1;
+
+    ID3D11ShaderResourceView* pSRV = NULL;
+    hr = g_GfxData.pDevice->CreateShaderResourceView(pTexture, &srv_desc, &pSRV);
+    if (FAILED(hr) || !pSRV) { pTexture->Release(); return NULL; }
+
+    D3D11_RENDER_TARGET_VIEW_DESC rtv_desc = {};
+    rtv_desc.Format = format;
+    rtv_desc.ViewDimension = D3D11_RTV_DIMENSION_TEXTURE2D;
+
+    ID3D11RenderTargetView* pRTV = NULL;
+    hr = g_GfxData.pDevice->CreateRenderTargetView(pTexture, &rtv_desc, &pRTV);
+    pTexture->Release();
+    if (FAILED(hr) || !pRTV) { pSRV->Release(); return NULL; }
+
+    // Track the pair
+    ImPlatform_RTTracking_DX11* entry = new ImPlatform_RTTracking_DX11();
+    entry->pSRV = pSRV;
+    entry->pRTV = pRTV;
+    entry->width = desc->width;
+    entry->height = desc->height;
+    entry->next = g_RTTrackingHead;
+    g_RTTrackingHead = entry;
+
+    return (ImTextureID)pSRV;
+}
+
+IMPLATFORM_API bool ImPlatform_BeginRenderToTexture(ImTextureID texture)
+{
+    if (!texture || !g_GfxData.pDeviceContext)
+        return false;
+
+    ID3D11ShaderResourceView* pSRV = (ID3D11ShaderResourceView*)texture;
+
+    // Find tracked RTV
+    ImPlatform_RTTracking_DX11* entry = g_RTTrackingHead;
+    while (entry) { if (entry->pSRV == pSRV) break; entry = entry->next; }
+    if (!entry) return false;
+
+    // Save current render target, viewport, and scissor
+    UINT numViewports = 1;
+    g_GfxData.pDeviceContext->OMGetRenderTargets(1, &g_SavedRTV, NULL);
+    g_GfxData.pDeviceContext->RSGetViewports(&numViewports, &g_SavedViewport);
+    g_SavedScissorCount = 1;
+    g_GfxData.pDeviceContext->RSGetScissorRects(&g_SavedScissorCount, &g_SavedScissor);
+
+    // Unbind the SRV from pixel shader so it can be used as RT (D3D11 validation)
+    ID3D11ShaderResourceView* nullSRV = NULL;
+    g_GfxData.pDeviceContext->PSSetShaderResources(0, 1, &nullSRV);
+
+    // Set new render target
+    g_GfxData.pDeviceContext->OMSetRenderTargets(1, &entry->pRTV, NULL);
+
+    // Set viewport and scissor to match texture size
+    D3D11_VIEWPORT vp = {};
+    vp.Width = (float)entry->width;
+    vp.Height = (float)entry->height;
+    vp.MaxDepth = 1.0f;
+    g_GfxData.pDeviceContext->RSSetViewports(1, &vp);
+
+    D3D11_RECT scissor = { 0, 0, (LONG)entry->width, (LONG)entry->height };
+    g_GfxData.pDeviceContext->RSSetScissorRects(1, &scissor);
+
+    // Clear the render texture
+    float clearColor[4] = { 0, 0, 0, 0 };
+    g_GfxData.pDeviceContext->ClearRenderTargetView(entry->pRTV, clearColor);
+
+    return true;
+}
+
+IMPLATFORM_API void ImPlatform_EndRenderToTexture(void)
+{
+    if (!g_GfxData.pDeviceContext) return;
+
+    // Restore saved render target and viewport
+    if (g_SavedRTV)
+    {
+        g_GfxData.pDeviceContext->OMSetRenderTargets(1, &g_SavedRTV, NULL);
+        g_GfxData.pDeviceContext->RSSetViewports(1, &g_SavedViewport);
+        if (g_SavedScissorCount > 0)
+            g_GfxData.pDeviceContext->RSSetScissorRects(1, &g_SavedScissor);
+        g_SavedRTV->Release();
+        g_SavedRTV = NULL;
+    }
 }
 
 IMPLATFORM_API bool ImPlatform_CopyBackbuffer(ImTextureID dst)
