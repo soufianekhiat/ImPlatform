@@ -96,6 +96,10 @@ static ImDrawData* g_CurrentDrawData = nullptr;
 // Default sampler for custom shader bind groups (created on first use)
 static WGPUSampler g_DefaultSampler = nullptr;
 
+// Active render-to-texture state
+static WGPUCommandEncoder     g_RTEncoder = nullptr;
+static WGPURenderPassEncoder  g_RTPass    = nullptr;
+
 // ============================================================================
 // Texture Resource Tracking
 // ============================================================================
@@ -1179,6 +1183,114 @@ IMPLATFORM_API bool ImPlatform_UpdateTexture(ImTextureID texture_id, const void*
 
     free(converted_data);
     return true;
+}
+
+IMPLATFORM_API ImTextureID ImPlatform_CreateRenderTexture(const ImPlatform_TextureDesc* desc)
+{
+    if (!desc || !g_GfxData.device)
+        return NULL;
+
+    int bytes_per_pixel;
+    WGPUTextureFormat format = ImPlatform_GetWebGPUFormat(desc->format, &bytes_per_pixel);
+
+    WGPUTextureDescriptor tex_desc = {};
+    tex_desc.label                    = WGPU_STR("ImPlatform RenderTexture");
+    tex_desc.dimension                = WGPUTextureDimension_2D;
+    tex_desc.size.width               = desc->width;
+    tex_desc.size.height              = desc->height;
+    tex_desc.size.depthOrArrayLayers  = 1;
+    tex_desc.mipLevelCount            = 1;
+    tex_desc.sampleCount              = 1;
+    tex_desc.format                   = format;
+    tex_desc.usage                    = WGPUTextureUsage_TextureBinding | WGPUTextureUsage_RenderAttachment;
+
+    WGPUTexture texture = wgpuDeviceCreateTexture(g_GfxData.device, &tex_desc);
+    if (!texture)
+        return NULL;
+
+    WGPUTextureViewDescriptor view_desc = {};
+    view_desc.format          = format;
+    view_desc.dimension       = WGPUTextureViewDimension_2D;
+    view_desc.mipLevelCount   = 1;
+    view_desc.arrayLayerCount = 1;
+    view_desc.aspect          = WGPUTextureAspect_All;
+
+    WGPUTextureView texture_view = wgpuTextureCreateView(texture, &view_desc);
+    if (!texture_view)
+    {
+        wgpuTextureRelease(texture);
+        return NULL;
+    }
+
+    WGPUSamplerDescriptor sampler_desc = {};
+    sampler_desc.addressModeU = WGPUAddressMode_ClampToEdge;
+    sampler_desc.addressModeV = WGPUAddressMode_ClampToEdge;
+    sampler_desc.addressModeW = WGPUAddressMode_ClampToEdge;
+    sampler_desc.magFilter    = WGPUFilterMode_Linear;
+    sampler_desc.minFilter    = WGPUFilterMode_Linear;
+    sampler_desc.mipmapFilter = WGPUMipmapFilterMode_Linear;
+    sampler_desc.lodMaxClamp  = 1000.0f;
+    sampler_desc.maxAnisotropy = 1;
+
+    WGPUSampler sampler = wgpuDeviceCreateSampler(g_GfxData.device, &sampler_desc);
+    if (!sampler)
+    {
+        wgpuTextureViewRelease(texture_view);
+        wgpuTextureRelease(texture);
+        return NULL;
+    }
+
+    ImPlatform_TrackTexture(texture, texture_view, sampler, desc->width, desc->height, desc->format);
+
+    return (ImTextureID)texture_view;
+}
+
+IMPLATFORM_API bool ImPlatform_BeginRenderToTexture(ImTextureID texture)
+{
+    if (!texture || !g_GfxData.device)
+        return false;
+
+    WGPUTextureView view = (WGPUTextureView)texture;
+    ImPlatform_TextureTracking_WebGPU* tracking = ImPlatform_FindTrackedTexture(view);
+    if (!tracking) return false;
+
+    WGPUCommandEncoderDescriptor enc_desc = {};
+    g_RTEncoder = wgpuDeviceCreateCommandEncoder(g_GfxData.device, &enc_desc);
+
+    WGPURenderPassColorAttachment color_attachment = {};
+    color_attachment.view              = view;
+    color_attachment.depthSlice        = WGPU_DEPTH_SLICE_UNDEFINED;
+    color_attachment.loadOp            = WGPULoadOp_Clear;
+    color_attachment.storeOp           = WGPUStoreOp_Store;
+    color_attachment.clearValue.r      = 0.0;
+    color_attachment.clearValue.g      = 0.0;
+    color_attachment.clearValue.b      = 0.0;
+    color_attachment.clearValue.a      = 0.0;
+
+    WGPURenderPassDescriptor pass_desc = {};
+    pass_desc.colorAttachmentCount    = 1;
+    pass_desc.colorAttachments        = &color_attachment;
+
+    g_RTPass = wgpuCommandEncoderBeginRenderPass(g_RTEncoder, &pass_desc);
+
+    return true;
+}
+
+IMPLATFORM_API void ImPlatform_EndRenderToTexture(void)
+{
+    if (!g_RTPass || !g_RTEncoder) return;
+
+    wgpuRenderPassEncoderEnd(g_RTPass);
+
+    WGPUCommandBufferDescriptor cmd_desc = {};
+    WGPUCommandBuffer cmd = wgpuCommandEncoderFinish(g_RTEncoder, &cmd_desc);
+    wgpuQueueSubmit(g_GfxData.queue, 1, &cmd);
+
+    wgpuCommandBufferRelease(cmd);
+    wgpuRenderPassEncoderRelease(g_RTPass);
+    wgpuCommandEncoderRelease(g_RTEncoder);
+    g_RTPass    = nullptr;
+    g_RTEncoder = nullptr;
 }
 
 IMPLATFORM_API bool ImPlatform_CopyBackbuffer(ImTextureID dst) { (void)dst; return false; }

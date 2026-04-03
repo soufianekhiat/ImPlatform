@@ -16,6 +16,21 @@ static ImPlatform_GfxData_DX10 g_GfxData = { 0 };
 unsigned int g_ImPlatform_BackbufferW = 0;
 unsigned int g_ImPlatform_BackbufferH = 0;
 
+// Render texture tracking (SRV ↔ RTV pairs)
+struct ImPlatform_RTTracking_DX10 {
+    ID3D10ShaderResourceView*  pSRV;
+    ID3D10RenderTargetView*    pRTV;
+    unsigned int               width, height;
+    ImPlatform_RTTracking_DX10* next;
+};
+static ImPlatform_RTTracking_DX10* g_RTTrackingHead = NULL;
+
+// Saved render target for Begin/EndRenderToTexture
+static ID3D10RenderTargetView* g_SavedRTV      = NULL;
+static D3D10_VIEWPORT          g_SavedViewport  = {};
+static RECT                    g_SavedScissor   = {};
+static UINT                    g_SavedScissorCount = 0;
+
 // Helper functions
 static void CreateRenderTarget()
 {
@@ -467,6 +482,113 @@ IMPLATFORM_API bool ImPlatform_UpdateTexture(ImTextureID texture_id, const void*
 
     pTexture->Release();
     return true;
+}
+
+IMPLATFORM_API ImTextureID ImPlatform_CreateRenderTexture(const ImPlatform_TextureDesc* desc)
+{
+    if (!desc || !g_GfxData.pDevice)
+        return NULL;
+
+    int bytes_per_pixel;
+    DXGI_FORMAT format = ImPlatform_GetD3D10Format(desc->format, &bytes_per_pixel);
+
+    D3D10_TEXTURE2D_DESC tex_desc = {};
+    tex_desc.Width            = desc->width;
+    tex_desc.Height           = desc->height;
+    tex_desc.MipLevels        = 1;
+    tex_desc.ArraySize        = 1;
+    tex_desc.Format           = format;
+    tex_desc.SampleDesc.Count = 1;
+    tex_desc.Usage            = D3D10_USAGE_DEFAULT;
+    tex_desc.BindFlags        = D3D10_BIND_SHADER_RESOURCE | D3D10_BIND_RENDER_TARGET;
+
+    ID3D10Texture2D* pTexture = NULL;
+    HRESULT hr = g_GfxData.pDevice->CreateTexture2D(&tex_desc, NULL, &pTexture);
+    if (FAILED(hr) || !pTexture)
+        return NULL;
+
+    D3D10_SHADER_RESOURCE_VIEW_DESC srv_desc = {};
+    srv_desc.Format                    = format;
+    srv_desc.ViewDimension             = D3D10_SRV_DIMENSION_TEXTURE2D;
+    srv_desc.Texture2D.MipLevels       = 1;
+    srv_desc.Texture2D.MostDetailedMip = 0;
+
+    ID3D10ShaderResourceView* pSRV = NULL;
+    hr = g_GfxData.pDevice->CreateShaderResourceView(pTexture, &srv_desc, &pSRV);
+    if (FAILED(hr) || !pSRV) { pTexture->Release(); return NULL; }
+
+    D3D10_RENDER_TARGET_VIEW_DESC rtv_desc = {};
+    rtv_desc.Format             = format;
+    rtv_desc.ViewDimension      = D3D10_RTV_DIMENSION_TEXTURE2D;
+    rtv_desc.Texture2D.MipSlice = 0;
+
+    ID3D10RenderTargetView* pRTV = NULL;
+    hr = g_GfxData.pDevice->CreateRenderTargetView(pTexture, &rtv_desc, &pRTV);
+    pTexture->Release();
+    if (FAILED(hr) || !pRTV) { pSRV->Release(); return NULL; }
+
+    ImPlatform_RTTracking_DX10* entry = new ImPlatform_RTTracking_DX10();
+    entry->pSRV   = pSRV;
+    entry->pRTV   = pRTV;
+    entry->width  = desc->width;
+    entry->height = desc->height;
+    entry->next   = g_RTTrackingHead;
+    g_RTTrackingHead = entry;
+
+    return (ImTextureID)pSRV;
+}
+
+IMPLATFORM_API bool ImPlatform_BeginRenderToTexture(ImTextureID texture)
+{
+    if (!texture || !g_GfxData.pDevice)
+        return false;
+
+    ID3D10ShaderResourceView* pSRV = (ID3D10ShaderResourceView*)texture;
+
+    ImPlatform_RTTracking_DX10* entry = g_RTTrackingHead;
+    while (entry) { if (entry->pSRV == pSRV) break; entry = entry->next; }
+    if (!entry) return false;
+
+    // Save current render target, viewport, and scissor
+    UINT numViewports = 1;
+    g_GfxData.pDevice->OMGetRenderTargets(1, &g_SavedRTV, NULL);
+    g_GfxData.pDevice->RSGetViewports(&numViewports, &g_SavedViewport);
+    g_SavedScissorCount = 1;
+    g_GfxData.pDevice->RSGetScissorRects(&g_SavedScissorCount, &g_SavedScissor);
+
+    // Unbind the SRV so D3D10 doesn't complain about RT/SRV overlap
+    ID3D10ShaderResourceView* nullSRV = NULL;
+    g_GfxData.pDevice->PSSetShaderResources(0, 1, &nullSRV);
+
+    // Set new render target
+    g_GfxData.pDevice->OMSetRenderTargets(1, &entry->pRTV, NULL);
+
+    D3D10_VIEWPORT vp = {};
+    vp.Width    = (FLOAT)entry->width;
+    vp.Height   = (FLOAT)entry->height;
+    vp.MaxDepth = 1.0f;
+    g_GfxData.pDevice->RSSetViewports(1, &vp);
+
+    RECT scissor = { 0, 0, (LONG)entry->width, (LONG)entry->height };
+    g_GfxData.pDevice->RSSetScissorRects(1, &scissor);
+
+    float clearColor[4] = { 0.f, 0.f, 0.f, 0.f };
+    g_GfxData.pDevice->ClearRenderTargetView(entry->pRTV, clearColor);
+
+    return true;
+}
+
+IMPLATFORM_API void ImPlatform_EndRenderToTexture(void)
+{
+    if (!g_GfxData.pDevice || !g_SavedRTV)
+        return;
+
+    g_GfxData.pDevice->OMSetRenderTargets(1, &g_SavedRTV, NULL);
+    g_GfxData.pDevice->RSSetViewports(1, &g_SavedViewport);
+    if (g_SavedScissorCount > 0)
+        g_GfxData.pDevice->RSSetScissorRects(1, &g_SavedScissor);
+    g_SavedRTV->Release();
+    g_SavedRTV = NULL;
 }
 
 IMPLATFORM_API bool ImPlatform_CopyBackbuffer(ImTextureID dst) { (void)dst; return false; }

@@ -194,6 +194,19 @@ static ImPlatform_GfxData_OpenGL3 g_GfxData = {};
 unsigned int g_ImPlatform_BackbufferW = 0;
 unsigned int g_ImPlatform_BackbufferH = 0;
 
+// Render texture tracking
+struct ImPlatform_RTTracking_GL {
+    GLuint       tex;
+    unsigned int width, height;
+    ImPlatform_RTTracking_GL* next;
+};
+static ImPlatform_RTTracking_GL* g_RTTrackingHead = nullptr;
+
+// Saved GL state for Begin/EndRenderToTexture
+static GLint g_SavedFBO      = 0;
+static GLint g_SavedViewport[4] = {};
+static GLuint g_RTFbo        = 0;
+
 // Cached draw data for custom shader callbacks (needed for multi-viewport support)
 static ImDrawData* g_CurrentDrawData = nullptr;
 
@@ -963,6 +976,93 @@ IMPLATFORM_API bool ImPlatform_UpdateTexture(ImTextureID texture_id, const void*
     glTexSubImage2D(GL_TEXTURE_2D, 0, x, y, width, height, format, type, pixel_data);
 
     return true;
+}
+
+IMPLATFORM_API ImTextureID ImPlatform_CreateRenderTexture(const ImPlatform_TextureDesc* desc)
+{
+    if (!desc)
+        return NULL;
+
+    GLint internal_format;
+    GLenum format;
+    GLenum type;
+    int channels;
+    ImPlatform_GetOpenGLFormat(desc->format, &internal_format, &format, &type, &channels);
+
+    GLuint tex = 0;
+    glGenTextures(1, &tex);
+    glBindTexture(GL_TEXTURE_2D, tex);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glTexImage2D(GL_TEXTURE_2D, 0, internal_format, desc->width, desc->height, 0, format, type, NULL);
+    glBindTexture(GL_TEXTURE_2D, 0);
+
+    ImPlatform_RTTracking_GL* entry = new ImPlatform_RTTracking_GL();
+    entry->tex    = tex;
+    entry->width  = desc->width;
+    entry->height = desc->height;
+    entry->next   = g_RTTrackingHead;
+    g_RTTrackingHead = entry;
+
+    return (ImTextureID)(intptr_t)tex;
+}
+
+IMPLATFORM_API bool ImPlatform_BeginRenderToTexture(ImTextureID texture)
+{
+    if (!texture)
+        return false;
+
+    GLuint tex = (GLuint)(intptr_t)texture;
+
+    ImPlatform_RTTracking_GL* entry = g_RTTrackingHead;
+    while (entry) { if (entry->tex == tex) break; entry = entry->next; }
+    if (!entry) return false;
+
+    // Load FBO functions via proc address (same pattern as CopyTexture)
+    typedef void (APIENTRYP PFNGLGENFRAMEBUFFERSPROC_LOCAL)(GLsizei, GLuint*);
+    typedef void (APIENTRYP PFNGLBINDFRAMEBUFFERPROC_LOCAL)(GLenum, GLuint);
+    typedef void (APIENTRYP PFNGLFRAMEBUFFERTEXTURE2DPROC_LOCAL)(GLenum, GLenum, GLenum, GLuint, GLint);
+    static PFNGLGENFRAMEBUFFERSPROC_LOCAL     glGenFramebuffers_fn     = (PFNGLGENFRAMEBUFFERSPROC_LOCAL)ImGui_ImplOpenGL3_GetProcAddress("glGenFramebuffers");
+    static PFNGLBINDFRAMEBUFFERPROC_LOCAL     glBindFramebuffer_fn     = (PFNGLBINDFRAMEBUFFERPROC_LOCAL)ImGui_ImplOpenGL3_GetProcAddress("glBindFramebuffer");
+    static PFNGLFRAMEBUFFERTEXTURE2DPROC_LOCAL glFramebufferTexture2D_fn = (PFNGLFRAMEBUFFERTEXTURE2DPROC_LOCAL)ImGui_ImplOpenGL3_GetProcAddress("glFramebufferTexture2D");
+    if (!glGenFramebuffers_fn || !glBindFramebuffer_fn || !glFramebufferTexture2D_fn)
+        return false;
+
+    // Save current state
+    glGetIntegerv(GL_FRAMEBUFFER_BINDING, &g_SavedFBO);
+    glGetIntegerv(GL_VIEWPORT, g_SavedViewport);
+
+    // Create and bind FBO targeting the render texture
+    glGenFramebuffers_fn(1, &g_RTFbo);
+    glBindFramebuffer_fn(GL_FRAMEBUFFER, g_RTFbo);
+    glFramebufferTexture2D_fn(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, tex, 0);
+
+    glViewport(0, 0, (GLsizei)entry->width, (GLsizei)entry->height);
+
+    glClearColor(0.f, 0.f, 0.f, 0.f);
+    glClear(GL_COLOR_BUFFER_BIT);
+
+    return true;
+}
+
+IMPLATFORM_API void ImPlatform_EndRenderToTexture(void)
+{
+    if (!g_RTFbo)
+        return;
+
+    typedef void (APIENTRYP PFNGLBINDFRAMEBUFFERPROC_LOCAL)(GLenum, GLuint);
+    typedef void (APIENTRYP PFNGLDELETEFRAMEBUFFERSPROC_LOCAL)(GLsizei, const GLuint*);
+    static PFNGLBINDFRAMEBUFFERPROC_LOCAL   glBindFramebuffer_fn   = (PFNGLBINDFRAMEBUFFERPROC_LOCAL)ImGui_ImplOpenGL3_GetProcAddress("glBindFramebuffer");
+    static PFNGLDELETEFRAMEBUFFERSPROC_LOCAL glDeleteFramebuffers_fn = (PFNGLDELETEFRAMEBUFFERSPROC_LOCAL)ImGui_ImplOpenGL3_GetProcAddress("glDeleteFramebuffers");
+
+    if (glDeleteFramebuffers_fn) glDeleteFramebuffers_fn(1, &g_RTFbo);
+    g_RTFbo = 0;
+
+    if (glBindFramebuffer_fn) glBindFramebuffer_fn(GL_FRAMEBUFFER, (GLuint)g_SavedFBO);
+
+    glViewport(g_SavedViewport[0], g_SavedViewport[1], g_SavedViewport[2], g_SavedViewport[3]);
 }
 
 IMPLATFORM_API bool ImPlatform_CopyBackbuffer(ImTextureID dst) { (void)dst; return false; }

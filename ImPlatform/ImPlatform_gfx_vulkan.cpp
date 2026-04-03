@@ -29,6 +29,24 @@ static ImPlatform_GfxData_Vulkan g_GfxData = {};
 unsigned int g_ImPlatform_BackbufferW = 0;
 unsigned int g_ImPlatform_BackbufferH = 0;
 static VkAllocationCallbacks* g_Allocator = NULL;
+
+// Render texture tracking
+struct ImPlatform_RTTracking_Vulkan {
+    VkImage             image;
+    VkDeviceMemory      imageMemory;
+    VkImageView         imageView;
+    VkSampler           sampler;
+    VkDescriptorSet     descriptorSet;
+    VkRenderPass        renderPass;
+    VkFramebuffer       framebuffer;
+    VkCommandPool       commandPool;
+    VkCommandBuffer     commandBuffer;
+    unsigned int        width, height;
+    VkFormat            format;
+    ImPlatform_RTTracking_Vulkan* next;
+};
+static ImPlatform_RTTracking_Vulkan* g_RTTrackingHead  = NULL;
+static ImPlatform_RTTracking_Vulkan* g_ActiveRTEntry   = NULL;
 static ImGui_ImplVulkanH_Window g_MainWindowData;  // Don't use = {} - let constructor run!
 static bool g_SwapChainRebuild = false;
 static uint32_t g_QueueFamily = (uint32_t)-1;
@@ -1290,6 +1308,263 @@ IMPLATFORM_API bool ImPlatform_UpdateTexture(ImTextureID texture_id, const void*
     // Vulkan texture updates require staging buffers and command lists
     // This is complex and not implemented yet
     return false;
+}
+
+IMPLATFORM_API ImTextureID ImPlatform_CreateRenderTexture(const ImPlatform_TextureDesc* desc)
+{
+    if (!desc || !g_GfxData.device)
+        return NULL;
+
+    int bytes_per_pixel;
+    VkFormat format = ImPlatform_GetVulkanFormat(desc->format, &bytes_per_pixel);
+    VkResult err;
+
+    // Create image
+    VkImage image;
+    VkDeviceMemory imageMemory;
+    {
+        VkImageCreateInfo image_info = {};
+        image_info.sType         = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+        image_info.imageType     = VK_IMAGE_TYPE_2D;
+        image_info.format        = format;
+        image_info.extent        = { desc->width, desc->height, 1 };
+        image_info.mipLevels     = 1;
+        image_info.arrayLayers   = 1;
+        image_info.samples       = VK_SAMPLE_COUNT_1_BIT;
+        image_info.tiling        = VK_IMAGE_TILING_OPTIMAL;
+        image_info.usage         = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+        image_info.sharingMode   = VK_SHARING_MODE_EXCLUSIVE;
+        image_info.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        err = vkCreateImage(g_GfxData.device, &image_info, g_Allocator, &image);
+        if (err != VK_SUCCESS) return NULL;
+
+        VkMemoryRequirements mem_req;
+        vkGetImageMemoryRequirements(g_GfxData.device, image, &mem_req);
+        VkMemoryAllocateInfo alloc_info = {};
+        alloc_info.sType           = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+        alloc_info.allocationSize  = mem_req.size;
+        alloc_info.memoryTypeIndex = ImPlatform_FindMemoryType(VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, mem_req.memoryTypeBits);
+        err = vkAllocateMemory(g_GfxData.device, &alloc_info, g_Allocator, &imageMemory);
+        if (err != VK_SUCCESS) { vkDestroyImage(g_GfxData.device, image, g_Allocator); return NULL; }
+        vkBindImageMemory(g_GfxData.device, image, imageMemory, 0);
+    }
+
+    // Create image view
+    VkImageView imageView;
+    {
+        VkImageViewCreateInfo view_info = {};
+        view_info.sType                           = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+        view_info.image                           = image;
+        view_info.viewType                        = VK_IMAGE_VIEW_TYPE_2D;
+        view_info.format                          = format;
+        view_info.subresourceRange.aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT;
+        view_info.subresourceRange.levelCount     = 1;
+        view_info.subresourceRange.layerCount     = 1;
+        err = vkCreateImageView(g_GfxData.device, &view_info, g_Allocator, &imageView);
+        if (err != VK_SUCCESS) {
+            vkFreeMemory(g_GfxData.device, imageMemory, g_Allocator);
+            vkDestroyImage(g_GfxData.device, image, g_Allocator);
+            return NULL;
+        }
+    }
+
+    // Create sampler
+    VkSampler sampler;
+    {
+        VkSamplerCreateInfo sampler_info = {};
+        sampler_info.sType      = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+        sampler_info.magFilter  = VK_FILTER_LINEAR;
+        sampler_info.minFilter  = VK_FILTER_LINEAR;
+        sampler_info.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+        sampler_info.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        sampler_info.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        sampler_info.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        sampler_info.maxAnisotropy = 1.0f;
+        sampler_info.minLod = -1000;
+        sampler_info.maxLod = 1000;
+        err = vkCreateSampler(g_GfxData.device, &sampler_info, g_Allocator, &sampler);
+        if (err != VK_SUCCESS) {
+            vkDestroyImageView(g_GfxData.device, imageView, g_Allocator);
+            vkFreeMemory(g_GfxData.device, imageMemory, g_Allocator);
+            vkDestroyImage(g_GfxData.device, image, g_Allocator);
+            return NULL;
+        }
+    }
+
+    // Create render pass
+    VkRenderPass renderPass;
+    {
+        VkAttachmentDescription attachment = {};
+        attachment.format         = format;
+        attachment.samples        = VK_SAMPLE_COUNT_1_BIT;
+        attachment.loadOp         = VK_ATTACHMENT_LOAD_OP_CLEAR;
+        attachment.storeOp        = VK_ATTACHMENT_STORE_OP_STORE;
+        attachment.stencilLoadOp  = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+        attachment.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+        attachment.initialLayout  = VK_IMAGE_LAYOUT_UNDEFINED;
+        attachment.finalLayout    = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+        VkAttachmentReference color_ref = { 0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL };
+
+        VkSubpassDescription subpass = {};
+        subpass.pipelineBindPoint    = VK_PIPELINE_BIND_POINT_GRAPHICS;
+        subpass.colorAttachmentCount = 1;
+        subpass.pColorAttachments    = &color_ref;
+
+        VkSubpassDependency dep = {};
+        dep.srcSubpass    = VK_SUBPASS_EXTERNAL;
+        dep.dstSubpass    = 0;
+        dep.srcStageMask  = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+        dep.dstStageMask  = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+        dep.srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
+        dep.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+
+        VkRenderPassCreateInfo rp_info = {};
+        rp_info.sType           = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
+        rp_info.attachmentCount = 1;
+        rp_info.pAttachments    = &attachment;
+        rp_info.subpassCount    = 1;
+        rp_info.pSubpasses      = &subpass;
+        rp_info.dependencyCount = 1;
+        rp_info.pDependencies   = &dep;
+        err = vkCreateRenderPass(g_GfxData.device, &rp_info, g_Allocator, &renderPass);
+        if (err != VK_SUCCESS) {
+            vkDestroySampler(g_GfxData.device, sampler, g_Allocator);
+            vkDestroyImageView(g_GfxData.device, imageView, g_Allocator);
+            vkFreeMemory(g_GfxData.device, imageMemory, g_Allocator);
+            vkDestroyImage(g_GfxData.device, image, g_Allocator);
+            return NULL;
+        }
+    }
+
+    // Create framebuffer
+    VkFramebuffer framebuffer;
+    {
+        VkFramebufferCreateInfo fb_info = {};
+        fb_info.sType           = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
+        fb_info.renderPass      = renderPass;
+        fb_info.attachmentCount = 1;
+        fb_info.pAttachments    = &imageView;
+        fb_info.width           = desc->width;
+        fb_info.height          = desc->height;
+        fb_info.layers          = 1;
+        err = vkCreateFramebuffer(g_GfxData.device, &fb_info, g_Allocator, &framebuffer);
+        if (err != VK_SUCCESS) {
+            vkDestroyRenderPass(g_GfxData.device, renderPass, g_Allocator);
+            vkDestroySampler(g_GfxData.device, sampler, g_Allocator);
+            vkDestroyImageView(g_GfxData.device, imageView, g_Allocator);
+            vkFreeMemory(g_GfxData.device, imageMemory, g_Allocator);
+            vkDestroyImage(g_GfxData.device, image, g_Allocator);
+            return NULL;
+        }
+    }
+
+    // Create dedicated command pool + command buffer for standalone rendering
+    VkCommandPool commandPool;
+    VkCommandBuffer commandBuffer;
+    {
+        VkCommandPoolCreateInfo pool_info = {};
+        pool_info.sType            = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
+        pool_info.queueFamilyIndex = g_QueueFamily;
+        pool_info.flags            = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
+        err = vkCreateCommandPool(g_GfxData.device, &pool_info, g_Allocator, &commandPool);
+        if (err != VK_SUCCESS) {
+            vkDestroyFramebuffer(g_GfxData.device, framebuffer, g_Allocator);
+            vkDestroyRenderPass(g_GfxData.device, renderPass, g_Allocator);
+            vkDestroySampler(g_GfxData.device, sampler, g_Allocator);
+            vkDestroyImageView(g_GfxData.device, imageView, g_Allocator);
+            vkFreeMemory(g_GfxData.device, imageMemory, g_Allocator);
+            vkDestroyImage(g_GfxData.device, image, g_Allocator);
+            return NULL;
+        }
+
+        VkCommandBufferAllocateInfo alloc_info = {};
+        alloc_info.sType              = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+        alloc_info.commandPool        = commandPool;
+        alloc_info.level              = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+        alloc_info.commandBufferCount = 1;
+        vkAllocateCommandBuffers(g_GfxData.device, &alloc_info, &commandBuffer);
+    }
+
+    // Register with ImGui for use as a shader input
+    VkDescriptorSet descriptorSet = (VkDescriptorSet)ImGui_ImplVulkan_AddTexture(
+        sampler, imageView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+
+    ImPlatform_RTTracking_Vulkan* entry = new ImPlatform_RTTracking_Vulkan();
+    entry->image         = image;
+    entry->imageMemory   = imageMemory;
+    entry->imageView     = imageView;
+    entry->sampler       = sampler;
+    entry->descriptorSet = descriptorSet;
+    entry->renderPass    = renderPass;
+    entry->framebuffer   = framebuffer;
+    entry->commandPool   = commandPool;
+    entry->commandBuffer = commandBuffer;
+    entry->width         = desc->width;
+    entry->height        = desc->height;
+    entry->format        = format;
+    entry->next          = g_RTTrackingHead;
+    g_RTTrackingHead     = entry;
+
+    return (ImTextureID)descriptorSet;
+}
+
+IMPLATFORM_API bool ImPlatform_BeginRenderToTexture(ImTextureID texture)
+{
+    if (!texture || !g_GfxData.device)
+        return false;
+
+    VkDescriptorSet ds = (VkDescriptorSet)texture;
+    ImPlatform_RTTracking_Vulkan* entry = g_RTTrackingHead;
+    while (entry) { if (entry->descriptorSet == ds) break; entry = entry->next; }
+    if (!entry) return false;
+
+    // Begin the dedicated command buffer
+    vkResetCommandBuffer(entry->commandBuffer, 0);
+    VkCommandBufferBeginInfo begin_info = {};
+    begin_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    begin_info.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    VkResult err = vkBeginCommandBuffer(entry->commandBuffer, &begin_info);
+    if (err != VK_SUCCESS) return false;
+
+    // Begin render pass (loadOp = CLEAR handles the clear)
+    VkClearValue clear_value = {};
+    VkRenderPassBeginInfo rp_info = {};
+    rp_info.sType                    = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+    rp_info.renderPass               = entry->renderPass;
+    rp_info.framebuffer              = entry->framebuffer;
+    rp_info.renderArea.extent.width  = entry->width;
+    rp_info.renderArea.extent.height = entry->height;
+    rp_info.clearValueCount          = 1;
+    rp_info.pClearValues             = &clear_value;
+    vkCmdBeginRenderPass(entry->commandBuffer, &rp_info, VK_SUBPASS_CONTENTS_INLINE);
+
+    VkViewport viewport = { 0, 0, (float)entry->width, (float)entry->height, 0.f, 1.f };
+    vkCmdSetViewport(entry->commandBuffer, 0, 1, &viewport);
+
+    VkRect2D scissor = { {0, 0}, {entry->width, entry->height} };
+    vkCmdSetScissor(entry->commandBuffer, 0, 1, &scissor);
+
+    g_ActiveRTEntry = entry;
+    return true;
+}
+
+IMPLATFORM_API void ImPlatform_EndRenderToTexture(void)
+{
+    if (!g_ActiveRTEntry) return;
+
+    ImPlatform_RTTracking_Vulkan* entry = g_ActiveRTEntry;
+    g_ActiveRTEntry = NULL;
+
+    vkCmdEndRenderPass(entry->commandBuffer);
+    vkEndCommandBuffer(entry->commandBuffer);
+
+    VkSubmitInfo submit_info = {};
+    submit_info.sType              = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    submit_info.commandBufferCount = 1;
+    submit_info.pCommandBuffers    = &entry->commandBuffer;
+    vkQueueSubmit(g_GfxData.queue, 1, &submit_info, VK_NULL_HANDLE);
+    vkQueueWaitIdle(g_GfxData.queue);
 }
 
 IMPLATFORM_API bool ImPlatform_CopyBackbuffer(ImTextureID dst) { (void)dst; return false; }

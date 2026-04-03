@@ -403,6 +403,20 @@ IMPLATFORM_API bool ImPlatform_CopyBackbuffer(ImTextureID dst);
 // Query the current backbuffer dimensions in pixels.
 IMPLATFORM_API void ImPlatform_GetBackbufferSize(unsigned int* width, unsigned int* height);
 
+// Create a texture that can also be used as a render target (for offscreen passes).
+// Unlike ImPlatform_CreateTexture, no pixel data is needed — the texture starts cleared.
+// Returns: ImTextureID that can be used with ImPlatform_BeginRenderToTexture and as a shader input.
+IMPLATFORM_API ImTextureID ImPlatform_CreateRenderTexture(const ImPlatform_TextureDesc* desc);
+
+// Set a render texture as the active render target. All subsequent draw calls
+// (including ImGui draw commands) will render into this texture instead of the backbuffer.
+// texture: must have been created with ImPlatform_CreateRenderTexture.
+// Returns: true on success
+IMPLATFORM_API bool ImPlatform_BeginRenderToTexture(ImTextureID texture);
+
+// Restore the backbuffer as the active render target.
+IMPLATFORM_API void ImPlatform_EndRenderToTexture(void);
+
 // Destroy a texture and free its resources
 // texture_id: Texture to destroy
 IMPLATFORM_API void ImPlatform_DestroyTexture(
@@ -815,7 +829,7 @@ IMPLATFORM_API void ImPlatform_EndCustomTitleBar(void);
 // Controls resize border size, minimum window dimensions, and drag/resize behavior.
 // Call ImPlatform_SetBorderlessParams() before or after ImPlatform_CreateWindow().
 // Changes take effect immediately (minimum size is applied to the current window).
-typedef struct ImPlatform_BorderlessParams {
+typedef struct   {
     int   resizeBorderSize;     // Resize edge thickness in pixels (default: 5). Used by SDL2/SDL3 hit-test; Win32 uses system metrics.
     int   minWidth;             // Minimum window width in pixels (default: 100, 0 = no limit)
     int   minHeight;            // Minimum window height in pixels (default: 100, 0 = no limit)

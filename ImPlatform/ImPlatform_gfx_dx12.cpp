@@ -85,6 +85,26 @@ unsigned int g_ImPlatform_BackbufferW = 0;
 unsigned int g_ImPlatform_BackbufferH = 0;
 static ExampleDescriptorHeapAllocator g_SrvDescHeapAlloc;
 
+// Render texture tracking
+struct ImPlatform_RTTracking_DX12 {
+    ID3D12Resource*             pTexture;
+    D3D12_CPU_DESCRIPTOR_HANDLE rtvCpuHandle;
+    D3D12_GPU_DESCRIPTOR_HANDLE srvGpuHandle;
+    unsigned int                width, height;
+    DXGI_FORMAT                 format;
+    ImPlatform_RTTracking_DX12* next;
+};
+static ImPlatform_RTTracking_DX12* g_RTTrackingHead = NULL;
+
+// Small RTV descriptor heap dedicated to render textures (created lazily)
+static ID3D12DescriptorHeap*   g_RTVTexDescHeap     = NULL;
+static UINT                    g_RTVTexDescOffset    = 0;
+static UINT                    g_RTVTexDescStride    = 0;
+static const UINT              g_RTVTexDescCapacity  = 16;
+
+// The entry that is currently acting as render target (set by BeginRenderToTexture)
+static ImPlatform_RTTracking_DX12* g_ActiveRTEntry = NULL;
+
 // Uniform block API state
 static ImPlatform_ShaderProgram g_CurrentUniformBlockProgram = nullptr;
 static void* g_UniformBlockData = nullptr;
@@ -849,6 +869,157 @@ IMPLATFORM_API bool ImPlatform_UpdateTexture(ImTextureID texture_id, const void*
     // 5. Handle resource barriers
     // This is quite involved for DX12
     return false;
+}
+
+IMPLATFORM_API ImTextureID ImPlatform_CreateRenderTexture(const ImPlatform_TextureDesc* desc)
+{
+    if (!desc || !g_GfxData.pDevice || !g_GfxData.pSrvDescHeapAlloc)
+        return NULL;
+
+    int bytes_per_pixel;
+    DXGI_FORMAT format = ImPlatform_GetD3D12Format(desc->format, &bytes_per_pixel);
+
+    // Lazily create the dedicated RTV descriptor heap for render textures
+    if (!g_RTVTexDescHeap)
+    {
+        D3D12_DESCRIPTOR_HEAP_DESC heap_desc = {};
+        heap_desc.Type           = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
+        heap_desc.NumDescriptors = g_RTVTexDescCapacity;
+        heap_desc.Flags          = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
+        heap_desc.NodeMask       = 1;
+        if (g_GfxData.pDevice->CreateDescriptorHeap(&heap_desc, IID_PPV_ARGS(&g_RTVTexDescHeap)) != S_OK)
+            return NULL;
+        g_RTVTexDescStride = g_GfxData.pDevice->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
+        g_RTVTexDescOffset = 0;
+    }
+    if (g_RTVTexDescOffset >= g_RTVTexDescCapacity)
+        return NULL; // Exhausted RTV slots
+
+    // Create texture resource (starts in RENDER_TARGET state for clear on first use)
+    D3D12_RESOURCE_DESC tex_desc = {};
+    tex_desc.Dimension          = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+    tex_desc.Width              = desc->width;
+    tex_desc.Height             = desc->height;
+    tex_desc.DepthOrArraySize   = 1;
+    tex_desc.MipLevels          = 1;
+    tex_desc.Format             = format;
+    tex_desc.SampleDesc.Count   = 1;
+    tex_desc.Flags              = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
+
+    D3D12_CLEAR_VALUE clear_value = {};
+    clear_value.Format = format;
+
+    D3D12_HEAP_PROPERTIES heap_props = {};
+    heap_props.Type = D3D12_HEAP_TYPE_DEFAULT;
+
+    ID3D12Resource* pTexture = NULL;
+    HRESULT hr = g_GfxData.pDevice->CreateCommittedResource(
+        &heap_props, D3D12_HEAP_FLAG_NONE,
+        &tex_desc, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+        &clear_value, IID_PPV_ARGS(&pTexture));
+    if (FAILED(hr) || !pTexture)
+        return NULL;
+
+    // Allocate RTV from our dedicated heap
+    D3D12_CPU_DESCRIPTOR_HANDLE rtvCpuHandle = g_RTVTexDescHeap->GetCPUDescriptorHandleForHeapStart();
+    rtvCpuHandle.ptr += (SIZE_T)g_RTVTexDescOffset * g_RTVTexDescStride;
+    g_RTVTexDescOffset++;
+
+    D3D12_RENDER_TARGET_VIEW_DESC rtv_desc = {};
+    rtv_desc.Format             = format;
+    rtv_desc.ViewDimension      = D3D12_RTV_DIMENSION_TEXTURE2D;
+    g_GfxData.pDevice->CreateRenderTargetView(pTexture, &rtv_desc, rtvCpuHandle);
+
+    // Allocate SRV from the shared shader-visible heap
+    D3D12_CPU_DESCRIPTOR_HANDLE srvCpuHandle;
+    D3D12_GPU_DESCRIPTOR_HANDLE srvGpuHandle;
+    g_GfxData.pSrvDescHeapAlloc->Alloc(&srvCpuHandle, &srvGpuHandle);
+
+    D3D12_SHADER_RESOURCE_VIEW_DESC srv_desc = {};
+    srv_desc.Format                        = format;
+    srv_desc.ViewDimension                 = D3D12_SRV_DIMENSION_TEXTURE2D;
+    srv_desc.Shader4ComponentMapping       = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+    srv_desc.Texture2D.MipLevels           = 1;
+    g_GfxData.pDevice->CreateShaderResourceView(pTexture, &srv_desc, srvCpuHandle);
+
+    ImPlatform_RTTracking_DX12* entry = new ImPlatform_RTTracking_DX12();
+    entry->pTexture    = pTexture;
+    entry->rtvCpuHandle = rtvCpuHandle;
+    entry->srvGpuHandle = srvGpuHandle;
+    entry->width       = desc->width;
+    entry->height      = desc->height;
+    entry->format      = format;
+    entry->next        = g_RTTrackingHead;
+    g_RTTrackingHead   = entry;
+
+    return (ImTextureID)srvGpuHandle.ptr;
+}
+
+IMPLATFORM_API bool ImPlatform_BeginRenderToTexture(ImTextureID texture)
+{
+    if (!texture || !g_GfxData.pCommandList)
+        return false;
+
+    ImPlatform_RTTracking_DX12* entry = g_RTTrackingHead;
+    while (entry) { if ((ImTextureID)entry->srvGpuHandle.ptr == texture) break; entry = entry->next; }
+    if (!entry) return false;
+
+    // Transition to render target
+    D3D12_RESOURCE_BARRIER barrier = {};
+    barrier.Type                   = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    barrier.Transition.pResource   = entry->pTexture;
+    barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+    barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+    barrier.Transition.StateAfter  = D3D12_RESOURCE_STATE_RENDER_TARGET;
+    g_GfxData.pCommandList->ResourceBarrier(1, &barrier);
+
+    g_GfxData.pCommandList->OMSetRenderTargets(1, &entry->rtvCpuHandle, FALSE, NULL);
+
+    float clearColor[4] = { 0.f, 0.f, 0.f, 0.f };
+    g_GfxData.pCommandList->ClearRenderTargetView(entry->rtvCpuHandle, clearColor, 0, NULL);
+
+    D3D12_VIEWPORT vp = {};
+    vp.Width    = (FLOAT)entry->width;
+    vp.Height   = (FLOAT)entry->height;
+    vp.MaxDepth = 1.0f;
+    g_GfxData.pCommandList->RSSetViewports(1, &vp);
+
+    D3D12_RECT scissor = { 0, 0, (LONG)entry->width, (LONG)entry->height };
+    g_GfxData.pCommandList->RSSetScissorRects(1, &scissor);
+
+    g_ActiveRTEntry = entry;
+    return true;
+}
+
+IMPLATFORM_API void ImPlatform_EndRenderToTexture(void)
+{
+    if (!g_GfxData.pCommandList || !g_GfxData.pSwapChain || !g_ActiveRTEntry)
+        return;
+
+    // Transition render texture back to shader resource
+    D3D12_RESOURCE_BARRIER barrier = {};
+    barrier.Type                   = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    barrier.Transition.pResource   = g_ActiveRTEntry->pTexture;
+    barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+    barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
+    barrier.Transition.StateAfter  = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+    g_GfxData.pCommandList->ResourceBarrier(1, &barrier);
+    g_ActiveRTEntry = NULL;
+
+    // Restore backbuffer as render target
+    UINT backBufferIdx = g_GfxData.pSwapChain->GetCurrentBackBufferIndex();
+    g_GfxData.pCommandList->OMSetRenderTargets(1, &g_GfxData.renderTargetDescriptor[backBufferIdx], FALSE, NULL);
+    g_GfxData.pCommandList->SetDescriptorHeaps(1, &g_GfxData.pSrvDescHeap);
+
+    // Restore full-screen viewport and scissor
+    D3D12_VIEWPORT vp = {};
+    vp.Width    = (FLOAT)g_ImPlatform_BackbufferW;
+    vp.Height   = (FLOAT)g_ImPlatform_BackbufferH;
+    vp.MaxDepth = 1.0f;
+    g_GfxData.pCommandList->RSSetViewports(1, &vp);
+
+    D3D12_RECT scissor = { 0, 0, (LONG)g_ImPlatform_BackbufferW, (LONG)g_ImPlatform_BackbufferH };
+    g_GfxData.pCommandList->RSSetScissorRects(1, &scissor);
 }
 
 IMPLATFORM_API bool ImPlatform_CopyBackbuffer(ImTextureID dst) { (void)dst; return false; }
