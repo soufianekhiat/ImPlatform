@@ -423,6 +423,18 @@ IMPLATFORM_API void ImPlatform_DestroyTexture(
     ImTextureID texture_id
 );
 
+// Override the sampler used by ImGui::Image() (and similar) for one or more draw calls.
+// Call ImPlatform_PushSampler() before the image call and ImPlatform_PopSampler() after.
+// Calls may be nested. Safe no-op on backends that don't support dynamic sampler override
+// (DX12, Vulkan, WGPU — where the sampler is baked into the pipeline/descriptor set).
+//
+// Example:
+//   ImPlatform_PushSampler(ImPlatform_TextureFilter_Nearest, ImPlatform_TextureWrap_Clamp);
+//   ImGui::Image(pixelArtTex, size);
+//   ImPlatform_PopSampler();
+IMPLATFORM_API void ImPlatform_PushSampler(ImPlatform_TextureFilter filter, ImPlatform_TextureWrap wrap);
+IMPLATFORM_API void ImPlatform_PopSampler(void);
+
 // ============================================================================
 // Custom Vertex/Index Buffer Management API
 // ============================================================================

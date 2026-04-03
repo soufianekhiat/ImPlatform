@@ -2245,4 +2245,19 @@ IMPLATFORM_API void ImPlatform_PopShaderConstants(void* handle)
     (void)handle;
 }
 
+// ============================================================================
+// Sampler Override API - Vulkan
+// ============================================================================
+// Vulkan samplers are baked into descriptor sets that are rebuilt per frame.
+// Overriding the sampler mid-frame without rebuilding the descriptor set
+// is not supported without significant pipeline surgery. Intentional no-ops.
+
+IMPLATFORM_API void ImPlatform_PushSampler(ImPlatform_TextureFilter /*filter*/, ImPlatform_TextureWrap /*wrap*/)
+{
+}
+
+IMPLATFORM_API void ImPlatform_PopSampler(void)
+{
+}
+
 #endif // IM_GFX_VULKAN

@@ -32,6 +32,11 @@ static ImPlatform_RTTracking_DX9* g_RTTrackingHead = NULL;
 static IDirect3DSurface9* g_SavedSurface  = NULL;
 static D3DVIEWPORT9       g_SavedViewport = {};
 
+// Sampler stack for PushSampler/PopSampler — saves D3D9 per-stage state
+struct ImPlatform_SamplerStackEntry_DX9 { DWORD minF, magF, addrU, addrV; };
+static ImPlatform_SamplerStackEntry_DX9 g_SamplerStack[8];
+static int                              g_SamplerDepth = 0;
+
 // Uniform block API state
 static ImPlatform_ShaderProgram g_CurrentUniformBlockProgram = nullptr;
 static void* g_UniformBlockData = nullptr;
@@ -564,6 +569,51 @@ IMPLATFORM_API void ImPlatform_DestroyTexture(ImTextureID texture_id)
 
     LPDIRECT3DTEXTURE9 pTexture = (LPDIRECT3DTEXTURE9)texture_id;
     pTexture->Release();
+}
+
+IMPLATFORM_API void ImPlatform_PushSampler(ImPlatform_TextureFilter filter, ImPlatform_TextureWrap wrap)
+{
+    // Encode filter+wrap as a small int passed through UserCallbackData
+    uintptr_t encoded = (uintptr_t)(((int)filter << 8) | (int)wrap);
+    ImGui::GetWindowDrawList()->AddCallback(
+        [](const ImDrawList*, const ImDrawCmd* cmd) {
+            if (!g_GfxData.pDevice) return;
+            // Save current state
+            if (g_SamplerDepth < 8)
+            {
+                auto& e = g_SamplerStack[g_SamplerDepth++];
+                g_GfxData.pDevice->GetSamplerState(0, D3DSAMP_MINFILTER, &e.minF);
+                g_GfxData.pDevice->GetSamplerState(0, D3DSAMP_MAGFILTER, &e.magF);
+                g_GfxData.pDevice->GetSamplerState(0, D3DSAMP_ADDRESSU,  &e.addrU);
+                g_GfxData.pDevice->GetSamplerState(0, D3DSAMP_ADDRESSV,  &e.addrV);
+            }
+            // Decode and apply new state
+            int enc   = (int)(uintptr_t)cmd->UserCallbackData;
+            int f     = (enc >> 8) & 0xFF;
+            int w     = enc & 0xFF;
+            static const DWORD kFilter[2] = { D3DTEXF_POINT, D3DTEXF_LINEAR };
+            static const DWORD kAddr[3]   = { D3DTADDRESS_CLAMP, D3DTADDRESS_WRAP, D3DTADDRESS_MIRROR };
+            DWORD df = kFilter[f & 1];
+            DWORD da = kAddr[w < 3 ? w : 0];
+            g_GfxData.pDevice->SetSamplerState(0, D3DSAMP_MINFILTER, df);
+            g_GfxData.pDevice->SetSamplerState(0, D3DSAMP_MAGFILTER, df);
+            g_GfxData.pDevice->SetSamplerState(0, D3DSAMP_MIPFILTER, D3DTEXF_NONE);
+            g_GfxData.pDevice->SetSamplerState(0, D3DSAMP_ADDRESSU,  da);
+            g_GfxData.pDevice->SetSamplerState(0, D3DSAMP_ADDRESSV,  da);
+        }, (void*)encoded);
+}
+
+IMPLATFORM_API void ImPlatform_PopSampler(void)
+{
+    ImGui::GetWindowDrawList()->AddCallback(
+        [](const ImDrawList*, const ImDrawCmd*) {
+            if (!g_GfxData.pDevice || g_SamplerDepth <= 0) return;
+            const auto& e = g_SamplerStack[--g_SamplerDepth];
+            g_GfxData.pDevice->SetSamplerState(0, D3DSAMP_MINFILTER, e.minF);
+            g_GfxData.pDevice->SetSamplerState(0, D3DSAMP_MAGFILTER, e.magF);
+            g_GfxData.pDevice->SetSamplerState(0, D3DSAMP_ADDRESSU,  e.addrU);
+            g_GfxData.pDevice->SetSamplerState(0, D3DSAMP_ADDRESSV,  e.addrV);
+        }, nullptr);
 }
 
 // ============================================================================

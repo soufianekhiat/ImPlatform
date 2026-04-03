@@ -168,6 +168,11 @@ typedef void (APIENTRYP PFNGLUNIFORM3FVPROC) (GLint location, GLsizei count, con
 typedef void (APIENTRYP PFNGLUNIFORM4FVPROC) (GLint location, GLsizei count, const GLfloat *value);
 typedef void (APIENTRYP PFNGLUNIFORM1IVPROC) (GLint location, GLsizei count, const GLint *value);
 typedef void (APIENTRYP PFNGLGETTEXLEVELPARAMETERIVPROC) (GLenum target, GLint level, GLenum pname, GLint *params);
+// GL 3.3 sampler objects
+typedef void (APIENTRYP PFNGLGENSAMPLERSPROC)         (GLsizei count, GLuint *samplers);
+typedef void (APIENTRYP PFNGLDELETESAMPLERSPROC)      (GLsizei count, const GLuint *samplers);
+typedef void (APIENTRYP PFNGLBINDSAMPLERPROC)         (GLuint unit, GLuint sampler);
+typedef void (APIENTRYP PFNGLSAMPLERPARAMETERIPROC)   (GLuint sampler, GLenum pname, GLint param);
 
 static PFNGLUNIFORM1FVPROC glUniform1fv_Ptr = NULL;
 static PFNGLUNIFORM2FVPROC glUniform2fv_Ptr = NULL;
@@ -175,6 +180,10 @@ static PFNGLUNIFORM3FVPROC glUniform3fv_Ptr = NULL;
 static PFNGLUNIFORM4FVPROC glUniform4fv_Ptr = NULL;
 static PFNGLUNIFORM1IVPROC glUniform1iv_Ptr = NULL;
 static PFNGLGETTEXLEVELPARAMETERIVPROC glGetTexLevelParameteriv_Ptr = NULL;
+static PFNGLGENSAMPLERSPROC       glGenSamplers_Ptr       = NULL;
+static PFNGLDELETESAMPLERSPROC    glDeleteSamplers_Ptr    = NULL;
+static PFNGLBINDSAMPLERPROC       glBindSampler_Ptr       = NULL;
+static PFNGLSAMPLERPARAMETERIPROC glSamplerParameteri_Ptr = NULL;
 
 #if defined(IM_CURRENT_PLATFORM) && (IM_CURRENT_PLATFORM == IM_PLATFORM_WIN32)
     // Need to link with opengl32.lib
@@ -209,6 +218,11 @@ static GLuint g_RTFbo        = 0;
 
 // Cached draw data for custom shader callbacks (needed for multi-viewport support)
 static ImDrawData* g_CurrentDrawData = nullptr;
+
+// Sampler override state - [filter][wrap]: filter 0=Nearest 1=Linear, wrap 0=Clamp 1=Wrap 2=Mirror
+static GLuint g_Samplers[2][3]  = {};
+static GLuint g_SamplerStack[8] = {};
+static int    g_SamplerDepth    = 0;
 
 #if defined(IM_CURRENT_PLATFORM) && (IM_CURRENT_PLATFORM == IM_PLATFORM_WIN32)
 static HGLRC g_hRC = NULL; // Shared GL context for main window
@@ -379,6 +393,27 @@ IMPLATFORM_API bool ImPlatform_InitGfx(void)
     glUniform1iv_Ptr = (PFNGLUNIFORM1IVPROC)imgl3wGetProcAddress("glUniform1iv");
     glGetTexLevelParameteriv_Ptr = (PFNGLGETTEXLEVELPARAMETERIVPROC)imgl3wGetProcAddress("glGetTexLevelParameteriv");
 
+    glGenSamplers_Ptr       = (PFNGLGENSAMPLERSPROC)imgl3wGetProcAddress("glGenSamplers");
+    glDeleteSamplers_Ptr    = (PFNGLDELETESAMPLERSPROC)imgl3wGetProcAddress("glDeleteSamplers");
+    glBindSampler_Ptr       = (PFNGLBINDSAMPLERPROC)imgl3wGetProcAddress("glBindSampler");
+    glSamplerParameteri_Ptr = (PFNGLSAMPLERPARAMETERIPROC)imgl3wGetProcAddress("glSamplerParameteri");
+
+    // Create 6 sampler objects for all filter/wrap combinations (GL 3.3+)
+    if (glGenSamplers_Ptr && glSamplerParameteri_Ptr)
+    {
+        static const GLint kMinMag[2] = { 0x2600 /*GL_NEAREST*/, 0x2601 /*GL_LINEAR*/ };
+        static const GLint kWrap[3]   = { 0x812F /*GL_CLAMP_TO_EDGE*/, 0x2901 /*GL_REPEAT*/, 0x8370 /*GL_MIRRORED_REPEAT*/ };
+        for (int f = 0; f < 2; ++f)
+        for (int w = 0; w < 3; ++w)
+        {
+            glGenSamplers_Ptr(1, &g_Samplers[f][w]);
+            glSamplerParameteri_Ptr(g_Samplers[f][w], 0x2801 /*GL_TEXTURE_MIN_FILTER*/, kMinMag[f]);
+            glSamplerParameteri_Ptr(g_Samplers[f][w], 0x2800 /*GL_TEXTURE_MAG_FILTER*/, kMinMag[f]);
+            glSamplerParameteri_Ptr(g_Samplers[f][w], 0x2802 /*GL_TEXTURE_WRAP_S*/,     kWrap[w]);
+            glSamplerParameteri_Ptr(g_Samplers[f][w], 0x2803 /*GL_TEXTURE_WRAP_T*/,     kWrap[w]);
+        }
+    }
+
 #if defined(IM_CURRENT_PLATFORM) && (IM_CURRENT_PLATFORM == IM_PLATFORM_WIN32) && defined(IMGUI_HAS_VIEWPORT)
     // Win32+GL needs specific hooks for viewport, as there are specific things needed to tie Win32 and GL api.
     ImGuiIO& io = ImGui::GetIO();
@@ -531,6 +566,11 @@ IMPLATFORM_API void ImPlatform_ShutdownGfxAPI(void)
 // ImPlatform API - ShutdownWindow
 IMPLATFORM_API void ImPlatform_ShutdownWindow(void)
 {
+    if (glDeleteSamplers_Ptr)
+        for (int f = 0; f < 2; ++f)
+        for (int w = 0; w < 3; ++w)
+            if (g_Samplers[f][w]) { glDeleteSamplers_Ptr(1, &g_Samplers[f][w]); g_Samplers[f][w] = 0; }
+
     ImGui_ImplOpenGL3_Shutdown();
 
 #if defined(IM_CURRENT_PLATFORM) && (IM_CURRENT_PLATFORM == IM_PLATFORM_WIN32)
@@ -1812,6 +1852,40 @@ IMPLATFORM_API void* ImPlatform_PushShaderConstants(const void* data, unsigned i
 IMPLATFORM_API void ImPlatform_PopShaderConstants(void* handle)
 {
     (void)handle;
+}
+
+// ============================================================================
+// Sampler Override API - OpenGL3
+// ============================================================================
+
+IMPLATFORM_API void ImPlatform_PushSampler(ImPlatform_TextureFilter filter, ImPlatform_TextureWrap wrap)
+{
+    uintptr_t encoded = (uintptr_t)(((int)filter << 8) | (int)wrap);
+    ImGui::GetWindowDrawList()->AddCallback(
+        [](const ImDrawList*, const ImDrawCmd* cmd) {
+            if (!glBindSampler_Ptr || !glGenSamplers_Ptr) return;
+            // Save current binding onto the stack
+            if (g_SamplerDepth < 8)
+            {
+                GLint cur = 0;
+                glGetIntegerv(0x8C2D /*GL_SAMPLER_BINDING*/, &cur);
+                g_SamplerStack[g_SamplerDepth++] = (GLuint)cur;
+            }
+            int enc = (int)(uintptr_t)cmd->UserCallbackData;
+            int f = (enc >> 8) & 0xFF;
+            int w = enc & 0xFF;
+            if (f < 2 && w < 3 && g_Samplers[f][w])
+                glBindSampler_Ptr(0, g_Samplers[f][w]);
+        }, (void*)encoded);
+}
+
+IMPLATFORM_API void ImPlatform_PopSampler(void)
+{
+    ImGui::GetWindowDrawList()->AddCallback(
+        [](const ImDrawList*, const ImDrawCmd*) {
+            if (!glBindSampler_Ptr || g_SamplerDepth <= 0) return;
+            glBindSampler_Ptr(0, g_SamplerStack[--g_SamplerDepth]);
+        }, nullptr);
 }
 
 #endif // IM_GFX_OPENGL3
