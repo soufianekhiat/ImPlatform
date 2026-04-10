@@ -328,6 +328,95 @@ typedef enum ImPlatform_PixelFormat {
 #endif
 } ImPlatform_PixelFormat;
 
+// ----------------------------------------------------------------------------
+// Generic image buffer descriptor (Halide-style)
+// ----------------------------------------------------------------------------
+// Describes an arbitrary CPU-resident image buffer of any of 11 sample types,
+// 1..4 channels, with per-axis byte strides. This decouples "what the bytes
+// mean" (sample_type, channels) from "how they are laid out" (strides), so
+// callers can describe interleaved, planar, sub-image (ROI), or even mirrored
+// (negative-stride) layouts without copying.
+//
+// Used by widgets that need to read raw image data without going through the
+// limited ImPlatform_PixelFormat enum (e.g. DearWidgets ImageInspector).
+//
+// Sample type taxonomy: 11 scalar types (signed/unsigned 8/16/32/64 + half/float/double).
+typedef enum ImSampleType {
+    ImSampleType_U8,    // 8-bit unsigned integer
+    ImSampleType_I8,    // 8-bit signed integer
+    ImSampleType_U16,   // 16-bit unsigned integer
+    ImSampleType_I16,   // 16-bit signed integer
+    ImSampleType_U32,   // 32-bit unsigned integer
+    ImSampleType_I32,   // 32-bit signed integer
+    ImSampleType_U64,   // 64-bit unsigned integer
+    ImSampleType_I64,   // 64-bit signed integer
+    ImSampleType_F16,   // 16-bit IEEE half float
+    ImSampleType_F32,   // 32-bit IEEE float
+    ImSampleType_F64,   // 64-bit IEEE double
+    ImSampleType_COUNT
+} ImSampleType;
+
+// Halide-style raw image buffer descriptor.
+// All strides are in bytes (not elements) and may be negative for flips.
+// `byte_offset` is added to `host` to reach pixel (0, 0, channel 0).
+//
+// Examples:
+//   Tightly packed RGBA8 interleaved (most common):
+//     x_stride_bytes = 4, y_stride_bytes = width * 4, c_stride_bytes = 1
+//   Planar 16-bit RGB:
+//     x_stride_bytes = 2, y_stride_bytes = width * 2, c_stride_bytes = width * height * 2
+//   Sub-image (ROI) of an interleaved parent:
+//     same strides as parent, byte_offset = parent_y_stride * roi_y + parent_x_stride * roi_x
+//   Vertically flipped:
+//     y_stride_bytes negative, byte_offset = (height - 1) * |y_stride|
+typedef struct ImImageBuffer {
+    const void*     host;             // Base pointer to image data (mmap-friendly)
+    size_t          byte_offset;      // Offset added to host to reach pixel (0, 0, 0)
+    unsigned int    width;            // X extent in pixels
+    unsigned int    height;           // Y extent in pixels
+    unsigned int    channels;         // 1..4
+    ptrdiff_t       x_stride_bytes;   // Bytes from pixel (x, y, c) to (x+1, y, c)
+    ptrdiff_t       y_stride_bytes;   // Bytes from pixel (x, y, c) to (x, y+1, c)
+    ptrdiff_t       c_stride_bytes;   // Bytes from pixel (x, y, c) to (x, y, c+1)
+    ImSampleType    type;             // Scalar type of each channel
+    ImU64           version;          // Bump on ANY descriptor change to trigger re-upload
+} ImImageBuffer;
+
+// Returns the size in bytes of one scalar of the given sample type.
+static inline size_t ImPlatform_SampleTypeSize(ImSampleType t) {
+    switch (t) {
+    case ImSampleType_U8:  case ImSampleType_I8:  return 1;
+    case ImSampleType_U16: case ImSampleType_I16: case ImSampleType_F16: return 2;
+    case ImSampleType_U32: case ImSampleType_I32: case ImSampleType_F32: return 4;
+    case ImSampleType_U64: case ImSampleType_I64: case ImSampleType_F64: return 8;
+    default: return 0;
+    }
+}
+
+// Returns true if the sample type is a floating-point format (F16/F32/F64).
+static inline bool ImPlatform_SampleTypeIsFloat(ImSampleType t) {
+    return t == ImSampleType_F16 || t == ImSampleType_F32 || t == ImSampleType_F64;
+}
+
+// Returns true if the sample type is signed (signed integer or float).
+static inline bool ImPlatform_SampleTypeIsSigned(ImSampleType t) {
+    switch (t) {
+    case ImSampleType_I8: case ImSampleType_I16: case ImSampleType_I32: case ImSampleType_I64:
+    case ImSampleType_F16: case ImSampleType_F32: case ImSampleType_F64:
+        return true;
+    default:
+        return false;
+    }
+}
+
+// Returns the tight (no-padding) byte size of an ImImageBuffer's pixel data:
+// width * height * channels * sample_size. This is the size needed for a
+// tight-packed copy regardless of the buffer's actual strides.
+static inline size_t ImPlatform_ImageBufferTightByteSize(const ImImageBuffer* buf) {
+    if (!buf) return 0;
+    return (size_t)buf->width * (size_t)buf->height * (size_t)buf->channels * ImPlatform_SampleTypeSize(buf->type);
+}
+
 // Texture filtering modes
 typedef enum ImPlatform_TextureFilter {
     ImPlatform_TextureFilter_Nearest,    // Point sampling (sharp, pixelated)
