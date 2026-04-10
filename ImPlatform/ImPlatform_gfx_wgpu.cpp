@@ -1576,6 +1576,32 @@ struct ImPlatform_ShaderProgramData_WebGPU
     char* fragmentEntryPoint;
 };
 
+// Caching strategy:
+//   Verified against imgui_impl_wgpu.h and the current webgpu.h headers
+//   bundled with this project: no pipeline cache type, no binary archive
+//   type, no serialization/deserialization entry points exist. Concretely:
+//
+//     (a) WGSL has no standardized binary representation -- the spec only
+//         defines a textual source form, so there is nothing analogous to
+//         SPIR-V or DXBC to persist at the shader-module level.
+//     (b) The WebGPU spec currently has no pipeline cache extension. There
+//         is no WGPUPipelineCache, no WGPUBinaryArchive, and no equivalent
+//         of VK_EXT_pipeline_cache / MTLBinaryArchive / glProgramBinary.
+//     (c) Browsers (Chrome's Dawn backend, Firefox's wgpu-core backend) may
+//         cache compiled pipelines internally across page loads, but that
+//         cache is opaque to the application -- there is no JS/C API to
+//         opt in to it, inspect it, or persist it to application storage.
+//     (d) wgpu-native and Dawn both expose native device handles that
+//         *could* be bridged to VkPipelineCache on Vulkan-backed builds,
+//         but that escape hatch is backend-specific and not part of the
+//         portable ImPlatform WebGPU path.
+//
+//   Consequence: the `cache_key` and `compile_flags` fields of
+//   ImPlatform_ShaderDesc are silently ignored on this backend. When (and
+//   if) a standardized WGPUPipelineCache ever lands, wire it up here the
+//   same way ImPlatform_gfx_vulkan.cpp wires VkPipelineCache: create one at
+//   device-create, pass it into every wgpuDeviceCreateRenderPipeline call,
+//   serialize it back on cleanup. Until then, this is a documented no-op.
 IMPLATFORM_API ImPlatform_Shader ImPlatform_CreateShader(const ImPlatform_ShaderDesc* desc)
 {
     if (!desc || !desc->source_code || !g_GfxData.device)

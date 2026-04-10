@@ -840,7 +840,10 @@ IMPLATFORM_API void ImPlatform_DrawIndexed(unsigned int primitive_type, unsigned
 // ============================================================================
 // Note: DirectX 9 shader support is limited because D3DX is deprecated
 // For full shader support, consider using D3DCompile from d3dcompiler.lib
-// or pre-compiled shader bytecode
+// or pre-compiled shader bytecode.
+//
+// Note: the shader cache (cache_key / compile_flags) is a no-op on this
+// backend because DX9 custom shader support itself is a stub.
 
 IMPLATFORM_API ImPlatform_Shader ImPlatform_CreateShader(const ImPlatform_ShaderDesc* desc)
 {
