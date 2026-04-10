@@ -1448,6 +1448,13 @@ struct ImPlatform_ShaderData_GL
 {
     GLuint shader_id;
     ImPlatform_ShaderStage stage;
+    // Cache-enabled path: source/entry/cache_key are stashed so CreateShaderProgram
+    // can hash them and look up a pre-linked program binary. source_code owns its
+    // storage; it is freed in DestroyShader.
+    char*        source_code;     // NULL if not using cache
+    char*        entry_point;     // NULL if not using cache
+    char*        cache_key;       // NULL if not using cache
+    unsigned int compile_flags;
 };
 
 // Internal shader program structure
@@ -1502,6 +1509,16 @@ static GLuint ImPlatform_CompileShader_GL(GLenum shader_type, const char* source
     return shader;
 }
 
+// Tiny string dup helper (malloc-based so DestroyShader can use free()).
+static char* ImPlatform_StrDup_GL(const char* s)
+{
+    if (!s) return NULL;
+    size_t n = strlen(s);
+    char* r = (char*)malloc(n + 1);
+    if (r) memcpy(r, s, n + 1);
+    return r;
+}
+
 IMPLATFORM_API ImPlatform_Shader ImPlatform_CreateShader(const ImPlatform_ShaderDesc* desc)
 {
     if (!desc || !desc->source_code)
@@ -1536,8 +1553,24 @@ IMPLATFORM_API ImPlatform_Shader ImPlatform_CreateShader(const ImPlatform_Shader
         return NULL;
 
     ImPlatform_ShaderData_GL* shader_data = new ImPlatform_ShaderData_GL();
-    shader_data->shader_id = shader_id;
-    shader_data->stage = desc->stage;
+    shader_data->shader_id   = shader_id;
+    shader_data->stage       = desc->stage;
+    shader_data->compile_flags = desc->compile_flags;
+
+    // Stash source/entry/cache_key only if caller opted into caching.
+    // CreateShaderProgram will use them to compute the program-binary cache key.
+    if (desc->cache_key && desc->cache_key[0])
+    {
+        shader_data->source_code  = ImPlatform_StrDup_GL(desc->source_code);
+        shader_data->entry_point  = ImPlatform_StrDup_GL(desc->entry_point ? desc->entry_point : "main");
+        shader_data->cache_key    = ImPlatform_StrDup_GL(desc->cache_key);
+    }
+    else
+    {
+        shader_data->source_code  = NULL;
+        shader_data->entry_point  = NULL;
+        shader_data->cache_key    = NULL;
+    }
 
     return (ImPlatform_Shader)shader_data;
 }
@@ -1550,8 +1583,117 @@ IMPLATFORM_API void ImPlatform_DestroyShader(ImPlatform_Shader shader)
     ImPlatform_ShaderData_GL* shader_data = (ImPlatform_ShaderData_GL*)shader;
     if (shader_data->shader_id)
         glDeleteShader(shader_data->shader_id);
+    if (shader_data->source_code) free(shader_data->source_code);
+    if (shader_data->entry_point) free(shader_data->entry_point);
+    if (shader_data->cache_key)   free(shader_data->cache_key);
 
     delete shader_data;
+}
+
+// -----------------------------------------------------------------------------
+// GL program binary cache (via GL_ARB_get_program_binary / core 4.1+)
+// -----------------------------------------------------------------------------
+// Cache file layout:
+//   4 bytes: magic "IPGL"
+//   4 bytes: GL binary format (GLenum, driver-specific)
+//   4 bytes: binary length N
+//   N bytes: raw program binary
+//
+// On load: magic check, then glProgramBinary(format, data, N). If the driver
+// rejects the binary (e.g. driver upgrade changed the format) we fall back to
+// a normal compile+link path. There's no versioning beyond the magic — the
+// source hash in the filename already invalidates on any source change.
+
+static const char kGLProgramBinaryMagic[4] = { 'I', 'P', 'G', 'L' };
+
+// Try to load a cached linked program from disk into `out_program`.
+// out_cache_path receives the computed path (so the caller can save on miss).
+// Returns true on successful load + link.
+static bool ImPlatform_GL_TryLoadCachedProgram(
+    const ImPlatform_ShaderData_GL* vs_data,
+    const ImPlatform_ShaderData_GL* fs_data,
+    GLuint program,
+    char* out_cache_path, size_t out_cache_path_size)
+{
+    out_cache_path[0] = '\0';
+    if (!vs_data->cache_key || !fs_data->cache_key) return false;
+
+    // Combined cache key: hash both sources + both entry points.
+    unsigned long long vs_hash = ImPlatform_ShaderCacheHashSource(
+        vs_data->source_code, strlen(vs_data->source_code), vs_data->entry_point, "gl_vs");
+    unsigned long long fs_hash = ImPlatform_ShaderCacheHashSource(
+        fs_data->source_code, strlen(fs_data->source_code), fs_data->entry_point, "gl_fs");
+    unsigned long long combined = vs_hash ^ (fs_hash * 1099511628211ull);
+
+    ImPlatform_ShaderCacheBuildPath(out_cache_path, out_cache_path_size,
+                                    vs_data->cache_key, "program", "glbin", combined);
+
+    size_t file_size = 0;
+    void* file_data = ImPlatform_ShaderCacheLoad(out_cache_path, &file_size);
+    if (!file_data || file_size < 12) { if (file_data) free(file_data); return false; }
+
+    const unsigned char* p = (const unsigned char*)file_data;
+    if (memcmp(p, kGLProgramBinaryMagic, 4) != 0) { free(file_data); return false; }
+
+    GLenum binary_format;
+    unsigned int binary_len;
+    memcpy(&binary_format, p + 4, 4);
+    memcpy(&binary_len,    p + 8, 4);
+
+    if ((size_t)binary_len + 12 > file_size) { free(file_data); return false; }
+
+    glProgramBinary(program, binary_format, p + 12, (GLsizei)binary_len);
+    free(file_data);
+
+    GLint link_status = GL_FALSE;
+    glGetProgramiv(program, GL_LINK_STATUS, &link_status);
+    if (!link_status)
+    {
+        // Driver rejected the binary (e.g. GPU/driver upgrade). Let the caller
+        // re-link from source. We leave `program` in an unspecified state; the
+        // caller will re-attach shaders and relink.
+        return false;
+    }
+
+    fprintf(stderr, "[ImPlatform shader cache] HIT  %s/program (GL binary %u bytes)\n",
+            vs_data->cache_key, binary_len);
+    return true;
+}
+
+// Save the linked program binary to disk.
+static void ImPlatform_GL_SaveProgramBinary(GLuint program, const char* cache_path, const char* cache_key)
+{
+    if (!cache_path || !cache_path[0]) return;
+
+    GLint binary_length = 0;
+    glGetProgramiv(program, GL_PROGRAM_BINARY_LENGTH, &binary_length);
+    if (binary_length <= 0) return;
+
+    void* binary_data = malloc((size_t)binary_length);
+    if (!binary_data) return;
+
+    GLsizei actual_len = 0;
+    GLenum  binary_format = 0;
+    glGetProgramBinary(program, binary_length, &actual_len, &binary_format, binary_data);
+    if (actual_len <= 0) { free(binary_data); return; }
+
+    // Build file: magic(4) + format(4) + length(4) + data
+    size_t file_size = 12 + (size_t)actual_len;
+    unsigned char* file_data = (unsigned char*)malloc(file_size);
+    if (!file_data) { free(binary_data); return; }
+    memcpy(file_data,     kGLProgramBinaryMagic, 4);
+    memcpy(file_data + 4, &binary_format,        4);
+    unsigned int ulen = (unsigned int)actual_len;
+    memcpy(file_data + 8, &ulen,                 4);
+    memcpy(file_data + 12, binary_data,          (size_t)actual_len);
+    free(binary_data);
+
+    if (ImPlatform_ShaderCacheSave(cache_path, file_data, file_size))
+    {
+        fprintf(stderr, "[ImPlatform shader cache] SAVE %s/program (GL binary %d bytes)\n",
+                cache_key ? cache_key : "?", (int)actual_len);
+    }
+    free(file_data);
 }
 
 IMPLATFORM_API ImPlatform_ShaderProgram ImPlatform_CreateShaderProgram(ImPlatform_Shader vertex_shader, ImPlatform_Shader fragment_shader)
@@ -1564,20 +1706,50 @@ IMPLATFORM_API ImPlatform_ShaderProgram ImPlatform_CreateShaderProgram(ImPlatfor
 
     // Create program
     GLuint program = glCreateProgram();
-    glAttachShader(program, vs_data->shader_id);
-    glAttachShader(program, fs_data->shader_id);
-    glLinkProgram(program);
 
-    // Check for linking errors
-    GLint success;
-    glGetProgramiv(program, GL_LINK_STATUS, &success);
-    if (!success)
+    // Hint the driver to produce a retrievable binary if we want to cache it.
+    bool cache_enabled = (vs_data->cache_key && fs_data->cache_key);
+    if (cache_enabled)
     {
-        char info_log[512];
-        glGetProgramInfoLog(program, 512, NULL, info_log);
-        fprintf(stderr, "Shader program linking failed: %s\n", info_log);
-        glDeleteProgram(program);
-        return NULL;
+#ifdef GL_PROGRAM_BINARY_RETRIEVABLE_HINT
+        glProgramParameteri(program, GL_PROGRAM_BINARY_RETRIEVABLE_HINT, GL_TRUE);
+#endif
+    }
+
+    // 1) Try to load the pre-linked program binary from disk
+    char cache_path[512];
+    cache_path[0] = '\0';
+    bool cache_hit = false;
+    if (cache_enabled)
+    {
+        cache_hit = ImPlatform_GL_TryLoadCachedProgram(vs_data, fs_data, program,
+                                                       cache_path, sizeof(cache_path));
+    }
+
+    // 2) Cache miss (or no cache_key): attach shaders and link normally
+    if (!cache_hit)
+    {
+        if (cache_enabled)
+            fprintf(stderr, "[ImPlatform shader cache] MISS %s/program -- linking...\n", vs_data->cache_key);
+
+        glAttachShader(program, vs_data->shader_id);
+        glAttachShader(program, fs_data->shader_id);
+        glLinkProgram(program);
+
+        GLint success;
+        glGetProgramiv(program, GL_LINK_STATUS, &success);
+        if (!success)
+        {
+            char info_log[512];
+            glGetProgramInfoLog(program, 512, NULL, info_log);
+            fprintf(stderr, "Shader program linking failed: %s\n", info_log);
+            glDeleteProgram(program);
+            return NULL;
+        }
+
+        // 3) Save the linked binary for next launch
+        if (cache_enabled)
+            ImPlatform_GL_SaveProgramBinary(program, cache_path, vs_data->cache_key);
     }
 
     ImPlatform_ShaderProgramData_GL* program_data = new ImPlatform_ShaderProgramData_GL();

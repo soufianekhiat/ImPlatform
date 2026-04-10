@@ -23,6 +23,12 @@ static ImPlatform_GfxData_Metal g_GfxData = {};
 unsigned int g_ImPlatform_BackbufferW = 0;
 unsigned int g_ImPlatform_BackbufferH = 0;
 
+// Global MTLBinaryArchive (macOS 11 / iOS 14+). Caches compiled render pipeline
+// state objects across runs. Loaded from disk at device-create time, attached
+// to every MTLRenderPipelineDescriptor, populated on successful pipeline
+// creation, and serialized back on cleanup. nullptr on older OSes.
+static void* g_MetalBinaryArchive = nullptr; // id<MTLBinaryArchive>
+
 // Saved state for Begin/EndRenderToTexture
 static id<MTLCommandBuffer>        g_RTCommandBuffer  = nil;
 static id<MTLRenderCommandEncoder> g_RTRenderEncoder  = nil;
@@ -39,6 +45,146 @@ static size_t g_UniformBlockSize = 0;
 ImPlatform_GfxData_Metal* ImPlatform_Gfx_GetData_Metal(void)
 {
     return &g_GfxData;
+}
+
+// ----------------------------------------------------------------------------
+// MTLBinaryArchive disk persistence helpers (macOS 11 / iOS 14+)
+// ----------------------------------------------------------------------------
+// MTLBinaryArchive is Apple's equivalent of VkPipelineCache: it stores
+// compiled pipeline state objects in an opaque .metallib blob that Metal
+// knows how to consume. We load it once on device create, attach it to every
+// MTLRenderPipelineDescriptor so Metal can look up cached pipelines, and
+// serialize it back to disk on cleanup. The ShaderCacheLoad helper is NOT
+// used to read the bytes (MTLBinaryArchive wants a URL directly); we only
+// use ImPlatform_ShaderCacheBuildPath for the directory layout and the
+// stdio-level save/serialize path is driven by Metal's serializeToURL:.
+
+static void ImPlatform_Metal_BuildArchivePath(char* out_path, size_t out_size)
+{
+    // cache_key="metal_global", entry="archive", ext="metallib", hash=0
+    ImPlatform_ShaderCacheBuildPath(out_path, out_size,
+                                    "metal_global", "archive", "metallib", 0);
+}
+
+static bool ImPlatform_Metal_FileExists(const char* path)
+{
+    if (!path || !*path) return false;
+    FILE* f = fopen(path, "rb");
+    if (!f) return false;
+    fclose(f);
+    return true;
+}
+
+static void ImPlatform_Metal_InitBinaryArchive(void)
+{
+    if (g_MetalBinaryArchive != nullptr)
+        return;
+    if (!g_GfxData.pMetalDevice)
+        return;
+
+    if (@available(macOS 11.0, iOS 14.0, *))
+    {
+        @autoreleasepool {
+            id<MTLDevice> device = (__bridge id<MTLDevice>)g_GfxData.pMetalDevice;
+
+            char cache_path[512];
+            ImPlatform_Metal_BuildArchivePath(cache_path, sizeof(cache_path));
+
+            MTLBinaryArchiveDescriptor* desc = [[MTLBinaryArchiveDescriptor alloc] init];
+
+            if (ImPlatform_Metal_FileExists(cache_path))
+            {
+                NSString* nsPath = [NSString stringWithUTF8String:cache_path];
+                desc.url = [NSURL fileURLWithPath:nsPath];
+            }
+            else
+            {
+                desc.url = nil;
+            }
+
+            NSError* error = nil;
+            id<MTLBinaryArchive> archive = [device newBinaryArchiveWithDescriptor:desc error:&error];
+            if (!archive && desc.url != nil)
+            {
+                // Driver rejected the on-disk archive (e.g. OS upgrade changed
+                // the format). Retry with a fresh empty archive.
+                fprintf(stderr, "[ImPlatform shader cache] MTL archive: rejected on-disk data (%s), starting fresh\n",
+                        error ? [[error localizedDescription] UTF8String] : "unknown error");
+                desc.url = nil;
+                error = nil;
+                archive = [device newBinaryArchiveWithDescriptor:desc error:&error];
+            }
+
+            if (archive)
+            {
+                g_MetalBinaryArchive = (__bridge_retained void*)archive;
+                if (desc.url != nil)
+                {
+                    // Determine size by stat via fseek for the log line.
+                    FILE* f = fopen(cache_path, "rb");
+                    size_t sz = 0;
+                    if (f) { fseek(f, 0, SEEK_END); long s = ftell(f); if (s > 0) sz = (size_t)s; fclose(f); }
+                    fprintf(stderr, "[ImPlatform shader cache] MTL archive: %zu bytes loaded from disk\n", sz);
+                }
+                else
+                {
+                    fprintf(stderr, "[ImPlatform shader cache] MTL archive: initialized empty (no cache file)\n");
+                }
+            }
+            else
+            {
+                fprintf(stderr, "[ImPlatform shader cache] MTL archive: newBinaryArchiveWithDescriptor failed (%s)\n",
+                        error ? [[error localizedDescription] UTF8String] : "unknown error");
+                g_MetalBinaryArchive = nullptr;
+            }
+        }
+    }
+    else
+    {
+        fprintf(stderr, "[ImPlatform shader cache] MTL archive: unavailable (requires macOS 11 / iOS 14)\n");
+    }
+}
+
+static void ImPlatform_Metal_SaveBinaryArchive(void)
+{
+    if (g_MetalBinaryArchive == nullptr)
+        return;
+
+    if (@available(macOS 11.0, iOS 14.0, *))
+    {
+        @autoreleasepool {
+            id<MTLBinaryArchive> archive = (__bridge id<MTLBinaryArchive>)g_MetalBinaryArchive;
+
+            char cache_path[512];
+            ImPlatform_Metal_BuildArchivePath(cache_path, sizeof(cache_path));
+
+            NSString* nsPath = [NSString stringWithUTF8String:cache_path];
+            NSURL* url = [NSURL fileURLWithPath:nsPath];
+
+            NSError* error = nil;
+            BOOL ok = [archive serializeToURL:url error:&error];
+            if (ok)
+            {
+                FILE* f = fopen(cache_path, "rb");
+                size_t sz = 0;
+                if (f) { fseek(f, 0, SEEK_END); long s = ftell(f); if (s > 0) sz = (size_t)s; fclose(f); }
+                fprintf(stderr, "[ImPlatform shader cache] MTL archive: saved %zu bytes to disk\n", sz);
+            }
+            else
+            {
+                fprintf(stderr, "[ImPlatform shader cache] MTL archive: serializeToURL failed (%s)\n",
+                        error ? [[error localizedDescription] UTF8String] : "unknown error");
+            }
+        }
+    }
+}
+
+static void ImPlatform_Metal_DestroyBinaryArchive(void)
+{
+    if (g_MetalBinaryArchive == nullptr)
+        return;
+    CFRelease(g_MetalBinaryArchive);
+    g_MetalBinaryArchive = nullptr;
 }
 
 // Internal API - Create Metal device
@@ -74,6 +220,10 @@ void* ImPlatform_Gfx_CreateDevice_Metal(void* pNSWindow, ImPlatform_GfxData_Meta
         MTLRenderPassDescriptor* renderPassDesc = [MTLRenderPassDescriptor new];
         pData->pRenderPassDescriptor = (__bridge_retained void*)renderPassDesc;
 
+        // Load disk-backed MTLBinaryArchive so subsequent pipeline state
+        // creations can reuse compiled pipelines from previous runs.
+        ImPlatform_Metal_InitBinaryArchive();
+
         return pData->pMetalLayer;
     }
 }
@@ -82,6 +232,10 @@ void* ImPlatform_Gfx_CreateDevice_Metal(void* pNSWindow, ImPlatform_GfxData_Meta
 void ImPlatform_Gfx_CleanupDevice_Metal(ImPlatform_GfxData_Metal* pData)
 {
     @autoreleasepool {
+        // Serialize and tear down the binary archive before the device goes away.
+        ImPlatform_Metal_SaveBinaryArchive();
+        ImPlatform_Metal_DestroyBinaryArchive();
+
         if (pData->pRenderPassDescriptor)
         {
             CFRelease(pData->pRenderPassDescriptor);
@@ -669,6 +823,23 @@ static void* g_MetalSamplers[2][3]  = {};  // id<MTLSamplerState>
 static void* g_SamplerStack[8]      = {};  // id<MTLSamplerState>
 static int   g_SamplerDepth         = 0;
 
+// Caching strategy:
+//   Metal compiles MSL source to an MTLLibrary at ImPlatform_CreateShader
+//   time, then builds an MTLRenderPipelineState from (vertex, fragment,
+//   vertex descriptor, color attachment formats, blend state) at
+//   ImPlatform_CreateShaderProgram time. The expensive work is the pipeline
+//   build, not the library compile, so the per-shader cache_key / compile_flags
+//   fields are intentionally ignored at the MTLLibrary level.
+//
+//   Pipeline-level caching IS active via a global MTLBinaryArchive (macOS 11 /
+//   iOS 14+) that is loaded from
+//       ./shaders/bytecode_cache/metal_global_archive_0000000000000000.metallib
+//   at device-create time and serialized back on device cleanup. Every
+//   MTLRenderPipelineDescriptor built in this file gets `binaryArchives`
+//   set to [archive] so Metal will transparently look up and reuse cached
+//   pipelines; on a miss we populate the archive via
+//   addRenderPipelineFunctionsWithDescriptor: so next launch sees the hit.
+//   See ImPlatform_Metal_InitBinaryArchive / _SaveBinaryArchive above.
 IMPLATFORM_API ImPlatform_Shader ImPlatform_CreateShader(const ImPlatform_ShaderDesc* desc)
 {
     if (!desc || !desc->source_code || !g_GfxData.pMetalDevice)
@@ -780,6 +951,17 @@ IMPLATFORM_API ImPlatform_ShaderProgram ImPlatform_CreateShaderProgram(ImPlatfor
         pipelineDescriptor.colorAttachments[0].sourceAlphaBlendFactor = MTLBlendFactorOne;
         pipelineDescriptor.colorAttachments[0].destinationAlphaBlendFactor = MTLBlendFactorOneMinusSourceAlpha;
 
+        // Attach the global binary archive (macOS 11 / iOS 14+) so Metal can
+        // look up a cached compiled pipeline instead of compiling from scratch.
+        if (@available(macOS 11.0, iOS 14.0, *))
+        {
+            if (g_MetalBinaryArchive != nullptr)
+            {
+                id<MTLBinaryArchive> archive = (__bridge id<MTLBinaryArchive>)g_MetalBinaryArchive;
+                pipelineDescriptor.binaryArchives = @[ archive ];
+            }
+        }
+
         // Create pipeline state
         NSError* error = nil;
         id<MTLRenderPipelineState> pipelineState = [device newRenderPipelineStateWithDescriptor:pipelineDescriptor error:&error];
@@ -790,6 +972,25 @@ IMPLATFORM_API ImPlatform_ShaderProgram ImPlatform_CreateShaderProgram(ImPlatfor
                 NSLog(@"Metal render pipeline creation failed: %@", error.localizedDescription);
             }
             return NULL;
+        }
+
+        // On a cache miss, add the freshly-compiled pipeline to the archive so
+        // it will be reused on the next launch. addRenderPipelineFunctions-
+        // WithDescriptor: is a no-op if the pipeline is already present.
+        if (@available(macOS 11.0, iOS 14.0, *))
+        {
+            if (g_MetalBinaryArchive != nullptr)
+            {
+                id<MTLBinaryArchive> archive = (__bridge id<MTLBinaryArchive>)g_MetalBinaryArchive;
+                NSError* archiveError = nil;
+                BOOL ok = [archive addRenderPipelineFunctionsWithDescriptor:pipelineDescriptor error:&archiveError];
+                if (!ok && archiveError)
+                {
+                    // Non-fatal: pipeline exists, archive just couldn't store it.
+                    fprintf(stderr, "[ImPlatform shader cache] MTL archive: addRenderPipelineFunctions failed (%s)\n",
+                            [[archiveError localizedDescription] UTF8String]);
+                }
+            }
         }
 
         // Create program data

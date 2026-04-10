@@ -674,6 +674,14 @@ typedef enum ImPlatform_ShaderFormat {
     ImPlatform_ShaderFormat_WGSL,        // WebGPU Shading Language
 } ImPlatform_ShaderFormat;
 
+// Shader compile flags — backend hints for the source-compile path.
+// Currently only DX11/DX12 honor them; other backends are free to extend.
+#define IMPLATFORM_SHADER_COMPILE_DEFAULT             0           // Backend default (moderate optimization)
+#define IMPLATFORM_SHADER_COMPILE_SKIP_OPTIMIZATION   (1u << 0)   // Fastest compile, worst runtime perf
+#define IMPLATFORM_SHADER_COMPILE_OPTIMIZATION_LOW    (1u << 1)   // Minimum optimization
+#define IMPLATFORM_SHADER_COMPILE_OPTIMIZATION_HIGH   (1u << 2)   // Maximum optimization (slowest compile)
+#define IMPLATFORM_SHADER_COMPILE_DEBUG               (1u << 3)   // Include debug info in bytecode
+
 // Shader descriptor - describes shader source
 typedef struct ImPlatform_ShaderDesc {
     ImPlatform_ShaderStage stage;        // Shader stage (vertex, fragment, etc.)
@@ -682,6 +690,19 @@ typedef struct ImPlatform_ShaderDesc {
     const void* bytecode;                 // Pre-compiled bytecode (optional, for SPIRV/DXIL)
     unsigned int bytecode_size;           // Size of bytecode in bytes
     const char* entry_point;              // Entry point function name (e.g., "main", "VSMain")
+
+    // Bytecode disk cache (optional). When non-NULL, the backend hashes the
+    // source+entry+profile and looks for a cached bytecode file at
+    //   ./shaders/bytecode_cache/<cache_key>_<entry>_<hash>.<ext>
+    // On cache hit the backend skips its compile step entirely; on miss it
+    // compiles from source and saves the resulting bytecode for next launch.
+    // Any change to the source invalidates the cache automatically.
+    // Ignored when `bytecode` is supplied directly.
+    const char* cache_key;
+
+    // Backend compile flags (bitmask of IMPLATFORM_SHADER_COMPILE_*).
+    // Only used on the source-compile path (ignored for bytecode input).
+    unsigned int compile_flags;
 } ImPlatform_ShaderDesc;
 
 // Opaque handle for shader

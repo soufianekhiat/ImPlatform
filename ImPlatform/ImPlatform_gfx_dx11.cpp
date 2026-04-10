@@ -1130,54 +1130,149 @@ struct VERTEX_CONSTANT_BUFFER_DX11
     float   mvp[4][4];
 };
 
-IMPLATFORM_API ImPlatform_Shader ImPlatform_CreateShader(const ImPlatform_ShaderDesc* desc)
+// Translate IMPLATFORM_SHADER_COMPILE_* flags to D3DCompile flags.
+static UINT ImPlatform_DX11_TranslateCompileFlags(unsigned int compile_flags)
 {
-    if (!desc || !desc->source_code)
+    UINT flags = D3DCOMPILE_ENABLE_STRICTNESS;
+    if (compile_flags & IMPLATFORM_SHADER_COMPILE_SKIP_OPTIMIZATION) flags |= D3DCOMPILE_SKIP_OPTIMIZATION;
+    if (compile_flags & IMPLATFORM_SHADER_COMPILE_OPTIMIZATION_LOW)  flags |= D3DCOMPILE_OPTIMIZATION_LEVEL0;
+    if (compile_flags & IMPLATFORM_SHADER_COMPILE_OPTIMIZATION_HIGH) flags |= D3DCOMPILE_OPTIMIZATION_LEVEL3;
+    if (compile_flags & IMPLATFORM_SHADER_COMPILE_DEBUG)             flags |= D3DCOMPILE_DEBUG;
+    return flags;
+}
+
+// Try to load cached DXBC bytecode for this shader into a fresh ID3DBlob.
+// Returns NULL on cache miss or I/O error. out_cache_path receives the
+// computed cache path so the caller can save after a successful compile.
+static ID3DBlob* ImPlatform_DX11_TryLoadCachedBytecode(
+    const ImPlatform_ShaderDesc* desc,
+    const char* entry, const char* target, size_t source_len,
+    char* out_cache_path, size_t out_cache_path_size)
+{
+    out_cache_path[0] = '\0';
+    if (!desc->cache_key || !desc->cache_key[0])
         return NULL;
 
-    if (desc->format != ImPlatform_ShaderFormat_HLSL)
+    unsigned long long hash = ImPlatform_ShaderCacheHashSource(
+        desc->source_code, source_len, entry, target);
+    ImPlatform_ShaderCacheBuildPath(out_cache_path, out_cache_path_size,
+                                    desc->cache_key, entry, "dxbc", hash);
+
+    size_t cached_size = 0;
+    void* cached = ImPlatform_ShaderCacheLoad(out_cache_path, &cached_size);
+    if (!cached || cached_size == 0)
+    {
+        if (cached) free(cached);
+        return NULL;
+    }
+
+    ID3DBlob* blob = NULL;
+    HRESULT hr = D3DCreateBlob(cached_size, &blob);
+    if (FAILED(hr) || !blob)
+    {
+        free(cached);
+        return NULL;
+    }
+    memcpy(blob->GetBufferPointer(), cached, cached_size);
+    free(cached);
+    fprintf(stderr, "[ImPlatform shader cache] HIT  %s/%s (%zu bytes)\n",
+            desc->cache_key, entry, cached_size);
+    return blob;
+}
+
+IMPLATFORM_API ImPlatform_Shader ImPlatform_CreateShader(const ImPlatform_ShaderDesc* desc)
+{
+    if (!desc || (!desc->source_code && !desc->bytecode))
+        return NULL;
+
+    // Accept HLSL source OR pre-compiled DXBC bytecode.
+    if (desc->source_code && desc->format != ImPlatform_ShaderFormat_HLSL)
         return NULL;
 
     ImPlatform_ShaderData_DX11* shader_data = new ImPlatform_ShaderData_DX11();
     memset(shader_data, 0, sizeof(ImPlatform_ShaderData_DX11));
     shader_data->stage = desc->stage;
 
-    // Compile shader
-    ID3DBlob* pErrorBlob = NULL;
-    const char* target = NULL;
+    HRESULT hr = S_OK;
 
+    // Resolve target profile (also used as part of the cache key hash)
+    const char* target = NULL;
     if (desc->stage == ImPlatform_ShaderStage_Vertex)
-        target = "vs_4_0";
+        target = "vs_5_0";
     else if (desc->stage == ImPlatform_ShaderStage_Fragment)
-        target = "ps_4_0";
+        target = "ps_5_0";
     else
     {
         delete shader_data;
         return NULL;
     }
 
-    HRESULT hr = D3DCompile(
-        desc->source_code,
-        strlen(desc->source_code),
-        NULL,  // pSourceName
-        NULL,  // pDefines
-        NULL,  // pInclude
-        desc->entry_point ? desc->entry_point : "main",  // pEntrypoint
-        target,  // pTarget
-        D3DCOMPILE_ENABLE_STRICTNESS,  // Flags1
-        0,  // Flags2
-        &shader_data->pBlob,  // ppCode
-        &pErrorBlob);  // ppErrorMsgs
-
-    if (FAILED(hr))
+    if (desc->bytecode && desc->bytecode_size > 0)
     {
-        if (pErrorBlob)
+        // Caller-supplied bytecode: wrap in an ID3DBlob so the rest of the
+        // pipeline (CreateVertexShader/PixelShader, CreateInputLayout) works
+        // uniformly. Cache and compile_flags are ignored on this path.
+        hr = D3DCreateBlob(desc->bytecode_size, &shader_data->pBlob);
+        if (FAILED(hr) || !shader_data->pBlob)
         {
-            fprintf(stderr, "Shader compilation failed: %s\n", (char*)pErrorBlob->GetBufferPointer());
-            pErrorBlob->Release();
+            fprintf(stderr, "Shader bytecode blob allocation failed (size=%u)\n", desc->bytecode_size);
+            delete shader_data;
+            return NULL;
         }
-        delete shader_data;
-        return NULL;
+        memcpy(shader_data->pBlob->GetBufferPointer(), desc->bytecode, desc->bytecode_size);
+    }
+    else
+    {
+        // Source-compile path with optional disk cache.
+        const char* entry = desc->entry_point ? desc->entry_point : "main";
+        size_t source_len = strlen(desc->source_code);
+        char cache_path[512];
+
+        // 1) Try the cache first
+        shader_data->pBlob = ImPlatform_DX11_TryLoadCachedBytecode(
+            desc, entry, target, source_len, cache_path, sizeof(cache_path));
+
+        // 2) Cache miss (or no cache_key): compile from source
+        if (!shader_data->pBlob)
+        {
+            if (desc->cache_key && desc->cache_key[0])
+            {
+                fprintf(stderr, "[ImPlatform shader cache] MISS %s/%s -- compiling...\n",
+                        desc->cache_key, entry);
+            }
+
+            ID3DBlob* pErrorBlob = NULL;
+            UINT flags = ImPlatform_DX11_TranslateCompileFlags(desc->compile_flags);
+            hr = D3DCompile(
+                desc->source_code, source_len,
+                NULL, NULL, NULL,
+                entry, target, flags, 0,
+                &shader_data->pBlob, &pErrorBlob);
+
+            if (FAILED(hr))
+            {
+                if (pErrorBlob)
+                {
+                    fprintf(stderr, "Shader compilation failed: %s\n", (char*)pErrorBlob->GetBufferPointer());
+                    pErrorBlob->Release();
+                }
+                delete shader_data;
+                return NULL;
+            }
+            if (pErrorBlob) pErrorBlob->Release();
+
+            // 3) Save to cache for next launch
+            if (desc->cache_key && desc->cache_key[0] && shader_data->pBlob && cache_path[0])
+            {
+                if (ImPlatform_ShaderCacheSave(cache_path,
+                                               shader_data->pBlob->GetBufferPointer(),
+                                               shader_data->pBlob->GetBufferSize()))
+                {
+                    fprintf(stderr, "[ImPlatform shader cache] SAVE %s/%s (%zu bytes)\n",
+                            desc->cache_key, entry, (size_t)shader_data->pBlob->GetBufferSize());
+                }
+            }
+        }
     }
 
     // Create shader object

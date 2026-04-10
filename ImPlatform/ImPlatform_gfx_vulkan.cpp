@@ -30,6 +30,12 @@ unsigned int g_ImPlatform_BackbufferW = 0;
 unsigned int g_ImPlatform_BackbufferH = 0;
 static VkAllocationCallbacks* g_Allocator = NULL;
 
+// Global VK_EXT_pipeline_cache (core since Vulkan 1.0). Caches compiled
+// pipeline state objects across runs. Loaded from disk at device creation
+// time, passed to every vkCreateGraphicsPipelines / vkCreateComputePipelines
+// call, and serialized back to disk on cleanup.
+static VkPipelineCache g_VulkanPipelineCache = VK_NULL_HANDLE;
+
 // Render texture tracking
 struct ImPlatform_RTTracking_Vulkan {
     VkImage             image;
@@ -95,6 +101,105 @@ static bool IsExtensionAvailable(const VkExtensionProperties* properties, uint32
         if (strcmp(properties[i].extensionName, extension) == 0)
             return true;
     return false;
+}
+
+// ----------------------------------------------------------------------------
+// VK_EXT_pipeline_cache disk persistence helpers
+// ----------------------------------------------------------------------------
+// Cache file layout: opaque blob produced/consumed by the Vulkan driver.
+// The driver embeds a 32-byte header that begins with a 4-byte header length,
+// a 4-byte cache header version, a 4-byte vendor ID, a 4-byte device ID, and
+// a 16-byte pipeline cache UUID. vkCreatePipelineCache will reject the data
+// if any of those fields don't match the current device, so we don't need to
+// hash source or track driver versions ourselves.
+
+static void ImPlatform_Vulkan_BuildPipelineCachePath(char* out_path, size_t out_size)
+{
+    // cache_key="vulkan_global", entry="pipeline", ext="cache", hash=0
+    ImPlatform_ShaderCacheBuildPath(out_path, out_size,
+                                    "vulkan_global", "pipeline", "cache", 0);
+}
+
+static void ImPlatform_Vulkan_InitPipelineCache(VkDevice device)
+{
+    if (g_VulkanPipelineCache != VK_NULL_HANDLE)
+        return;
+
+    char cache_path[512];
+    ImPlatform_Vulkan_BuildPipelineCachePath(cache_path, sizeof(cache_path));
+
+    size_t data_size = 0;
+    void* data = ImPlatform_ShaderCacheLoad(cache_path, &data_size);
+
+    VkPipelineCacheCreateInfo info = {};
+    info.sType = VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO;
+    info.initialDataSize = data ? data_size : 0;
+    info.pInitialData = data;
+
+    VkResult err = vkCreatePipelineCache(device, &info, g_Allocator, &g_VulkanPipelineCache);
+    if (err != VK_SUCCESS)
+    {
+        // Driver rejected the initial data (e.g. GPU or driver changed). Retry
+        // with an empty cache -- this is not a fatal error.
+        fprintf(stderr, "[ImPlatform shader cache] VK pipeline cache: rejected on-disk data (VkResult %d), starting fresh\n", err);
+        info.initialDataSize = 0;
+        info.pInitialData = NULL;
+        err = vkCreatePipelineCache(device, &info, g_Allocator, &g_VulkanPipelineCache);
+        if (err != VK_SUCCESS)
+        {
+            fprintf(stderr, "[ImPlatform shader cache] VK pipeline cache: vkCreatePipelineCache failed (VkResult %d)\n", err);
+            g_VulkanPipelineCache = VK_NULL_HANDLE;
+        }
+    }
+    else if (data && data_size > 0)
+    {
+        fprintf(stderr, "[ImPlatform shader cache] VK pipeline cache: loaded %zu bytes from disk\n", data_size);
+    }
+    else
+    {
+        fprintf(stderr, "[ImPlatform shader cache] VK pipeline cache: initialized empty (no cache file)\n");
+    }
+
+    if (data) free(data);
+}
+
+static void ImPlatform_Vulkan_SavePipelineCache(VkDevice device)
+{
+    if (g_VulkanPipelineCache == VK_NULL_HANDLE || device == VK_NULL_HANDLE)
+        return;
+
+    size_t data_size = 0;
+    VkResult err = vkGetPipelineCacheData(device, g_VulkanPipelineCache, &data_size, NULL);
+    if (err != VK_SUCCESS || data_size == 0)
+        return;
+
+    void* data = malloc(data_size);
+    if (!data)
+        return;
+
+    err = vkGetPipelineCacheData(device, g_VulkanPipelineCache, &data_size, data);
+    if (err != VK_SUCCESS)
+    {
+        free(data);
+        return;
+    }
+
+    char cache_path[512];
+    ImPlatform_Vulkan_BuildPipelineCachePath(cache_path, sizeof(cache_path));
+
+    if (ImPlatform_ShaderCacheSave(cache_path, data, data_size))
+    {
+        fprintf(stderr, "[ImPlatform shader cache] VK pipeline cache: saved %zu bytes to disk\n", data_size);
+    }
+    free(data);
+}
+
+static void ImPlatform_Vulkan_DestroyPipelineCache(VkDevice device)
+{
+    if (g_VulkanPipelineCache == VK_NULL_HANDLE)
+        return;
+    vkDestroyPipelineCache(device, g_VulkanPipelineCache, g_Allocator);
+    g_VulkanPipelineCache = VK_NULL_HANDLE;
 }
 
 // Internal API - Get Vulkan gfx data
@@ -236,6 +341,10 @@ static bool SetupVulkan(const char** instance_extensions, uint32_t instance_exte
         err = vkCreateDescriptorPool(g_GfxData.device, &pool_info, g_Allocator, &g_GfxData.descriptorPool);
         check_vk_result(err);
     }
+
+    // Initialize disk-backed VkPipelineCache so subsequent vkCreateGraphicsPipelines
+    // calls can reuse compiled pipeline state objects from previous runs.
+    ImPlatform_Vulkan_InitPipelineCache(g_GfxData.device);
 
     return true;
 }
@@ -483,6 +592,10 @@ bool ImPlatform_Gfx_CreateDevice_Vulkan(void* pWindow, ImPlatform_GfxData_Vulkan
 // Internal API - Cleanup Vulkan device
 void ImPlatform_Gfx_CleanupDevice_Vulkan(ImPlatform_GfxData_Vulkan* pData)
 {
+    // Serialize and tear down the pipeline cache before the device goes away.
+    ImPlatform_Vulkan_SavePipelineCache(pData->device);
+    ImPlatform_Vulkan_DestroyPipelineCache(pData->device);
+
     vkDestroyDescriptorPool(pData->device, pData->descriptorPool, g_Allocator);
 
 #ifdef _DEBUG
@@ -1637,6 +1750,22 @@ struct ImPlatform_ShaderProgramData_Vulkan
 };
 
 // Custom Shader System API - Vulkan
+//
+// Caching strategy:
+//   Vulkan only accepts SPIR-V bytecode, which is already the pre-compiled
+//   form produced by Slang at build time. There is no runtime source->bytecode
+//   compilation step, so the per-shader `cache_key` / `compile_flags` fields
+//   of ImPlatform_ShaderDesc are silently ignored at the shader-module level.
+//
+//   The expensive work on Vulkan happens when pipeline state objects are
+//   built. That work IS cached on this backend via a global VK_EXT_pipeline_cache
+//   (VkPipelineCache) that is loaded from
+//       ./shaders/bytecode_cache/vulkan_global_pipeline_0000000000000000.cache
+//   at device-create time and written back on device cleanup. Every call to
+//   vkCreateGraphicsPipelines in this file passes that cache. The Vulkan
+//   driver itself validates cache compatibility (vendor ID / device ID /
+//   UUID) via the header it embeds in the blob, so no extra hashing here.
+//   See ImPlatform_Vulkan_InitPipelineCache / _SavePipelineCache above.
 IMPLATFORM_API ImPlatform_Shader ImPlatform_CreateShader(const ImPlatform_ShaderDesc* desc)
 {
     if (!desc || !desc->bytecode || desc->bytecode_size == 0)
@@ -1875,7 +2004,9 @@ IMPLATFORM_API ImPlatform_ShaderProgram ImPlatform_CreateShaderProgram(ImPlatfor
         pipeline_info.renderPass = g_MainWindowData.RenderPass;
         pipeline_info.subpass = 0;
 
-        err = vkCreateGraphicsPipelines(g_GfxData.device, VK_NULL_HANDLE, 1, &pipeline_info, g_Allocator, &program_data->pipeline);
+        // Pass the global pipeline cache so this pipeline's compiled state can
+        // be reused across runs (see ImPlatform_Vulkan_InitPipelineCache above).
+        err = vkCreateGraphicsPipelines(g_GfxData.device, g_VulkanPipelineCache, 1, &pipeline_info, g_Allocator, &program_data->pipeline);
         if (err != VK_SUCCESS)
         {
             fprintf(stderr, "[ImPlatform] Vulkan: Failed to create graphics pipeline (VkResult = %d)\n", err);

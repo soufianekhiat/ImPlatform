@@ -433,3 +433,116 @@ struct ImPlatform_GfxData_WebGPU* ImPlatform_Gfx_GetData_WebGPU(void);
 #ifdef __cplusplus
 }
 #endif
+
+// ============================================================================
+// Shader bytecode disk cache (shared across graphics backends)
+// ============================================================================
+// Backend-agnostic helpers for storing pre-compiled shader bytecode on disk
+// keyed by a hash of the source + entry + profile. Each graphics backend
+// (DX11, DX12, Vulkan SPIR-V, Metal, WebGPU) picks its own extension and
+// compiles into its own native bytecode format; this header only provides
+// hashing, path generation, and file I/O.
+//
+// Typical flow per backend CreateShader:
+//   1. If desc->bytecode is set -> use it directly (skip cache)
+//   2. Else if desc->cache_key is set:
+//       hash = FNV64(source + entry + profile)
+//       path = BuildPath(cache_key, entry, ext, hash)
+//       cached = CacheLoad(path)
+//       if cached: wrap in native blob, done
+//       else: compile (with desc->compile_flags), CacheSave(path, blob), done
+//   3. Else: compile without cache (legacy path)
+
+#if IMPLATFORM_GFX_SUPPORT_CUSTOM_SHADER
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#ifdef _WIN32
+    #include <direct.h>
+    #define IMPLATFORM_MKDIR_(path) _mkdir(path)
+#else
+    #include <sys/stat.h>
+    #include <sys/types.h>
+    #define IMPLATFORM_MKDIR_(path) mkdir((path), 0755)
+#endif
+
+// FNV-1a 64-bit hash of a buffer.
+static inline unsigned long long ImPlatform_ShaderCacheHashBytes(const void* data, size_t len)
+{
+    unsigned long long h = 14695981039346656037ull;
+    const unsigned char* p = (const unsigned char*)data;
+    for (size_t i = 0; i < len; i++)
+    {
+        h ^= (unsigned long long)p[i];
+        h *= 1099511628211ull;
+    }
+    return h;
+}
+
+// Combine source + entry + profile into a single 64-bit cache key.
+// Any change to source, entry, or profile invalidates the cache entry.
+static inline unsigned long long ImPlatform_ShaderCacheHashSource(
+    const char* source, size_t source_len,
+    const char* entry, const char* profile)
+{
+    unsigned long long h = ImPlatform_ShaderCacheHashBytes(source, source_len);
+    if (entry && *entry)
+        h ^= ImPlatform_ShaderCacheHashBytes(entry, strlen(entry)) * 1099511628211ull;
+    if (profile && *profile)
+        h ^= ImPlatform_ShaderCacheHashBytes(profile, strlen(profile)) * 1099511628211ull;
+    return h;
+}
+
+// Build the on-disk cache path and ensure the parent directories exist.
+// Layout: ./shaders/bytecode_cache/<cache_key>_<entry>_<16-hex-hash>.<ext>
+// Parent dirs are created silently; mkdir errors are ignored.
+static inline void ImPlatform_ShaderCacheBuildPath(
+    char* out_path, size_t out_size,
+    const char* cache_key, const char* entry, const char* ext,
+    unsigned long long hash)
+{
+    IMPLATFORM_MKDIR_("./shaders");
+    IMPLATFORM_MKDIR_("./shaders/bytecode_cache");
+    snprintf(out_path, out_size, "./shaders/bytecode_cache/%s_%s_%016llx.%s",
+             cache_key ? cache_key : "shader",
+             entry ? entry : "main",
+             hash,
+             ext ? ext : "bin");
+}
+
+// Load a cached bytecode blob from disk. Returns a newly-allocated buffer
+// (caller must free() it) and writes the size into *out_size. Returns NULL
+// on cache miss or I/O error.
+static inline void* ImPlatform_ShaderCacheLoad(const char* path, size_t* out_size)
+{
+    if (!path || !out_size) return NULL;
+    *out_size = 0;
+    FILE* f = fopen(path, "rb");
+    if (!f) return NULL;
+    if (fseek(f, 0, SEEK_END) != 0) { fclose(f); return NULL; }
+    long sz = ftell(f);
+    if (sz <= 0) { fclose(f); return NULL; }
+    if (fseek(f, 0, SEEK_SET) != 0) { fclose(f); return NULL; }
+    void* data = malloc((size_t)sz);
+    if (!data) { fclose(f); return NULL; }
+    size_t read = fread(data, 1, (size_t)sz, f);
+    fclose(f);
+    if (read != (size_t)sz) { free(data); return NULL; }
+    *out_size = (size_t)sz;
+    return data;
+}
+
+// Save a bytecode blob to disk. Returns true on success.
+static inline bool ImPlatform_ShaderCacheSave(const char* path, const void* data, size_t size)
+{
+    if (!path || !data || size == 0) return false;
+    FILE* f = fopen(path, "wb");
+    if (!f) return false;
+    size_t written = fwrite(data, 1, size, f);
+    fclose(f);
+    return written == size;
+}
+
+#endif  // IMPLATFORM_GFX_SUPPORT_CUSTOM_SHADER
