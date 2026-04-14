@@ -752,8 +752,6 @@ IMPLATFORM_API bool ImPlatform_InitGfx(void)
         // TODO: Upload actual white pixel data using a staging buffer
 
         // Transition image layout to shader read
-        VkCommandBuffer cmd_buf = g_MainWindowData.Frames[g_MainWindowData.FrameIndex].CommandBuffer;
-
         VkImageMemoryBarrier barrier = {};
         barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
         barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
@@ -1414,9 +1412,9 @@ IMPLATFORM_API ImTextureID ImPlatform_CreateTexture(const void* pixel_data, cons
     return (ImTextureID)descriptor_set;
 }
 
-IMPLATFORM_API bool ImPlatform_UpdateTexture(ImTextureID texture_id, const void* pixel_data,
-                                              unsigned int x, unsigned int y,
-                                              unsigned int width, unsigned int height)
+IMPLATFORM_API bool ImPlatform_UpdateTexture(ImTextureID /*texture_id*/, const void* /*pixel_data*/,
+                                              unsigned int /*x*/, unsigned int /*y*/,
+                                              unsigned int /*width*/, unsigned int /*height*/)
 {
     // Vulkan texture updates require staging buffers and command lists
     // This is complex and not implemented yet
@@ -1712,15 +1710,15 @@ IMPLATFORM_API void ImPlatform_DestroyTexture(ImTextureID texture_id)
 // Custom Vertex/Index Buffer Management API - Vulkan (Stubs)
 // ============================================================================
 
-IMPLATFORM_API ImPlatform_VertexBuffer ImPlatform_CreateVertexBuffer(const void* vertex_data, const ImPlatform_VertexBufferDesc* desc) { return NULL; }
-IMPLATFORM_API bool ImPlatform_UpdateVertexBuffer(ImPlatform_VertexBuffer vertex_buffer, const void* vertex_data, unsigned int vertex_count, unsigned int offset) { return false; }
-IMPLATFORM_API void ImPlatform_DestroyVertexBuffer(ImPlatform_VertexBuffer vertex_buffer) {}
-IMPLATFORM_API ImPlatform_IndexBuffer ImPlatform_CreateIndexBuffer(const void* index_data, const ImPlatform_IndexBufferDesc* desc) { return NULL; }
-IMPLATFORM_API bool ImPlatform_UpdateIndexBuffer(ImPlatform_IndexBuffer index_buffer, const void* index_data, unsigned int index_count, unsigned int offset) { return false; }
-IMPLATFORM_API void ImPlatform_DestroyIndexBuffer(ImPlatform_IndexBuffer index_buffer) {}
-IMPLATFORM_API void ImPlatform_BindVertexBuffer(ImPlatform_VertexBuffer vertex_buffer) {}
-IMPLATFORM_API void ImPlatform_BindIndexBuffer(ImPlatform_IndexBuffer index_buffer) {}
-IMPLATFORM_API void ImPlatform_DrawIndexed(unsigned int primitive_type, unsigned int index_count, unsigned int start_index) {}
+IMPLATFORM_API ImPlatform_VertexBuffer ImPlatform_CreateVertexBuffer(const void* /*vertex_data*/, const ImPlatform_VertexBufferDesc* /*desc*/) { return NULL; }
+IMPLATFORM_API bool ImPlatform_UpdateVertexBuffer(ImPlatform_VertexBuffer /*vertex_buffer*/, const void* /*vertex_data*/, unsigned int /*vertex_count*/, unsigned int /*offset*/) { return false; }
+IMPLATFORM_API void ImPlatform_DestroyVertexBuffer(ImPlatform_VertexBuffer /*vertex_buffer*/) {}
+IMPLATFORM_API ImPlatform_IndexBuffer ImPlatform_CreateIndexBuffer(const void* /*index_data*/, const ImPlatform_IndexBufferDesc* /*desc*/) { return NULL; }
+IMPLATFORM_API bool ImPlatform_UpdateIndexBuffer(ImPlatform_IndexBuffer /*index_buffer*/, const void* /*index_data*/, unsigned int /*index_count*/, unsigned int /*offset*/) { return false; }
+IMPLATFORM_API void ImPlatform_DestroyIndexBuffer(ImPlatform_IndexBuffer /*index_buffer*/) {}
+IMPLATFORM_API void ImPlatform_BindVertexBuffer(ImPlatform_VertexBuffer /*vertex_buffer*/) {}
+IMPLATFORM_API void ImPlatform_BindIndexBuffer(ImPlatform_IndexBuffer /*index_buffer*/) {}
+IMPLATFORM_API void ImPlatform_DrawIndexed(unsigned int /*primitive_type*/, unsigned int /*index_count*/, unsigned int /*start_index*/) {}
 
 // ============================================================================
 // Custom Shader System - Vulkan
@@ -2113,18 +2111,18 @@ IMPLATFORM_API void ImPlatform_DestroyShaderProgram(ImPlatform_ShaderProgram pro
     free(program_data);
 }
 
-IMPLATFORM_API void ImPlatform_UseShaderProgram(ImPlatform_ShaderProgram program)
+IMPLATFORM_API void ImPlatform_UseShaderProgram(ImPlatform_ShaderProgram /*program*/)
 {
     // Not needed for Vulkan - shaders are bound through draw callbacks
 }
 
-IMPLATFORM_API bool ImPlatform_SetShaderUniform(ImPlatform_ShaderProgram program, const char* name, const void* data, unsigned int size)
+IMPLATFORM_API bool ImPlatform_SetShaderUniform(ImPlatform_ShaderProgram /*program*/, const char* /*name*/, const void* /*data*/, unsigned int /*size*/)
 {
     // Not needed for Vulkan - uniforms are set through uniform blocks
     return false;
 }
 
-IMPLATFORM_API bool ImPlatform_SetShaderTexture(ImPlatform_ShaderProgram program, const char* name, unsigned int slot, ImTextureID texture)
+IMPLATFORM_API bool ImPlatform_SetShaderTexture(ImPlatform_ShaderProgram /*program*/, const char* /*name*/, unsigned int /*slot*/, ImTextureID /*texture*/)
 {
     // Not needed for Vulkan - textures are bound through descriptor sets
     return false;
@@ -2146,7 +2144,7 @@ IMPLATFORM_API void ImPlatform_BeginUniformBlock(ImPlatform_ShaderProgram progra
     }
 }
 
-IMPLATFORM_API bool ImPlatform_SetUniform(const char* name, const void* data, unsigned int size)
+IMPLATFORM_API bool ImPlatform_SetUniform(const char* /*name*/, const void* data, unsigned int size)
 {
     if (!g_CurrentUniformBlockProgram || !data || size == 0)
         return false;
@@ -2276,7 +2274,7 @@ static void ImPlatform_SetCustomShader(const ImDrawList* parent_list, const ImDr
     {
         vkCmdPushConstants(g_CurrentCommandBuffer, program_data->pipelineLayout,
                           VK_SHADER_STAGE_FRAGMENT_BIT, 64,
-                          program_data->uniformBufferSize, program_data->uniformBufferMapped);
+                          (uint32_t)program_data->uniformBufferSize, program_data->uniformBufferMapped);
     }
 
     // Bind descriptor set (set 0) containing only the texture (binding 0)
@@ -2339,7 +2337,7 @@ IMPLATFORM_API void ImPlatform_BeginCustomShader_Render(ImPlatform_ShaderProgram
     {
         vkCmdPushConstants(g_CurrentCommandBuffer, program_data->pipelineLayout,
                           VK_SHADER_STAGE_FRAGMENT_BIT, 64,
-                          program_data->uniformBufferSize, program_data->uniformBufferMapped);
+                          (uint32_t)program_data->uniformBufferSize, program_data->uniformBufferMapped);
     }
 
     // Bind descriptor set (set 0) containing only the texture (binding 0)
