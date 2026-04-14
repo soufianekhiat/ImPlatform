@@ -1411,7 +1411,7 @@ IMPLATFORM_API void ImPlatform_UseShaderProgram(ImPlatform_ShaderProgram program
     g_GfxData.pDeviceContext->PSSetShader(program_data->pPixelShader, NULL, 0);
 }
 
-IMPLATFORM_API bool ImPlatform_SetShaderUniform(ImPlatform_ShaderProgram program, const char* name, const void* data, unsigned int size)
+IMPLATFORM_API bool ImPlatform_SetShaderUniform(ImPlatform_ShaderProgram program, const char* /*name*/, const void* data, unsigned int size)
 {
     if (!program || !data || size == 0)
         return false;
@@ -1463,7 +1463,7 @@ IMPLATFORM_API void ImPlatform_BeginUniformBlock(ImPlatform_ShaderProgram progra
     }
 }
 
-IMPLATFORM_API bool ImPlatform_SetUniform(const char* name, const void* data, unsigned int size)
+IMPLATFORM_API bool ImPlatform_SetUniform(const char* /*name*/, const void* data, unsigned int size)
 {
     if (!g_CurrentUniformBlockProgram || !data || size == 0)
         return false;
@@ -1501,7 +1501,7 @@ IMPLATFORM_API void ImPlatform_EndUniformBlock(ImPlatform_ShaderProgram program)
     g_CurrentUniformBlockProgram = nullptr;
 }
 
-IMPLATFORM_API bool ImPlatform_SetShaderTexture(ImPlatform_ShaderProgram program, const char* name, unsigned int slot, ImTextureID texture)
+IMPLATFORM_API bool ImPlatform_SetShaderTexture(ImPlatform_ShaderProgram program, const char* /*name*/, unsigned int slot, ImTextureID texture)
 {
     if (!program || !texture)
         return false;
@@ -1517,7 +1517,7 @@ IMPLATFORM_API bool ImPlatform_SetShaderTexture(ImPlatform_ShaderProgram program
 // ============================================================================
 
 // ImDrawCallback handler to activate a custom shader
-static void ImPlatform_SetCustomShader(const ImDrawList* parent_list, const ImDrawCmd* cmd)
+static void ImPlatform_SetCustomShader(const ImDrawList* /*parent_list*/, const ImDrawCmd* cmd)
 {
     ImPlatform_ShaderProgram program = (ImPlatform_ShaderProgram)cmd->UserCallbackData;
     if (program)

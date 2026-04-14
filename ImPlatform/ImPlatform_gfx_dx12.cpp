@@ -855,9 +855,9 @@ IMPLATFORM_API ImTextureID ImPlatform_CreateTexture(const void* pixel_data, cons
     return (ImTextureID)srvGpuHandle.ptr;
 }
 
-IMPLATFORM_API bool ImPlatform_UpdateTexture(ImTextureID texture_id, const void* pixel_data,
-                                              unsigned int x, unsigned int y,
-                                              unsigned int width, unsigned int height)
+IMPLATFORM_API bool ImPlatform_UpdateTexture(ImTextureID /*texture_id*/, const void* /*pixel_data*/,
+                                              unsigned int /*x*/, unsigned int /*y*/,
+                                              unsigned int /*width*/, unsigned int /*height*/)
 {
     // DX12 texture updates are complex and require command lists
     // For now, we return false to indicate this feature is not implemented
@@ -1064,48 +1064,48 @@ IMPLATFORM_API void ImPlatform_DestroyTexture(ImTextureID texture_id)
 // - Resource barriers and transitions
 // - Descriptor heaps for SRVs/CBVs
 
-IMPLATFORM_API ImPlatform_VertexBuffer ImPlatform_CreateVertexBuffer(const void* vertex_data, const ImPlatform_VertexBufferDesc* desc)
+IMPLATFORM_API ImPlatform_VertexBuffer ImPlatform_CreateVertexBuffer(const void* /*vertex_data*/, const ImPlatform_VertexBufferDesc* /*desc*/)
 {
     // Stub: DX12 buffer creation requires command list upload
     return NULL;
 }
 
-IMPLATFORM_API bool ImPlatform_UpdateVertexBuffer(ImPlatform_VertexBuffer vertex_buffer, const void* vertex_data, unsigned int vertex_count, unsigned int offset)
+IMPLATFORM_API bool ImPlatform_UpdateVertexBuffer(ImPlatform_VertexBuffer /*vertex_buffer*/, const void* /*vertex_data*/, unsigned int /*vertex_count*/, unsigned int /*offset*/)
 {
     return false;
 }
 
-IMPLATFORM_API void ImPlatform_DestroyVertexBuffer(ImPlatform_VertexBuffer vertex_buffer)
+IMPLATFORM_API void ImPlatform_DestroyVertexBuffer(ImPlatform_VertexBuffer /*vertex_buffer*/)
 {
     // Stub
 }
 
-IMPLATFORM_API ImPlatform_IndexBuffer ImPlatform_CreateIndexBuffer(const void* index_data, const ImPlatform_IndexBufferDesc* desc)
+IMPLATFORM_API ImPlatform_IndexBuffer ImPlatform_CreateIndexBuffer(const void* /*index_data*/, const ImPlatform_IndexBufferDesc* /*desc*/)
 {
     return NULL;
 }
 
-IMPLATFORM_API bool ImPlatform_UpdateIndexBuffer(ImPlatform_IndexBuffer index_buffer, const void* index_data, unsigned int index_count, unsigned int offset)
+IMPLATFORM_API bool ImPlatform_UpdateIndexBuffer(ImPlatform_IndexBuffer /*index_buffer*/, const void* /*index_data*/, unsigned int /*index_count*/, unsigned int /*offset*/)
 {
     return false;
 }
 
-IMPLATFORM_API void ImPlatform_DestroyIndexBuffer(ImPlatform_IndexBuffer index_buffer)
+IMPLATFORM_API void ImPlatform_DestroyIndexBuffer(ImPlatform_IndexBuffer /*index_buffer*/)
 {
     // Stub
 }
 
-IMPLATFORM_API void ImPlatform_BindVertexBuffer(ImPlatform_VertexBuffer vertex_buffer)
+IMPLATFORM_API void ImPlatform_BindVertexBuffer(ImPlatform_VertexBuffer /*vertex_buffer*/)
 {
     // Stub
 }
 
-IMPLATFORM_API void ImPlatform_BindIndexBuffer(ImPlatform_IndexBuffer index_buffer)
+IMPLATFORM_API void ImPlatform_BindIndexBuffer(ImPlatform_IndexBuffer /*index_buffer*/)
 {
     // Stub
 }
 
-IMPLATFORM_API void ImPlatform_DrawIndexed(unsigned int primitive_type, unsigned int index_count, unsigned int start_index)
+IMPLATFORM_API void ImPlatform_DrawIndexed(unsigned int /*primitive_type*/, unsigned int /*index_count*/, unsigned int /*start_index*/)
 {
     // Stub
 }
@@ -1511,14 +1511,14 @@ IMPLATFORM_API void ImPlatform_DestroyShaderProgram(ImPlatform_ShaderProgram pro
     delete program_data;
 }
 
-IMPLATFORM_API void ImPlatform_UseShaderProgram(ImPlatform_ShaderProgram program)
+IMPLATFORM_API void ImPlatform_UseShaderProgram(ImPlatform_ShaderProgram /*program*/)
 {
     // In DX12, shader binding is done via PSO in the draw callback
     // This function is a no-op for DX12
     // The actual PSO binding happens in ImPlatform_SetCustomShader callback
 }
 
-IMPLATFORM_API bool ImPlatform_SetShaderUniform(ImPlatform_ShaderProgram program, const char* name, const void* data, unsigned int size)
+IMPLATFORM_API bool ImPlatform_SetShaderUniform(ImPlatform_ShaderProgram program, const char* /*name*/, const void* data, unsigned int size)
 {
     if (!program || !data || size == 0)
         return false;
@@ -1574,7 +1574,7 @@ IMPLATFORM_API bool ImPlatform_SetShaderUniform(ImPlatform_ShaderProgram program
     return true;
 }
 
-IMPLATFORM_API bool ImPlatform_SetShaderTexture(ImPlatform_ShaderProgram program, const char* name, unsigned int slot, ImTextureID texture)
+IMPLATFORM_API bool ImPlatform_SetShaderTexture(ImPlatform_ShaderProgram /*program*/, const char* /*name*/, unsigned int /*slot*/, ImTextureID /*texture*/)
 {
     // Texture binding in DX12 is done via descriptor tables in the draw callback
     // For now, this is a stub - texture support can be added later
@@ -1597,7 +1597,7 @@ IMPLATFORM_API void ImPlatform_BeginUniformBlock(ImPlatform_ShaderProgram progra
     }
 }
 
-IMPLATFORM_API bool ImPlatform_SetUniform(const char* name, const void* data, unsigned int size)
+IMPLATFORM_API bool ImPlatform_SetUniform(const char* /*name*/, const void* data, unsigned int size)
 {
     if (!g_CurrentUniformBlockProgram || !data || size == 0)
         return false;
@@ -1676,7 +1676,6 @@ static void ImPlatform_SetCustomShader(const ImDrawList* parent_list, const ImDr
     else
     {
         // Fallback: search through all viewports to find which one owns this draw list
-        ImGuiPlatformIO& platform_io = ImGui::GetPlatformIO();
         for (int i = 0; i < platform_io.Viewports.Size; i++)
         {
             ImGuiViewport* viewport = platform_io.Viewports[i];

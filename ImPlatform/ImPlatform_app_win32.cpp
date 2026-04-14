@@ -252,12 +252,11 @@ IMPLATFORM_API bool ImPlatform_CreateWindow(char const* pWindowsName, ImVec2 con
         return false;
 
     // Get actual client area size after window creation and update graphics backend
+#if defined(IM_CURRENT_GFX) && (IM_CURRENT_GFX == IM_GFX_OPENGL3)
     RECT rect;
     ::GetClientRect(g_AppData.hWnd, &rect);
     unsigned int client_width = (unsigned int)(rect.right - rect.left);
     unsigned int client_height = (unsigned int)(rect.bottom - rect.top);
-
-#if defined(IM_CURRENT_GFX) && (IM_CURRENT_GFX == IM_GFX_OPENGL3)
     // OpenGL needs viewport size set immediately
     ImPlatform_Gfx_SetSize_OpenGL3(client_width, client_height);
 #endif

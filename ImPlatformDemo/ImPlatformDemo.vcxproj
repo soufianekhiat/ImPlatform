@@ -95,7 +95,7 @@
   <!-- Win32_DX9 Configuration -->
   <ItemDefinitionGroup Condition="'$(Configuration)'=='Win32_DX9'">
     <ClCompile>
-      <WarningLevel>Level3</WarningLevel>
+      <WarningLevel>Level4</WarningLevel>
       <SDLCheck>true</SDLCheck>
       <PreprocessorDefinitions>_CRT_SECURE_NO_WARNINGS;_DEBUG;_CONSOLE;IM_CONFIG_PLATFORM=IM_PLATFORM_WIN32;IM_CONFIG_GFX=IM_GFX_DIRECTX9;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
@@ -109,7 +109,7 @@
   <!-- Win32_DX10 Configuration -->
   <ItemDefinitionGroup Condition="'$(Configuration)'=='Win32_DX10'">
     <ClCompile>
-      <WarningLevel>Level3</WarningLevel>
+      <WarningLevel>Level4</WarningLevel>
       <SDLCheck>true</SDLCheck>
       <PreprocessorDefinitions>_CRT_SECURE_NO_WARNINGS;_DEBUG;_CONSOLE;IM_CONFIG_PLATFORM=IM_PLATFORM_WIN32;IM_CONFIG_GFX=IM_GFX_DIRECTX10;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
@@ -123,7 +123,7 @@
   <!-- Win32_DX11 Configuration -->
   <ItemDefinitionGroup Condition="'$(Configuration)'=='Win32_DX11'">
     <ClCompile>
-      <WarningLevel>Level3</WarningLevel>
+      <WarningLevel>Level4</WarningLevel>
       <SDLCheck>true</SDLCheck>
       <PreprocessorDefinitions>_CRT_SECURE_NO_WARNINGS;_DEBUG;_CONSOLE;IM_CONFIG_PLATFORM=IM_PLATFORM_WIN32;IM_CONFIG_GFX=IM_GFX_DIRECTX11;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
@@ -137,7 +137,7 @@
   <!-- Win32_DX12 Configuration -->
   <ItemDefinitionGroup Condition="'$(Configuration)'=='Win32_DX12'">
     <ClCompile>
-      <WarningLevel>Level3</WarningLevel>
+      <WarningLevel>Level4</WarningLevel>
       <SDLCheck>true</SDLCheck>
       <PreprocessorDefinitions>_CRT_SECURE_NO_WARNINGS;_DEBUG;_CONSOLE;IM_CONFIG_PLATFORM=IM_PLATFORM_WIN32;IM_CONFIG_GFX=IM_GFX_DIRECTX12;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
@@ -151,7 +151,7 @@
   <!-- Win32_OpenGL3 Configuration -->
   <ItemDefinitionGroup Condition="'$(Configuration)'=='Win32_OpenGL3'">
     <ClCompile>
-      <WarningLevel>Level3</WarningLevel>
+      <WarningLevel>Level4</WarningLevel>
       <SDLCheck>true</SDLCheck>
       <PreprocessorDefinitions>_CRT_SECURE_NO_WARNINGS;_DEBUG;_CONSOLE;IM_CONFIG_PLATFORM=IM_PLATFORM_WIN32;IM_CONFIG_GFX=IM_GFX_OPENGL3;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
@@ -165,7 +165,7 @@
   <!-- GLFW_OpenGL3 Configuration -->
   <ItemDefinitionGroup Condition="'$(Configuration)'=='GLFW_OpenGL3'">
     <ClCompile>
-      <WarningLevel>Level3</WarningLevel>
+      <WarningLevel>Level4</WarningLevel>
       <SDLCheck>true</SDLCheck>
       <PreprocessorDefinitions>_CRT_SECURE_NO_WARNINGS;_DEBUG;_CONSOLE;IM_CONFIG_PLATFORM=IM_PLATFORM_GLFW;IM_CONFIG_GFX=IM_GFX_OPENGL3;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
@@ -179,7 +179,7 @@
   <!-- GLFW_Vulkan Configuration -->
   <ItemDefinitionGroup Condition="'$(Configuration)'=='GLFW_Vulkan'">
     <ClCompile>
-      <WarningLevel>Level3</WarningLevel>
+      <WarningLevel>Level4</WarningLevel>
       <SDLCheck>true</SDLCheck>
       <PreprocessorDefinitions>_CRT_SECURE_NO_WARNINGS;_DEBUG;_CONSOLE;IM_CONFIG_PLATFORM=IM_PLATFORM_GLFW;IM_CONFIG_GFX=IM_GFX_VULKAN;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
@@ -193,7 +193,7 @@
   <!-- SDL2_DX11 Configuration -->
   <ItemDefinitionGroup Condition="'$(Configuration)'=='SDL2_DX11'">
     <ClCompile>
-      <WarningLevel>Level3</WarningLevel>
+      <WarningLevel>Level4</WarningLevel>
       <SDLCheck>true</SDLCheck>
       <PreprocessorDefinitions>_CRT_SECURE_NO_WARNINGS;_DEBUG;_CONSOLE;SDL_MAIN_HANDLED;IM_CONFIG_PLATFORM=IM_PLATFORM_SDL2;IM_CONFIG_GFX=IM_GFX_DIRECTX11;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
@@ -207,7 +207,7 @@
   <!-- SDL2_OpenGL3 Configuration -->
   <ItemDefinitionGroup Condition="'$(Configuration)'=='SDL2_OpenGL3'">
     <ClCompile>
-      <WarningLevel>Level3</WarningLevel>
+      <WarningLevel>Level4</WarningLevel>
       <SDLCheck>true</SDLCheck>
       <PreprocessorDefinitions>_CRT_SECURE_NO_WARNINGS;_DEBUG;_CONSOLE;SDL_MAIN_HANDLED;IM_CONFIG_PLATFORM=IM_PLATFORM_SDL2;IM_CONFIG_GFX=IM_GFX_OPENGL3;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
@@ -221,7 +221,7 @@
   <!-- SDL2_Vulkan Configuration -->
   <ItemDefinitionGroup Condition="'$(Configuration)'=='SDL2_Vulkan'">
     <ClCompile>
-      <WarningLevel>Level3</WarningLevel>
+      <WarningLevel>Level4</WarningLevel>
       <SDLCheck>true</SDLCheck>
       <PreprocessorDefinitions>_CRT_SECURE_NO_WARNINGS;_DEBUG;_CONSOLE;SDL_MAIN_HANDLED;IM_CONFIG_PLATFORM=IM_PLATFORM_SDL2;IM_CONFIG_GFX=IM_GFX_VULKAN;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
@@ -235,7 +235,7 @@
   <!-- SDL3_DX11 Configuration -->
   <ItemDefinitionGroup Condition="'$(Configuration)'=='SDL3_DX11'">
     <ClCompile>
-      <WarningLevel>Level3</WarningLevel>
+      <WarningLevel>Level4</WarningLevel>
       <SDLCheck>true</SDLCheck>
       <PreprocessorDefinitions>_CRT_SECURE_NO_WARNINGS;_DEBUG;_CONSOLE;SDL_MAIN_HANDLED;IM_CONFIG_PLATFORM=IM_PLATFORM_SDL3;IM_CONFIG_GFX=IM_GFX_DIRECTX11;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
@@ -249,7 +249,7 @@
   <!-- SDL3_OpenGL3 Configuration -->
   <ItemDefinitionGroup Condition="'$(Configuration)'=='SDL3_OpenGL3'">
     <ClCompile>
-      <WarningLevel>Level3</WarningLevel>
+      <WarningLevel>Level4</WarningLevel>
       <SDLCheck>true</SDLCheck>
       <PreprocessorDefinitions>_CRT_SECURE_NO_WARNINGS;_DEBUG;_CONSOLE;SDL_MAIN_HANDLED;IM_CONFIG_PLATFORM=IM_PLATFORM_SDL3;IM_CONFIG_GFX=IM_GFX_OPENGL3;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
@@ -263,7 +263,7 @@
   <!-- SDL3_Vulkan Configuration -->
   <ItemDefinitionGroup Condition="'$(Configuration)'=='SDL3_Vulkan'">
     <ClCompile>
-      <WarningLevel>Level3</WarningLevel>
+      <WarningLevel>Level4</WarningLevel>
       <SDLCheck>true</SDLCheck>
       <PreprocessorDefinitions>_CRT_SECURE_NO_WARNINGS;_DEBUG;_CONSOLE;SDL_MAIN_HANDLED;IM_CONFIG_PLATFORM=IM_PLATFORM_SDL3;IM_CONFIG_GFX=IM_GFX_VULKAN;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
