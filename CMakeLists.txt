@@ -107,6 +107,12 @@ add_library(imgui STATIC
     ${IMGUI_DIR}/imgui_widgets.cpp
 )
 target_include_directories(imgui PUBLIC ${IMGUI_DIR})
+# Propagate DearWidgets' imconfig overrides to every consumer of the imgui target.
+# Keeping these in the build system lets imconfig.h stay upstream-vanilla.
+target_compile_definitions(imgui PUBLIC
+    "ImDrawIdx=unsigned int"
+    IMGUI_USE_WCHAR32
+)
 
 # =============================================================================
 # ImPlatform Source Files
