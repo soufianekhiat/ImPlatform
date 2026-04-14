@@ -926,7 +926,7 @@ IMPLATFORM_API void ImPlatform_EndUniformBlock(ImPlatform_ShaderProgram program)
     if (g_UniformBlockData && g_UniformBlockSize > 0)
     {
         // Upload the accumulated uniform block to the shader
-        ImPlatform_SetShaderUniform(program, "pixelBuffer", g_UniformBlockData, g_UniformBlockSize);
+        ImPlatform_SetShaderUniform(program, "pixelBuffer", g_UniformBlockData, (unsigned int)g_UniformBlockSize);
 
         // Clean up
         free(g_UniformBlockData);

@@ -587,8 +587,8 @@ IMPLATFORM_API bool ImPlatform_BeginRenderToTexture(ImTextureID texture)
     g_GfxData.pDevice->OMSetRenderTargets(1, &entry->pRTV, NULL);
 
     D3D10_VIEWPORT vp = {};
-    vp.Width    = (FLOAT)entry->width;
-    vp.Height   = (FLOAT)entry->height;
+    vp.Width    = entry->width;
+    vp.Height   = entry->height;
     vp.MaxDepth = 1.0f;
     g_GfxData.pDevice->RSSetViewports(1, &vp);
 
@@ -1279,7 +1279,7 @@ IMPLATFORM_API void ImPlatform_EndUniformBlock(ImPlatform_ShaderProgram program)
     if (g_UniformBlockData && g_UniformBlockSize > 0)
     {
         // Upload the accumulated uniform block to the shader
-        ImPlatform_SetShaderUniform(program, "pixelBuffer", g_UniformBlockData, g_UniformBlockSize);
+        ImPlatform_SetShaderUniform(program, "pixelBuffer", g_UniformBlockData, (unsigned int)g_UniformBlockSize);
 
         // Clean up
         free(g_UniformBlockData);
