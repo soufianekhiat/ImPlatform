@@ -1806,7 +1806,7 @@ IMPLATFORM_API void ImPlatform_UseShaderProgram(ImPlatform_ShaderProgram program
     (void)program;
 }
 
-IMPLATFORM_API bool ImPlatform_SetShaderUniform(ImPlatform_ShaderProgram program, const char* name, const void* data, unsigned int size)
+IMPLATFORM_API bool ImPlatform_SetShaderUniform(ImPlatform_ShaderProgram program, const char* /*name*/, const void* data, unsigned int size)
 {
     if (!program || !data || size == 0)
         return false;
@@ -1850,7 +1850,7 @@ IMPLATFORM_API void ImPlatform_BeginUniformBlock(ImPlatform_ShaderProgram progra
     }
 }
 
-IMPLATFORM_API bool ImPlatform_SetUniform(const char* name, const void* data, unsigned int size)
+IMPLATFORM_API bool ImPlatform_SetUniform(const char* /*name*/, const void* data, unsigned int size)
 {
     if (!g_CurrentUniformBlockProgram || !data || size == 0)
         return false;
