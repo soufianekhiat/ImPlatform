@@ -1055,7 +1055,7 @@ IMPLATFORM_API void ImPlatform_UseShaderProgram(ImPlatform_ShaderProgram program
     // Shaders are bound per render pass via callbacks
 }
 
-IMPLATFORM_API bool ImPlatform_SetShaderUniform(ImPlatform_ShaderProgram program, const char* name, const void* data, unsigned int size)
+IMPLATFORM_API bool ImPlatform_SetShaderUniform(ImPlatform_ShaderProgram program, const char* /*name*/, const void* data, unsigned int size)
 {
     if (!program || !data || size == 0)
         return false;
@@ -1084,7 +1084,7 @@ IMPLATFORM_API bool ImPlatform_SetShaderUniform(ImPlatform_ShaderProgram program
     }
 }
 
-IMPLATFORM_API bool ImPlatform_SetShaderTexture(ImPlatform_ShaderProgram program, const char* name, unsigned int slot, ImTextureID texture)
+IMPLATFORM_API bool ImPlatform_SetShaderTexture(ImPlatform_ShaderProgram /*program*/, const char* /*name*/, unsigned int /*slot*/, ImTextureID /*texture*/)
 {
     // Metal texture binding happens in the render callback
     // This is a stub for API consistency
@@ -1107,7 +1107,7 @@ IMPLATFORM_API void ImPlatform_BeginUniformBlock(ImPlatform_ShaderProgram progra
     }
 }
 
-IMPLATFORM_API bool ImPlatform_SetUniform(const char* name, const void* data, unsigned int size)
+IMPLATFORM_API bool ImPlatform_SetUniform(const char* /*name*/, const void* data, unsigned int size)
 {
     if (!g_CurrentUniformBlockProgram || !data || size == 0)
         return false;

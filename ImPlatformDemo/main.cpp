@@ -214,9 +214,11 @@ int main()
 	// ========================================================================
 
 	// Define shader source code based on graphics API
+#if (IM_CURRENT_GFX != IM_GFX_VULKAN)
 	const char* arrow_vs_source = nullptr;
 	const char* arrow_ps_source = nullptr;
 	ImPlatform_ShaderFormat arrow_format = ImPlatform_ShaderFormat_GLSL;
+#endif
 
 #if (IM_CURRENT_GFX == IM_GFX_OPENGL3)
 	// GLSL for OpenGL3
@@ -306,7 +308,6 @@ int main()
 
 #elif (IM_CURRENT_GFX == IM_GFX_VULKAN)
 	// Vulkan uses pre-compiled SPIR-V bytecode
-	arrow_format = ImPlatform_ShaderFormat_SPIRV;
 	// Include generated SPIR-V headers
 	#include "shaders/arrow_sdf.vert.h"
 	#include "shaders/arrow_sdf.frag.h"
@@ -366,9 +367,11 @@ int main()
 	// Custom Shader Demo: Linear Gradient with Custom Vertex Buffer
 	// ========================================================================
 
+#if (IM_CURRENT_GFX != IM_GFX_VULKAN)
 	const char* gradient_vs_source = nullptr;
 	const char* gradient_ps_source = nullptr;
 	ImPlatform_ShaderFormat gradient_format = ImPlatform_ShaderFormat_GLSL;
+#endif
 
 	// Gradient colors
 	ImVec4 gradient_color_start = ImVec4(1.0f, 0.2f, 0.2f, 1.0f);
@@ -437,7 +440,6 @@ int main()
 
 #elif (IM_CURRENT_GFX == IM_GFX_VULKAN)
 	// Vulkan uses pre-compiled SPIR-V bytecode
-	gradient_format = ImPlatform_ShaderFormat_SPIRV;
 	// Include generated SPIR-V headers
 	#include "shaders/gradient.vert.h"
 	#include "shaders/gradient.frag.h"

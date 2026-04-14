@@ -42,18 +42,6 @@ static ImPlatform_ShaderProgram g_CurrentUniformBlockProgram = nullptr;
 static void* g_UniformBlockData = nullptr;
 static size_t g_UniformBlockSize = 0;
 
-// Helper functions
-static void CreateRenderTarget()
-{
-    // DX9 doesn't need explicit render target view creation
-    // The backbuffer is accessed through GetBackBuffer()
-}
-
-static void CleanupRenderTarget()
-{
-    // Nothing to clean up for DX9
-}
-
 // Internal API - Create D3D9 device
 bool ImPlatform_Gfx_CreateDevice_DX9(HWND hWnd, ImPlatform_GfxData_DX9* pData)
 {
@@ -845,40 +833,40 @@ IMPLATFORM_API void ImPlatform_DrawIndexed(unsigned int primitive_type, unsigned
 // Note: the shader cache (cache_key / compile_flags) is a no-op on this
 // backend because DX9 custom shader support itself is a stub.
 
-IMPLATFORM_API ImPlatform_Shader ImPlatform_CreateShader(const ImPlatform_ShaderDesc* desc)
+IMPLATFORM_API ImPlatform_Shader ImPlatform_CreateShader(const ImPlatform_ShaderDesc* /*desc*/)
 {
     // Stub: D3DX is not available in modern Windows SDK
     // Would need to use D3DCompile or pre-compiled bytecode
     return NULL;
 }
 
-IMPLATFORM_API void ImPlatform_DestroyShader(ImPlatform_Shader shader)
+IMPLATFORM_API void ImPlatform_DestroyShader(ImPlatform_Shader /*shader*/)
 {
     // Stub
 }
 
-IMPLATFORM_API ImPlatform_ShaderProgram ImPlatform_CreateShaderProgram(ImPlatform_Shader vertex_shader, ImPlatform_Shader fragment_shader)
+IMPLATFORM_API ImPlatform_ShaderProgram ImPlatform_CreateShaderProgram(ImPlatform_Shader /*vertex_shader*/, ImPlatform_Shader /*fragment_shader*/)
 {
     // Stub
     return NULL;
 }
 
-IMPLATFORM_API void ImPlatform_DestroyShaderProgram(ImPlatform_ShaderProgram program)
+IMPLATFORM_API void ImPlatform_DestroyShaderProgram(ImPlatform_ShaderProgram /*program*/)
 {
     // Stub
 }
 
-IMPLATFORM_API void ImPlatform_UseShaderProgram(ImPlatform_ShaderProgram program)
+IMPLATFORM_API void ImPlatform_UseShaderProgram(ImPlatform_ShaderProgram /*program*/)
 {
     // Stub
 }
 
-IMPLATFORM_API bool ImPlatform_SetShaderUniform(ImPlatform_ShaderProgram program, const char* name, const void* data, unsigned int size)
+IMPLATFORM_API bool ImPlatform_SetShaderUniform(ImPlatform_ShaderProgram /*program*/, const char* /*name*/, const void* /*data*/, unsigned int /*size*/)
 {
     return false;
 }
 
-IMPLATFORM_API bool ImPlatform_SetShaderTexture(ImPlatform_ShaderProgram program, const char* name, unsigned int slot, ImTextureID texture)
+IMPLATFORM_API bool ImPlatform_SetShaderTexture(ImPlatform_ShaderProgram /*program*/, const char* /*name*/, unsigned int /*slot*/, ImTextureID /*texture*/)
 {
     return false;
 }
@@ -899,7 +887,7 @@ IMPLATFORM_API void ImPlatform_BeginUniformBlock(ImPlatform_ShaderProgram progra
     }
 }
 
-IMPLATFORM_API bool ImPlatform_SetUniform(const char* name, const void* data, unsigned int size)
+IMPLATFORM_API bool ImPlatform_SetUniform(const char* /*name*/, const void* data, unsigned int size)
 {
     if (!g_CurrentUniformBlockProgram || !data || size == 0)
         return false;
@@ -942,14 +930,14 @@ IMPLATFORM_API void ImPlatform_EndUniformBlock(ImPlatform_ShaderProgram program)
 // ============================================================================
 
 // ImDrawCallback handler to activate a custom shader
-static void ImPlatform_SetCustomShader(const ImDrawList* parent_list, const ImDrawCmd* cmd)
+static void ImPlatform_SetCustomShader(const ImDrawList* /*parent_list*/, const ImDrawCmd* /*cmd*/)
 {
     // DX9 custom shaders not supported (D3DX deprecated)
     // This is a stub for API consistency
 }
 
 // Activate a custom shader immediately (for use inside draw callbacks).
-IMPLATFORM_API void ImPlatform_BeginCustomShader_Render(ImPlatform_ShaderProgram program)
+IMPLATFORM_API void ImPlatform_BeginCustomShader_Render(ImPlatform_ShaderProgram /*program*/)
 {
     // DX9 custom shaders not supported (D3DX deprecated)
     // This is a stub for API consistency
