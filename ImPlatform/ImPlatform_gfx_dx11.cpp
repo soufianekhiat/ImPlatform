@@ -512,6 +512,64 @@ IMPLATFORM_API ImTextureID ImPlatform_CreateTexture(const void* pixel_data, cons
     return (ImTextureID)pSRV;
 }
 
+// ------------------- 3D Texture (D3D11 native) -------------------
+IMPLATFORM_API ImPlatform_TextureDesc3D ImPlatform_TextureDesc3D_Default(
+    unsigned int width, unsigned int height, unsigned int depth)
+{
+    ImPlatform_TextureDesc3D d;
+    d.width = width; d.height = height; d.depth = depth;
+    d.format = ImPlatform_PixelFormat_RGBA8;
+    d.min_filter = ImPlatform_TextureFilter_Linear;
+    d.mag_filter = ImPlatform_TextureFilter_Linear;
+    d.wrap_u = ImPlatform_TextureWrap_Clamp;
+    d.wrap_v = ImPlatform_TextureWrap_Clamp;
+    d.wrap_w = ImPlatform_TextureWrap_Clamp;
+    return d;
+}
+
+IMPLATFORM_API bool ImPlatform_SupportsTexture3D(void) { return true; }
+
+IMPLATFORM_API ImTextureID ImPlatform_CreateTexture3D(const void* voxel_data,
+                                                      const ImPlatform_TextureDesc3D* desc)
+{
+    if (!desc || !voxel_data || !g_GfxData.pDevice) return NULL;
+    int bytes_per_pixel = 0;
+    DXGI_FORMAT format = ImPlatform_GetD3D11Format(desc->format, &bytes_per_pixel);
+
+    D3D11_TEXTURE3D_DESC td;
+    ZeroMemory(&td, sizeof(td));
+    td.Width = desc->width;
+    td.Height = desc->height;
+    td.Depth = desc->depth;
+    td.MipLevels = 1;
+    td.Format = format;
+    td.Usage = D3D11_USAGE_DEFAULT;
+    td.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+    td.CPUAccessFlags = 0;
+
+    D3D11_SUBRESOURCE_DATA sub;
+    sub.pSysMem = voxel_data;
+    sub.SysMemPitch = desc->width * bytes_per_pixel;
+    sub.SysMemSlicePitch = desc->width * desc->height * bytes_per_pixel;
+
+    ID3D11Texture3D* pTex = NULL;
+    HRESULT hr = g_GfxData.pDevice->CreateTexture3D(&td, &sub, &pTex);
+    if (FAILED(hr) || !pTex) return NULL;
+
+    D3D11_SHADER_RESOURCE_VIEW_DESC sv;
+    ZeroMemory(&sv, sizeof(sv));
+    sv.Format = format;
+    sv.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE3D;
+    sv.Texture3D.MipLevels = 1;
+    sv.Texture3D.MostDetailedMip = 0;
+
+    ID3D11ShaderResourceView* pSRV = NULL;
+    hr = g_GfxData.pDevice->CreateShaderResourceView(pTex, &sv, &pSRV);
+    pTex->Release();
+    if (FAILED(hr) || !pSRV) return NULL;
+    return (ImTextureID)pSRV;
+}
+
 IMPLATFORM_API bool ImPlatform_UpdateTexture(ImTextureID texture_id, const void* pixel_data,
                                               unsigned int x, unsigned int y,
                                               unsigned int width, unsigned int height)
