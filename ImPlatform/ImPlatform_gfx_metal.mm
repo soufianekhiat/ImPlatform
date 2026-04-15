@@ -544,6 +544,18 @@ IMPLATFORM_API ImPlatform_TextureDesc ImPlatform_TextureDesc_Default(unsigned in
     return desc;
 }
 
+// Texture3D stub for Metal.
+IMPLATFORM_API ImPlatform_TextureDesc3D ImPlatform_TextureDesc3D_Default(unsigned int w, unsigned int h, unsigned int d)
+{
+    ImPlatform_TextureDesc3D x; x.width = w; x.height = h; x.depth = d;
+    x.format = ImPlatform_PixelFormat_RGBA8;
+    x.min_filter = ImPlatform_TextureFilter_Linear; x.mag_filter = ImPlatform_TextureFilter_Linear;
+    x.wrap_u = x.wrap_v = x.wrap_w = ImPlatform_TextureWrap_Clamp;
+    return x;
+}
+IMPLATFORM_API bool ImPlatform_SupportsTexture3D(void) { return false; }
+IMPLATFORM_API ImTextureID ImPlatform_CreateTexture3D(const void*, const ImPlatform_TextureDesc3D*) { return (ImTextureID)0; }
+
 IMPLATFORM_API ImTextureID ImPlatform_CreateTexture(const void* pixel_data, const ImPlatform_TextureDesc* desc)
 {
     if (!desc || !pixel_data || !g_GfxData.pMetalDevice)
