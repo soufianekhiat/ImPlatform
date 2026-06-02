@@ -78,18 +78,14 @@ static LRESULT WINAPI WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
     case WM_NCCALCSIZE:
         if (g_AppData.bCustomTitleBar && lParam)
         {
-            // Custom titlebar: remove standard window frame but keep resize borders
-            RECT border_thickness = {0, 0, 0, 0};
-            AdjustWindowRectEx(&border_thickness, GetWindowLong(hWnd, GWL_STYLE) & ~WS_CAPTION, FALSE, NULL);
-            border_thickness.left *= -1;
-            border_thickness.top *= -1;
-            border_thickness.right *= -1;
-            border_thickness.bottom *= -1;
-
-            NCCALCSIZE_PARAMS* sz = (NCCALCSIZE_PARAMS*)lParam;
-            sz->rgrc[0].left += border_thickness.left;
-            sz->rgrc[0].right -= border_thickness.right;
-            sz->rgrc[0].bottom -= border_thickness.bottom;
+            // Borderless: the ENTIRE window is client area (no visible frame or
+            // caption) in BOTH restored and maximized states. Returning 0 with
+            // rgrc[0] unchanged removes the standard frame while keeping the
+            // window functional. Resize is provided by WM_NCHITTEST returning
+            // HTLEFT/HTRIGHT/HTTOP/HTBOTTOM near the edges (now aligned with the
+            // window edges); maximize is clamped to the work area in
+            // WM_GETMINMAXINFO. The old asymmetric left/right/bottom inset broke
+            // edge resize and shifted the layout between restored and maximized.
             return 0;
         }
         break;
@@ -149,6 +145,19 @@ static LRESULT WINAPI WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
             }
         }
         break;
+
+    case WM_NCLBUTTONDBLCLK:
+        // Double-click the (custom) title bar toggles maximize/restore. The
+        // borderless WS_POPUP window has no WS_MAXIMIZEBOX, so the default
+        // double-click does nothing — do it explicitly. SC_MAXIMIZE goes through
+        // the standard path (WM_GETMINMAXINFO work-area clamp), so no crop.
+        if (g_AppData.bCustomTitleBar && wParam == HTCAPTION)
+        {
+            ::SendMessageW(hWnd, WM_SYSCOMMAND,
+                ImPlatform_IsMaximized() ? SC_RESTORE : SC_MAXIMIZE, 0);
+            return 0;
+        }
+        break;
 #endif // IMPLATFORM_APP_SUPPORT_CUSTOM_TITLEBAR
 
 #if IMPLATFORM_APP_SUPPORT_CUSTOM_TITLEBAR
@@ -156,6 +165,22 @@ static LRESULT WINAPI WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
         if (g_AppData.bCustomTitleBar)
         {
             MINMAXINFO* mmi = (MINMAXINFO*)lParam;
+
+            // Clamp the MAXIMIZED position + size to the monitor WORK AREA so a
+            // borderless window fills the screen exactly instead of spilling its
+            // (invisible) frame off the right/bottom/top edges. Position is
+            // relative to the monitor origin; size is the work-area extent.
+            // ptMaxTrackSize is left untouched so manual resize isn't capped.
+            HMONITOR hMon = MonitorFromWindow(hWnd, MONITOR_DEFAULTTONEAREST);
+            MONITORINFO mi; mi.cbSize = sizeof(mi);
+            if (GetMonitorInfo(hMon, &mi))
+            {
+                mmi->ptMaxPosition.x = mi.rcWork.left - mi.rcMonitor.left;
+                mmi->ptMaxPosition.y = mi.rcWork.top  - mi.rcMonitor.top;
+                mmi->ptMaxSize.x     = mi.rcWork.right  - mi.rcWork.left;
+                mmi->ptMaxSize.y     = mi.rcWork.bottom - mi.rcWork.top;
+            }
+
             if (g_BorderlessParams.minWidth > 0)
                 mmi->ptMinTrackSize.x = g_BorderlessParams.minWidth;
             if (g_BorderlessParams.minHeight > 0)
@@ -227,8 +252,14 @@ IMPLATFORM_API bool ImPlatform_CreateWindow(char const* pWindowsName, ImVec2 con
     g_AppData.wc.hIconSm = NULL;
     ::RegisterClassExW(&g_AppData.wc);
 
-    // Apply DPI scaling to window size
-    // Use custom window style for custom titlebar (borderless with thick frame for resizing)
+    // Apply DPI scaling to window size.
+    // Custom titlebar: WS_POPUP (no caption) + WS_THICKFRAME (resize). WS_POPUP
+    // maximizes cleanly to the work area once WM_GETMINMAXINFO clamps the size
+    // (no right/bottom crop), and WM_NCCALCSIZE returns the FULL window as client
+    // in BOTH states so restored and maximized layouts match. Double-click-to-
+    // maximize is handled explicitly in WM_NCLBUTTONDBLCLK (so we don't need
+    // WS_MAXIMIZEBOX/WS_SYSMENU, which would re-add a caption). WS_OVERLAPPEDWINDOW
+    // was tried and re-introduced the crop + restored/maximized inconsistency.
 #if IMPLATFORM_APP_SUPPORT_CUSTOM_TITLEBAR
     DWORD dwStyle = g_AppData.bCustomTitleBar ? (WS_POPUP | WS_THICKFRAME) : WS_OVERLAPPEDWINDOW;
 #else

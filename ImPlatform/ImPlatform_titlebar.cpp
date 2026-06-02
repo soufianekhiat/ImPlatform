@@ -203,7 +203,10 @@ IMPLATFORM_API bool ImPlatform_BeginCustomTitleBar(float fHeight)
     ImGuiViewport* pViewport = ImGui::GetMainViewport();
     ImVec2 vDragZoneSize = ImVec2(pViewport->Size.x, fHeight);
 
-    float titlebarVerticalOffset = ImPlatform_IsMaximized() ? 6.0f : 0.0f;
+    // No maximized offset: the window now fills the monitor work area exactly
+    // when maximized (WM_GETMINMAXINFO clamp + WM_NCCALCSIZE return 0), so the
+    // old 6px shift just pushed the title bar down and made it look shorter.
+    float titlebarVerticalOffset = 0.0f;
 
     ImGui::SetNextWindowPos(ImVec2(pViewport->Pos.x, pViewport->Pos.y + titlebarVerticalOffset), ImGuiCond_Always);
     ImGui::SetNextWindowSize(vDragZoneSize);
