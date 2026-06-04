@@ -458,6 +458,36 @@ IMPLATFORM_API ImTextureID ImPlatform_CreateTexture(
     const ImPlatform_TextureDesc* desc
 );
 
+// ---------------------------------------------------------------
+// 3D Texture (Texture3D / volumetric) support
+// ---------------------------------------------------------------
+typedef struct ImPlatform_TextureDesc3D {
+    unsigned int width;
+    unsigned int height;
+    unsigned int depth;                   // Z dimension (slices)
+    ImPlatform_PixelFormat format;
+    ImPlatform_TextureFilter min_filter;
+    ImPlatform_TextureFilter mag_filter;
+    ImPlatform_TextureWrap wrap_u;
+    ImPlatform_TextureWrap wrap_v;
+    ImPlatform_TextureWrap wrap_w;        // W / Z wrap mode
+} ImPlatform_TextureDesc3D;
+
+IMPLATFORM_API ImPlatform_TextureDesc3D ImPlatform_TextureDesc3D_Default(
+    unsigned int width, unsigned int height, unsigned int depth
+);
+
+// Create a 3D texture from raw voxel data (tightly packed, z-major:
+// z*w*h + y*w + x order). Returns ImTextureID_Invalid on failure or if
+// the backend does not support 3D textures.
+IMPLATFORM_API ImTextureID ImPlatform_CreateTexture3D(
+    const void* voxel_data,
+    const ImPlatform_TextureDesc3D* desc
+);
+
+// Returns true if the active backend supports Texture3D.
+IMPLATFORM_API bool ImPlatform_SupportsTexture3D(void);
+
 // Update existing texture with new pixel data
 // texture_id: Previously created texture
 // pixel_data: New pixel data (must match original texture format and dimensions)
@@ -1007,6 +1037,18 @@ IMPLATFORM_API float ImPlatform_EmSize(float lines);
 // Inverse of ImPlatform_EmSize.
 IMPLATFORM_API float ImPlatform_PixelsToEm(float pixels);
 
+// ---------------------------------------------------------------
+// "lp" (logical pixel / DIP) <-> physical pixel helpers.
+//
+// The scale factor is sourced from ImGui::GetStyle().FontScaleDpi so these
+// stay in lockstep with the font/typography scaling already used by Slug
+// and the per-style variables downstream. Authored widget sizes expressed
+// in lp stay physically consistent across DPI settings.
+// ---------------------------------------------------------------
+IMPLATFORM_API float ImPlatform_LpPxScale(void);   // current FontScaleDpi, clamped to >=1e-3
+IMPLATFORM_API float ImPlatform_LpToPx(float lp);
+IMPLATFORM_API float ImPlatform_PxToLp(float px);
+
 // DPI change callback.
 // Register a callback that fires when the DPI scale changes at runtime
 // (e.g., window moved to a different monitor).
@@ -1037,6 +1079,10 @@ IMPLATFORM_API void ImPlatform_DestroyWindow(void);
 // Convert Em units to pixel coordinates.
 // Example: ImPlatform_EmToVec2(10.0f, 5.0f) returns a 10-Em x 5-Em rectangle in pixels.
 IMPLATFORM_API ImVec2 ImPlatform_EmToVec2(float em_x, float em_y);
+
+// C++ only: ImVec2 lp <-> px overloads (pair with ImPlatform_LpToPx / ImPlatform_PxToLp).
+IMPLATFORM_API ImVec2 ImPlatform_LpToPx(ImVec2 lp);
+IMPLATFORM_API ImVec2 ImPlatform_PxToLp(ImVec2 px);
 
 #endif
 
@@ -1199,6 +1245,29 @@ IMPLATFORM_API float ImPlatform_PixelsToEm(float pixels)
 {
     float fontSize = ImGui::GetFontSize();
     return (fontSize > 0.0f) ? (pixels / fontSize) : 0.0f;
+}
+
+// ---------------------------------------------------------------
+// Lp <-> Px helpers (keyed off ImGui::GetStyle().FontScaleDpi)
+// ---------------------------------------------------------------
+
+IMPLATFORM_API float ImPlatform_LpPxScale(void)
+{
+    float s = ImGui::GetStyle().FontScaleDpi;
+    return (s > 1e-3f) ? s : 1.0f;
+}
+IMPLATFORM_API float ImPlatform_LpToPx(float lp) { return lp * ImPlatform_LpPxScale(); }
+IMPLATFORM_API float ImPlatform_PxToLp(float px) { return px / ImPlatform_LpPxScale(); }
+
+IMPLATFORM_API ImVec2 ImPlatform_LpToPx(ImVec2 lp)
+{
+    float s = ImPlatform_LpPxScale();
+    return ImVec2(lp.x * s, lp.y * s);
+}
+IMPLATFORM_API ImVec2 ImPlatform_PxToLp(ImVec2 px)
+{
+    float s = ImPlatform_LpPxScale();
+    return ImVec2(px.x / s, px.y / s);
 }
 
 // ============================================================================
