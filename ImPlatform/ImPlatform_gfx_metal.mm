@@ -33,6 +33,11 @@ static void* g_MetalBinaryArchive = nullptr; // id<MTLBinaryArchive>
 static id<MTLCommandBuffer>        g_RTCommandBuffer  = nil;
 static id<MTLRenderCommandEncoder> g_RTRenderEncoder  = nil;
 
+// Sampler override state - [filter][wrap]: filter 0=Nearest 1=Linear, wrap 0=Clamp 1=Wrap 2=Mirror
+static void* g_MetalSamplers[2][3]  = {};  // id<MTLSamplerState>
+static void* g_SamplerStack[8]      = {};  // id<MTLSamplerState>
+static int   g_SamplerDepth         = 0;
+
 // Forward declaration for wrapper function
 static void ImPlatform_RenderDrawDataWrapper(ImDrawData* draw_data, id<MTLCommandBuffer> commandBuffer, id<MTLRenderCommandEncoder> renderEncoder);
 
@@ -829,11 +834,6 @@ static ImDrawData* g_CurrentDrawData = nullptr;
 
 // Current render encoder for custom shader rendering (set during render pass)
 static void* g_CurrentRenderEncoder = nullptr; // id<MTLRenderCommandEncoder>
-
-// Sampler override state - [filter][wrap]: filter 0=Nearest 1=Linear, wrap 0=Clamp 1=Wrap 2=Mirror
-static void* g_MetalSamplers[2][3]  = {};  // id<MTLSamplerState>
-static void* g_SamplerStack[8]      = {};  // id<MTLSamplerState>
-static int   g_SamplerDepth         = 0;
 
 // Caching strategy:
 //   Metal compiles MSL source to an MTLLibrary at ImPlatform_CreateShader
