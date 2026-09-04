@@ -1102,9 +1102,18 @@ IMPLATFORM_API int ImPlatform_GetVersionNum(void)
     return IMPLATFORM_VERSION_NUM;
 }
 
-// Borderless params storage (read by platform backends in hit-test callbacks)
+// Borderless params storage (read by platform backends in hit-test callbacks).
+// This sits after the extern "C" block above, so it needs its own linkage
+// specifier to match the extern declaration in ImPlatform_Internal.h. MSVC
+// tolerates the mismatch; GCC and Clang reject it.
 #if IMPLATFORM_APP_SUPPORT_CUSTOM_TITLEBAR
+#ifdef __cplusplus
+extern "C" {
+#endif
 ImPlatform_BorderlessParams g_BorderlessParams = { 5, 100, 100, true, true };
+#ifdef __cplusplus
+}
+#endif
 #endif
 
 // Include graphics backend implementation
