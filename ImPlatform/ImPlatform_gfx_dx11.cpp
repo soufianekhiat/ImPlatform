@@ -8,9 +8,15 @@
 #include "../imgui/backends/imgui_impl_dx11.h"
 #include <d3d11.h>
 #include <d3dcompiler.h>
+#include <dxgi.h>
 #include <stdio.h>
 #include <string.h>
 #include <stdint.h>
+#include <stdlib.h>
+
+#ifdef _MSC_VER
+#pragma comment(lib, "dxgi") // CreateDXGIFactory1 for adapter selection
+#endif
 
 // Global state
 static ImPlatform_GfxData_DX11 g_GfxData = { 0 };
@@ -97,9 +103,66 @@ bool ImPlatform_Gfx_CreateDevice_DX11(void* hWnd, ImPlatform_GfxData_DX11* pData
     ID3D11DeviceContext* pDeviceContext = NULL;
     IDXGISwapChain* pSwapChain = NULL;
 
+    // Prefer the adapter with the most dedicated VRAM instead of the OS
+    // default. On hybrid laptops the default is the integrated GPU, and the
+    // Intel Iris Xe D3D11 UMD (igd10um64xe.dll 30.0.101.1660) corrupts its own
+    // heap under sustained texture churn with a debug-layer-clean API stream:
+    // its worker thread runs `rep stosb` with a size read from a freed heap
+    // block (0xC0000005 WRITE at a heap commit frontier / 0xC0000374),
+    // reproduced by the_flow's flow_diff UI-test suite and gone on the same
+    // stream against the discrete adapter. Picking the biggest-VRAM adapter
+    // matches the compute backend's selection policy and routes the UI off
+    // the buggy UMD wherever a discrete GPU exists; single-GPU machines keep
+    // the previous behavior. IMPLATFORM_UI_ADAPTER=<index> forces a specific
+    // DXGI adapter (for tests or to opt back into the default).
+    IDXGIAdapter* pPreferredAdapter = NULL;
+    {
+        IDXGIFactory1* pFactory = NULL;
+        if (SUCCEEDED(CreateDXGIFactory1(__uuidof(IDXGIFactory1), (void**)&pFactory)) && pFactory)
+        {
+            char const* forced_env = getenv("IMPLATFORM_UI_ADAPTER");
+            if (forced_env)
+            {
+                if (FAILED(pFactory->EnumAdapters((UINT)atoi(forced_env), &pPreferredAdapter)))
+                    pPreferredAdapter = NULL;
+            }
+            else
+            {
+                SIZE_T best_vram = 0;
+                UINT best_index = 0;
+                bool have_best = false;
+                IDXGIAdapter* pAdapter = NULL;
+                for (UINT i = 0; pFactory->EnumAdapters(i, &pAdapter) != DXGI_ERROR_NOT_FOUND; ++i)
+                {
+                    DXGI_ADAPTER_DESC desc = {};
+                    if (SUCCEEDED(pAdapter->GetDesc(&desc)) &&
+                        desc.DedicatedVideoMemory > best_vram)
+                    {
+                        best_vram = desc.DedicatedVideoMemory;
+                        best_index = i;
+                        have_best = true;
+                    }
+                    pAdapter->Release();
+                    pAdapter = NULL;
+                }
+                if (have_best)
+                    if (FAILED(pFactory->EnumAdapters(best_index, &pPreferredAdapter)))
+                        pPreferredAdapter = NULL;
+            }
+            if (pPreferredAdapter)
+            {
+                DXGI_ADAPTER_DESC desc = {};
+                pPreferredAdapter->GetDesc(&desc);
+                fprintf(stderr, "[ImPlatform] D3D11 UI adapter: %ls (%zu MB dedicated VRAM)\n",
+                        desc.Description, (size_t)(desc.DedicatedVideoMemory >> 20));
+            }
+            pFactory->Release();
+        }
+    }
+
     HRESULT res = D3D11CreateDeviceAndSwapChain(
-        NULL,
-        D3D_DRIVER_TYPE_HARDWARE,
+        pPreferredAdapter,
+        pPreferredAdapter ? D3D_DRIVER_TYPE_UNKNOWN : D3D_DRIVER_TYPE_HARDWARE,
         NULL,
         createDeviceFlags,
         featureLevelArray,
@@ -110,6 +173,29 @@ bool ImPlatform_Gfx_CreateDevice_DX11(void* hWnd, ImPlatform_GfxData_DX11* pData
         &pDevice,
         &featureLevel,
         &pDeviceContext);
+    if (pPreferredAdapter)
+    {
+        // If creation on the preferred adapter failed for any reason, fall
+        // back to the previous default-adapter behavior (whose own
+        // DXGI_ERROR_UNSUPPORTED still reaches the WARP fallback below).
+        if (res != S_OK)
+        {
+            res = D3D11CreateDeviceAndSwapChain(
+                NULL,
+                D3D_DRIVER_TYPE_HARDWARE,
+                NULL,
+                createDeviceFlags,
+                featureLevelArray,
+                2,
+                D3D11_SDK_VERSION,
+                &sd,
+                &pSwapChain,
+                &pDevice,
+                &featureLevel,
+                &pDeviceContext);
+        }
+        pPreferredAdapter->Release();
+    }
 
     // Try WARP software driver if hardware is not available
     if (res == DXGI_ERROR_UNSUPPORTED)

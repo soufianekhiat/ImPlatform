@@ -38,7 +38,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           submodules: recursive
 
@@ -190,7 +190,7 @@ jobs:
         continue-on-error: true
 
       - name: Upload Executable
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         if: success()
         with:
           name: ImPlatformDemo-MSBuild-${{ matrix.config }}
@@ -198,7 +198,7 @@ jobs:
           retention-days: 7
 
       - name: Upload Screenshot
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         if: always()
         with:
           name: Screenshot-MSBuild-${{ matrix.config }}
@@ -215,7 +215,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           submodules: recursive
 
@@ -311,7 +311,7 @@ jobs:
         continue-on-error: true
 
       - name: Upload Artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         if: success()
         with:
           name: ImPlatformDemo-CMake-Windows
@@ -319,7 +319,7 @@ jobs:
           retention-days: 7
 
       - name: Upload Screenshot
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         if: always()
         with:
           name: Screenshot-CMake-Windows
@@ -336,7 +336,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           submodules: recursive
 
@@ -353,6 +353,7 @@ jobs:
             libxcursor-dev \
             libxi-dev \
             libxext-dev \
+            libxtst-dev \
             libwayland-dev \
             libxkbcommon-dev \
             libglfw3-dev \
@@ -429,7 +430,7 @@ jobs:
         continue-on-error: true
 
       - name: Upload Artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         if: success()
         with:
           name: ImPlatformDemo-CMake-Linux
@@ -437,7 +438,7 @@ jobs:
           retention-days: 7
 
       - name: Upload Screenshot
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         if: always()
         with:
           name: Screenshot-CMake-Linux
@@ -454,7 +455,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           submodules: recursive
 
@@ -520,7 +521,7 @@ jobs:
         continue-on-error: true
 
       - name: Upload Artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         if: success()
         with:
           name: ImPlatformDemo-CMake-macOS
@@ -528,7 +529,7 @@ jobs:
           retention-days: 7
 
       - name: Upload Screenshot
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         if: always()
         with:
           name: Screenshot-CMake-macOS

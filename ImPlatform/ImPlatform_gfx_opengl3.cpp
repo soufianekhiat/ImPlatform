@@ -160,6 +160,27 @@
 #ifndef GL_DEPTH32F_STENCIL8
 #define GL_DEPTH32F_STENCIL8              0x8CAD
 #endif
+// Texture level query
+#ifndef GL_TEXTURE_WIDTH
+#define GL_TEXTURE_WIDTH                  0x1000
+#endif
+#ifndef GL_TEXTURE_HEIGHT
+#define GL_TEXTURE_HEIGHT                 0x1001
+#endif
+// Framebuffer objects
+#ifndef GL_FRAMEBUFFER
+#define GL_FRAMEBUFFER                    0x8D40
+#endif
+#ifndef GL_FRAMEBUFFER_BINDING
+#define GL_FRAMEBUFFER_BINDING            0x8CA6
+#endif
+#ifndef GL_COLOR_ATTACHMENT0
+#define GL_COLOR_ATTACHMENT0              0x8CE0
+#endif
+// Program binary (GL 4.1 / ARB_get_program_binary)
+#ifndef GL_PROGRAM_BINARY_LENGTH
+#define GL_PROGRAM_BINARY_LENGTH          0x8741
+#endif
 
 // Load additional GL function pointers not in the stripped loader
 typedef void (APIENTRYP PFNGLUNIFORM1FVPROC) (GLint location, GLsizei count, const GLfloat *value);
@@ -173,6 +194,9 @@ typedef void (APIENTRYP PFNGLGENSAMPLERSPROC)         (GLsizei count, GLuint *sa
 typedef void (APIENTRYP PFNGLDELETESAMPLERSPROC)      (GLsizei count, const GLuint *samplers);
 typedef void (APIENTRYP PFNGLBINDSAMPLERPROC)         (GLuint unit, GLuint sampler);
 typedef void (APIENTRYP PFNGLSAMPLERPARAMETERIPROC)   (GLuint sampler, GLenum pname, GLint param);
+// GL 4.1 program binary (shader cache)
+typedef void (APIENTRYP PFNGLPROGRAMBINARYPROC)       (GLuint program, GLenum binaryFormat, const void* binary, GLsizei length);
+typedef void (APIENTRYP PFNGLGETPROGRAMBINARYPROC)    (GLuint program, GLsizei bufSize, GLsizei* length, GLenum* binaryFormat, void* binary);
 
 static PFNGLUNIFORM1FVPROC glUniform1fv_Ptr = NULL;
 static PFNGLUNIFORM2FVPROC glUniform2fv_Ptr = NULL;
@@ -184,6 +208,8 @@ static PFNGLGENSAMPLERSPROC       glGenSamplers_Ptr       = NULL;
 static PFNGLDELETESAMPLERSPROC    glDeleteSamplers_Ptr    = NULL;
 static PFNGLBINDSAMPLERPROC       glBindSampler_Ptr       = NULL;
 static PFNGLSAMPLERPARAMETERIPROC glSamplerParameteri_Ptr = NULL;
+static PFNGLPROGRAMBINARYPROC     glProgramBinary_Ptr     = NULL;
+static PFNGLGETPROGRAMBINARYPROC  glGetProgramBinary_Ptr  = NULL;
 
 #if defined(IM_CURRENT_PLATFORM) && (IM_CURRENT_PLATFORM == IM_PLATFORM_WIN32)
     // Need to link with opengl32.lib
@@ -397,6 +423,9 @@ IMPLATFORM_API bool ImPlatform_InitGfx(void)
     glDeleteSamplers_Ptr    = (PFNGLDELETESAMPLERSPROC)imgl3wGetProcAddress("glDeleteSamplers");
     glBindSampler_Ptr       = (PFNGLBINDSAMPLERPROC)imgl3wGetProcAddress("glBindSampler");
     glSamplerParameteri_Ptr = (PFNGLSAMPLERPARAMETERIPROC)imgl3wGetProcAddress("glSamplerParameteri");
+
+    glProgramBinary_Ptr    = (PFNGLPROGRAMBINARYPROC)imgl3wGetProcAddress("glProgramBinary");
+    glGetProgramBinary_Ptr = (PFNGLGETPROGRAMBINARYPROC)imgl3wGetProcAddress("glGetProgramBinary");
 
     // Create 6 sampler objects for all filter/wrap combinations (GL 3.3+)
     if (glGenSamplers_Ptr && glSamplerParameteri_Ptr)
@@ -1076,9 +1105,9 @@ IMPLATFORM_API bool ImPlatform_BeginRenderToTexture(ImTextureID texture)
     typedef void (APIENTRYP PFNGLGENFRAMEBUFFERSPROC_LOCAL)(GLsizei, GLuint*);
     typedef void (APIENTRYP PFNGLBINDFRAMEBUFFERPROC_LOCAL)(GLenum, GLuint);
     typedef void (APIENTRYP PFNGLFRAMEBUFFERTEXTURE2DPROC_LOCAL)(GLenum, GLenum, GLenum, GLuint, GLint);
-    static PFNGLGENFRAMEBUFFERSPROC_LOCAL     glGenFramebuffers_fn     = (PFNGLGENFRAMEBUFFERSPROC_LOCAL)ImGui_ImplOpenGL3_GetProcAddress("glGenFramebuffers");
-    static PFNGLBINDFRAMEBUFFERPROC_LOCAL     glBindFramebuffer_fn     = (PFNGLBINDFRAMEBUFFERPROC_LOCAL)ImGui_ImplOpenGL3_GetProcAddress("glBindFramebuffer");
-    static PFNGLFRAMEBUFFERTEXTURE2DPROC_LOCAL glFramebufferTexture2D_fn = (PFNGLFRAMEBUFFERTEXTURE2DPROC_LOCAL)ImGui_ImplOpenGL3_GetProcAddress("glFramebufferTexture2D");
+    static PFNGLGENFRAMEBUFFERSPROC_LOCAL     glGenFramebuffers_fn     = (PFNGLGENFRAMEBUFFERSPROC_LOCAL)imgl3wGetProcAddress("glGenFramebuffers");
+    static PFNGLBINDFRAMEBUFFERPROC_LOCAL     glBindFramebuffer_fn     = (PFNGLBINDFRAMEBUFFERPROC_LOCAL)imgl3wGetProcAddress("glBindFramebuffer");
+    static PFNGLFRAMEBUFFERTEXTURE2DPROC_LOCAL glFramebufferTexture2D_fn = (PFNGLFRAMEBUFFERTEXTURE2DPROC_LOCAL)imgl3wGetProcAddress("glFramebufferTexture2D");
     if (!glGenFramebuffers_fn || !glBindFramebuffer_fn || !glFramebufferTexture2D_fn)
         return false;
 
@@ -1106,8 +1135,8 @@ IMPLATFORM_API void ImPlatform_EndRenderToTexture(void)
 
     typedef void (APIENTRYP PFNGLBINDFRAMEBUFFERPROC_LOCAL)(GLenum, GLuint);
     typedef void (APIENTRYP PFNGLDELETEFRAMEBUFFERSPROC_LOCAL)(GLsizei, const GLuint*);
-    static PFNGLBINDFRAMEBUFFERPROC_LOCAL   glBindFramebuffer_fn   = (PFNGLBINDFRAMEBUFFERPROC_LOCAL)ImGui_ImplOpenGL3_GetProcAddress("glBindFramebuffer");
-    static PFNGLDELETEFRAMEBUFFERSPROC_LOCAL glDeleteFramebuffers_fn = (PFNGLDELETEFRAMEBUFFERSPROC_LOCAL)ImGui_ImplOpenGL3_GetProcAddress("glDeleteFramebuffers");
+    static PFNGLBINDFRAMEBUFFERPROC_LOCAL   glBindFramebuffer_fn   = (PFNGLBINDFRAMEBUFFERPROC_LOCAL)imgl3wGetProcAddress("glBindFramebuffer");
+    static PFNGLDELETEFRAMEBUFFERSPROC_LOCAL glDeleteFramebuffers_fn = (PFNGLDELETEFRAMEBUFFERSPROC_LOCAL)imgl3wGetProcAddress("glDeleteFramebuffers");
 
     if (glDeleteFramebuffers_fn) glDeleteFramebuffers_fn(1, &g_RTFbo);
     g_RTFbo = 0;
@@ -1132,11 +1161,14 @@ IMPLATFORM_API bool ImPlatform_CopyTexture(ImTextureID dst, ImTextureID src)
     GLuint srcTex = (GLuint)(intptr_t)src;
     GLuint dstTex = (GLuint)(intptr_t)dst;
 
+    if (!glGetTexLevelParameteriv_Ptr)
+        return false;
+
     // Get source texture dimensions
     GLint width = 0, height = 0;
     glBindTexture(GL_TEXTURE_2D, srcTex);
-    glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_WIDTH, &width);
-    glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_HEIGHT, &height);
+    glGetTexLevelParameteriv_Ptr(GL_TEXTURE_2D, 0, GL_TEXTURE_WIDTH, &width);
+    glGetTexLevelParameteriv_Ptr(GL_TEXTURE_2D, 0, GL_TEXTURE_HEIGHT, &height);
     glBindTexture(GL_TEXTURE_2D, 0);
 
     if (width <= 0 || height <= 0)
@@ -1165,11 +1197,11 @@ IMPLATFORM_API bool ImPlatform_CopyTexture(ImTextureID dst, ImTextureID src)
     typedef void (APIENTRYP PFNGLBLITFRAMEBUFFERPROC)(GLint srcX0, GLint srcY0, GLint srcX1, GLint srcY1, GLint dstX0, GLint dstY0, GLint dstX1, GLint dstY1, GLbitfield mask, GLenum filter);
     typedef void (APIENTRYP PFNGLDELETEFRAMEBUFFERSPROC)(GLsizei n, const GLuint* framebuffers);
 
-    static PFNGLGENFRAMEBUFFERSPROC glGenFramebuffers_fn = (PFNGLGENFRAMEBUFFERSPROC)ImGui_ImplOpenGL3_GetProcAddress("glGenFramebuffers");
-    static PFNGLBINDFRAMEBUFFERPROC glBindFramebuffer_fn = (PFNGLBINDFRAMEBUFFERPROC)ImGui_ImplOpenGL3_GetProcAddress("glBindFramebuffer");
-    static PFNGLFRAMEBUFFERTEXTURE2DPROC glFramebufferTexture2D_fn = (PFNGLFRAMEBUFFERTEXTURE2DPROC)ImGui_ImplOpenGL3_GetProcAddress("glFramebufferTexture2D");
-    static PFNGLBLITFRAMEBUFFERPROC glBlitFramebuffer_fn = (PFNGLBLITFRAMEBUFFERPROC)ImGui_ImplOpenGL3_GetProcAddress("glBlitFramebuffer");
-    static PFNGLDELETEFRAMEBUFFERSPROC glDeleteFramebuffers_fn = (PFNGLDELETEFRAMEBUFFERSPROC)ImGui_ImplOpenGL3_GetProcAddress("glDeleteFramebuffers");
+    static PFNGLGENFRAMEBUFFERSPROC glGenFramebuffers_fn = (PFNGLGENFRAMEBUFFERSPROC)imgl3wGetProcAddress("glGenFramebuffers");
+    static PFNGLBINDFRAMEBUFFERPROC glBindFramebuffer_fn = (PFNGLBINDFRAMEBUFFERPROC)imgl3wGetProcAddress("glBindFramebuffer");
+    static PFNGLFRAMEBUFFERTEXTURE2DPROC glFramebufferTexture2D_fn = (PFNGLFRAMEBUFFERTEXTURE2DPROC)imgl3wGetProcAddress("glFramebufferTexture2D");
+    static PFNGLBLITFRAMEBUFFERPROC glBlitFramebuffer_fn = (PFNGLBLITFRAMEBUFFERPROC)imgl3wGetProcAddress("glBlitFramebuffer");
+    static PFNGLDELETEFRAMEBUFFERSPROC glDeleteFramebuffers_fn = (PFNGLDELETEFRAMEBUFFERSPROC)imgl3wGetProcAddress("glDeleteFramebuffers");
 
     if (!glGenFramebuffers_fn || !glBindFramebuffer_fn || !glFramebufferTexture2D_fn || !glBlitFramebuffer_fn || !glDeleteFramebuffers_fn)
         return false;
@@ -1629,6 +1661,7 @@ static bool ImPlatform_GL_TryLoadCachedProgram(
 {
     out_cache_path[0] = '\0';
     if (!vs_data->cache_key || !fs_data->cache_key) return false;
+    if (!glProgramBinary_Ptr) return false; // No GL 4.1 / ARB_get_program_binary
 
     // Combined cache key: hash both sources + both entry points.
     unsigned long long vs_hash = ImPlatform_ShaderCacheHashSource(
@@ -1654,7 +1687,7 @@ static bool ImPlatform_GL_TryLoadCachedProgram(
 
     if ((size_t)binary_len + 12 > file_size) { free(file_data); return false; }
 
-    glProgramBinary(program, binary_format, p + 12, (GLsizei)binary_len);
+    glProgramBinary_Ptr(program, binary_format, p + 12, (GLsizei)binary_len);
     free(file_data);
 
     GLint link_status = GL_FALSE;
@@ -1676,6 +1709,7 @@ static bool ImPlatform_GL_TryLoadCachedProgram(
 static void ImPlatform_GL_SaveProgramBinary(GLuint program, const char* cache_path, const char* cache_key)
 {
     if (!cache_path || !cache_path[0]) return;
+    if (!glGetProgramBinary_Ptr) return; // No GL 4.1 / ARB_get_program_binary
 
     GLint binary_length = 0;
     glGetProgramiv(program, GL_PROGRAM_BINARY_LENGTH, &binary_length);
@@ -1686,7 +1720,7 @@ static void ImPlatform_GL_SaveProgramBinary(GLuint program, const char* cache_pa
 
     GLsizei actual_len = 0;
     GLenum  binary_format = 0;
-    glGetProgramBinary(program, binary_length, &actual_len, &binary_format, binary_data);
+    glGetProgramBinary_Ptr(program, binary_length, &actual_len, &binary_format, binary_data);
     if (actual_len <= 0) { free(binary_data); return; }
 
     // Build file: magic(4) + format(4) + length(4) + data
