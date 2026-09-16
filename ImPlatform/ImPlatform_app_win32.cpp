@@ -221,9 +221,17 @@ static LRESULT WINAPI WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
 // ImPlatform API - CreateWindow
 IMPLATFORM_API bool ImPlatform_CreateWindow(char const* pWindowsName, ImVec2 const vPos, unsigned int uWidth, unsigned int uHeight)
 {
-    // Make process DPI aware and obtain main monitor scale
+    // Make process DPI aware and obtain the DPI scale for the monitor this
+    // window will actually be created on. Was previously hardcoded to
+    // MonitorFromPoint({0, 0}, MONITOR_DEFAULTTOPRIMARY) -- i.e. always the
+    // PRIMARY monitor's DPI, completely ignoring vPos -- so a window created
+    // at a position on a secondary monitor with a different DPI than the
+    // primary would size itself (uWidth/uHeight below) and set the initial
+    // ImGui style scale using the WRONG monitor's DPI. MONITOR_DEFAULTTONEAREST
+    // (rather than TOPRIMARY) as the fallback so an off-screen/edge vPos still
+    // resolves to whichever real monitor is closest, instead of forcing primary.
     ImGui_ImplWin32_EnableDpiAwareness();
-    float main_scale = ImGui_ImplWin32_GetDpiScaleForMonitor(::MonitorFromPoint({0, 0}, MONITOR_DEFAULTTOPRIMARY));
+    float main_scale = ImGui_ImplWin32_GetDpiScaleForMonitor(::MonitorFromPoint({(LONG)vPos.x, (LONG)vPos.y}, MONITOR_DEFAULTTONEAREST));
 
     // Store scale for later use in ImPlatform_InitPlatform
     g_AppData.fDpiScale = main_scale;
