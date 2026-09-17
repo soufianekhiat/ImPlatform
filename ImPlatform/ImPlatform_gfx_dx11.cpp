@@ -1387,11 +1387,15 @@ IMPLATFORM_API ImPlatform_Shader ImPlatform_CreateShader(const ImPlatform_Shader
 
             ID3DBlob* pErrorBlob = NULL;
             UINT flags = ImPlatform_DX11_TranslateCompileFlags(desc->compile_flags);
+            LARGE_INTEGER _compFreq, _compT0, _compT1;
+            QueryPerformanceFrequency(&_compFreq);
+            QueryPerformanceCounter(&_compT0);
             hr = D3DCompile(
                 desc->source_code, source_len,
                 NULL, NULL, NULL,
                 entry, target, flags, 0,
                 &shader_data->pBlob, &pErrorBlob);
+            QueryPerformanceCounter(&_compT1);
 
             if (FAILED(hr))
             {
@@ -1404,6 +1408,15 @@ IMPLATFORM_API ImPlatform_Shader ImPlatform_CreateShader(const ImPlatform_Shader
                 return NULL;
             }
             if (pErrorBlob) pErrorBlob->Release();
+
+            // Per-shader compilation timing (cold compile, cache miss).
+            {
+                double _compMs = (double)(_compT1.QuadPart - _compT0.QuadPart) * 1000.0 / (double)_compFreq.QuadPart;
+                fprintf(stderr, "[ImPlatform shader compile] %-22s %s  target=%s  %8.2f ms  (%zu bytes, %zu src chars)\n",
+                        (desc->cache_key && desc->cache_key[0]) ? desc->cache_key : "(no-key)",
+                        entry, target, _compMs,
+                        (size_t)shader_data->pBlob->GetBufferSize(), source_len);
+            }
 
             // 3) Save to cache for next launch
             if (desc->cache_key && desc->cache_key[0] && shader_data->pBlob && cache_path[0])
