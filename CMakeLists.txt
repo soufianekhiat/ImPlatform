@@ -169,6 +169,8 @@ if(APPLE)
             LANGUAGE OBJCXX
             COMPILE_FLAGS "-fobjc-arc -x objective-c++"
     )
+    # imgui_impl_wgpu.cpp surface helper includes Cocoa headers on macOS
+    set_source_files_properties(${IMGUI_BACKEND_WGPU} PROPERTIES COMPILE_FLAGS "-x objective-c++")
 endif()
 
 # =============================================================================
@@ -268,8 +270,11 @@ function(implatform_add_config TARGET_NAME PLATFORM GFX)
         endif()
     elseif(PLATFORM STREQUAL "SDL2")
         target_link_libraries(${TARGET_NAME} PUBLIC SDL2::SDL2)
+        # The demo provides its own main() (same as the MSBuild project)
+        target_compile_definitions(${TARGET_NAME} PUBLIC SDL_MAIN_HANDLED)
     elseif(PLATFORM STREQUAL "SDL3")
         target_link_libraries(${TARGET_NAME} PUBLIC SDL3::SDL3)
+        target_compile_definitions(${TARGET_NAME} PUBLIC SDL_MAIN_HANDLED)
     endif()
 
     # Graphics-specific dependencies
@@ -306,6 +311,11 @@ function(implatform_add_config TARGET_NAME PLATFORM GFX)
         elseif(TARGET wgpu_native)
             target_link_libraries(${TARGET_NAME} PUBLIC wgpu_native)
             target_compile_definitions(${TARGET_NAME} PUBLIC IMGUI_IMPL_WEBGPU_BACKEND_WGPU)
+        endif()
+        if(APPLE)
+            find_library(QUARTZCORE_FRAMEWORK QuartzCore REQUIRED)
+            find_library(METAL_FRAMEWORK Metal REQUIRED)
+            target_link_libraries(${TARGET_NAME} PUBLIC ${QUARTZCORE_FRAMEWORK} ${METAL_FRAMEWORK})
         endif()
     endif()
 

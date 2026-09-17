@@ -6,7 +6,9 @@
 #if defined(IM_CURRENT_PLATFORM) && (IM_CURRENT_PLATFORM == IM_PLATFORM_SDL3)
 
 // Tell SDL we handle main() ourselves - prevents conflicts with SDL3main
+#ifndef SDL_MAIN_HANDLED
 #define SDL_MAIN_HANDLED
+#endif
 
 #include "../imgui.h"
 #include "../imgui/backends/imgui_impl_sdl3.h"
@@ -88,8 +90,8 @@ IMPLATFORM_API bool ImPlatform_CreateWindow(char const* pWindowsName, ImVec2 con
         return false;
     }
 
-#ifdef IM_GFX_OPENGL3
-    // Decide GL+GLSL versions
+#if IM_CURRENT_GFX == IM_GFX_OPENGL3
+    // Decide GL version (GLSL version is selected by the renderer backend)
 #if defined(IMGUI_IMPL_OPENGL_ES2)
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_FLAGS, 0);
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_ES);
@@ -118,11 +120,18 @@ IMPLATFORM_API bool ImPlatform_CreateWindow(char const* pWindowsName, ImVec2 con
     SDL_GL_SetAttribute(SDL_GL_STENCIL_SIZE, 8);
 #endif // IM_GFX_OPENGL3
 
-    Uint32 window_flags =
-#ifdef IM_GFX_OPENGL3
+    float main_scale = SDL_GetDisplayContentScale(SDL_GetPrimaryDisplay());
+    if (main_scale <= 0.0f)
+        main_scale = 1.0f;
+    SDL_WindowFlags window_flags =
+#if IM_CURRENT_GFX == IM_GFX_OPENGL3
         SDL_WINDOW_OPENGL |
+#elif IM_CURRENT_GFX == IM_GFX_VULKAN
+        SDL_WINDOW_VULKAN |
+#elif IM_CURRENT_GFX == IM_GFX_METAL
+        SDL_WINDOW_METAL |
 #endif
-        SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIDDEN;
+        SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIDDEN | SDL_WINDOW_HIGH_PIXEL_DENSITY;
 
 #if IMPLATFORM_APP_SUPPORT_CUSTOM_TITLEBAR
     if (g_AppData.bCustomTitleBar)
@@ -131,8 +140,8 @@ IMPLATFORM_API bool ImPlatform_CreateWindow(char const* pWindowsName, ImVec2 con
 
     g_AppData.pWindow = SDL_CreateWindow(
         pWindowsName,
-        (int)uWidth,
-        (int)uHeight,
+        (int)(uWidth * main_scale),
+        (int)(uHeight * main_scale),
         window_flags);
 
     if (g_AppData.pWindow == NULL)
@@ -155,13 +164,9 @@ IMPLATFORM_API bool ImPlatform_CreateWindow(char const* pWindowsName, ImVec2 con
     int posY = (vPos.y == 0.0f) ? SDL_WINDOWPOS_CENTERED : (int)vPos.y;
     SDL_SetWindowPosition(g_AppData.pWindow, posX, posY);
 
-    // Query DPI scale
-    {
-        float scale = SDL_GetWindowDisplayScale(g_AppData.pWindow);
-        g_AppData.fDpiScale = (scale > 0.0f) ? scale : 1.0f;
-    }
+    g_AppData.fDpiScale = main_scale;
 
-#ifdef IM_GFX_OPENGL3
+#if IM_CURRENT_GFX == IM_GFX_OPENGL3
     g_AppData.glContext = SDL_GL_CreateContext(g_AppData.pWindow);
     if (g_AppData.glContext == NULL)
     {
@@ -191,11 +196,17 @@ IMPLATFORM_API bool ImPlatform_ShowWindow(void)
 IMPLATFORM_API bool ImPlatform_InitPlatform(void)
 {
     // Init ImGui SDL3 backend
-#ifdef IM_GFX_OPENGL3
+#if IM_CURRENT_GFX == IM_GFX_OPENGL3
     if (!ImGui_ImplSDL3_InitForOpenGL(g_AppData.pWindow, g_AppData.glContext))
         return false;
-#elif defined(IM_GFX_VULKAN)
+#elif IM_CURRENT_GFX == IM_GFX_VULKAN
     if (!ImGui_ImplSDL3_InitForVulkan(g_AppData.pWindow))
+        return false;
+#elif (IM_CURRENT_GFX == IM_GFX_DIRECTX9) || (IM_CURRENT_GFX == IM_GFX_DIRECTX10) || (IM_CURRENT_GFX == IM_GFX_DIRECTX11) || (IM_CURRENT_GFX == IM_GFX_DIRECTX12)
+    if (!ImGui_ImplSDL3_InitForD3D(g_AppData.pWindow))
+        return false;
+#elif IM_CURRENT_GFX == IM_GFX_METAL
+    if (!ImGui_ImplSDL3_InitForMetal(g_AppData.pWindow))
         return false;
 #else
     if (!ImGui_ImplSDL3_InitForOther(g_AppData.pWindow))
@@ -229,6 +240,16 @@ IMPLATFORM_API bool ImPlatform_PlatformEvents(void)
             g_AppData.bDone = true;
             return false;
         }
+#if defined(IM_CURRENT_GFX) && (IM_CURRENT_GFX == IM_GFX_DIRECTX11)
+        // Notify gfx backend of resize (same as upstream example_sdl3_directx11)
+        if (event.type == SDL_EVENT_WINDOW_RESIZED &&
+            event.window.windowID == SDL_GetWindowID(g_AppData.pWindow))
+        {
+            int fb_w = 0, fb_h = 0;
+            SDL_GetWindowSizeInPixels(g_AppData.pWindow, &fb_w, &fb_h);
+            ImPlatform_Gfx_OnResize_DX11(ImPlatform_Gfx_GetData_DX11(), (unsigned int)fb_w, (unsigned int)fb_h);
+        }
+#endif
 #if IMPLATFORM_APP_SUPPORT_DROP_FILE
         if (event.type == SDL_EVENT_DROP_FILE && event.drop.data)
         {
@@ -242,7 +263,7 @@ IMPLATFORM_API bool ImPlatform_PlatformEvents(void)
     if (SDL_GetWindowFlags(g_AppData.pWindow) & SDL_WINDOW_MINIMIZED)
     {
         SDL_Delay(10);
-        return true; // Continue but don't render this frame
+        return false; // Skip frame
     }
 
     return true;

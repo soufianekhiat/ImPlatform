@@ -44,6 +44,13 @@ static void CreateRenderTarget()
     if (pBackBuffer)
     {
         g_GfxData.pDevice->CreateRenderTargetView(pBackBuffer, NULL, &g_GfxData.pRenderTargetView);
+
+        // Update stored backbuffer size
+        D3D10_TEXTURE2D_DESC bbDesc;
+        pBackBuffer->GetDesc(&bbDesc);
+        g_ImPlatform_BackbufferW = bbDesc.Width;
+        g_ImPlatform_BackbufferH = bbDesc.Height;
+
         pBackBuffer->Release();
     }
 }
@@ -90,8 +97,30 @@ bool ImPlatform_Gfx_CreateDevice_DX10(HWND hWnd, ImPlatform_GfxData_DX10* pData)
         &pData->pSwapChain,
         &pData->pDevice);
 
+    // Try high-performance WARP software driver if hardware is not available
+    if (res == DXGI_ERROR_UNSUPPORTED)
+        res = D3D10CreateDeviceAndSwapChain(
+            NULL,
+            D3D10_DRIVER_TYPE_WARP,
+            NULL,
+            createDeviceFlags,
+            D3D10_SDK_VERSION,
+            &sd,
+            &pData->pSwapChain,
+            &pData->pDevice);
+
     if (res != S_OK)
         return false;
+
+    // Disable DXGI's default Alt+Enter fullscreen behavior.
+    // - It does not work properly with multiple viewports.
+    // - This must be done for all windows associated to the device. The DX10 backend does this automatically for secondary viewports that it creates.
+    IDXGIFactory* pSwapChainFactory;
+    if (SUCCEEDED(pData->pSwapChain->GetParent(IID_PPV_ARGS(&pSwapChainFactory))))
+    {
+        pSwapChainFactory->MakeWindowAssociation(hWnd, DXGI_MWA_NO_ALT_ENTER);
+        pSwapChainFactory->Release();
+    }
 
     pData->bSwapChainOccluded = false;
     pData->uResizeWidth = 0;
@@ -1403,7 +1432,7 @@ IMPLATFORM_API void ImPlatform_EndCustomShader(ImDrawList* draw)
     if (!draw)
         return;
 
-    draw->AddCallback(ImDrawCallback_ResetRenderState, NULL);
+    draw->AddCallback(ImGui::GetPlatformIO().DrawCallback_ResetRenderState, NULL);
 }
 
 IMPLATFORM_API void* ImPlatform_PushShaderConstants(const void* data, unsigned int size)

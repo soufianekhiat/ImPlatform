@@ -619,7 +619,10 @@ int main()
 	while ( ImPlatform_PlatformContinue() )
 #endif
 	{
-		ImPlatform_PlatformEvents();
+		if ( !ImPlatform_PlatformEvents() )
+		{
+			continue;
+		}
 
 		if ( !ImPlatform_GfxCheck() )
 		{

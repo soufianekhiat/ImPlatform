@@ -64,12 +64,17 @@ static LRESULT WINAPI WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
         {
             UINT dpi = HIWORD(wParam);
             g_AppData.fDpiScale = (float)dpi / 96.0f;
-            RECT* const prcNewWindow = (RECT*)lParam;
-            ::SetWindowPos(hWnd, NULL,
-                prcNewWindow->left, prcNewWindow->top,
-                prcNewWindow->right - prcNewWindow->left,
-                prcNewWindow->bottom - prcNewWindow->top,
-                SWP_NOZORDER | SWP_NOACTIVATE);
+            // The Win32 backend already applies the suggested rectangle when io.ConfigDpiScaleViewports is enabled
+            bool backend_resizes = ImGui::GetCurrentContext() != NULL && ImGui::GetIO().ConfigDpiScaleViewports;
+            if (!backend_resizes)
+            {
+                RECT* const prcNewWindow = (RECT*)lParam;
+                ::SetWindowPos(hWnd, NULL,
+                    prcNewWindow->left, prcNewWindow->top,
+                    prcNewWindow->right - prcNewWindow->left,
+                    prcNewWindow->bottom - prcNewWindow->top,
+                    SWP_NOZORDER | SWP_NOACTIVATE);
+            }
             ImPlatform_NotifyDpiChange(g_AppData.fDpiScale);
         }
         return 0;
@@ -256,7 +261,7 @@ IMPLATFORM_API bool ImPlatform_CreateWindow(char const* pWindowsName, ImVec2 con
     g_AppData.wc.hCursor = NULL;
     g_AppData.wc.hbrBackground = NULL;
     g_AppData.wc.lpszMenuName = NULL;
-    g_AppData.wc.lpszClassName = wName;
+    g_AppData.wc.lpszClassName = L"ImPlatform"; // Static string: must outlive the window for UnregisterClassW()
     g_AppData.wc.hIconSm = NULL;
     ::RegisterClassExW(&g_AppData.wc);
 

@@ -167,9 +167,15 @@
 #ifndef GL_TEXTURE_HEIGHT
 #define GL_TEXTURE_HEIGHT                 0x1001
 #endif
-// Framebuffer objects
+// Framebuffer objects (render-to-texture, texture copy)
 #ifndef GL_FRAMEBUFFER
 #define GL_FRAMEBUFFER                    0x8D40
+#endif
+#ifndef GL_READ_FRAMEBUFFER
+#define GL_READ_FRAMEBUFFER               0x8CA8
+#endif
+#ifndef GL_DRAW_FRAMEBUFFER
+#define GL_DRAW_FRAMEBUFFER               0x8CA9
 #endif
 #ifndef GL_FRAMEBUFFER_BINDING
 #define GL_FRAMEBUFFER_BINDING            0x8CA6
@@ -290,7 +296,70 @@ bool ImPlatform_Gfx_CreateDevice_OpenGL3(void* hWnd, ImPlatform_GfxData_OpenGL3*
 
     pData->hDC = ::GetDC(hwnd);
     if (!g_hRC)
-        g_hRC = wglCreateContext(pData->hDC);
+    {
+        // Create legacy context (same approach as upstream example_win32_opengl3, see #9427)
+        HGLRC tempRC = wglCreateContext(pData->hDC);
+        if (!tempRC) { ::ReleaseDC(hwnd, pData->hDC); return false; }
+        if (!wglMakeCurrent(pData->hDC, tempRC))
+        {
+            wglDeleteContext(tempRC);
+            ::ReleaseDC(hwnd, pData->hDC);
+            return false;
+        }
+
+        // Get context version.
+        // Query GL 1.1 entry points directly from opengl32.dll: ImGui's GL loader is not initialized yet at this point.
+        typedef void (WINAPI* GetIntegervFn)(GLenum, GLint*);
+        typedef const GLubyte* (WINAPI* GetStringFn)(GLenum);
+        HMODULE opengl32 = ::GetModuleHandleA("opengl32.dll");
+        GetIntegervFn get_integerv = opengl32 ? (GetIntegervFn)(void*)::GetProcAddress(opengl32, "glGetIntegerv") : NULL;
+        GetStringFn get_string = opengl32 ? (GetStringFn)(void*)::GetProcAddress(opengl32, "glGetString") : NULL;
+        GLint major = 0, minor = 0;
+        if (get_integerv)
+        {
+            get_integerv(0x821B, &major); // GL_MAJOR_VERSION
+            get_integerv(0x821C, &minor); // GL_MINOR_VERSION
+        }
+        const char* gl_version_str = get_string ? (const char*)get_string(0x1F02 /*GL_VERSION*/) : NULL;
+        if (major == 0 && minor == 0 && gl_version_str)
+        {
+            // Query GL_VERSION in desktop GL 2.x, the string will start with "<major>.<minor>"
+#ifdef _MSC_VER
+            sscanf_s(gl_version_str, "%d.%d", &major, &minor);
+#else
+            sscanf(gl_version_str, "%d.%d", &major, &minor);
+#endif
+        }
+        const GLuint gl_version = (GLuint)(major * 100 + minor * 10);
+
+        // Keep temporary context: already OpenGL 3.0+.
+        g_hRC = tempRC;
+        if (gl_version < 300)
+        {
+            typedef HGLRC (WINAPI* PFNWGLCREATECONTEXTATTRIBSARBPROC)(HDC, HGLRC, const int*);
+            const PFNWGLCREATECONTEXTATTRIBSARBPROC wglCreateContextAttribsARB = (PFNWGLCREATECONTEXTATTRIBSARBPROC)(void*)wglGetProcAddress("wglCreateContextAttribsARB");
+
+            // GL 3.0
+            const int attribs[] =
+            {
+                0x2091, 3,      // WGL_CONTEXT_MAJOR_VERSION_ARB
+                0x2092, 0,      // WGL_CONTEXT_MINOR_VERSION_ARB
+                0x9126, 0x0001, // WGL_CONTEXT_PROFILE_MASK_ARB, WGL_CONTEXT_CORE_PROFILE_BIT_ARB
+                0
+            };
+            HGLRC newRC = NULL;
+            if (wglCreateContextAttribsARB)
+                newRC = wglCreateContextAttribsARB(pData->hDC, 0, attribs);
+
+            // If we managed to create 3.0+ context: use that one and destroy the temporary OpenGL 2.x compatibility context.
+            if (newRC)
+            {
+                wglMakeCurrent(NULL, NULL);
+                wglDeleteContext(tempRC);
+                g_hRC = newRC;
+            }
+        }
+    }
     pData->hRC = g_hRC;
 
     wglMakeCurrent(pData->hDC, pData->hRC);
@@ -390,23 +459,9 @@ IMPLATFORM_API bool ImPlatform_InitGfxAPI(void)
 // ImPlatform API - InitGfx
 IMPLATFORM_API bool ImPlatform_InitGfx(void)
 {
-    // Decide GL+GLSL versions
-#if defined(IM_CURRENT_PLATFORM) && (IM_CURRENT_PLATFORM == IM_PLATFORM_WIN32)
-    const char* glsl_version = "#version 130";
-#elif defined(IM_CURRENT_PLATFORM) && (IM_CURRENT_PLATFORM == IM_PLATFORM_GLFW)
-    const char* glsl_version = "#version 130";
-#elif defined(IM_CURRENT_PLATFORM) && ((IM_CURRENT_PLATFORM == IM_PLATFORM_SDL2) || (IM_CURRENT_PLATFORM == IM_PLATFORM_SDL3))
-    // Use same versioning as SDL examples
-#if defined(IMGUI_IMPL_OPENGL_ES2)
-    const char* glsl_version = "#version 100";
-#elif defined(IMGUI_IMPL_OPENGL_ES3)
-    const char* glsl_version = "#version 300 es";
-#elif defined(__APPLE__)
-    const char* glsl_version = "#version 150";
-#else
-    const char* glsl_version = "#version 130";
-#endif
-#endif
+    // The GL version is selected by the platform backend when creating the context.
+    // Let the renderer backend select a GLSL version matching the context it gets (same as upstream examples, see #9427).
+    const char* glsl_version = nullptr;
 
     if (!ImGui_ImplOpenGL3_Init(glsl_version))
         return false;
@@ -424,6 +479,7 @@ IMPLATFORM_API bool ImPlatform_InitGfx(void)
     glBindSampler_Ptr       = (PFNGLBINDSAMPLERPROC)imgl3wGetProcAddress("glBindSampler");
     glSamplerParameteri_Ptr = (PFNGLSAMPLERPARAMETERIPROC)imgl3wGetProcAddress("glSamplerParameteri");
 
+    // Program binary cache (GL 4.1+), disabled when unavailable
     glProgramBinary_Ptr    = (PFNGLPROGRAMBINARYPROC)imgl3wGetProcAddress("glProgramBinary");
     glGetProgramBinary_Ptr = (PFNGLGETPROGRAMBINARYPROC)imgl3wGetProcAddress("glGetProgramBinary");
 
@@ -466,7 +522,14 @@ IMPLATFORM_API bool ImPlatform_InitGfx(void)
 // ImPlatform API - GfxCheck
 IMPLATFORM_API bool ImPlatform_GfxCheck(void)
 {
-    // No special checks needed for OpenGL
+#if defined(IM_CURRENT_PLATFORM) && (IM_CURRENT_PLATFORM == IM_PLATFORM_WIN32)
+    // Skip rendering while minimized (same as upstream example_win32_opengl3)
+    if (::IsIconic(ImPlatform_App_GetHWND()))
+    {
+        ::Sleep(10);
+        return false;
+    }
+#endif
     return true;
 }
 
@@ -492,7 +555,11 @@ IMPLATFORM_API bool ImPlatform_GfxAPIClear(ImVec4 const vClearColor)
     glViewport(0, 0, (int)io.DisplaySize.x, (int)io.DisplaySize.y);
 #endif
 
+#if defined(IM_CURRENT_PLATFORM) && (IM_CURRENT_PLATFORM == IM_PLATFORM_WIN32)
     glClearColor(vClearColor.x, vClearColor.y, vClearColor.z, vClearColor.w);
+#else
+    glClearColor(vClearColor.x * vClearColor.w, vClearColor.y * vClearColor.w, vClearColor.z * vClearColor.w, vClearColor.w);
+#endif
     glClear(GL_COLOR_BUFFER_BIT);
     return true;
 }
@@ -557,15 +624,11 @@ IMPLATFORM_API void ImPlatform_GfxViewportPost(void)
         // GLFW backend handles context switching automatically
         glfwMakeContextCurrent(ImPlatform_App_GetGLFWWindow());
 #elif defined(IM_CURRENT_PLATFORM) && (IM_CURRENT_PLATFORM == IM_PLATFORM_SDL2)
-        // Restore the SDL2 context
-        SDL_Window* backup_current_window = SDL_GL_GetCurrentWindow();
-        SDL_GLContext backup_current_context = SDL_GL_GetCurrentContext();
-        SDL_GL_MakeCurrent(backup_current_window, backup_current_context);
+        // Restore the main window context (platform windows rendering may have changed it)
+        SDL_GL_MakeCurrent(ImPlatform_App_GetSDL2Window(), ImPlatform_App_GetData_SDL2()->glContext);
 #elif defined(IM_CURRENT_PLATFORM) && (IM_CURRENT_PLATFORM == IM_PLATFORM_SDL3)
-        // Restore the SDL3 context
-        SDL_Window* backup_current_window = SDL_GL_GetCurrentWindow();
-        SDL_GLContext backup_current_context = SDL_GL_GetCurrentContext();
-        SDL_GL_MakeCurrent(backup_current_window, backup_current_context);
+        // Restore the main window context (platform windows rendering may have changed it)
+        SDL_GL_MakeCurrent(ImPlatform_App_GetSDL3Window(), ImPlatform_App_GetData_SDL3()->glContext);
 #endif
     }
 }
@@ -601,10 +664,14 @@ IMPLATFORM_API void ImPlatform_ShutdownWindow(void)
             if (g_Samplers[f][w]) { glDeleteSamplers_Ptr(1, &g_Samplers[f][w]); g_Samplers[f][w] = 0; }
 
     ImGui_ImplOpenGL3_Shutdown();
+#ifdef IMGUI_HAS_VIEWPORT
+    g_OriginalRendererRenderWindow = nullptr;
+#endif
 
 #if defined(IM_CURRENT_PLATFORM) && (IM_CURRENT_PLATFORM == IM_PLATFORM_WIN32)
     HWND hWnd = ImPlatform_App_GetHWND();
     ImPlatform_Gfx_CleanupDevice_OpenGL3(hWnd, &g_GfxData);
+    g_MainWindow.hDC = NULL;
     if (g_hRC)
     {
         wglDeleteContext(g_hRC);
@@ -1166,6 +1233,8 @@ IMPLATFORM_API bool ImPlatform_CopyTexture(ImTextureID dst, ImTextureID src)
 
     // Get source texture dimensions
     GLint width = 0, height = 0;
+    if (!glGetTexLevelParameteriv_Ptr)
+        return false;
     glBindTexture(GL_TEXTURE_2D, srcTex);
     glGetTexLevelParameteriv_Ptr(GL_TEXTURE_2D, 0, GL_TEXTURE_WIDTH, &width);
     glGetTexLevelParameteriv_Ptr(GL_TEXTURE_2D, 0, GL_TEXTURE_HEIGHT, &height);
@@ -1175,22 +1244,6 @@ IMPLATFORM_API bool ImPlatform_CopyTexture(ImTextureID dst, ImTextureID src)
         return false;
 
     // Use FBO blit: attach src to READ, dst to DRAW, then blit
-#ifndef GL_FRAMEBUFFER
-#define GL_FRAMEBUFFER 0x8D40
-#endif
-#ifndef GL_READ_FRAMEBUFFER
-#define GL_READ_FRAMEBUFFER 0x8CA8
-#endif
-#ifndef GL_DRAW_FRAMEBUFFER
-#define GL_DRAW_FRAMEBUFFER 0x8CA9
-#endif
-#ifndef GL_COLOR_ATTACHMENT0
-#define GL_COLOR_ATTACHMENT0 0x8CE0
-#endif
-#ifndef GL_COLOR_BUFFER_BIT
-#define GL_COLOR_BUFFER_BIT 0x00004000
-#endif
-
     typedef void (APIENTRYP PFNGLGENFRAMEBUFFERSPROC)(GLsizei n, GLuint* framebuffers);
     typedef void (APIENTRYP PFNGLBINDFRAMEBUFFERPROC)(GLenum target, GLuint framebuffer);
     typedef void (APIENTRYP PFNGLFRAMEBUFFERTEXTURE2DPROC)(GLenum target, GLenum attachment, GLenum textarget, GLuint texture, GLint level);
@@ -1661,7 +1714,7 @@ static bool ImPlatform_GL_TryLoadCachedProgram(
 {
     out_cache_path[0] = '\0';
     if (!vs_data->cache_key || !fs_data->cache_key) return false;
-    if (!glProgramBinary_Ptr) return false; // No GL 4.1 / ARB_get_program_binary
+    if (!glProgramBinary_Ptr || !glGetProgramBinary_Ptr) return false; // No GL 4.1 / ARB_get_program_binary
 
     // Combined cache key: hash both sources + both entry points.
     unsigned long long vs_hash = ImPlatform_ShaderCacheHashSource(
@@ -1933,6 +1986,7 @@ IMPLATFORM_API bool ImPlatform_SetShaderTexture(ImPlatform_ShaderProgram program
 // ImDrawCallback handler to activate a custom shader
 static void ImPlatform_SetCustomShader(const ImDrawList* parent_list, const ImDrawCmd* cmd)
 {
+    (void)parent_list;
     ImPlatform_ShaderProgram program = (ImPlatform_ShaderProgram)cmd->UserCallbackData;
     if (!program) return;
 
@@ -2058,7 +2112,7 @@ IMPLATFORM_API void ImPlatform_EndCustomShader(ImDrawList* draw)
     if (!draw)
         return;
 
-    draw->AddCallback(ImDrawCallback_ResetRenderState, NULL);
+    draw->AddCallback(ImGui::GetPlatformIO().DrawCallback_ResetRenderState, NULL);
 }
 
 IMPLATFORM_API void* ImPlatform_PushShaderConstants(const void* data, unsigned int size)

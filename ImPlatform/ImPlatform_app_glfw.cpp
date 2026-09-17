@@ -72,8 +72,8 @@ IMPLATFORM_API bool ImPlatform_CreateWindow(char const* pWindowsName, ImVec2 con
         glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
         glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 0);
     #endif
-#elif (IM_CURRENT_GFX == IM_GFX_VULKAN) || (IM_CURRENT_GFX == IM_GFX_WGPU)
-    // Vulkan/WebGPU don't use OpenGL context
+#elif (IM_CURRENT_GFX == IM_GFX_VULKAN) || (IM_CURRENT_GFX == IM_GFX_WGPU) || (IM_CURRENT_GFX == IM_GFX_METAL)
+    // Vulkan/WebGPU/Metal don't use OpenGL context
     glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
 #endif
 
@@ -92,8 +92,13 @@ IMPLATFORM_API bool ImPlatform_CreateWindow(char const* pWindowsName, ImVec2 con
     }
 #endif
 
+    // Query DPI scale (same helper as upstream examples: consistent with the monitor DpiScale reported by the backend,
+    // handles legacy GLFW < 3.3 on Windows and returns 1.0f on Apple platforms which use FramebufferScale instead)
+    float main_scale = ImGui_ImplGlfw_GetContentScaleForMonitor(glfwGetPrimaryMonitor());
+    g_AppData.fDpiScale = main_scale;
+
     // Create window with graphics context
-    g_AppData.pWindow = glfwCreateWindow((int)uWidth, (int)uHeight, pWindowsName, NULL, NULL);
+    g_AppData.pWindow = glfwCreateWindow((int)(uWidth * main_scale), (int)(uHeight * main_scale), pWindowsName, NULL, NULL);
     if (g_AppData.pWindow == NULL)
         return false;
 
@@ -122,16 +127,9 @@ IMPLATFORM_API bool ImPlatform_CreateWindow(char const* pWindowsName, ImVec2 con
         glfwSetDropCallback(g_AppData.pWindow, glfw_drop_callback);
 #endif
 
-    // Query DPI scale and register callback for runtime changes (GLFW 3.3+)
+    // Register callback for runtime changes (GLFW 3.3+)
 #if GLFW_VERSION_MAJOR > 3 || (GLFW_VERSION_MAJOR == 3 && GLFW_VERSION_MINOR >= 3)
-    {
-        float xscale = 1.0f, yscale = 1.0f;
-        glfwGetWindowContentScale(g_AppData.pWindow, &xscale, &yscale);
-        g_AppData.fDpiScale = xscale;
-        glfwSetWindowContentScaleCallback(g_AppData.pWindow, glfw_content_scale_callback);
-    }
-#else
-    g_AppData.fDpiScale = 1.0f;
+    glfwSetWindowContentScaleCallback(g_AppData.pWindow, glfw_content_scale_callback);
 #endif
 
 #if IMPLATFORM_APP_SUPPORT_CUSTOM_TITLEBAR
@@ -163,9 +161,9 @@ IMPLATFORM_API bool ImPlatform_ShowWindow(void)
 IMPLATFORM_API bool ImPlatform_InitPlatform(void)
 {
     bool result;
-#ifdef IM_GFX_OPENGL3
+#if IM_CURRENT_GFX == IM_GFX_OPENGL3
     result = ImGui_ImplGlfw_InitForOpenGL(g_AppData.pWindow, true);
-#elif defined(IM_GFX_VULKAN)
+#elif IM_CURRENT_GFX == IM_GFX_VULKAN
     result = ImGui_ImplGlfw_InitForVulkan(g_AppData.pWindow, true);
 #else
     result = ImGui_ImplGlfw_InitForOther(g_AppData.pWindow, true);
@@ -237,14 +235,14 @@ IMPLATFORM_API void ImPlatform_PlatformNewFrame(void)
 IMPLATFORM_API void ImPlatform_ShutdownPostGfxAPI(void)
 {
     ImGui_ImplGlfw_Shutdown();
-    glfwDestroyWindow(g_AppData.pWindow);
-    glfwTerminate();
 }
 
 // ImPlatform API - DestroyWindow
 IMPLATFORM_API void ImPlatform_DestroyWindow(void)
 {
-    // Already handled in ShutdownPostGfxAPI
+    glfwDestroyWindow(g_AppData.pWindow);
+    g_AppData.pWindow = NULL;
+    glfwTerminate();
 }
 
 // Internal API - Get DPI scale

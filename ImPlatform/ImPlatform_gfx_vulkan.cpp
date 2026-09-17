@@ -41,7 +41,6 @@ struct ImPlatform_RTTracking_Vulkan {
     VkImage             image;
     VkDeviceMemory      imageMemory;
     VkImageView         imageView;
-    VkSampler           sampler;
     VkDescriptorSet     descriptorSet;
     VkRenderPass        renderPass;
     VkFramebuffer       framebuffer;
@@ -55,7 +54,10 @@ static ImPlatform_RTTracking_Vulkan* g_RTTrackingHead  = NULL;
 static ImPlatform_RTTracking_Vulkan* g_ActiveRTEntry   = NULL;
 static ImGui_ImplVulkanH_Window g_MainWindowData;  // Don't use = {} - let constructor run!
 static bool g_SwapChainRebuild = false;
+static bool g_FrameBegun = false;               // Main viewport command buffer is recording (set in GfxAPIClear)
 static uint32_t g_QueueFamily = (uint32_t)-1;
+static VkCommandPool g_UploadCommandPool = VK_NULL_HANDLE;     // Dedicated pool for texture uploads (never touch the frame command buffers)
+static VkCommandBuffer g_UploadCommandBuffer = VK_NULL_HANDLE;
 
 // Uniform block API state
 static ImPlatform_ShaderProgram g_CurrentUniformBlockProgram = nullptr;
@@ -292,7 +294,7 @@ static bool SetupVulkan(const char** instance_extensions, uint32_t instance_exte
 
     // Create Logical Device
     {
-        const char* device_extensions[] = { "VK_KHR_swapchain" };
+        const char* device_extensions[2] = { "VK_KHR_swapchain", NULL };
         uint32_t device_extensions_count = 1;
 
         // Check for portability subset
@@ -327,16 +329,23 @@ static bool SetupVulkan(const char** instance_extensions, uint32_t instance_exte
     }
 
     // Create Descriptor Pool
+    // Since 1.92.8 the ImGui Vulkan backend uses separate VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE (one per texture)
+    // and VK_DESCRIPTOR_TYPE_SAMPLER (linear + nearest) descriptors instead of combined image samplers.
+    // Combined image samplers are kept available for application code sharing this pool.
     {
         VkDescriptorPoolSize pool_sizes[] =
         {
+            { VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1000 },
+            { VK_DESCRIPTOR_TYPE_SAMPLER, IMGUI_IMPL_VULKAN_MINIMUM_SAMPLER_POOL_SIZE },
             { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1000 },
         };
         VkDescriptorPoolCreateInfo pool_info = {};
         pool_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
         pool_info.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
-        pool_info.maxSets = 1000;
-        pool_info.poolSizeCount = (uint32_t)(sizeof(pool_sizes) / sizeof(pool_sizes[0]));
+        pool_info.maxSets = 0;
+        for (VkDescriptorPoolSize& pool_size : pool_sizes)
+            pool_info.maxSets += pool_size.descriptorCount;
+        pool_info.poolSizeCount = (uint32_t)IM_COUNTOF(pool_sizes);
         pool_info.pPoolSizes = pool_sizes;
         err = vkCreateDescriptorPool(g_GfxData.device, &pool_info, g_Allocator, &g_GfxData.descriptorPool);
         check_vk_result(err);
@@ -345,6 +354,44 @@ static bool SetupVulkan(const char** instance_extensions, uint32_t instance_exte
     // Initialize disk-backed VkPipelineCache so subsequent vkCreateGraphicsPipelines
     // calls can reuse compiled pipeline state objects from previous runs.
     ImPlatform_Vulkan_InitPipelineCache(g_GfxData.device);
+
+    return true;
+}
+
+// Select surface format / present mode and create the main window swapchain (same as upstream SetupVulkanWindow)
+static bool ImPlatform_Vulkan_SetupWindow(ImPlatform_GfxData_Vulkan* pData, int width, int height)
+{
+    g_MainWindowData.Surface = pData->surface;
+    pData->minImageCount = 2;
+
+    // Check for WSI support
+    VkBool32 res;
+    vkGetPhysicalDeviceSurfaceSupportKHR(pData->physicalDevice, g_QueueFamily, g_MainWindowData.Surface, &res);
+    if (res != VK_TRUE)
+    {
+        fprintf(stderr, "[vulkan] Error: no WSI support on physical device\n");
+        return false;
+    }
+
+    // Select Surface Format
+    const VkFormat requestSurfaceImageFormat[] = { VK_FORMAT_B8G8R8A8_UNORM, VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_B8G8R8_UNORM, VK_FORMAT_R8G8B8_UNORM };
+    const VkColorSpaceKHR requestSurfaceColorSpace = VK_COLORSPACE_SRGB_NONLINEAR_KHR;
+    g_MainWindowData.SurfaceFormat = ImGui_ImplVulkanH_SelectSurfaceFormat(pData->physicalDevice, g_MainWindowData.Surface, requestSurfaceImageFormat, (size_t)IM_COUNTOF(requestSurfaceImageFormat), requestSurfaceColorSpace);
+
+    // Select Present Mode
+#ifdef IMPLATFORM_VULKAN_UNLIMITED_FRAMERATE
+    VkPresentModeKHR present_modes[] = { VK_PRESENT_MODE_MAILBOX_KHR, VK_PRESENT_MODE_IMMEDIATE_KHR, VK_PRESENT_MODE_FIFO_KHR };
+#else
+    VkPresentModeKHR present_modes[] = { VK_PRESENT_MODE_FIFO_KHR }; // FIFO is always supported (vsync enabled)
+#endif
+    g_MainWindowData.PresentMode = ImGui_ImplVulkanH_SelectPresentMode(pData->physicalDevice, g_MainWindowData.Surface, &present_modes[0], IM_COUNTOF(present_modes));
+
+    // Create SwapChain, RenderPass, Framebuffer, etc.
+    IM_ASSERT(pData->minImageCount >= 2);
+    ImGui_ImplVulkanH_CreateOrResizeWindow(pData->instance, pData->physicalDevice, pData->device,
+        &g_MainWindowData, g_QueueFamily, g_Allocator, width, height, pData->minImageCount, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT);
+    g_ImPlatform_BackbufferW = (unsigned int)g_MainWindowData.Width;
+    g_ImPlatform_BackbufferH = (unsigned int)g_MainWindowData.Height;
 
     return true;
 }
@@ -372,39 +419,14 @@ bool ImPlatform_Gfx_CreateDevice_Vulkan(void* hWnd, ImPlatform_GfxData_Vulkan* p
     VkResult err = vkCreateWin32SurfaceKHR(pData->instance, &createInfo, g_Allocator, &pData->surface);
     check_vk_result(err);
 
-    // Setup window data and select surface format/present mode
-    g_MainWindowData.Surface = pData->surface;
-    pData->minImageCount = 2;
+    // Use the actual client size (the window is already created with its DPI-scaled size)
+    RECT rect;
+    ::GetClientRect(hwnd, &rect);
+    int w = (int)(rect.right - rect.left);
+    int h = (int)(rect.bottom - rect.top);
+    if (w <= 0 || h <= 0) { w = 1280; h = 800; }
 
-    // Check for WSI support
-    VkBool32 res;
-    vkGetPhysicalDeviceSurfaceSupportKHR(pData->physicalDevice, g_QueueFamily, g_MainWindowData.Surface, &res);
-    if (res != VK_TRUE)
-    {
-        fprintf(stderr, "[vulkan] Error: no WSI support on physical device\n");
-        return false;
-    }
-
-    // Select Surface Format
-    const VkFormat requestSurfaceImageFormat[] = { VK_FORMAT_B8G8R8A8_UNORM, VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_B8G8R8_UNORM, VK_FORMAT_R8G8B8_UNORM };
-    const VkColorSpaceKHR requestSurfaceColorSpace = VK_COLORSPACE_SRGB_NONLINEAR_KHR;
-    g_MainWindowData.SurfaceFormat = ImGui_ImplVulkanH_SelectSurfaceFormat(pData->physicalDevice, g_MainWindowData.Surface, requestSurfaceImageFormat, 4, requestSurfaceColorSpace);
-
-    // Select Present Mode
-#ifdef IMPLATFORM_VULKAN_UNLIMITED_FRAMERATE
-    VkPresentModeKHR present_modes[] = { VK_PRESENT_MODE_MAILBOX_KHR, VK_PRESENT_MODE_IMMEDIATE_KHR, VK_PRESENT_MODE_FIFO_KHR };
-    g_MainWindowData.PresentMode = ImGui_ImplVulkanH_SelectPresentMode(pData->physicalDevice, g_MainWindowData.Surface, present_modes, 3);
-#else
-    // FIFO is always supported (vsync enabled)
-    VkPresentModeKHR present_modes[] = { VK_PRESENT_MODE_FIFO_KHR };
-    g_MainWindowData.PresentMode = ImGui_ImplVulkanH_SelectPresentMode(pData->physicalDevice, g_MainWindowData.Surface, present_modes, 1);
-#endif
-
-    // Create SwapChain, RenderPass, Framebuffer, etc.
-    ImGui_ImplVulkanH_CreateOrResizeWindow(pData->instance, pData->physicalDevice, pData->device,
-        &g_MainWindowData, g_QueueFamily, g_Allocator, 1280, 720, pData->minImageCount, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT);
-
-    return true;
+    return ImPlatform_Vulkan_SetupWindow(pData, w, h);
 }
 #endif
 
@@ -412,6 +434,12 @@ bool ImPlatform_Gfx_CreateDevice_Vulkan(void* hWnd, ImPlatform_GfxData_Vulkan* p
 bool ImPlatform_Gfx_CreateDevice_Vulkan(void* pWindow, ImPlatform_GfxData_Vulkan* pData)
 {
     GLFWwindow* window = (GLFWwindow*)pWindow;
+
+    if (!glfwVulkanSupported())
+    {
+        fprintf(stderr, "[vulkan] Error: GLFW: Vulkan not supported\n");
+        return false;
+    }
 
     // Get required extensions from GLFW
     uint32_t extensions_count = 0;
@@ -424,43 +452,10 @@ bool ImPlatform_Gfx_CreateDevice_Vulkan(void* pWindow, ImPlatform_GfxData_Vulkan
     VkResult err = glfwCreateWindowSurface(pData->instance, window, g_Allocator, &pData->surface);
     check_vk_result(err);
 
-    // Get framebuffer size
+    // Create Framebuffers
     int w, h;
     glfwGetFramebufferSize(window, &w, &h);
-
-    // Setup window data and select surface format/present mode
-    g_MainWindowData.Surface = pData->surface;
-    pData->minImageCount = 2;
-
-    // Check for WSI support
-    VkBool32 res;
-    vkGetPhysicalDeviceSurfaceSupportKHR(pData->physicalDevice, g_QueueFamily, g_MainWindowData.Surface, &res);
-    if (res != VK_TRUE)
-    {
-        fprintf(stderr, "[vulkan] Error: no WSI support on physical device\n");
-        return false;
-    }
-
-    // Select Surface Format
-    const VkFormat requestSurfaceImageFormat[] = { VK_FORMAT_B8G8R8A8_UNORM, VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_B8G8R8_UNORM, VK_FORMAT_R8G8B8_UNORM };
-    const VkColorSpaceKHR requestSurfaceColorSpace = VK_COLORSPACE_SRGB_NONLINEAR_KHR;
-    g_MainWindowData.SurfaceFormat = ImGui_ImplVulkanH_SelectSurfaceFormat(pData->physicalDevice, g_MainWindowData.Surface, requestSurfaceImageFormat, 4, requestSurfaceColorSpace);
-
-    // Select Present Mode
-#ifdef IMPLATFORM_VULKAN_UNLIMITED_FRAMERATE
-    VkPresentModeKHR present_modes[] = { VK_PRESENT_MODE_MAILBOX_KHR, VK_PRESENT_MODE_IMMEDIATE_KHR, VK_PRESENT_MODE_FIFO_KHR };
-    g_MainWindowData.PresentMode = ImGui_ImplVulkanH_SelectPresentMode(pData->physicalDevice, g_MainWindowData.Surface, present_modes, 3);
-#else
-    // FIFO is always supported (vsync enabled)
-    VkPresentModeKHR present_modes[] = { VK_PRESENT_MODE_FIFO_KHR };
-    g_MainWindowData.PresentMode = ImGui_ImplVulkanH_SelectPresentMode(pData->physicalDevice, g_MainWindowData.Surface, present_modes, 1);
-#endif
-
-    // Create SwapChain, RenderPass, Framebuffer, etc.
-    ImGui_ImplVulkanH_CreateOrResizeWindow(pData->instance, pData->physicalDevice, pData->device,
-        &g_MainWindowData, g_QueueFamily, g_Allocator, w, h, pData->minImageCount, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT);
-
-    return true;
+    return ImPlatform_Vulkan_SetupWindow(pData, w, h);
 }
 #endif
 
@@ -486,43 +481,10 @@ bool ImPlatform_Gfx_CreateDevice_Vulkan(void* pWindow, ImPlatform_GfxData_Vulkan
     if (!SDL_Vulkan_CreateSurface(window, pData->instance, &pData->surface))
         return false;
 
-    // Get window size
+    // Create Framebuffers
     int w, h;
-    SDL_GetWindowSize(window, &w, &h);
-
-    // Setup window data and select surface format/present mode
-    g_MainWindowData.Surface = pData->surface;
-    pData->minImageCount = 2;
-
-    // Check for WSI support
-    VkBool32 res;
-    vkGetPhysicalDeviceSurfaceSupportKHR(pData->physicalDevice, g_QueueFamily, g_MainWindowData.Surface, &res);
-    if (res != VK_TRUE)
-    {
-        fprintf(stderr, "[vulkan] Error: no WSI support on physical device\n");
-        return false;
-    }
-
-    // Select Surface Format
-    const VkFormat requestSurfaceImageFormat[] = { VK_FORMAT_B8G8R8A8_UNORM, VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_B8G8R8_UNORM, VK_FORMAT_R8G8B8_UNORM };
-    const VkColorSpaceKHR requestSurfaceColorSpace = VK_COLORSPACE_SRGB_NONLINEAR_KHR;
-    g_MainWindowData.SurfaceFormat = ImGui_ImplVulkanH_SelectSurfaceFormat(pData->physicalDevice, g_MainWindowData.Surface, requestSurfaceImageFormat, 4, requestSurfaceColorSpace);
-
-    // Select Present Mode
-#ifdef IMPLATFORM_VULKAN_UNLIMITED_FRAMERATE
-    VkPresentModeKHR present_modes[] = { VK_PRESENT_MODE_MAILBOX_KHR, VK_PRESENT_MODE_IMMEDIATE_KHR, VK_PRESENT_MODE_FIFO_KHR };
-    g_MainWindowData.PresentMode = ImGui_ImplVulkanH_SelectPresentMode(pData->physicalDevice, g_MainWindowData.Surface, present_modes, 3);
-#else
-    // FIFO is always supported (vsync enabled)
-    VkPresentModeKHR present_modes[] = { VK_PRESENT_MODE_FIFO_KHR };
-    g_MainWindowData.PresentMode = ImGui_ImplVulkanH_SelectPresentMode(pData->physicalDevice, g_MainWindowData.Surface, present_modes, 1);
-#endif
-
-    // Create SwapChain, RenderPass, Framebuffer, etc.
-    ImGui_ImplVulkanH_CreateOrResizeWindow(pData->instance, pData->physicalDevice, pData->device,
-        &g_MainWindowData, g_QueueFamily, g_Allocator, w, h, pData->minImageCount, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT);
-
-    return true;
+    SDL_GetWindowSizeInPixels(window, &w, &h);
+    return ImPlatform_Vulkan_SetupWindow(pData, w, h);
 }
 #endif
 
@@ -546,46 +508,13 @@ bool ImPlatform_Gfx_CreateDevice_Vulkan(void* pWindow, ImPlatform_GfxData_Vulkan
     free(extensions);
 
     // Create Window Surface
-    if (!SDL_Vulkan_CreateSurface(window, pData->instance, NULL, &pData->surface))
+    if (!SDL_Vulkan_CreateSurface(window, pData->instance, g_Allocator, &pData->surface))
         return false;
 
-    // Get window size
+    // Create Framebuffers
     int w, h;
-    SDL_GetWindowSize(window, &w, &h);
-
-    // Setup window data and select surface format/present mode
-    g_MainWindowData.Surface = pData->surface;
-    pData->minImageCount = 2;
-
-    // Check for WSI support
-    VkBool32 res;
-    vkGetPhysicalDeviceSurfaceSupportKHR(pData->physicalDevice, g_QueueFamily, g_MainWindowData.Surface, &res);
-    if (res != VK_TRUE)
-    {
-        fprintf(stderr, "[vulkan] Error: no WSI support on physical device\n");
-        return false;
-    }
-
-    // Select Surface Format
-    const VkFormat requestSurfaceImageFormat[] = { VK_FORMAT_B8G8R8A8_UNORM, VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_B8G8R8_UNORM, VK_FORMAT_R8G8B8_UNORM };
-    const VkColorSpaceKHR requestSurfaceColorSpace = VK_COLORSPACE_SRGB_NONLINEAR_KHR;
-    g_MainWindowData.SurfaceFormat = ImGui_ImplVulkanH_SelectSurfaceFormat(pData->physicalDevice, g_MainWindowData.Surface, requestSurfaceImageFormat, 4, requestSurfaceColorSpace);
-
-    // Select Present Mode
-#ifdef IMPLATFORM_VULKAN_UNLIMITED_FRAMERATE
-    VkPresentModeKHR present_modes[] = { VK_PRESENT_MODE_MAILBOX_KHR, VK_PRESENT_MODE_IMMEDIATE_KHR, VK_PRESENT_MODE_FIFO_KHR };
-    g_MainWindowData.PresentMode = ImGui_ImplVulkanH_SelectPresentMode(pData->physicalDevice, g_MainWindowData.Surface, present_modes, 3);
-#else
-    // FIFO is always supported (vsync enabled)
-    VkPresentModeKHR present_modes[] = { VK_PRESENT_MODE_FIFO_KHR };
-    g_MainWindowData.PresentMode = ImGui_ImplVulkanH_SelectPresentMode(pData->physicalDevice, g_MainWindowData.Surface, present_modes, 1);
-#endif
-
-    // Create SwapChain, RenderPass, Framebuffer, etc.
-    ImGui_ImplVulkanH_CreateOrResizeWindow(pData->instance, pData->physicalDevice, pData->device,
-        &g_MainWindowData, g_QueueFamily, g_Allocator, w, h, pData->minImageCount, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT);
-
-    return true;
+    SDL_GetWindowSizeInPixels(window, &w, &h);
+    return ImPlatform_Vulkan_SetupWindow(pData, w, h);
 }
 #endif
 
@@ -631,9 +560,25 @@ IMPLATFORM_API bool ImPlatform_InitGfxAPI(void)
 #endif
 }
 
+#if defined(IM_CURRENT_PLATFORM) && (IM_CURRENT_PLATFORM == IM_PLATFORM_WIN32)
+// The Win32 platform backend doesn't know about Vulkan: provide the surface creation for secondary viewports (same as upstream example_win32_vulkan)
+static int ImPlatform_Win32_CreateVkSurface(ImGuiViewport* viewport, ImU64 vk_instance, const void* vk_allocator, ImU64* out_vk_surface)
+{
+    VkWin32SurfaceCreateInfoKHR createInfo = {};
+    createInfo.sType = VK_STRUCTURE_TYPE_WIN32_SURFACE_CREATE_INFO_KHR;
+    createInfo.hwnd = (HWND)viewport->PlatformHandleRaw;
+    createInfo.hinstance = ::GetModuleHandle(NULL);
+    return (int)vkCreateWin32SurfaceKHR((VkInstance)vk_instance, &createInfo, (VkAllocationCallbacks*)vk_allocator, (VkSurfaceKHR*)out_vk_surface);
+}
+#endif
+
 // ImPlatform API - InitGfx
 IMPLATFORM_API bool ImPlatform_InitGfx(void)
 {
+#if defined(IM_CURRENT_PLATFORM) && (IM_CURRENT_PLATFORM == IM_PLATFORM_WIN32) && defined(IMGUI_HAS_VIEWPORT)
+    ImGui::GetPlatformIO().Platform_CreateVkSurface = ImPlatform_Win32_CreateVkSurface;
+#endif
+
     // Setup ImGui Vulkan backend
     ImGui_ImplVulkan_InitInfo init_info = {};
     init_info.Instance = g_GfxData.instance;
@@ -641,7 +586,7 @@ IMPLATFORM_API bool ImPlatform_InitGfx(void)
     init_info.Device = g_GfxData.device;
     init_info.QueueFamily = g_QueueFamily;
     init_info.Queue = g_GfxData.queue;
-    init_info.PipelineCache = g_GfxData.pipelineCache;
+    init_info.PipelineCache = g_VulkanPipelineCache;
     init_info.DescriptorPool = g_GfxData.descriptorPool;
     init_info.MinImageCount = g_GfxData.minImageCount;
     init_info.ImageCount = g_MainWindowData.ImageCount;
@@ -775,31 +720,42 @@ IMPLATFORM_API bool ImPlatform_InitGfx(void)
 // ImPlatform API - GfxCheck
 IMPLATFORM_API bool ImPlatform_GfxCheck(void)
 {
-    // Handle swapchain rebuild
-    if (g_SwapChainRebuild)
-    {
-        int width, height;
+    // Resize swap chain? (polled every frame, same as upstream examples)
+    int fb_width = 0, fb_height = 0;
 #if defined(IM_CURRENT_PLATFORM) && (IM_CURRENT_PLATFORM == IM_PLATFORM_WIN32)
+    HWND hwnd = ImPlatform_App_GetHWND();
+    if (!::IsIconic(hwnd))
+    {
         RECT rect;
-        GetClientRect(ImPlatform_App_GetHWND(), &rect);
-        width = rect.right - rect.left;
-        height = rect.bottom - rect.top;
+        ::GetClientRect(hwnd, &rect);
+        fb_width = (int)(rect.right - rect.left);
+        fb_height = (int)(rect.bottom - rect.top);
+    }
 #elif defined(IM_CURRENT_PLATFORM) && (IM_CURRENT_PLATFORM == IM_PLATFORM_GLFW)
-        glfwGetFramebufferSize(ImPlatform_App_GetGLFWWindow(), &width, &height);
+    glfwGetFramebufferSize(ImPlatform_App_GetGLFWWindow(), &fb_width, &fb_height);
 #elif defined(IM_CURRENT_PLATFORM) && (IM_CURRENT_PLATFORM == IM_PLATFORM_SDL2)
-        SDL_GetWindowSize(ImPlatform_App_GetSDL2Window(), &width, &height);
+    SDL_GetWindowSizeInPixels(ImPlatform_App_GetSDL2Window(), &fb_width, &fb_height);
 #elif defined(IM_CURRENT_PLATFORM) && (IM_CURRENT_PLATFORM == IM_PLATFORM_SDL3)
-        SDL_GetWindowSize(ImPlatform_App_GetSDL3Window(), &width, &height);
+    SDL_GetWindowSizeInPixels(ImPlatform_App_GetSDL3Window(), &fb_width, &fb_height);
 #endif
 
-        if (width > 0 && height > 0)
-        {
-            ImGui_ImplVulkan_SetMinImageCount(g_GfxData.minImageCount);
-            ImGui_ImplVulkanH_CreateOrResizeWindow(g_GfxData.instance, g_GfxData.physicalDevice, g_GfxData.device,
-                &g_MainWindowData, g_QueueFamily, g_Allocator, width, height, g_GfxData.minImageCount, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT);
-            g_MainWindowData.FrameIndex = 0;
-            g_SwapChainRebuild = false;
-        }
+    if (fb_width <= 0 || fb_height <= 0)
+    {
+#if defined(IM_CURRENT_PLATFORM) && (IM_CURRENT_PLATFORM == IM_PLATFORM_WIN32)
+        ::Sleep(10);
+#endif
+        return false; // Minimized: skip frame
+    }
+
+    if (g_SwapChainRebuild || g_MainWindowData.Width != fb_width || g_MainWindowData.Height != fb_height)
+    {
+        ImGui_ImplVulkan_SetMinImageCount(g_GfxData.minImageCount);
+        ImGui_ImplVulkanH_CreateOrResizeWindow(g_GfxData.instance, g_GfxData.physicalDevice, g_GfxData.device,
+            &g_MainWindowData, g_QueueFamily, g_Allocator, fb_width, fb_height, g_GfxData.minImageCount, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT);
+        g_MainWindowData.FrameIndex = 0;
+        g_SwapChainRebuild = false;
+        g_ImPlatform_BackbufferW = (unsigned int)g_MainWindowData.Width;
+        g_ImPlatform_BackbufferH = (unsigned int)g_MainWindowData.Height;
     }
 
     return true;
@@ -812,76 +768,106 @@ IMPLATFORM_API void ImPlatform_GfxAPINewFrame(void)
 }
 
 // ImPlatform API - GfxAPIClear
+// Acquires the next swapchain image and begins recording the main viewport command buffer (upstream FrameRender, first half)
 IMPLATFORM_API bool ImPlatform_GfxAPIClear(ImVec4 const vClearColor)
 {
-    ImGui::Render();
+    g_FrameBegun = false;
 
-    // Acquire next image using new semaphore API
-    VkSemaphore image_acquired_semaphore = g_MainWindowData.FrameSemaphores[g_MainWindowData.SemaphoreIndex].ImageAcquiredSemaphore;
-    VkResult err = vkAcquireNextImageKHR(g_GfxData.device, g_MainWindowData.Swapchain, UINT64_MAX, image_acquired_semaphore, VK_NULL_HANDLE, &g_MainWindowData.FrameIndex);
-    if (err == VK_ERROR_OUT_OF_DATE_KHR || err == VK_SUBOPTIMAL_KHR)
-    {
-        g_SwapChainRebuild = true;
+    ImGui::Render();
+    ImDrawData* main_draw_data = ImGui::GetDrawData();
+    const bool main_is_minimized = (main_draw_data->DisplaySize.x <= 0.0f || main_draw_data->DisplaySize.y <= 0.0f);
+    if (main_is_minimized)
         return false;
-    }
+
+    ImGui_ImplVulkanH_Window* wd = &g_MainWindowData;
+    wd->ClearValue.color.float32[0] = vClearColor.x * vClearColor.w;
+    wd->ClearValue.color.float32[1] = vClearColor.y * vClearColor.w;
+    wd->ClearValue.color.float32[2] = vClearColor.z * vClearColor.w;
+    wd->ClearValue.color.float32[3] = vClearColor.w;
+
+    VkSemaphore image_acquired_semaphore = wd->FrameSemaphores[wd->SemaphoreIndex].ImageAcquiredSemaphore;
+    VkResult err = vkAcquireNextImageKHR(g_GfxData.device, wd->Swapchain, UINT64_MAX, image_acquired_semaphore, VK_NULL_HANDLE, &wd->FrameIndex);
+    if (err == VK_ERROR_OUT_OF_DATE_KHR || err == VK_SUBOPTIMAL_KHR)
+        g_SwapChainRebuild = true;
     if (err == VK_ERROR_OUT_OF_DATE_KHR)
         return false;
-    check_vk_result(err);
+    if (err != VK_SUBOPTIMAL_KHR)
+        check_vk_result(err);
 
-    // Wait for fence from previous frame
-    ImGui_ImplVulkanH_Frame* fd = &g_MainWindowData.Frames[g_MainWindowData.FrameIndex];
-    err = vkWaitForFences(g_GfxData.device, 1, &fd->Fence, VK_TRUE, UINT64_MAX);
-    check_vk_result(err);
+    ImGui_ImplVulkanH_Frame* fd = &wd->Frames[wd->FrameIndex];
+    {
+        err = vkWaitForFences(g_GfxData.device, 1, &fd->Fence, VK_TRUE, UINT64_MAX); // wait indefinitely instead of periodically checking
+        check_vk_result(err);
 
-    err = vkResetFences(g_GfxData.device, 1, &fd->Fence);
-    check_vk_result(err);
+        err = vkResetFences(g_GfxData.device, 1, &fd->Fence);
+        check_vk_result(err);
+    }
+    {
+        err = vkResetCommandPool(g_GfxData.device, fd->CommandPool, 0);
+        check_vk_result(err);
+        VkCommandBufferBeginInfo info = {};
+        info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+        info.flags |= VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+        err = vkBeginCommandBuffer(fd->CommandBuffer, &info);
+        check_vk_result(err);
+    }
+    {
+        VkRenderPassBeginInfo info = {};
+        info.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+        info.renderPass = wd->RenderPass;
+        info.framebuffer = fd->Framebuffer;
+        info.renderArea.extent.width = wd->Width;
+        info.renderArea.extent.height = wd->Height;
+        info.clearValueCount = 1;
+        info.pClearValues = &wd->ClearValue;
+        vkCmdBeginRenderPass(fd->CommandBuffer, &info, VK_SUBPASS_CONTENTS_INLINE);
+    }
 
-    err = vkResetCommandPool(g_GfxData.device, fd->CommandPool, 0);
-    check_vk_result(err);
-
-    VkCommandBufferBeginInfo info = {};
-    info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-    info.flags |= VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-    err = vkBeginCommandBuffer(fd->CommandBuffer, &info);
-    check_vk_result(err);
-
-    VkRenderPassBeginInfo render_info = {};
-    render_info.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
-    render_info.renderPass = g_MainWindowData.RenderPass;
-    render_info.framebuffer = fd->Framebuffer;
-    render_info.renderArea.extent.width = g_MainWindowData.Width;
-    render_info.renderArea.extent.height = g_MainWindowData.Height;
-    render_info.clearValueCount = 1;
-    VkClearValue clearValue = {};
-    clearValue.color.float32[0] = vClearColor.x * vClearColor.w;
-    clearValue.color.float32[1] = vClearColor.y * vClearColor.w;
-    clearValue.color.float32[2] = vClearColor.z * vClearColor.w;
-    clearValue.color.float32[3] = vClearColor.w;
-    render_info.pClearValues = &clearValue;
-    vkCmdBeginRenderPass(fd->CommandBuffer, &render_info, VK_SUBPASS_CONTENTS_INLINE);
-
+    g_FrameBegun = true;
     return true;
 }
 
 // ImPlatform API - GfxAPIRender
+// Records ImGui draw data and submits the main viewport command buffer (upstream FrameRender, second half)
 IMPLATFORM_API bool ImPlatform_GfxAPIRender(ImVec4 const vClearColor)
 {
     (void)vClearColor;
+    if (!g_FrameBegun)
+        return false;
 
-    ImGui_ImplVulkanH_Frame* fd = &g_MainWindowData.Frames[g_MainWindowData.FrameIndex];
+    ImGui_ImplVulkanH_Window* wd = &g_MainWindowData;
+    ImGui_ImplVulkanH_Frame* fd = &wd->Frames[wd->FrameIndex];
 
     // Store command buffer for custom shader callbacks
     g_CurrentCommandBuffer = fd->CommandBuffer;
 
+    // Record dear imgui primitives into command buffer
     ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), fd->CommandBuffer);
 
     // Clear command buffer reference
     g_CurrentCommandBuffer = VK_NULL_HANDLE;
 
+    // Submit command buffer
     vkCmdEndRenderPass(fd->CommandBuffer);
+    {
+        VkSemaphore image_acquired_semaphore = wd->FrameSemaphores[wd->SemaphoreIndex].ImageAcquiredSemaphore;
+        VkSemaphore render_complete_semaphore = wd->FrameSemaphores[wd->SemaphoreIndex].RenderCompleteSemaphore;
+        VkPipelineStageFlags wait_stage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+        VkSubmitInfo info = {};
+        info.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+        info.waitSemaphoreCount = 1;
+        info.pWaitSemaphores = &image_acquired_semaphore;
+        info.pWaitDstStageMask = &wait_stage;
+        info.commandBufferCount = 1;
+        info.pCommandBuffers = &fd->CommandBuffer;
+        info.signalSemaphoreCount = 1;
+        info.pSignalSemaphores = &render_complete_semaphore;
 
-    VkResult err = vkEndCommandBuffer(fd->CommandBuffer);
-    check_vk_result(err);
+        VkResult err = vkEndCommandBuffer(fd->CommandBuffer);
+        check_vk_result(err);
+        err = vkQueueSubmit(g_GfxData.queue, 1, &info, fd->Fence);
+        check_vk_result(err);
+    }
 
     return true;
 }
@@ -907,49 +893,33 @@ IMPLATFORM_API void ImPlatform_GfxViewportPost(void)
 #endif
 
 // ImPlatform API - GfxAPISwapBuffer
+// Presents the main viewport (upstream FramePresent)
 IMPLATFORM_API bool ImPlatform_GfxAPISwapBuffer(void)
 {
+    if (!g_FrameBegun)
+        return false;
+    g_FrameBegun = false;
+
     if (g_SwapChainRebuild)
         return false;
 
-    ImGui_ImplVulkanH_Frame* fd = &g_MainWindowData.Frames[g_MainWindowData.FrameIndex];
-    VkSemaphore image_acquired_semaphore = g_MainWindowData.FrameSemaphores[g_MainWindowData.SemaphoreIndex].ImageAcquiredSemaphore;
-    VkSemaphore render_complete_semaphore = g_MainWindowData.FrameSemaphores[g_MainWindowData.SemaphoreIndex].RenderCompleteSemaphore;
-
-    VkPipelineStageFlags wait_stage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-    VkSubmitInfo info = {};
-    info.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    ImGui_ImplVulkanH_Window* wd = &g_MainWindowData;
+    VkSemaphore render_complete_semaphore = wd->FrameSemaphores[wd->SemaphoreIndex].RenderCompleteSemaphore;
+    VkPresentInfoKHR info = {};
+    info.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
     info.waitSemaphoreCount = 1;
-    info.pWaitSemaphores = &image_acquired_semaphore;
-    info.pWaitDstStageMask = &wait_stage;
-    info.commandBufferCount = 1;
-    info.pCommandBuffers = &fd->CommandBuffer;
-    info.signalSemaphoreCount = 1;
-    info.pSignalSemaphores = &render_complete_semaphore;
-
-    VkResult err = vkQueueSubmit(g_GfxData.queue, 1, &info, fd->Fence);
-    check_vk_result(err);
-
-    VkPresentInfoKHR present_info = {};
-    present_info.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
-    present_info.waitSemaphoreCount = 1;
-    present_info.pWaitSemaphores = &render_complete_semaphore;
-    present_info.swapchainCount = 1;
-    present_info.pSwapchains = &g_MainWindowData.Swapchain;
-    present_info.pImageIndices = &g_MainWindowData.FrameIndex;
-    err = vkQueuePresentKHR(g_GfxData.queue, &present_info);
+    info.pWaitSemaphores = &render_complete_semaphore;
+    info.swapchainCount = 1;
+    info.pSwapchains = &wd->Swapchain;
+    info.pImageIndices = &wd->FrameIndex;
+    VkResult err = vkQueuePresentKHR(g_GfxData.queue, &info);
     if (err == VK_ERROR_OUT_OF_DATE_KHR || err == VK_SUBOPTIMAL_KHR)
-    {
         g_SwapChainRebuild = true;
-        return true;
-    }
     if (err == VK_ERROR_OUT_OF_DATE_KHR)
         return false;
     if (err != VK_SUBOPTIMAL_KHR)
         check_vk_result(err);
-
-    // Advance semaphore index (critical for new API)
-    g_MainWindowData.SemaphoreIndex = (g_MainWindowData.SemaphoreIndex + 1) % g_MainWindowData.SemaphoreCount;
+    wd->SemaphoreIndex = (wd->SemaphoreIndex + 1) % wd->SemaphoreCount; // Now we can use the next set of semaphores
 
     return true;
 }
@@ -985,8 +955,19 @@ IMPLATFORM_API void ImPlatform_ShutdownWindow(void)
         g_GfxData.defaultImageMemory = VK_NULL_HANDLE;
     }
 
+    if (g_UploadCommandPool != VK_NULL_HANDLE)
+    {
+        vkDestroyCommandPool(g_GfxData.device, g_UploadCommandPool, g_Allocator); // Also frees g_UploadCommandBuffer
+        g_UploadCommandPool = VK_NULL_HANDLE;
+        g_UploadCommandBuffer = VK_NULL_HANDLE;
+    }
+
     ImGui_ImplVulkan_Shutdown();
     ImGui_ImplVulkanH_DestroyWindow(g_GfxData.instance, g_GfxData.device, &g_MainWindowData, g_Allocator);
+    // Since 1.92.6 ImGui_ImplVulkanH_DestroyWindow() doesn't destroy the surface: it is owned by the caller.
+    vkDestroySurfaceKHR(g_GfxData.instance, g_MainWindowData.Surface, g_Allocator);
+    g_MainWindowData.Surface = VK_NULL_HANDLE;
+    g_GfxData.surface = VK_NULL_HANDLE;
     ImPlatform_Gfx_CleanupDevice_Vulkan(&g_GfxData);
 }
 
@@ -1296,50 +1277,41 @@ IMPLATFORM_API ImTextureID ImPlatform_CreateTexture(const void* pixel_data, cons
         }
     }
 
-    // Create sampler
-    VkSampler sampler;
+    // Create descriptor set
+    // Since 1.92.8 textures are registered as VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE: the sampler is owned by the ImGui backend
+    // (linear by default, switch with ImPlatform_PushSampler()), so desc->min_filter/mag_filter/wrap_u/wrap_v are not baked in.
+    VkDescriptorSet descriptor_set = ImGui_ImplVulkan_AddTexture(image_view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    if (descriptor_set == VK_NULL_HANDLE)
     {
-        VkSamplerCreateInfo sampler_info = {};
-        sampler_info.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
-        sampler_info.magFilter = (desc->mag_filter == ImPlatform_TextureFilter_Nearest) ? VK_FILTER_NEAREST : VK_FILTER_LINEAR;
-        sampler_info.minFilter = (desc->min_filter == ImPlatform_TextureFilter_Nearest) ? VK_FILTER_NEAREST : VK_FILTER_LINEAR;
-        sampler_info.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
-
-        VkSamplerAddressMode wrap_u = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-        VkSamplerAddressMode wrap_v = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-        if (desc->wrap_u == ImPlatform_TextureWrap_Repeat)
-            wrap_u = VK_SAMPLER_ADDRESS_MODE_REPEAT;
-        else if (desc->wrap_u == ImPlatform_TextureWrap_Mirror)
-            wrap_u = VK_SAMPLER_ADDRESS_MODE_MIRRORED_REPEAT;
-        if (desc->wrap_v == ImPlatform_TextureWrap_Repeat)
-            wrap_v = VK_SAMPLER_ADDRESS_MODE_REPEAT;
-        else if (desc->wrap_v == ImPlatform_TextureWrap_Mirror)
-            wrap_v = VK_SAMPLER_ADDRESS_MODE_MIRRORED_REPEAT;
-
-        sampler_info.addressModeU = wrap_u;
-        sampler_info.addressModeV = wrap_v;
-        sampler_info.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-        sampler_info.minLod = -1000;
-        sampler_info.maxLod = 1000;
-        sampler_info.maxAnisotropy = 1.0f;
-        err = vkCreateSampler(g_GfxData.device, &sampler_info, g_Allocator, &sampler);
-        if (err != VK_SUCCESS)
-        {
-            vkDestroyImageView(g_GfxData.device, image_view, g_Allocator);
-            vkFreeMemory(g_GfxData.device, image_memory, g_Allocator);
-            vkDestroyImage(g_GfxData.device, image, g_Allocator);
-            vkDestroyBuffer(g_GfxData.device, staging_buffer, g_Allocator);
-            vkFreeMemory(g_GfxData.device, staging_memory, g_Allocator);
-            return NULL;
-        }
+        vkDestroyImageView(g_GfxData.device, image_view, g_Allocator);
+        vkFreeMemory(g_GfxData.device, image_memory, g_Allocator);
+        vkDestroyImage(g_GfxData.device, image, g_Allocator);
+        vkDestroyBuffer(g_GfxData.device, staging_buffer, g_Allocator);
+        vkFreeMemory(g_GfxData.device, staging_memory, g_Allocator);
+        return NULL;
     }
 
-    // Create descriptor set
-    VkDescriptorSet descriptor_set = (VkDescriptorSet)ImGui_ImplVulkan_AddTexture(sampler, image_view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-
-    // Upload to GPU using command buffer
+    // Upload to GPU using a dedicated command buffer: the frame command buffers may be recording
     {
-        VkCommandBuffer command_buffer = g_MainWindowData.Frames[g_MainWindowData.FrameIndex].CommandBuffer;
+        if (g_UploadCommandPool == VK_NULL_HANDLE)
+        {
+            VkCommandPoolCreateInfo pool_info = {};
+            pool_info.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
+            pool_info.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
+            pool_info.queueFamilyIndex = g_QueueFamily;
+            err = vkCreateCommandPool(g_GfxData.device, &pool_info, g_Allocator, &g_UploadCommandPool);
+            check_vk_result(err);
+
+            VkCommandBufferAllocateInfo cb_info = {};
+            cb_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+            cb_info.commandPool = g_UploadCommandPool;
+            cb_info.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+            cb_info.commandBufferCount = 1;
+            err = vkAllocateCommandBuffers(g_GfxData.device, &cb_info, &g_UploadCommandBuffer);
+            check_vk_result(err);
+        }
+        VkCommandBuffer command_buffer = g_UploadCommandBuffer;
+        vkResetCommandBuffer(command_buffer, 0);
 
         VkCommandBufferBeginInfo begin_info = {};
         begin_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
@@ -1349,7 +1321,6 @@ IMPLATFORM_API ImTextureID ImPlatform_CreateTexture(const void* pixel_data, cons
         {
             // Cleanup and return null
             ImGui_ImplVulkan_RemoveTexture(descriptor_set);
-            vkDestroySampler(g_GfxData.device, sampler, g_Allocator);
             vkDestroyImageView(g_GfxData.device, image_view, g_Allocator);
             vkFreeMemory(g_GfxData.device, image_memory, g_Allocator);
             vkDestroyImage(g_GfxData.device, image, g_Allocator);
@@ -1491,29 +1462,6 @@ IMPLATFORM_API ImTextureID ImPlatform_CreateRenderTexture(const ImPlatform_Textu
         }
     }
 
-    // Create sampler
-    VkSampler sampler;
-    {
-        VkSamplerCreateInfo sampler_info = {};
-        sampler_info.sType      = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
-        sampler_info.magFilter  = VK_FILTER_LINEAR;
-        sampler_info.minFilter  = VK_FILTER_LINEAR;
-        sampler_info.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
-        sampler_info.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-        sampler_info.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-        sampler_info.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-        sampler_info.maxAnisotropy = 1.0f;
-        sampler_info.minLod = -1000;
-        sampler_info.maxLod = 1000;
-        err = vkCreateSampler(g_GfxData.device, &sampler_info, g_Allocator, &sampler);
-        if (err != VK_SUCCESS) {
-            vkDestroyImageView(g_GfxData.device, imageView, g_Allocator);
-            vkFreeMemory(g_GfxData.device, imageMemory, g_Allocator);
-            vkDestroyImage(g_GfxData.device, image, g_Allocator);
-            return NULL;
-        }
-    }
-
     // Create render pass
     VkRenderPass renderPass;
     {
@@ -1552,7 +1500,6 @@ IMPLATFORM_API ImTextureID ImPlatform_CreateRenderTexture(const ImPlatform_Textu
         rp_info.pDependencies   = &dep;
         err = vkCreateRenderPass(g_GfxData.device, &rp_info, g_Allocator, &renderPass);
         if (err != VK_SUCCESS) {
-            vkDestroySampler(g_GfxData.device, sampler, g_Allocator);
             vkDestroyImageView(g_GfxData.device, imageView, g_Allocator);
             vkFreeMemory(g_GfxData.device, imageMemory, g_Allocator);
             vkDestroyImage(g_GfxData.device, image, g_Allocator);
@@ -1574,7 +1521,6 @@ IMPLATFORM_API ImTextureID ImPlatform_CreateRenderTexture(const ImPlatform_Textu
         err = vkCreateFramebuffer(g_GfxData.device, &fb_info, g_Allocator, &framebuffer);
         if (err != VK_SUCCESS) {
             vkDestroyRenderPass(g_GfxData.device, renderPass, g_Allocator);
-            vkDestroySampler(g_GfxData.device, sampler, g_Allocator);
             vkDestroyImageView(g_GfxData.device, imageView, g_Allocator);
             vkFreeMemory(g_GfxData.device, imageMemory, g_Allocator);
             vkDestroyImage(g_GfxData.device, image, g_Allocator);
@@ -1594,7 +1540,6 @@ IMPLATFORM_API ImTextureID ImPlatform_CreateRenderTexture(const ImPlatform_Textu
         if (err != VK_SUCCESS) {
             vkDestroyFramebuffer(g_GfxData.device, framebuffer, g_Allocator);
             vkDestroyRenderPass(g_GfxData.device, renderPass, g_Allocator);
-            vkDestroySampler(g_GfxData.device, sampler, g_Allocator);
             vkDestroyImageView(g_GfxData.device, imageView, g_Allocator);
             vkFreeMemory(g_GfxData.device, imageMemory, g_Allocator);
             vkDestroyImage(g_GfxData.device, image, g_Allocator);
@@ -1609,15 +1554,13 @@ IMPLATFORM_API ImTextureID ImPlatform_CreateRenderTexture(const ImPlatform_Textu
         vkAllocateCommandBuffers(g_GfxData.device, &alloc_info, &commandBuffer);
     }
 
-    // Register with ImGui for use as a shader input
-    VkDescriptorSet descriptorSet = (VkDescriptorSet)ImGui_ImplVulkan_AddTexture(
-        sampler, imageView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    // Register with ImGui for use as a shader input (sampled image, the sampler is owned by the ImGui backend)
+    VkDescriptorSet descriptorSet = ImGui_ImplVulkan_AddTexture(imageView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 
     ImPlatform_RTTracking_Vulkan* entry = new ImPlatform_RTTracking_Vulkan();
     entry->image         = image;
     entry->imageMemory   = imageMemory;
     entry->imageView     = imageView;
-    entry->sampler       = sampler;
     entry->descriptorSet = descriptorSet;
     entry->renderPass    = renderPass;
     entry->framebuffer   = framebuffer;
@@ -2372,7 +2315,7 @@ IMPLATFORM_API void ImPlatform_EndCustomShader(ImDrawList* draw)
     if (!draw)
         return;
 
-    draw->AddCallback(ImDrawCallback_ResetRenderState, NULL);
+    draw->AddCallback(ImGui::GetPlatformIO().DrawCallback_ResetRenderState, NULL);
 }
 
 IMPLATFORM_API void* ImPlatform_PushShaderConstants(const void* data, unsigned int size)
@@ -2389,16 +2332,18 @@ IMPLATFORM_API void ImPlatform_PopShaderConstants(void* handle)
 // ============================================================================
 // Sampler Override API - Vulkan
 // ============================================================================
-// Vulkan samplers are baked into descriptor sets that are rebuilt per frame.
-// Overriding the sampler mid-frame without rebuilding the descriptor set
-// is not supported without significant pipeline surgery. Intentional no-ops.
+// Uses the standard DrawCallback_SetSamplerLinear/Nearest callbacks of the ImGui Vulkan backend,
+// which binds its own linear/nearest VK_DESCRIPTOR_TYPE_SAMPLER descriptor sets.
+// Only the filter is honored: the wrap mode stays clamp.
 
-IMPLATFORM_API void ImPlatform_PushSampler(ImPlatform_TextureFilter /*filter*/, ImPlatform_TextureWrap /*wrap*/)
+IMPLATFORM_API void ImPlatform_PushSampler(ImPlatform_TextureFilter filter, ImPlatform_TextureWrap /*wrap*/)
 {
+    ImPlatform_PushSampler_StdCallbacks(filter);
 }
 
 IMPLATFORM_API void ImPlatform_PopSampler(void)
 {
+    ImPlatform_PopSampler_StdCallbacks();
 }
 
 #endif // IM_GFX_VULKAN

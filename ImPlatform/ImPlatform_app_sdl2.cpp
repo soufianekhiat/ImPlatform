@@ -6,7 +6,9 @@
 #if defined(IM_CURRENT_PLATFORM) && (IM_CURRENT_PLATFORM == IM_PLATFORM_SDL2)
 
 // Tell SDL we handle main() ourselves - prevents conflicts with SDL2main.lib
+#ifndef SDL_MAIN_HANDLED
 #define SDL_MAIN_HANDLED
+#endif
 
 #include "../imgui.h"
 #include "../imgui/backends/imgui_impl_sdl2.h"
@@ -87,14 +89,22 @@ HWND ImPlatform_App_GetHWND(void)
 // ImPlatform API - CreateWindow
 IMPLATFORM_API bool ImPlatform_CreateWindow(char const* pWindowsName, ImVec2 const vPos, unsigned int uWidth, unsigned int uHeight)
 {
+#ifdef _WIN32
+    ::SetProcessDPIAware();
+#endif
     // Setup SDL
     if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_TIMER | SDL_INIT_GAMECONTROLLER) != 0)
     {
         return false;
     }
 
-#ifdef IM_GFX_OPENGL3
-    // Decide GL+GLSL versions
+    // From 2.0.18: Enable native IME
+#ifdef SDL_HINT_IME_SHOW_UI
+    SDL_SetHint(SDL_HINT_IME_SHOW_UI, "1");
+#endif
+
+#if IM_CURRENT_GFX == IM_GFX_OPENGL3
+    // Decide GL version (GLSL version is selected by the renderer backend)
 #if defined(IMGUI_IMPL_OPENGL_ES2)
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_FLAGS, 0);
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_ES);
@@ -117,20 +127,18 @@ IMPLATFORM_API bool ImPlatform_CreateWindow(char const* pWindowsName, ImVec2 con
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 0);
 #endif
 
-    // From 2.0.18: Enable native IME
-#ifdef SDL_HINT_IME_SHOW_UI
-    SDL_SetHint(SDL_HINT_IME_SHOW_UI, "1");
-#endif
-
     // Create window with graphics context
     SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
     SDL_GL_SetAttribute(SDL_GL_DEPTH_SIZE, 24);
     SDL_GL_SetAttribute(SDL_GL_STENCIL_SIZE, 8);
 #endif // IM_GFX_OPENGL3
 
+    float main_scale = ImGui_ImplSDL2_GetContentScaleForDisplay(0);
     SDL_WindowFlags window_flags = (SDL_WindowFlags)(
-#ifdef IM_GFX_OPENGL3
+#if IM_CURRENT_GFX == IM_GFX_OPENGL3
         SDL_WINDOW_OPENGL |
+#elif IM_CURRENT_GFX == IM_GFX_VULKAN
+        SDL_WINDOW_VULKAN |
 #endif
         SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI);
 
@@ -146,8 +154,8 @@ IMPLATFORM_API bool ImPlatform_CreateWindow(char const* pWindowsName, ImVec2 con
         pWindowsName,
         posX,
         posY,
-        (int)uWidth,
-        (int)uHeight,
+        (int)(uWidth * main_scale),
+        (int)(uHeight * main_scale),
         window_flags);
 
     if (g_AppData.pWindow == NULL)
@@ -165,17 +173,9 @@ IMPLATFORM_API bool ImPlatform_CreateWindow(char const* pWindowsName, ImVec2 con
     }
 #endif
 
-    // Query DPI scale
-    {
-        float ddpi = 0.0f;
-        int displayIndex = SDL_GetWindowDisplayIndex(g_AppData.pWindow);
-        if (SDL_GetDisplayDPI(displayIndex, &ddpi, NULL, NULL) == 0 && ddpi > 0.0f)
-            g_AppData.fDpiScale = ddpi / 96.0f;
-        else
-            g_AppData.fDpiScale = 1.0f;
-    }
+    g_AppData.fDpiScale = main_scale;
 
-#ifdef IM_GFX_OPENGL3
+#if IM_CURRENT_GFX == IM_GFX_OPENGL3
     g_AppData.glContext = SDL_GL_CreateContext(g_AppData.pWindow);
     if (g_AppData.glContext == NULL)
     {
@@ -205,11 +205,17 @@ IMPLATFORM_API bool ImPlatform_ShowWindow(void)
 IMPLATFORM_API bool ImPlatform_InitPlatform(void)
 {
     // Init ImGui SDL2 backend
-#ifdef IM_GFX_OPENGL3
+#if IM_CURRENT_GFX == IM_GFX_OPENGL3
     if (!ImGui_ImplSDL2_InitForOpenGL(g_AppData.pWindow, g_AppData.glContext))
         return false;
-#elif defined(IM_GFX_VULKAN)
+#elif IM_CURRENT_GFX == IM_GFX_VULKAN
     if (!ImGui_ImplSDL2_InitForVulkan(g_AppData.pWindow))
+        return false;
+#elif (IM_CURRENT_GFX == IM_GFX_DIRECTX9) || (IM_CURRENT_GFX == IM_GFX_DIRECTX10) || (IM_CURRENT_GFX == IM_GFX_DIRECTX11) || (IM_CURRENT_GFX == IM_GFX_DIRECTX12)
+    if (!ImGui_ImplSDL2_InitForD3D(g_AppData.pWindow))
+        return false;
+#elif IM_CURRENT_GFX == IM_GFX_METAL
+    if (!ImGui_ImplSDL2_InitForMetal(g_AppData.pWindow))
         return false;
 #else
     if (!ImGui_ImplSDL2_InitForOther(g_AppData.pWindow))
@@ -244,6 +250,15 @@ IMPLATFORM_API bool ImPlatform_PlatformEvents(void)
             g_AppData.bDone = true;
             return false;
         }
+#if defined(IM_CURRENT_GFX) && (IM_CURRENT_GFX == IM_GFX_DIRECTX11)
+        // Notify gfx backend of resize (same as upstream example_sdl2_directx11)
+        if (event.type == SDL_WINDOWEVENT &&
+            event.window.event == SDL_WINDOWEVENT_RESIZED &&
+            event.window.windowID == SDL_GetWindowID(g_AppData.pWindow))
+        {
+            ImPlatform_Gfx_OnResize_DX11(ImPlatform_Gfx_GetData_DX11(), (unsigned int)event.window.data1, (unsigned int)event.window.data2);
+        }
+#endif
 #if IMPLATFORM_APP_SUPPORT_DROP_FILE
         if (event.type == SDL_DROPFILE && event.drop.file)
         {
@@ -259,7 +274,7 @@ IMPLATFORM_API bool ImPlatform_PlatformEvents(void)
     if (SDL_GetWindowFlags(g_AppData.pWindow) & SDL_WINDOW_MINIMIZED)
     {
         SDL_Delay(10);
-        return true; // Continue but don't render this frame
+        return false; // Skip frame
     }
 
     return true;

@@ -89,7 +89,8 @@ int main()
     ImVec4 clear_color = ImVec4(0.45f, 0.55f, 0.60f, 1.00f);
     while (ImPlatform_PlatformContinue())
     {
-        ImPlatform_PlatformEvents();
+        if (!ImPlatform_PlatformEvents()) // false: quit requested or window minimized
+            continue;
 
         if (!ImPlatform_GfxCheck())
             continue;
@@ -136,7 +137,7 @@ int main()
 ### Main Loop Functions
 
 - `ImPlatform_PlatformContinue()` - Check if application should continue running
-- `ImPlatform_PlatformEvents()` - Process platform events
+- `ImPlatform_PlatformEvents()` - Process platform events, returns false when the frame should be skipped (quit requested, window minimized)
 - `ImPlatform_GfxCheck()` - Check if graphics are ready to render
 - `ImPlatform_GfxAPINewFrame()` - Begin new graphics frame
 - `ImPlatform_PlatformNewFrame()` - Begin new platform frame

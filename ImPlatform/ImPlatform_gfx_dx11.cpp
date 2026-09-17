@@ -218,6 +218,16 @@ bool ImPlatform_Gfx_CreateDevice_DX11(void* hWnd, ImPlatform_GfxData_DX11* pData
     if (res != S_OK)
         return false;
 
+    // Disable DXGI's default Alt+Enter fullscreen behavior.
+    // - It does not work properly with multiple viewports.
+    // - This must be done for all windows associated to the device. The DX11 backend does this automatically for secondary viewports that it creates.
+    IDXGIFactory* pSwapChainFactory;
+    if (SUCCEEDED(pSwapChain->GetParent(IID_PPV_ARGS(&pSwapChainFactory))))
+    {
+        pSwapChainFactory->MakeWindowAssociation(hwnd, DXGI_MWA_NO_ALT_ENTER);
+        pSwapChainFactory->Release();
+    }
+
     pData->pDevice = pDevice;
     pData->pDeviceContext = pDeviceContext;
     pData->pSwapChain = pSwapChain;
@@ -1774,7 +1784,7 @@ IMPLATFORM_API void ImPlatform_EndCustomShader(ImDrawList* draw)
     if (!draw)
         return;
 
-    draw->AddCallback(ImDrawCallback_ResetRenderState, NULL);
+    draw->AddCallback(ImGui::GetPlatformIO().DrawCallback_ResetRenderState, NULL);
 }
 
 #endif // IM_GFX_DIRECTX11

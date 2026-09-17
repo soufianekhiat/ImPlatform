@@ -66,6 +66,7 @@ struct ExampleDescriptorHeapAllocator
 
     void Alloc(D3D12_CPU_DESCRIPTOR_HANDLE* out_cpu, D3D12_GPU_DESCRIPTOR_HANDLE* out_gpu)
     {
+        IM_ASSERT(FreeIndicesCount > 0 && "SRV descriptor heap is full (APP_SRV_HEAP_SIZE)");
         int idx = FreeIndices[--FreeIndicesCount];
         out_cpu->ptr = HeapStartCpu.ptr + (idx * HeapHandleIncrement);
         out_gpu->ptr = HeapStartGpu.ptr + (idx * HeapHandleIncrement);
@@ -74,8 +75,11 @@ struct ExampleDescriptorHeapAllocator
     void Free(D3D12_CPU_DESCRIPTOR_HANDLE cpu, D3D12_GPU_DESCRIPTOR_HANDLE gpu)
     {
         int cpu_idx = (int)((cpu.ptr - HeapStartCpu.ptr) / HeapHandleIncrement);
+        int gpu_idx = (int)((gpu.ptr - HeapStartGpu.ptr) / HeapHandleIncrement);
+        IM_ASSERT(cpu_idx == gpu_idx);
+        IM_ASSERT(FreeIndicesCount < FreeIndicesCapacity);
         FreeIndices[FreeIndicesCount++] = cpu_idx;
-        (void)gpu;
+        (void)gpu_idx;
     }
 };
 
@@ -123,10 +127,31 @@ static void CreateRenderTarget()
         g_GfxData.pDevice->CreateRenderTargetView(pBackBuffer, NULL, g_GfxData.renderTargetDescriptor[i]);
         g_GfxData.pRenderTargetResource[i] = pBackBuffer;
     }
+
+    // Update stored backbuffer size
+    if (g_GfxData.pRenderTargetResource[0])
+    {
+        D3D12_RESOURCE_DESC bbDesc = g_GfxData.pRenderTargetResource[0]->GetDesc();
+        g_ImPlatform_BackbufferW = (unsigned int)bbDesc.Width;
+        g_ImPlatform_BackbufferH = (unsigned int)bbDesc.Height;
+    }
+}
+
+// Wait for all command lists submitted to the queue so far to complete (same as upstream example_win32_directx12)
+static void WaitForPendingOperations()
+{
+    if (!g_GfxData.pCommandQueue || !g_GfxData.pFence || !g_GfxData.hFenceEvent)
+        return; // Device creation failed half-way
+    g_GfxData.pCommandQueue->Signal(g_GfxData.pFence, ++g_GfxData.uFenceLastSignaledValue);
+
+    g_GfxData.pFence->SetEventOnCompletion(g_GfxData.uFenceLastSignaledValue, g_GfxData.hFenceEvent);
+    ::WaitForSingleObject(g_GfxData.hFenceEvent, INFINITE);
 }
 
 static void CleanupRenderTarget()
 {
+    WaitForPendingOperations();
+
     for (UINT i = 0; i < IM_DX12_NUM_BACK_BUFFERS; i++)
     {
         if (g_GfxData.pRenderTargetResource[i])
@@ -137,41 +162,20 @@ static void CleanupRenderTarget()
     }
 }
 
-static void WaitForLastSubmittedFrame()
+// Wait for the swapchain and for the GPU to be done with the next frame context (same as upstream example_win32_directx12)
+static ImPlatform_FrameContext_DX12* WaitForNextFrameContext()
 {
     ImPlatform_FrameContext_DX12* frameCtx = &g_GfxData.frameContext[g_GfxData.uFrameIndex % IM_DX12_NUM_FRAMES_IN_FLIGHT];
-
-    UINT64 fenceValue = frameCtx->uFenceValue;
-    if (fenceValue == 0)
-        return;
-
-    frameCtx->uFenceValue = 0;
-    if (g_GfxData.pFence->GetCompletedValue() >= fenceValue)
-        return;
-
-    g_GfxData.pFence->SetEventOnCompletion(fenceValue, g_GfxData.hFenceEvent);
-    WaitForSingleObject(g_GfxData.hFenceEvent, INFINITE);
-}
-
-static ImPlatform_FrameContext_DX12* WaitForNextFrameResources()
-{
-    UINT nextFrameIndex = g_GfxData.uFrameIndex + 1;
-    g_GfxData.uFrameIndex = nextFrameIndex;
-
-    HANDLE waitableObjects[] = { g_GfxData.hSwapChainWaitableObject, NULL };
-    DWORD numWaitableObjects = 1;
-
-    ImPlatform_FrameContext_DX12* frameCtx = &g_GfxData.frameContext[nextFrameIndex % IM_DX12_NUM_FRAMES_IN_FLIGHT];
-    UINT64 fenceValue = frameCtx->uFenceValue;
-    if (fenceValue != 0)
+    if (g_GfxData.pFence->GetCompletedValue() < frameCtx->uFenceValue)
     {
-        frameCtx->uFenceValue = 0;
-        g_GfxData.pFence->SetEventOnCompletion(fenceValue, g_GfxData.hFenceEvent);
-        waitableObjects[1] = g_GfxData.hFenceEvent;
-        numWaitableObjects = 2;
+        g_GfxData.pFence->SetEventOnCompletion(frameCtx->uFenceValue, g_GfxData.hFenceEvent);
+        HANDLE waitableObjects[] = { g_GfxData.hSwapChainWaitableObject, g_GfxData.hFenceEvent };
+        ::WaitForMultipleObjects(2, waitableObjects, TRUE, INFINITE);
     }
-
-    WaitForMultipleObjects(numWaitableObjects, waitableObjects, TRUE, INFINITE);
+    else
+    {
+        ::WaitForSingleObject(g_GfxData.hSwapChainWaitableObject, INFINITE);
+    }
 
     return frameCtx;
 }
@@ -256,14 +260,24 @@ bool ImPlatform_Gfx_CreateDevice_DX12(HWND hWnd, ImPlatform_GfxData_DX12* pData)
 
     // Create swap chain
     {
-        IDXGIFactory4* dxgiFactory = NULL;
+        IDXGIFactory5* dxgiFactory = NULL;
         IDXGISwapChain1* swapChain1 = NULL;
         if (CreateDXGIFactory1(IID_PPV_ARGS(&dxgiFactory)) != S_OK)
             return false;
+
+        BOOL allow_tearing = FALSE;
+        dxgiFactory->CheckFeatureSupport(DXGI_FEATURE_PRESENT_ALLOW_TEARING, &allow_tearing, sizeof(allow_tearing));
+        pData->bSwapChainTearingSupport = (allow_tearing == TRUE);
+        if (pData->bSwapChainTearingSupport)
+            sd.Flags |= DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING;
+
         if (dxgiFactory->CreateSwapChainForHwnd(pData->pCommandQueue, hWnd, &sd, NULL, NULL, &swapChain1) != S_OK)
             return false;
         if (swapChain1->QueryInterface(IID_PPV_ARGS(&pData->pSwapChain)) != S_OK)
             return false;
+        if (pData->bSwapChainTearingSupport)
+            dxgiFactory->MakeWindowAssociation(hWnd, DXGI_MWA_NO_ALT_ENTER);
+
         swapChain1->Release();
         dxgiFactory->Release();
         pData->pSwapChain->SetMaximumFrameLatency(IM_DX12_NUM_BACK_BUFFERS);
@@ -340,11 +354,13 @@ void ImPlatform_Gfx_CleanupDevice_DX12(ImPlatform_GfxData_DX12* pData)
 // Internal API - Resize handling
 void ImPlatform_Gfx_OnResize_DX12(ImPlatform_GfxData_DX12* pData, unsigned int uWidth, unsigned int uHeight)
 {
-    if (pData->pDevice != NULL && uWidth > 0 && uHeight > 0)
+    if (pData->pDevice != NULL && pData->pSwapChain != NULL && uWidth > 0 && uHeight > 0)
     {
-        WaitForLastSubmittedFrame();
-        CleanupRenderTarget();
-        HRESULT result = pData->pSwapChain->ResizeBuffers(0, uWidth, uHeight, DXGI_FORMAT_UNKNOWN, DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT);
+        CleanupRenderTarget(); // Waits for pending operations
+        DXGI_SWAP_CHAIN_DESC1 desc = {};
+        pData->pSwapChain->GetDesc1(&desc);
+        HRESULT result = pData->pSwapChain->ResizeBuffers(0, uWidth, uHeight, desc.Format, desc.Flags);
+        IM_ASSERT(SUCCEEDED(result) && "Failed to resize swapchain.");
         CreateRenderTarget();
         (void)result;
     }
@@ -394,10 +410,10 @@ IMPLATFORM_API bool ImPlatform_InitGfx(void)
 // ImPlatform API - GfxCheck
 IMPLATFORM_API bool ImPlatform_GfxCheck(void)
 {
-    // Handle window screen locked
-    if (g_GfxData.bSwapChainOccluded && g_GfxData.pSwapChain->Present(0, DXGI_PRESENT_TEST) == DXGI_STATUS_OCCLUDED)
+    // Handle window screen locked or minimized (flip model swapchains don't report DXGI_STATUS_OCCLUDED when minimized)
+    if ((g_GfxData.bSwapChainOccluded && g_GfxData.pSwapChain->Present(0, DXGI_PRESENT_TEST) == DXGI_STATUS_OCCLUDED) || ::IsIconic(ImPlatform_App_GetHWND()))
     {
-        Sleep(10);
+        ::Sleep(10);
         return false;
     }
     g_GfxData.bSwapChainOccluded = false;
@@ -411,10 +427,14 @@ IMPLATFORM_API void ImPlatform_GfxAPINewFrame(void)
     ImGui_ImplDX12_NewFrame();
 }
 
+// Frame context used by the frame being recorded (between GfxAPIClear and GfxAPISwapBuffer)
+static ImPlatform_FrameContext_DX12* g_CurrentFrameCtx = NULL;
+
 // ImPlatform API - GfxAPIClear
 IMPLATFORM_API bool ImPlatform_GfxAPIClear(ImVec4 const vClearColor)
 {
-    ImPlatform_FrameContext_DX12* frameCtx = WaitForNextFrameResources();
+    ImPlatform_FrameContext_DX12* frameCtx = WaitForNextFrameContext();
+    g_CurrentFrameCtx = frameCtx;
     UINT backBufferIdx = g_GfxData.pSwapChain->GetCurrentBackBufferIndex();
     frameCtx->pCommandAllocator->Reset();
 
@@ -459,6 +479,20 @@ IMPLATFORM_API bool ImPlatform_GfxAPIRender(ImVec4 const vClearColor)
 
     ImPlatform_RenderDrawDataWrapper(ImGui::GetDrawData(), g_GfxData.pCommandList);
 
+    // Submit the main viewport before rendering secondary viewports (same order as upstream example_win32_directx12)
+    UINT backBufferIdx = g_GfxData.pSwapChain->GetCurrentBackBufferIndex();
+    D3D12_RESOURCE_BARRIER barrier = {};
+    barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    barrier.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
+    barrier.Transition.pResource = g_GfxData.pRenderTargetResource[backBufferIdx];
+    barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+    barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
+    barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_PRESENT;
+    g_GfxData.pCommandList->ResourceBarrier(1, &barrier);
+    g_GfxData.pCommandList->Close();
+
+    g_GfxData.pCommandQueue->ExecuteCommandLists(1, (ID3D12CommandList* const*)&g_GfxData.pCommandList);
+
     return true;
 }
 
@@ -502,7 +536,7 @@ IMPLATFORM_API void ImPlatform_GfxViewportPost(void)
             platform_io.Renderer_RenderWindow = ImPlatform_RendererRenderWindowWrapper;
         }
 
-        ImGui::RenderPlatformWindowsDefault(NULL, (void*)g_GfxData.pCommandList);
+        ImGui::RenderPlatformWindowsDefault();
     }
 }
 #endif
@@ -510,27 +544,17 @@ IMPLATFORM_API void ImPlatform_GfxViewportPost(void)
 // ImPlatform API - GfxAPISwapBuffer
 IMPLATFORM_API bool ImPlatform_GfxAPISwapBuffer(void)
 {
-    UINT backBufferIdx = g_GfxData.pSwapChain->GetCurrentBackBufferIndex();
+    // The main viewport command list was submitted by ImPlatform_GfxAPIRender, secondary viewports by RenderPlatformWindowsDefault()
+    g_GfxData.pCommandQueue->Signal(g_GfxData.pFence, ++g_GfxData.uFenceLastSignaledValue);
+    if (g_CurrentFrameCtx)
+        g_CurrentFrameCtx->uFenceValue = g_GfxData.uFenceLastSignaledValue;
+    g_CurrentFrameCtx = NULL;
 
-    D3D12_RESOURCE_BARRIER barrier = {};
-    barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-    barrier.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
-    barrier.Transition.pResource = g_GfxData.pRenderTargetResource[backBufferIdx];
-    barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-    barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
-    barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_PRESENT;
-    g_GfxData.pCommandList->ResourceBarrier(1, &barrier);
-    g_GfxData.pCommandList->Close();
-
-    g_GfxData.pCommandQueue->ExecuteCommandLists(1, (ID3D12CommandList* const*)&g_GfxData.pCommandList);
-
+    // Present
     HRESULT hr = g_GfxData.pSwapChain->Present(1, 0); // Present with vsync
+    //HRESULT hr = g_GfxData.pSwapChain->Present(0, g_GfxData.bSwapChainTearingSupport ? DXGI_PRESENT_ALLOW_TEARING : 0); // Present without vsync
     g_GfxData.bSwapChainOccluded = (hr == DXGI_STATUS_OCCLUDED);
-
-    UINT64 fenceValue = g_GfxData.uFenceLastSignaledValue + 1;
-    g_GfxData.pCommandQueue->Signal(g_GfxData.pFence, fenceValue);
-    g_GfxData.uFenceLastSignaledValue = fenceValue;
-    g_GfxData.frameContext[g_GfxData.uFrameIndex % IM_DX12_NUM_FRAMES_IN_FLIGHT].uFenceValue = fenceValue;
+    g_GfxData.uFrameIndex++;
 
     return true;
 }
@@ -538,7 +562,7 @@ IMPLATFORM_API bool ImPlatform_GfxAPISwapBuffer(void)
 // ImPlatform API - ShutdownGfxAPI
 IMPLATFORM_API void ImPlatform_ShutdownGfxAPI(void)
 {
-    WaitForLastSubmittedFrame();
+    WaitForPendingOperations();
 }
 
 // ImPlatform API - ShutdownWindow
@@ -785,13 +809,21 @@ IMPLATFORM_API ImTextureID ImPlatform_CreateTexture(const void* pixel_data, cons
     }
 
     // Create command list for upload
-    ID3D12CommandAllocator* pCommandAllocator = g_GfxData.frameContext[g_GfxData.uFrameIndex].pCommandAllocator;
-    pCommandAllocator->Reset();
+    // Uses its own allocator: the frame context allocators may still be in use by the GPU or by the frame being recorded.
+    ID3D12CommandAllocator* pCommandAllocator = nullptr;
+    hr = g_GfxData.pDevice->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&pCommandAllocator));
+    if (FAILED(hr))
+    {
+        uploadBuffer->Release();
+        pTexture->Release();
+        return NULL;
+    }
 
     ID3D12GraphicsCommandList* pCommandList = nullptr;
     hr = g_GfxData.pDevice->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, pCommandAllocator, NULL, IID_PPV_ARGS(&pCommandList));
     if (FAILED(hr))
     {
+        pCommandAllocator->Release();
         uploadBuffer->Release();
         pTexture->Release();
         return NULL;
@@ -835,6 +867,7 @@ IMPLATFORM_API ImTextureID ImPlatform_CreateTexture(const void* pixel_data, cons
 
     // Cleanup temp resources
     pCommandList->Release();
+    pCommandAllocator->Release();
     uploadBuffer->Release();
 
     // Create SRV in descriptor heap
@@ -1835,7 +1868,7 @@ IMPLATFORM_API void ImPlatform_EndCustomShader(ImDrawList* draw)
     if (!draw)
         return;
 
-    draw->AddCallback(ImDrawCallback_ResetRenderState, NULL);
+    draw->AddCallback(ImGui::GetPlatformIO().DrawCallback_ResetRenderState, NULL);
 }
 
 IMPLATFORM_API void* ImPlatform_PushShaderConstants(const void* data, unsigned int size)
@@ -1852,16 +1885,17 @@ IMPLATFORM_API void ImPlatform_PopShaderConstants(void* handle)
 // ============================================================================
 // Sampler Override API - DirectX 12
 // ============================================================================
-// DX12 uses static root-signature samplers baked into the PSO.
-// There is no per-draw sampler binding without rebuilding the PSO.
-// These are intentional no-ops.
+// Uses the standard DrawCallback_SetSamplerLinear/Nearest callbacks of the ImGui DX12 backend.
+// Only the filter is honored: the wrap mode stays clamp.
 
-IMPLATFORM_API void ImPlatform_PushSampler(ImPlatform_TextureFilter /*filter*/, ImPlatform_TextureWrap /*wrap*/)
+IMPLATFORM_API void ImPlatform_PushSampler(ImPlatform_TextureFilter filter, ImPlatform_TextureWrap /*wrap*/)
 {
+    ImPlatform_PushSampler_StdCallbacks(filter);
 }
 
 IMPLATFORM_API void ImPlatform_PopSampler(void)
 {
+    ImPlatform_PopSampler_StdCallbacks();
 }
 
 #endif // IM_GFX_DIRECTX12

@@ -24,7 +24,7 @@
 //   6. Main loop:
 //      while (ImPlatform_PlatformContinue())
 //      {
-//          ImPlatform_PlatformEvents();
+//          if (!ImPlatform_PlatformEvents()) continue; // false: quit requested or minimized
 //          if (!ImPlatform_GfxCheck()) continue;
 //
 //          ImPlatform_GfxAPINewFrame();
@@ -544,8 +544,8 @@ IMPLATFORM_API void ImPlatform_DestroyTexture(
 
 // Override the sampler used by ImGui::Image() (and similar) for one or more draw calls.
 // Call ImPlatform_PushSampler() before the image call and ImPlatform_PopSampler() after.
-// Calls may be nested. Safe no-op on backends that don't support dynamic sampler override
-// (DX12, Vulkan, WGPU — where the sampler is baked into the pipeline/descriptor set).
+// Calls may be nested. On DX12, Vulkan and WGPU this relies on the standard backend draw callbacks
+// (ImGuiPlatformIO::DrawCallback_SetSamplerLinear/Nearest): the filter is honored but the wrap mode stays clamp.
 //
 // Example:
 //   ImPlatform_PushSampler(ImPlatform_TextureFilter_Nearest, ImPlatform_TextureWrap_Clamp);
@@ -912,7 +912,7 @@ IMPLATFORM_API bool ImPlatform_InitGfx(void);
 IMPLATFORM_API bool ImPlatform_PlatformContinue(void);
 
 // Process platform events (input, window messages, etc.)
-// Returns true on success
+// Returns false when the frame should be skipped (quit requested, window minimized)
 IMPLATFORM_API bool ImPlatform_PlatformEvents(void);
 
 // Check graphics state (device lost, window occluded, etc.)

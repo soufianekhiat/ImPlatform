@@ -42,6 +42,22 @@ static ImPlatform_ShaderProgram g_CurrentUniformBlockProgram = nullptr;
 static void* g_UniformBlockData = nullptr;
 static size_t g_UniformBlockSize = 0;
 
+// Update stored backbuffer size from the device backbuffer (d3dpp sizes may be 0 = window client size)
+static void ImPlatform_UpdateBackbufferSize_DX9(ImPlatform_GfxData_DX9* pData)
+{
+    IDirect3DSurface9* pBackBuffer = NULL;
+    if (pData->pDevice && SUCCEEDED(pData->pDevice->GetBackBuffer(0, 0, D3DBACKBUFFER_TYPE_MONO, &pBackBuffer)) && pBackBuffer)
+    {
+        D3DSURFACE_DESC bbDesc;
+        if (SUCCEEDED(pBackBuffer->GetDesc(&bbDesc)))
+        {
+            g_ImPlatform_BackbufferW = bbDesc.Width;
+            g_ImPlatform_BackbufferH = bbDesc.Height;
+        }
+        pBackBuffer->Release();
+    }
+}
+
 // Internal API - Create D3D9 device
 bool ImPlatform_Gfx_CreateDevice_DX9(HWND hWnd, ImPlatform_GfxData_DX9* pData)
 {
@@ -71,6 +87,7 @@ bool ImPlatform_Gfx_CreateDevice_DX9(HWND hWnd, ImPlatform_GfxData_DX9* pData)
     pData->bDeviceLost = false;
     pData->uResizeWidth = 0;
     pData->uResizeHeight = 0;
+    ImPlatform_UpdateBackbufferSize_DX9(pData);
 
     return true;
 }
@@ -96,11 +113,10 @@ void ImPlatform_Gfx_ResetDevice_DX9(ImPlatform_GfxData_DX9* pData)
     ImGui_ImplDX9_InvalidateDeviceObjects();
     HRESULT hr = pData->pDevice->Reset(&pData->d3dpp);
     if (hr == D3DERR_INVALIDCALL)
-    {
-        // Failed to reset
-        return;
-    }
+        IM_ASSERT(0); // Reset fails while D3DPOOL_DEFAULT resources are still alive (e.g. ImPlatform render textures)
+    // Always recreate device objects, same as upstream example_win32_directx9 (also recreates secondary viewports swapchains)
     ImGui_ImplDX9_CreateDeviceObjects();
+    ImPlatform_UpdateBackbufferSize_DX9(pData);
 }
 
 // Internal API - Handle resize
@@ -970,7 +986,7 @@ IMPLATFORM_API void ImPlatform_EndCustomShader(ImDrawList* draw)
     if (!draw)
         return;
 
-    draw->AddCallback(ImDrawCallback_ResetRenderState, NULL);
+    draw->AddCallback(ImGui::GetPlatformIO().DrawCallback_ResetRenderState, NULL);
 }
 
 IMPLATFORM_API void* ImPlatform_PushShaderConstants(const void* data, unsigned int size)

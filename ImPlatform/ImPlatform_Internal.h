@@ -53,7 +53,7 @@
 
 #if defined(IM_CURRENT_GFX) && (IM_CURRENT_GFX == IM_GFX_DIRECTX12)
     #include <d3d12.h>
-    #include <dxgi1_4.h>
+    #include <dxgi1_5.h>
 #endif
 
 #if defined(IM_CURRENT_GFX) && (IM_CURRENT_GFX == IM_GFX_OPENGL3)
@@ -223,6 +223,7 @@ struct ImPlatform_GfxData_DX12 {
     HANDLE hFenceEvent;
     UINT64 uFenceLastSignaledValue;
     IDXGISwapChain3* pSwapChain;
+    bool bSwapChainTearingSupport;
     bool bSwapChainOccluded;
     HANDLE hSwapChainWaitableObject;
     ID3D12Resource* pRenderTargetResource[IM_DX12_NUM_BACK_BUFFERS];
@@ -285,10 +286,8 @@ struct ImPlatform_GfxData_WebGPU {
     WGPUDevice device;
     WGPUQueue queue;
     WGPUSurface surface;
-#if !(defined(__EMSCRIPTEN__) && defined(IMGUI_IMPL_WEBGPU_BACKEND_DAWN))
-    WGPUSwapChain swapChain;
-#endif
-    WGPUTextureFormat swapChainFormat;
+    WGPUSurfaceTexture surfaceTexture;  // Surface texture acquired for the current frame (in ImPlatform_GfxCheck)
+    WGPUTextureFormat swapChainFormat;  // Configured surface format
     unsigned int uSurfaceWidth;
     unsigned int uSurfaceHeight;
 };
@@ -431,6 +430,44 @@ struct ImPlatform_GfxData_WebGPU* ImPlatform_Gfx_GetData_WebGPU(void);
 #endif
 
 #ifdef __cplusplus
+}
+#endif
+
+// ============================================================================
+// Sampler override using standard backend draw callbacks
+// ============================================================================
+// Since Dear ImGui 1.92.8 renderer backends provide backend-agnostic draw callbacks
+// in ImGuiPlatformIO (DrawCallback_SetSamplerLinear / DrawCallback_SetSamplerNearest).
+// Backends that cannot swap arbitrary sampler states mid-frame (DX12, Vulkan, WebGPU)
+// use them to implement ImPlatform_PushSampler()/ImPlatform_PopSampler():
+// the filter is honored, the wrap mode stays at the backend default (clamp).
+// The stack is resolved at submission time, restoring Linear (backend default) when empty.
+
+#ifdef __cplusplus
+static inline ImVector<ImDrawCallback>& ImPlatform_StdSamplerStack()
+{
+    static ImVector<ImDrawCallback> stack;
+    return stack;
+}
+
+static inline void ImPlatform_PushSampler_StdCallbacks(ImPlatform_TextureFilter filter)
+{
+    ImGuiPlatformIO& platform_io = ImGui::GetPlatformIO();
+    ImDrawCallback callback = (filter == ImPlatform_TextureFilter_Nearest) ? platform_io.DrawCallback_SetSamplerNearest : platform_io.DrawCallback_SetSamplerLinear;
+    ImPlatform_StdSamplerStack().push_back(callback);
+    if (callback)
+        ImGui::GetWindowDrawList()->AddCallback(callback);
+}
+
+static inline void ImPlatform_PopSampler_StdCallbacks(void)
+{
+    ImVector<ImDrawCallback>& stack = ImPlatform_StdSamplerStack();
+    if (stack.Size == 0)
+        return;
+    stack.pop_back();
+    ImDrawCallback callback = (stack.Size > 0) ? stack.back() : ImGui::GetPlatformIO().DrawCallback_SetSamplerLinear;
+    if (callback)
+        ImGui::GetWindowDrawList()->AddCallback(callback);
 }
 #endif
 

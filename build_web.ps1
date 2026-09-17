@@ -85,6 +85,7 @@ $ARGS = @(
     "-sASSERTIONS=1"
     "-sNO_FILESYSTEM=1"
     "-sASYNCIFY"
+    "--shell-file", "$IMGUI/examples/libs/emscripten/shell_minimal.html"
 )
 
 Write-Host "Building ImPlatform Demo for Emscripten (GLFW + WebGPU)..." -ForegroundColor Cyan
