@@ -380,6 +380,11 @@ void ImPlatform_Gfx_OnResize_DX11(struct ImPlatform_GfxData_DX11* pData, unsigne
 struct ImPlatform_GfxData_DX11* ImPlatform_Gfx_GetData_DX11(void);
 #endif
 
+#if defined(IM_CURRENT_GFX) && (IM_CURRENT_GFX == IM_GFX_CUSTOM)
+// Provided by the application's graphics backend: the window's client area changed size.
+void ImPlatform_Gfx_OnResize_Custom(unsigned int uWidth, unsigned int uHeight);
+#endif
+
 #if defined(IM_CURRENT_GFX) && (IM_CURRENT_GFX == IM_GFX_DIRECTX12)
 bool ImPlatform_Gfx_CreateDevice_DX12(void* hWnd, struct ImPlatform_GfxData_DX12* pData);
 void ImPlatform_Gfx_CleanupDevice_DX12(struct ImPlatform_GfxData_DX12* pData);
