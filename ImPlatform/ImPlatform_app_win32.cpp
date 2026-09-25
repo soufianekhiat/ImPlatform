@@ -51,6 +51,8 @@ static LRESULT WINAPI WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
             ImPlatform_Gfx_OnResize_DX12(ImPlatform_Gfx_GetData_DX12(), uWidth, uHeight);
 #elif defined(IM_CURRENT_GFX) && (IM_CURRENT_GFX == IM_GFX_OPENGL3)
             ImPlatform_Gfx_SetSize_OpenGL3(uWidth, uHeight);
+#elif defined(IM_CURRENT_GFX) && (IM_CURRENT_GFX == IM_GFX_CUSTOM)
+            ImPlatform_Gfx_OnResize_Custom(uWidth, uHeight);
 #endif
         }
         return 0;

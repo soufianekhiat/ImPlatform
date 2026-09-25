@@ -9,6 +9,12 @@
 //   IM_PLATFORM_WIN32, IM_PLATFORM_GLFW, IM_PLATFORM_APPLE
 // Available graphics APIs:
 //   IM_GFX_OPENGL3, IM_GFX_DIRECTX11, IM_GFX_DIRECTX12, IM_GFX_VULKAN, IM_GFX_METAL, IM_GFX_WGPU
+//   IM_GFX_CUSTOM: the APPLICATION provides the graphics backend. ImPlatform compiles no
+//     graphics backend; the application links its own implementation of the ImPlatform_*
+//     graphics entry points (InitGfxAPI, GfxAPINewFrame/Render/SwapBuffer, textures, shaders,
+//     buffers...) and of ImPlatform_Gfx_OnResize_Custom, which the platform layer calls when
+//     the window is resized. The platform layer (window, input, DPI, title bar) is ImPlatform's
+//     as usual. Feature flags below default to "supported" and can be predefined to 0.
 //
 // Or use predefined combinations:
 //   IM_TARGET_WIN32_DX11, IM_TARGET_WIN32_DX12, IM_TARGET_WIN32_OPENGL3
@@ -74,12 +80,39 @@
 #define IM_GFX_VULKAN       ( 1u << 5u )
 #define IM_GFX_METAL        ( 1u << 6u )
 #define IM_GFX_WGPU         ( 1u << 7u )
+#define IM_GFX_CUSTOM       ( 1u << 8u )
 
 #define IM_GFX_MASK         0x0000FFFFu
 
 // Graphics API feature support flags
 // These indicate which features are supported by each backend
-#if defined(IM_CURRENT_GFX)
+#if defined(IM_CURRENT_GFX) && (IM_CURRENT_GFX == IM_GFX_CUSTOM)
+    // The application's backend declares what it supports; everything by default.
+    #ifndef IMPLATFORM_GFX_SUPPORT_CUSTOM_SHADER
+        #define IMPLATFORM_GFX_SUPPORT_CUSTOM_SHADER 1
+    #endif
+    #ifndef IMPLATFORM_GFX_SUPPORT_BGRA_FORMATS
+        #define IMPLATFORM_GFX_SUPPORT_BGRA_FORMATS 1
+    #endif
+    #ifndef IMPLATFORM_GFX_SUPPORT_HALF_FLOAT_FORMATS
+        #define IMPLATFORM_GFX_SUPPORT_HALF_FLOAT_FORMATS 1
+    #endif
+    #ifndef IMPLATFORM_GFX_SUPPORT_RGB_EXTENDED
+        #define IMPLATFORM_GFX_SUPPORT_RGB_EXTENDED 1
+    #endif
+    #ifndef IMPLATFORM_GFX_SUPPORT_SRGB_FORMATS
+        #define IMPLATFORM_GFX_SUPPORT_SRGB_FORMATS 1
+    #endif
+    #ifndef IMPLATFORM_GFX_SUPPORT_PACKED_FORMATS
+        #define IMPLATFORM_GFX_SUPPORT_PACKED_FORMATS 1
+    #endif
+    #ifndef IMPLATFORM_GFX_SUPPORT_DEPTH_FORMATS
+        #define IMPLATFORM_GFX_SUPPORT_DEPTH_FORMATS 1
+    #endif
+    #ifndef IMPLATFORM_GFX_SUPPORT_INTEGER_FORMATS
+        #define IMPLATFORM_GFX_SUPPORT_INTEGER_FORMATS 1
+    #endif
+#elif defined(IM_CURRENT_GFX)
     #if (IM_CURRENT_GFX == IM_GFX_OPENGL3) || \
         (IM_CURRENT_GFX == IM_GFX_DIRECTX9) || \
         (IM_CURRENT_GFX == IM_GFX_DIRECTX10) || \
@@ -1133,6 +1166,9 @@ ImPlatform_BorderlessParams g_BorderlessParams = { 5, 100, 100, true, true };
     #include "ImPlatform_gfx_metal.mm"
 #elif IM_CURRENT_GFX == IM_GFX_WGPU
     #include "ImPlatform_gfx_wgpu.cpp"
+#elif IM_CURRENT_GFX == IM_GFX_CUSTOM
+    // No backend here: the application links its own implementation of the
+    // graphics entry points (see IM_GFX_CUSTOM at the top of this file).
 #else
     #error "Unknown or unsupported IM_CURRENT_GFX backend"
 #endif
