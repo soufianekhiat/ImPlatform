@@ -258,6 +258,14 @@ IMPLATFORM_API bool ImPlatform_PlatformEvents(void)
         {
             ImPlatform_Gfx_OnResize_DX11(ImPlatform_Gfx_GetData_DX11(), (unsigned int)event.window.data1, (unsigned int)event.window.data2);
         }
+#elif defined(IM_CURRENT_GFX) && (IM_CURRENT_GFX == IM_GFX_CUSTOM)
+        // The application's backend owns its swap chain: tell it the window's new size.
+        if (event.type == SDL_WINDOWEVENT &&
+            event.window.event == SDL_WINDOWEVENT_RESIZED &&
+            event.window.windowID == SDL_GetWindowID(g_AppData.pWindow))
+        {
+            ImPlatform_Gfx_OnResize_Custom((unsigned int)event.window.data1, (unsigned int)event.window.data2);
+        }
 #endif
 #if IMPLATFORM_APP_SUPPORT_DROP_FILE
         if (event.type == SDL_DROPFILE && event.drop.file)
