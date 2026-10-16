@@ -965,6 +965,9 @@ IMPLATFORM_API bool ImPlatform_GfxDebugRemoveDevice(void);
 // false). Call between frames, after destroying every texture, shader, program and buffer created on the old device:
 // they are all invalid afterwards and their IDs may be handed out again. Returns false when no device could be created.
 IMPLATFORM_API bool ImPlatform_GfxRecreateDevice(void);
+// Testing aid: texture creation fails, as on device memory exhaustion, once the textures created through ImPlatform
+// would exceed `bytes` (0 removes the limit). DirectX 12; ignored elsewhere.
+IMPLATFORM_API void ImPlatform_GfxDebugSetMemoryLimit(size_t bytes);
 
 // ============================================================================
 // Depth-tested immediate drawing (optional capability; implemented on DirectX 11 and DirectX 12)
@@ -1272,6 +1275,7 @@ IMPLATFORM_API bool ImPlatform_SupportsDepthDraw(void) { return false; }
 IMPLATFORM_API bool ImPlatform_GfxDeviceLost(void) { return false; }
 IMPLATFORM_API bool ImPlatform_GfxDebugRemoveDevice(void) { return false; }
 IMPLATFORM_API bool ImPlatform_GfxRecreateDevice(void) { return false; }
+IMPLATFORM_API void ImPlatform_GfxDebugSetMemoryLimit(size_t) {}
 IMPLATFORM_API ImTextureID ImPlatform_CreateRenderTextureWithDepth(const ImPlatform_TextureDesc*) { return (ImTextureID)0; }
 IMPLATFORM_API bool ImPlatform_DrawMesh(const ImPlatform_DrawMeshDesc*) { return false; }
 #endif

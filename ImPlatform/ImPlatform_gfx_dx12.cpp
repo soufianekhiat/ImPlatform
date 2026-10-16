@@ -1975,6 +1975,8 @@ namespace
     }
 
     // Creates a texture with its ImGui SRV and CPU-side views. flags: UAV and/or render target.
+    UINT64 g_P12_DebugMemoryLimit = 0;      // ImPlatform_GfxDebugSetMemoryLimit (0: none).
+
     ImTextureID ImP12_CreateTexture(const ImPlatform_TextureDesc* desc, D3D12_RESOURCE_FLAGS flags, bool depth)
     {
         if (!desc || !desc->width || !desc->height || !ImP12_Init())
@@ -2000,6 +2002,14 @@ namespace
         rd.Flags = flags;
         D3D12_CLEAR_VALUE cv = {};
         cv.Format = format;
+        if (g_P12_DebugMemoryLimit)
+        {
+            UINT64 live = (UINT64)t.w * t.h * t.bpp;
+            for (const auto& kv : g_P12.textures)
+                live += (UINT64)kv.second.w * kv.second.h * kv.second.bpp;
+            if (live > g_P12_DebugMemoryLimit)
+                return NULL;        // Simulated E_OUTOFMEMORY.
+        }
         if (FAILED(g_GfxData.pDevice->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &rd, t.cur,
                                                               (flags & D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET) ? &cv : NULL, IID_PPV_ARGS(&t.res))))
             return NULL;
@@ -2501,6 +2511,11 @@ IMPLATFORM_API bool ImPlatform_GfxRecreateDevice(void)
     ImPlatform_Gfx_CleanupDevice_DX12(&g_GfxData);
     g_GfxData = ImPlatform_GfxData_DX12();      // Frame fences restart from zero with the new fence.
     return ImPlatform_InitGfxAPI() && ImPlatform_InitGfx();
+}
+
+IMPLATFORM_API void ImPlatform_GfxDebugSetMemoryLimit(size_t bytes)
+{
+    g_P12_DebugMemoryLimit = bytes;
 }
 
 IMPLATFORM_API bool ImPlatform_SupportsDepthDraw(void) { return true; }
