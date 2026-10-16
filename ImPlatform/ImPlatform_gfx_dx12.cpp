@@ -90,6 +90,7 @@ unsigned int g_ImPlatform_BackbufferH = 0;
 static ExampleDescriptorHeapAllocator g_SrvDescHeapAlloc;
 static void ImPlatform_DX12_FlushWork();     // Resource layer (end of this file).
 static void ImPlatform_DX12_ReleaseAll();
+static void ImPlatform_DX12_DeferRelease(IUnknown* object);
 
 // Render texture tracking
 struct ImPlatform_RTTracking_DX12 {
@@ -928,7 +929,7 @@ IMPLATFORM_API void ImPlatform_DestroyShader(ImPlatform_Shader shader)
     if (shader_data->pBlob)
         shader_data->pBlob->Release();
     if (shader_data->pComputePSO)
-        shader_data->pComputePSO->Release();
+        ImPlatform_DX12_DeferRelease(shader_data->pComputePSO);     // Dispatches recorded but not yet submitted still use it.
 
     delete shader_data;
 }
@@ -1090,16 +1091,11 @@ IMPLATFORM_API ImPlatform_ShaderProgram ImPlatform_CreateShaderProgram(ImPlatfor
     psoDesc.RTVFormats[0] = DXGI_FORMAT_R8G8B8A8_UNORM;  // Match the swapchain format
     psoDesc.SampleDesc.Count = 1;
 
+    // The ImGui-layout pipeline serves the ImGui draw callbacks only; a program written for ImPlatform_DrawMesh (its own
+    // vertex layout and root signature) does not fit it and keeps pPSO NULL.
     hr = g_GfxData.pDevice->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&program->pPSO));
     if (FAILED(hr))
-    {
-        fprintf(stderr, "DX12 CreateGraphicsPipelineState failed\n");
-        if (program->pRootSignature) program->pRootSignature->Release();
-        if (program->pVSBlob) program->pVSBlob->Release();
-        if (program->pPSBlob) program->pPSBlob->Release();
-        delete program;
-        return NULL;
-    }
+        program->pPSO = NULL;
 
     return (ImPlatform_ShaderProgram)program;
 }
@@ -1115,6 +1111,7 @@ IMPLATFORM_API void ImPlatform_DestroyShaderProgram(ImPlatform_ShaderProgram pro
     // This is important to avoid crashes during shutdown
     if (g_GfxData.pDevice && g_GfxData.pCommandQueue)
     {
+        ImPlatform_DX12_FlushWork();        // Draws recorded but not yet submitted use its pipelines.
         // Flush the command queue to ensure GPU is done with these resources
         ID3D12Fence* pFence = nullptr;
         if (SUCCEEDED(g_GfxData.pDevice->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&pFence))))
@@ -1291,6 +1288,8 @@ static void ImPlatform_SetCustomShader(const ImDrawList* parent_list, const ImDr
         return;
 
     ID3D12GraphicsCommandList* cmdList = render_state->CommandList;
+    if (!program_data->pPSO)
+        return;     // Not an ImGui-layout program.
 
     // Set Pipeline State Object and Root Signature
     cmdList->SetPipelineState(program_data->pPSO);
@@ -1389,6 +1388,8 @@ IMPLATFORM_API void ImPlatform_BeginCustomShader_Render(ImPlatform_ShaderProgram
         return;
 
     ID3D12GraphicsCommandList* cmdList = render_state->CommandList;
+    if (!program_data->pPSO)
+        return;     // Not an ImGui-layout program.
 
     // Set Pipeline State Object and Root Signature
     cmdList->SetPipelineState(program_data->pPSO);
@@ -1564,7 +1565,7 @@ namespace
         D3D12_CPU_DESCRIPTOR_HANDLE srv = {}, uav = {}, rtv = {}, dsv = {};   // CPU-only copies for tables / targets.
     };
 
-    struct ImP12_Release { UINT64 fence; ID3D12Resource* res; ImP12_Texture tex; bool texture; };
+    struct ImP12_Release { UINT64 fence; IUnknown* res; ImP12_Texture tex; bool texture; };
 
     struct ImP12_State
     {
@@ -1760,11 +1761,33 @@ namespace
         return g_P12.list;
     }
 
+    // Debug layer messages (debug builds): printed and cleared at each submission.
+    void ImP12_DumpMessages()
+    {
+#ifdef DX12_ENABLE_DEBUG_LAYER
+        ID3D12InfoQueue* q = NULL;
+        if (FAILED(g_GfxData.pDevice->QueryInterface(IID_PPV_ARGS(&q))) || !q)
+            return;
+        for (UINT64 i = 0, n = q->GetNumStoredMessages(); i < n; i++)
+        {
+            SIZE_T len = 0;
+            q->GetMessage(i, NULL, &len);
+            std::vector<char> buf(len);
+            D3D12_MESSAGE* m = (D3D12_MESSAGE*)buf.data();
+            if (SUCCEEDED(q->GetMessage(i, m, &len)) && m->Severity <= D3D12_MESSAGE_SEVERITY_WARNING)
+                fprintf(stderr, "[D3D12] %s\n", m->pDescription);
+        }
+        q->ClearStoredMessages();
+        q->Release();
+#endif
+    }
+
     // Submits recorded work; returns the fence value that marks its completion (0 when nothing was recorded).
     UINT64 ImP12_Flush()
     {
         if (!g_P12.open)
             return 0;
+        ImP12_DumpMessages();
         g_P12.list->Close();
         g_GfxData.pCommandQueue->ExecuteCommandLists(1, (ID3D12CommandList* const*)&g_P12.list);
         const UINT64 fence = ++g_GfxData.uFenceLastSignaledValue;
@@ -1787,7 +1810,7 @@ namespace
         return fence;
     }
 
-    void ImP12_DeferRelease(ID3D12Resource* res)
+    void ImP12_DeferRelease(IUnknown* res)
     {
         ImP12_Release r = {};
         r.res = res;
@@ -2073,6 +2096,7 @@ namespace
 
 // Submits pending work ahead of the frame's command list (called by ImPlatform_GfxAPIRender).
 static void ImPlatform_DX12_FlushWork() { ImP12_Flush(); }
+static void ImPlatform_DX12_DeferRelease(IUnknown* object) { ImP12_DeferRelease(object); }
 
 IMPLATFORM_API ImTextureID ImPlatform_CreateTexture(const void* pixel_data, const ImPlatform_TextureDesc* desc)
 {
