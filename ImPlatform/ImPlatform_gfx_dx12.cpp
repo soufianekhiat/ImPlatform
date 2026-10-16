@@ -20,7 +20,7 @@
 #pragma comment(lib, "dxguid.lib")
 #endif
 
-#define APP_SRV_HEAP_SIZE 64
+#define APP_SRV_HEAP_SIZE 8192     // ImGui textures plus application textures (ImPlatform_CreateTexture and friends)
 
 // Descriptor heap allocator (from example_win32_directx12)
 struct ExampleDescriptorHeapAllocator
@@ -88,6 +88,8 @@ static ImPlatform_GfxData_DX12 g_GfxData = { 0 };
 unsigned int g_ImPlatform_BackbufferW = 0;
 unsigned int g_ImPlatform_BackbufferH = 0;
 static ExampleDescriptorHeapAllocator g_SrvDescHeapAlloc;
+static void ImPlatform_DX12_FlushWork();     // Resource layer (end of this file).
+static void ImPlatform_DX12_ReleaseAll();
 
 // Render texture tracking
 struct ImPlatform_RTTracking_DX12 {
@@ -478,6 +480,7 @@ IMPLATFORM_API bool ImPlatform_GfxAPIRender(ImVec4 const vClearColor)
     (void)vClearColor;
 
     ImPlatform_RenderDrawDataWrapper(ImGui::GetDrawData(), g_GfxData.pCommandList);
+    ImPlatform_DX12_FlushWork();        // Uploads, dispatches and offscreen draws recorded this frame run first.
 
     // Submit the main viewport before rendering secondary viewports (same order as upstream example_win32_directx12)
     UINT backBufferIdx = g_GfxData.pSwapChain->GetCurrentBackBufferIndex();
@@ -562,7 +565,9 @@ IMPLATFORM_API bool ImPlatform_GfxAPISwapBuffer(void)
 // ImPlatform API - ShutdownGfxAPI
 IMPLATFORM_API void ImPlatform_ShutdownGfxAPI(void)
 {
+    ImPlatform_DX12_FlushWork();
     WaitForPendingOperations();
+    ImPlatform_DX12_ReleaseAll();
 }
 
 // ImPlatform API - ShutdownWindow
@@ -720,384 +725,11 @@ IMPLATFORM_API ImPlatform_TextureDesc3D ImPlatform_TextureDesc3D_Default(unsigne
 IMPLATFORM_API bool ImPlatform_SupportsTexture3D(void) { return false; }
 IMPLATFORM_API ImTextureID ImPlatform_CreateTexture3D(const void*, const ImPlatform_TextureDesc3D*) { return NULL; }
 
-IMPLATFORM_API ImTextureID ImPlatform_CreateTexture(const void* pixel_data, const ImPlatform_TextureDesc* desc)
-{
-    if (!desc || !pixel_data || !g_GfxData.pDevice || !g_GfxData.pCommandQueue || !g_GfxData.pSrvDescHeapAlloc)
-        return NULL;
-
-    int bytes_per_pixel;
-    DXGI_FORMAT format = ImPlatform_GetD3D12Format(desc->format, &bytes_per_pixel);
-
-    // Create texture resource
-    D3D12_HEAP_PROPERTIES props;
-    memset(&props, 0, sizeof(D3D12_HEAP_PROPERTIES));
-    props.Type = D3D12_HEAP_TYPE_DEFAULT;
-    props.CPUPageProperty = D3D12_CPU_PAGE_PROPERTY_UNKNOWN;
-    props.MemoryPoolPreference = D3D12_MEMORY_POOL_UNKNOWN;
-
-    D3D12_RESOURCE_DESC resource_desc;
-    ZeroMemory(&resource_desc, sizeof(resource_desc));
-    resource_desc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
-    resource_desc.Alignment = 0;
-    resource_desc.Width = desc->width;
-    resource_desc.Height = desc->height;
-    resource_desc.DepthOrArraySize = 1;
-    resource_desc.MipLevels = 1;
-    resource_desc.Format = format;
-    resource_desc.SampleDesc.Count = 1;
-    resource_desc.SampleDesc.Quality = 0;
-    resource_desc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
-    resource_desc.Flags = D3D12_RESOURCE_FLAG_NONE;
-
-    ID3D12Resource* pTexture = nullptr;
-    HRESULT hr = g_GfxData.pDevice->CreateCommittedResource(
-        &props, D3D12_HEAP_FLAG_NONE, &resource_desc,
-        D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(&pTexture));
-
-    if (FAILED(hr) || !pTexture)
-        return NULL;
-
-    // Create upload buffer
-    UINT uploadPitch = (desc->width * bytes_per_pixel + D3D12_TEXTURE_DATA_PITCH_ALIGNMENT - 1u) & ~(D3D12_TEXTURE_DATA_PITCH_ALIGNMENT - 1u);
-    UINT uploadSize = desc->height * uploadPitch;
-
-    D3D12_RESOURCE_DESC upload_desc;
-    ZeroMemory(&upload_desc, sizeof(upload_desc));
-    upload_desc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
-    upload_desc.Alignment = 0;
-    upload_desc.Width = uploadSize;
-    upload_desc.Height = 1;
-    upload_desc.DepthOrArraySize = 1;
-    upload_desc.MipLevels = 1;
-    upload_desc.Format = DXGI_FORMAT_UNKNOWN;
-    upload_desc.SampleDesc.Count = 1;
-    upload_desc.SampleDesc.Quality = 0;
-    upload_desc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
-    upload_desc.Flags = D3D12_RESOURCE_FLAG_NONE;
-
-    D3D12_HEAP_PROPERTIES upload_props;
-    memset(&upload_props, 0, sizeof(upload_props));
-    upload_props.Type = D3D12_HEAP_TYPE_UPLOAD;
-    upload_props.CPUPageProperty = D3D12_CPU_PAGE_PROPERTY_UNKNOWN;
-    upload_props.MemoryPoolPreference = D3D12_MEMORY_POOL_UNKNOWN;
-
-    ID3D12Resource* uploadBuffer = nullptr;
-    hr = g_GfxData.pDevice->CreateCommittedResource(
-        &upload_props, D3D12_HEAP_FLAG_NONE, &upload_desc,
-        D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&uploadBuffer));
-
-    if (FAILED(hr) || !uploadBuffer)
-    {
-        pTexture->Release();
-        return NULL;
-    }
-
-    // Map and copy data
-    void* mapped = nullptr;
-    D3D12_RANGE range = { 0, uploadSize };
-    hr = uploadBuffer->Map(0, &range, &mapped);
-    if (SUCCEEDED(hr))
-    {
-        for (UINT y = 0; y < desc->height; y++)
-        {
-            memcpy(
-                (void*)((uintptr_t)mapped + y * uploadPitch),
-                (const unsigned char*)pixel_data + y * desc->width * bytes_per_pixel,
-                desc->width * bytes_per_pixel);
-        }
-        uploadBuffer->Unmap(0, &range);
-    }
-
-    // Create command list for upload
-    // Uses its own allocator: the frame context allocators may still be in use by the GPU or by the frame being recorded.
-    ID3D12CommandAllocator* pCommandAllocator = nullptr;
-    hr = g_GfxData.pDevice->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&pCommandAllocator));
-    if (FAILED(hr))
-    {
-        uploadBuffer->Release();
-        pTexture->Release();
-        return NULL;
-    }
-
-    ID3D12GraphicsCommandList* pCommandList = nullptr;
-    hr = g_GfxData.pDevice->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, pCommandAllocator, NULL, IID_PPV_ARGS(&pCommandList));
-    if (FAILED(hr))
-    {
-        pCommandAllocator->Release();
-        uploadBuffer->Release();
-        pTexture->Release();
-        return NULL;
-    }
-
-    // Copy from upload buffer to texture
-    D3D12_TEXTURE_COPY_LOCATION srcLocation = {};
-    srcLocation.pResource = uploadBuffer;
-    srcLocation.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
-    srcLocation.PlacedFootprint.Footprint.Format = format;
-    srcLocation.PlacedFootprint.Footprint.Width = desc->width;
-    srcLocation.PlacedFootprint.Footprint.Height = desc->height;
-    srcLocation.PlacedFootprint.Footprint.Depth = 1;
-    srcLocation.PlacedFootprint.Footprint.RowPitch = uploadPitch;
-
-    D3D12_TEXTURE_COPY_LOCATION dstLocation = {};
-    dstLocation.pResource = pTexture;
-    dstLocation.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
-    dstLocation.SubresourceIndex = 0;
-
-    D3D12_RESOURCE_BARRIER barrier = {};
-    barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-    barrier.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
-    barrier.Transition.pResource = pTexture;
-    barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-    barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
-    barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
-
-    pCommandList->CopyTextureRegion(&dstLocation, 0, 0, 0, &srcLocation, nullptr);
-    pCommandList->ResourceBarrier(1, &barrier);
-    pCommandList->Close();
-
-    // Execute command list
-    g_GfxData.pCommandQueue->ExecuteCommandLists(1, (ID3D12CommandList* const*)&pCommandList);
-
-    // Wait for upload to complete (simplified - in production you'd want async)
-    g_GfxData.uFenceLastSignaledValue++;
-    g_GfxData.pCommandQueue->Signal(g_GfxData.pFence, g_GfxData.uFenceLastSignaledValue);
-    g_GfxData.pFence->SetEventOnCompletion(g_GfxData.uFenceLastSignaledValue, g_GfxData.hFenceEvent);
-    WaitForSingleObject(g_GfxData.hFenceEvent, INFINITE);
-
-    // Cleanup temp resources
-    pCommandList->Release();
-    pCommandAllocator->Release();
-    uploadBuffer->Release();
-
-    // Create SRV in descriptor heap
-    D3D12_CPU_DESCRIPTOR_HANDLE srvCpuHandle;
-    D3D12_GPU_DESCRIPTOR_HANDLE srvGpuHandle;
-    g_GfxData.pSrvDescHeapAlloc->Alloc(&srvCpuHandle, &srvGpuHandle);
-
-    D3D12_SHADER_RESOURCE_VIEW_DESC srv_desc;
-    ZeroMemory(&srv_desc, sizeof(srv_desc));
-    srv_desc.Format = format;
-    srv_desc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
-    srv_desc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-    srv_desc.Texture2D.MipLevels = 1;
-    srv_desc.Texture2D.MostDetailedMip = 0;
-
-    g_GfxData.pDevice->CreateShaderResourceView(pTexture, &srv_desc, srvCpuHandle);
-
-    // IMPORTANT: We do NOT release pTexture here because:
-    // 1. The SRV descriptor does NOT keep the resource alive (unlike DX11)
-    // 2. In DX12, ImTextureID is the GPU descriptor handle (not the resource)
-    // 3. We have no way to retrieve the resource pointer from the descriptor handle later
-    //
-    // This means DestroyTexture() won't be able to properly clean up (small leak).
-    // A proper implementation would need a texture registry that maps:
-    //   GPU descriptor handle -> ID3D12Resource* + CPU descriptor handle
-    //
-    // For now, we keep the texture alive by NOT calling Release().
-    // The texture will stay in memory until the application exits.
-
-    return (ImTextureID)srvGpuHandle.ptr;
-}
-
-IMPLATFORM_API bool ImPlatform_UpdateTexture(ImTextureID /*texture_id*/, const void* /*pixel_data*/,
-                                              unsigned int /*x*/, unsigned int /*y*/,
-                                              unsigned int /*width*/, unsigned int /*height*/)
-{
-    // DX12 texture updates are complex and require command lists
-    // For now, we return false to indicate this feature is not implemented
-    // A full implementation would need to:
-    // 1. Track the texture resource from ImTextureID
-    // 2. Create an upload buffer
-    // 3. Copy data to upload buffer
-    // 4. Use command list to copy from upload to texture
-    // 5. Handle resource barriers
-    // This is quite involved for DX12
-    return false;
-}
-
-IMPLATFORM_API ImTextureID ImPlatform_CreateRenderTexture(const ImPlatform_TextureDesc* desc)
-{
-    if (!desc || !g_GfxData.pDevice || !g_GfxData.pSrvDescHeapAlloc)
-        return NULL;
-
-    int bytes_per_pixel;
-    DXGI_FORMAT format = ImPlatform_GetD3D12Format(desc->format, &bytes_per_pixel);
-
-    // Lazily create the dedicated RTV descriptor heap for render textures
-    if (!g_RTVTexDescHeap)
-    {
-        D3D12_DESCRIPTOR_HEAP_DESC heap_desc = {};
-        heap_desc.Type           = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
-        heap_desc.NumDescriptors = g_RTVTexDescCapacity;
-        heap_desc.Flags          = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
-        heap_desc.NodeMask       = 1;
-        if (g_GfxData.pDevice->CreateDescriptorHeap(&heap_desc, IID_PPV_ARGS(&g_RTVTexDescHeap)) != S_OK)
-            return NULL;
-        g_RTVTexDescStride = g_GfxData.pDevice->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
-        g_RTVTexDescOffset = 0;
-    }
-    if (g_RTVTexDescOffset >= g_RTVTexDescCapacity)
-        return NULL; // Exhausted RTV slots
-
-    // Create texture resource (starts in RENDER_TARGET state for clear on first use)
-    D3D12_RESOURCE_DESC tex_desc = {};
-    tex_desc.Dimension          = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
-    tex_desc.Width              = desc->width;
-    tex_desc.Height             = desc->height;
-    tex_desc.DepthOrArraySize   = 1;
-    tex_desc.MipLevels          = 1;
-    tex_desc.Format             = format;
-    tex_desc.SampleDesc.Count   = 1;
-    tex_desc.Flags              = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
-
-    D3D12_CLEAR_VALUE clear_value = {};
-    clear_value.Format = format;
-
-    D3D12_HEAP_PROPERTIES heap_props = {};
-    heap_props.Type = D3D12_HEAP_TYPE_DEFAULT;
-
-    ID3D12Resource* pTexture = NULL;
-    HRESULT hr = g_GfxData.pDevice->CreateCommittedResource(
-        &heap_props, D3D12_HEAP_FLAG_NONE,
-        &tex_desc, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
-        &clear_value, IID_PPV_ARGS(&pTexture));
-    if (FAILED(hr) || !pTexture)
-        return NULL;
-
-    // Allocate RTV from our dedicated heap
-    D3D12_CPU_DESCRIPTOR_HANDLE rtvCpuHandle = g_RTVTexDescHeap->GetCPUDescriptorHandleForHeapStart();
-    rtvCpuHandle.ptr += (SIZE_T)g_RTVTexDescOffset * g_RTVTexDescStride;
-    g_RTVTexDescOffset++;
-
-    D3D12_RENDER_TARGET_VIEW_DESC rtv_desc = {};
-    rtv_desc.Format             = format;
-    rtv_desc.ViewDimension      = D3D12_RTV_DIMENSION_TEXTURE2D;
-    g_GfxData.pDevice->CreateRenderTargetView(pTexture, &rtv_desc, rtvCpuHandle);
-
-    // Allocate SRV from the shared shader-visible heap
-    D3D12_CPU_DESCRIPTOR_HANDLE srvCpuHandle;
-    D3D12_GPU_DESCRIPTOR_HANDLE srvGpuHandle;
-    g_GfxData.pSrvDescHeapAlloc->Alloc(&srvCpuHandle, &srvGpuHandle);
-
-    D3D12_SHADER_RESOURCE_VIEW_DESC srv_desc = {};
-    srv_desc.Format                        = format;
-    srv_desc.ViewDimension                 = D3D12_SRV_DIMENSION_TEXTURE2D;
-    srv_desc.Shader4ComponentMapping       = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-    srv_desc.Texture2D.MipLevels           = 1;
-    g_GfxData.pDevice->CreateShaderResourceView(pTexture, &srv_desc, srvCpuHandle);
-
-    ImPlatform_RTTracking_DX12* entry = new ImPlatform_RTTracking_DX12();
-    entry->pTexture    = pTexture;
-    entry->rtvCpuHandle = rtvCpuHandle;
-    entry->srvGpuHandle = srvGpuHandle;
-    entry->width       = desc->width;
-    entry->height      = desc->height;
-    entry->format      = format;
-    entry->next        = g_RTTrackingHead;
-    g_RTTrackingHead   = entry;
-
-    return (ImTextureID)srvGpuHandle.ptr;
-}
-
-IMPLATFORM_API bool ImPlatform_BeginRenderToTexture(ImTextureID texture)
-{
-    if (!texture || !g_GfxData.pCommandList)
-        return false;
-
-    ImPlatform_RTTracking_DX12* entry = g_RTTrackingHead;
-    while (entry) { if ((ImTextureID)entry->srvGpuHandle.ptr == texture) break; entry = entry->next; }
-    if (!entry) return false;
-
-    // Transition to render target
-    D3D12_RESOURCE_BARRIER barrier = {};
-    barrier.Type                   = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-    barrier.Transition.pResource   = entry->pTexture;
-    barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-    barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
-    barrier.Transition.StateAfter  = D3D12_RESOURCE_STATE_RENDER_TARGET;
-    g_GfxData.pCommandList->ResourceBarrier(1, &barrier);
-
-    g_GfxData.pCommandList->OMSetRenderTargets(1, &entry->rtvCpuHandle, FALSE, NULL);
-
-    float clearColor[4] = { 0.f, 0.f, 0.f, 0.f };
-    g_GfxData.pCommandList->ClearRenderTargetView(entry->rtvCpuHandle, clearColor, 0, NULL);
-
-    D3D12_VIEWPORT vp = {};
-    vp.Width    = (FLOAT)entry->width;
-    vp.Height   = (FLOAT)entry->height;
-    vp.MaxDepth = 1.0f;
-    g_GfxData.pCommandList->RSSetViewports(1, &vp);
-
-    D3D12_RECT scissor = { 0, 0, (LONG)entry->width, (LONG)entry->height };
-    g_GfxData.pCommandList->RSSetScissorRects(1, &scissor);
-
-    g_ActiveRTEntry = entry;
-    return true;
-}
-
-IMPLATFORM_API void ImPlatform_EndRenderToTexture(void)
-{
-    if (!g_GfxData.pCommandList || !g_GfxData.pSwapChain || !g_ActiveRTEntry)
-        return;
-
-    // Transition render texture back to shader resource
-    D3D12_RESOURCE_BARRIER barrier = {};
-    barrier.Type                   = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-    barrier.Transition.pResource   = g_ActiveRTEntry->pTexture;
-    barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-    barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
-    barrier.Transition.StateAfter  = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
-    g_GfxData.pCommandList->ResourceBarrier(1, &barrier);
-    g_ActiveRTEntry = NULL;
-
-    // Restore backbuffer as render target
-    UINT backBufferIdx = g_GfxData.pSwapChain->GetCurrentBackBufferIndex();
-    g_GfxData.pCommandList->OMSetRenderTargets(1, &g_GfxData.renderTargetDescriptor[backBufferIdx], FALSE, NULL);
-    g_GfxData.pCommandList->SetDescriptorHeaps(1, &g_GfxData.pSrvDescHeap);
-
-    // Restore full-screen viewport and scissor
-    D3D12_VIEWPORT vp = {};
-    vp.Width    = (FLOAT)g_ImPlatform_BackbufferW;
-    vp.Height   = (FLOAT)g_ImPlatform_BackbufferH;
-    vp.MaxDepth = 1.0f;
-    g_GfxData.pCommandList->RSSetViewports(1, &vp);
-
-    D3D12_RECT scissor = { 0, 0, (LONG)g_ImPlatform_BackbufferW, (LONG)g_ImPlatform_BackbufferH };
-    g_GfxData.pCommandList->RSSetScissorRects(1, &scissor);
-}
-
 IMPLATFORM_API bool ImPlatform_CopyBackbuffer(ImTextureID dst) { (void)dst; return false; }
 IMPLATFORM_API void ImPlatform_GetBackbufferSize(unsigned int* width, unsigned int* height)
 {
     if (width)  *width  = g_ImPlatform_BackbufferW;
     if (height) *height = g_ImPlatform_BackbufferH;
-}
-
-IMPLATFORM_API bool ImPlatform_CopyTexture(ImTextureID dst, ImTextureID src)
-{
-    // DX12 texture copy requires proper command list management and resource tracking
-    // which is not yet implemented in this backend.
-    (void)dst; (void)src;
-    return false;
-}
-
-IMPLATFORM_API void ImPlatform_DestroyTexture(ImTextureID texture_id)
-{
-    if (!texture_id || !g_GfxData.pSrvDescHeapAlloc)
-        return;
-
-    // Free the descriptor from the heap
-    D3D12_GPU_DESCRIPTOR_HANDLE gpuHandle;
-    gpuHandle.ptr = (UINT64)texture_id;
-
-    // Convert GPU handle to CPU handle for freeing
-    // This requires knowing the descriptor heap structure
-    // For now, this is a simplified version
-    // A full implementation would need proper handle tracking
-
-    // Note: The texture resource itself will be released when its ref count hits zero
-    // The descriptor heap allocator should handle freeing the slot
 }
 
 // ============================================================================
@@ -1109,52 +741,6 @@ IMPLATFORM_API void ImPlatform_DestroyTexture(ImTextureID texture_id)
 // - Resource barriers and transitions
 // - Descriptor heaps for SRVs/CBVs
 
-IMPLATFORM_API ImPlatform_VertexBuffer ImPlatform_CreateVertexBuffer(const void* /*vertex_data*/, const ImPlatform_VertexBufferDesc* /*desc*/)
-{
-    // Stub: DX12 buffer creation requires command list upload
-    return NULL;
-}
-
-IMPLATFORM_API bool ImPlatform_UpdateVertexBuffer(ImPlatform_VertexBuffer /*vertex_buffer*/, const void* /*vertex_data*/, unsigned int /*vertex_count*/, unsigned int /*offset*/)
-{
-    return false;
-}
-
-IMPLATFORM_API void ImPlatform_DestroyVertexBuffer(ImPlatform_VertexBuffer /*vertex_buffer*/)
-{
-    // Stub
-}
-
-IMPLATFORM_API ImPlatform_IndexBuffer ImPlatform_CreateIndexBuffer(const void* /*index_data*/, const ImPlatform_IndexBufferDesc* /*desc*/)
-{
-    return NULL;
-}
-
-IMPLATFORM_API bool ImPlatform_UpdateIndexBuffer(ImPlatform_IndexBuffer /*index_buffer*/, const void* /*index_data*/, unsigned int /*index_count*/, unsigned int /*offset*/)
-{
-    return false;
-}
-
-IMPLATFORM_API void ImPlatform_DestroyIndexBuffer(ImPlatform_IndexBuffer /*index_buffer*/)
-{
-    // Stub
-}
-
-IMPLATFORM_API void ImPlatform_BindVertexBuffer(ImPlatform_VertexBuffer /*vertex_buffer*/)
-{
-    // Stub
-}
-
-IMPLATFORM_API void ImPlatform_BindIndexBuffer(ImPlatform_IndexBuffer /*index_buffer*/)
-{
-    // Stub
-}
-
-IMPLATFORM_API void ImPlatform_DrawIndexed(unsigned int /*primitive_type*/, unsigned int /*index_count*/, unsigned int /*start_index*/)
-{
-    // Stub
-}
-
 // ============================================================================
 // Custom Shader System API - DirectX 12
 // ============================================================================
@@ -1163,7 +749,8 @@ IMPLATFORM_API void ImPlatform_DrawIndexed(unsigned int /*primitive_type*/, unsi
 struct ImPlatform_ShaderData_DX12
 {
     ID3DBlob* pBlob;                    // Compiled shader bytecode
-    ImPlatform_ShaderStage stage;       // Shader stage (vertex/pixel)
+    ImPlatform_ShaderStage stage;       // Shader stage (vertex/pixel/compute)
+    ID3D12PipelineState* pComputePSO;   // Compute stage: created on the first dispatch
 };
 
 // Internal shader program structure for DX12
@@ -1254,6 +841,8 @@ IMPLATFORM_API ImPlatform_Shader ImPlatform_CreateShader(const ImPlatform_Shader
         target = "vs_5_0";
     else if (desc->stage == ImPlatform_ShaderStage_Fragment)
         target = "ps_5_0";
+    else if (desc->stage == ImPlatform_ShaderStage_Compute)
+        target = "cs_5_0";
     else
     {
         delete shader_data;
@@ -1338,6 +927,8 @@ IMPLATFORM_API void ImPlatform_DestroyShader(ImPlatform_Shader shader)
 
     if (shader_data->pBlob)
         shader_data->pBlob->Release();
+    if (shader_data->pComputePSO)
+        shader_data->pComputePSO->Release();
 
     delete shader_data;
 }
@@ -1896,6 +1487,1063 @@ IMPLATFORM_API void ImPlatform_PushSampler(ImPlatform_TextureFilter filter, ImPl
 IMPLATFORM_API void ImPlatform_PopSampler(void)
 {
     ImPlatform_PopSampler_StdCallbacks();
+}
+
+
+// ============================================================================
+// DX12 resources, work submission, compute, readback and depth-tested drawing
+// ============================================================================
+// Work outside the frame command list (texture uploads, compute dispatches, offscreen draws, readback copies) is
+// recorded into a work command list on the same queue. It is submitted before the frame's ImGui command list
+// (ImPlatform_GfxAPIRender) or when a readback needs it, so GPU order matches call order. Upload memory comes from a
+// paged arena recycled by fence value; destroyed resources and descriptors are released once the GPU is done with
+// them. Every texture created here rests in a shader-readable state between operations.
+
+#include <string>
+#include <unordered_map>
+#include <vector>
+
+namespace
+{
+    // ---- Fences and deferred release ---------------------------------------------------------------------------
+    UINT64 ImP12_NextFence() { return g_GfxData.uFenceLastSignaledValue + 1; }
+    bool   ImP12_Done(UINT64 v) { return g_GfxData.pFence && g_GfxData.pFence->GetCompletedValue() >= v; }
+    void   ImP12_Wait(UINT64 v)
+    {
+        if (ImP12_Done(v))
+            return;
+        g_GfxData.pFence->SetEventOnCompletion(v, g_GfxData.hFenceEvent);
+        ::WaitForSingleObject(g_GfxData.hFenceEvent, INFINITE);
+    }
+
+    struct ImP12_Simple_Alloc       // Fixed-size descriptor heap with a free list (CPU-only or shader-visible).
+    {
+        ID3D12DescriptorHeap* heap = NULL;
+        UINT stride = 0, capacity = 0;
+        std::vector<UINT> free_list;
+        bool create(D3D12_DESCRIPTOR_HEAP_TYPE type, UINT count, bool shader_visible)
+        {
+            D3D12_DESCRIPTOR_HEAP_DESC d = {};
+            d.Type = type;
+            d.NumDescriptors = count;
+            d.Flags = shader_visible ? D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE : D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
+            if (FAILED(g_GfxData.pDevice->CreateDescriptorHeap(&d, IID_PPV_ARGS(&heap))))
+                return false;
+            stride = g_GfxData.pDevice->GetDescriptorHandleIncrementSize(type);
+            capacity = count;
+            free_list.resize(count);
+            for (UINT i = 0; i < count; i++)
+                free_list[i] = count - 1 - i;
+            return true;
+        }
+        bool alloc(D3D12_CPU_DESCRIPTOR_HANDLE* out)
+        {
+            if (free_list.empty())
+                return false;
+            const UINT i = free_list.back();
+            free_list.pop_back();
+            out->ptr = heap->GetCPUDescriptorHandleForHeapStart().ptr + (SIZE_T)i * stride;
+            return true;
+        }
+        void free(D3D12_CPU_DESCRIPTOR_HANDLE h)
+        {
+            if (h.ptr)
+                free_list.push_back((UINT)((h.ptr - heap->GetCPUDescriptorHandleForHeapStart().ptr) / stride));
+        }
+    };
+
+    struct ImP12_Texture
+    {
+        ID3D12Resource* res = NULL;
+        ID3D12Resource* depth = NULL;
+        DXGI_FORMAT format = DXGI_FORMAT_UNKNOWN;
+        UINT w = 0, h = 0, bpp = 0;
+        D3D12_RESOURCE_STATES rest = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, cur = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+        D3D12_CPU_DESCRIPTOR_HANDLE srv_vis_cpu = {};       // ImGui's shader-visible heap (the ImTextureID).
+        D3D12_GPU_DESCRIPTOR_HANDLE srv_vis_gpu = {};
+        D3D12_CPU_DESCRIPTOR_HANDLE srv = {}, uav = {}, rtv = {}, dsv = {};   // CPU-only copies for tables / targets.
+    };
+
+    struct ImP12_Release { UINT64 fence; ID3D12Resource* res; ImP12_Texture tex; bool texture; };
+
+    struct ImP12_State
+    {
+        bool ready = false, failed = false;
+        // Work list.
+        ID3D12CommandAllocator* allocators[4] = {};
+        UINT64 allocator_fence[4] = {};
+        int allocator = 0;
+        ID3D12GraphicsCommandList* list = NULL;
+        bool open = false;
+        // Upload arena.
+        struct page { ID3D12Resource* res; uint8_t* cpu; UINT64 size, used, fence; };
+        std::vector<page> pages;
+        int page_index = -1;
+        // Descriptors.
+        ImP12_Simple_Alloc cpu_srv;     // SRV/UAV CPU copies.
+        ImP12_Simple_Alloc rtv, dsv;
+        ID3D12DescriptorHeap* transient = NULL;     // Shader-visible ring for per-op tables.
+        UINT transient_stride = 0, transient_cap = 0, transient_head = 0;
+        UINT64 transient_wrap_fence = 0;
+        D3D12_CPU_DESCRIPTOR_HANDLE null_srv = {}, null_uav = {};
+        // Root signatures.
+        ID3D12RootSignature* compute_rs = NULL;
+        ID3D12RootSignature* graphics_rs = NULL;
+        // Registry and deferred releases.
+        std::unordered_map<UINT64, ImP12_Texture> textures;
+        std::vector<ImP12_Release> releases, pending_releases;
+        ImP12_Texture* active_rt = NULL;
+    };
+    ImP12_State g_P12;
+
+    // ---- Root signatures ---------------------------------------------------------------------------------------
+    ID3D12RootSignature* ImP12_MakeRootSignature(const D3D12_ROOT_SIGNATURE_DESC& d)
+    {
+        ID3DBlob* blob = NULL;
+        ID3DBlob* err = NULL;
+        ID3D12RootSignature* rs = NULL;
+        if (SUCCEEDED(D3D12SerializeRootSignature(&d, D3D_ROOT_SIGNATURE_VERSION_1, &blob, &err)))
+            g_GfxData.pDevice->CreateRootSignature(0, blob->GetBufferPointer(), blob->GetBufferSize(), IID_PPV_ARGS(&rs));
+        else if (err)
+            fprintf(stderr, "[ImPlatform DX12] root signature: %s\n", (const char*)err->GetBufferPointer());
+        if (blob) blob->Release();
+        if (err) err->Release();
+        return rs;
+    }
+
+    D3D12_STATIC_SAMPLER_DESC ImP12_LinearClamp()
+    {
+        D3D12_STATIC_SAMPLER_DESC s = {};
+        s.Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
+        s.AddressU = s.AddressV = s.AddressW = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+        s.MaxLOD = D3D12_FLOAT32_MAX;
+        s.ShaderRegister = 0;
+        s.ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+        return s;
+    }
+
+    bool ImP12_Init()
+    {
+        if (g_P12.ready || g_P12.failed)
+            return g_P12.ready;
+        g_P12.failed = true;
+        ID3D12Device* dev = g_GfxData.pDevice;
+        if (!dev || !g_GfxData.pCommandQueue || !g_GfxData.pFence)
+            return false;
+        for (auto& a : g_P12.allocators)
+            if (FAILED(dev->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&a))))
+                return false;
+        if (FAILED(dev->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, g_P12.allocators[0], NULL, IID_PPV_ARGS(&g_P12.list))))
+            return false;
+        g_P12.list->Close();
+        if (!g_P12.cpu_srv.create(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 16384, false) || !g_P12.rtv.create(D3D12_DESCRIPTOR_HEAP_TYPE_RTV, 256, false)
+            || !g_P12.dsv.create(D3D12_DESCRIPTOR_HEAP_TYPE_DSV, 256, false))
+            return false;
+        D3D12_DESCRIPTOR_HEAP_DESC td = {};
+        td.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
+        td.NumDescriptors = 65536;
+        td.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
+        if (FAILED(dev->CreateDescriptorHeap(&td, IID_PPV_ARGS(&g_P12.transient))))
+            return false;
+        g_P12.transient_stride = dev->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+        g_P12.transient_cap = td.NumDescriptors;
+        // Null descriptors fill unused table slots.
+        g_P12.cpu_srv.alloc(&g_P12.null_srv);
+        g_P12.cpu_srv.alloc(&g_P12.null_uav);
+        D3D12_SHADER_RESOURCE_VIEW_DESC ns = {};
+        ns.Format = DXGI_FORMAT_R32G32B32A32_FLOAT;
+        ns.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+        ns.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        ns.Texture2D.MipLevels = 1;
+        dev->CreateShaderResourceView(NULL, &ns, g_P12.null_srv);
+        D3D12_UNORDERED_ACCESS_VIEW_DESC nu = {};
+        nu.Format = DXGI_FORMAT_R32G32B32A32_FLOAT;
+        nu.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
+        dev->CreateUnorderedAccessView(NULL, NULL, &nu, g_P12.null_uav);
+        // Compute: b0 root CBV, t0..t7 table, u0..u7 table, s0 linear clamp.
+        {
+            D3D12_DESCRIPTOR_RANGE ranges[2] = {};
+            ranges[0].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+            ranges[0].NumDescriptors = 8;
+            ranges[1].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_UAV;
+            ranges[1].NumDescriptors = 8;
+            D3D12_ROOT_PARAMETER p[3] = {};
+            p[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
+            p[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+            for (int i = 0; i < 2; i++)
+            {
+                p[1 + i].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+                p[1 + i].DescriptorTable.NumDescriptorRanges = 1;
+                p[1 + i].DescriptorTable.pDescriptorRanges = &ranges[i];
+                p[1 + i].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+            }
+            const D3D12_STATIC_SAMPLER_DESC smp = ImP12_LinearClamp();
+            D3D12_ROOT_SIGNATURE_DESC d = {};
+            d.NumParameters = 3;
+            d.pParameters = p;
+            d.NumStaticSamplers = 1;
+            d.pStaticSamplers = &smp;
+            g_P12.compute_rs = ImP12_MakeRootSignature(d);
+        }
+        // Graphics: VS b0 CBV, PS b0 CBV, PS t0..t3 table, s0 linear clamp.
+        {
+            D3D12_DESCRIPTOR_RANGE range = {};
+            range.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+            range.NumDescriptors = 4;
+            D3D12_ROOT_PARAMETER p[3] = {};
+            p[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
+            p[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
+            p[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
+            p[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+            p[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+            p[2].DescriptorTable.NumDescriptorRanges = 1;
+            p[2].DescriptorTable.pDescriptorRanges = &range;
+            p[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+            D3D12_STATIC_SAMPLER_DESC smp = ImP12_LinearClamp();
+            smp.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+            D3D12_ROOT_SIGNATURE_DESC d = {};
+            d.NumParameters = 3;
+            d.pParameters = p;
+            d.NumStaticSamplers = 1;
+            d.pStaticSamplers = &smp;
+            d.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
+            g_P12.graphics_rs = ImP12_MakeRootSignature(d);
+        }
+        if (!g_P12.compute_rs || !g_P12.graphics_rs)
+            return false;
+        g_P12.failed = false;
+        g_P12.ready = true;
+        return true;
+    }
+
+    // ---- Work list ---------------------------------------------------------------------------------------------
+    void ImP12_ProcessReleases()
+    {
+        for (size_t i = 0; i < g_P12.releases.size();)
+        {
+            ImP12_Release& r = g_P12.releases[i];
+            if (!ImP12_Done(r.fence))
+            {
+                i++;
+                continue;
+            }
+            if (r.res)
+                r.res->Release();
+            if (r.texture)
+            {
+                if (r.tex.res) r.tex.res->Release();
+                if (r.tex.depth) r.tex.depth->Release();
+                if (r.tex.srv_vis_cpu.ptr) g_SrvDescHeapAlloc.Free(r.tex.srv_vis_cpu, r.tex.srv_vis_gpu);
+                g_P12.cpu_srv.free(r.tex.srv);
+                g_P12.cpu_srv.free(r.tex.uav);
+                g_P12.rtv.free(r.tex.rtv);
+                g_P12.dsv.free(r.tex.dsv);
+            }
+            r = g_P12.releases.back();
+            g_P12.releases.pop_back();
+        }
+    }
+
+    ID3D12GraphicsCommandList* ImP12_List()
+    {
+        if (!ImP12_Init())
+            return NULL;
+        if (!g_P12.open)
+        {
+            const int a = g_P12.allocator;
+            ImP12_Wait(g_P12.allocator_fence[a]);
+            g_P12.allocators[a]->Reset();
+            g_P12.list->Reset(g_P12.allocators[a], NULL);
+            g_P12.list->SetDescriptorHeaps(1, &g_P12.transient);
+            g_P12.open = true;
+        }
+        return g_P12.list;
+    }
+
+    // Submits recorded work; returns the fence value that marks its completion (0 when nothing was recorded).
+    UINT64 ImP12_Flush()
+    {
+        if (!g_P12.open)
+            return 0;
+        g_P12.list->Close();
+        g_GfxData.pCommandQueue->ExecuteCommandLists(1, (ID3D12CommandList* const*)&g_P12.list);
+        const UINT64 fence = ++g_GfxData.uFenceLastSignaledValue;
+        g_GfxData.pCommandQueue->Signal(g_GfxData.pFence, fence);
+        g_P12.allocator_fence[g_P12.allocator] = fence;
+        g_P12.allocator = (g_P12.allocator + 1) % 4;
+        g_P12.open = false;
+        for (auto& p : g_P12.pages)
+            if (p.fence == UINT64_MAX)
+                p.fence = fence;            // Used by this submission.
+        if (g_P12.page_index >= 0)
+            g_P12.page_index = -1;          // Next allocation picks a free page.
+        for (ImP12_Release& r : g_P12.pending_releases)
+        {
+            r.fence = fence;
+            g_P12.releases.push_back(r);
+        }
+        g_P12.pending_releases.clear();
+        ImP12_ProcessReleases();
+        return fence;
+    }
+
+    void ImP12_DeferRelease(ID3D12Resource* res)
+    {
+        ImP12_Release r = {};
+        r.res = res;
+        r.fence = ImP12_NextFence();
+        (g_P12.open ? g_P12.pending_releases : g_P12.releases).push_back(r);
+    }
+
+    // ---- Upload arena ------------------------------------------------------------------------------------------
+    struct ImP12_Upload { ID3D12Resource* res; UINT64 offset; uint8_t* cpu; D3D12_GPU_VIRTUAL_ADDRESS gpu; };
+
+    bool ImP12_Alloc(UINT64 size, UINT64 align, ImP12_Upload* out)
+    {
+        auto fits = [&](const ImP12_State::page& p) { return ((p.used + align - 1) & ~(align - 1)) + size <= p.size; };
+        if (g_P12.page_index < 0 || !fits(g_P12.pages[(size_t)g_P12.page_index]))
+        {
+            g_P12.page_index = -1;
+            for (size_t i = 0; i < g_P12.pages.size(); i++)
+            {
+                ImP12_State::page& p = g_P12.pages[i];
+                if (p.fence != UINT64_MAX && ImP12_Done(p.fence) && p.size >= size)
+                {
+                    p.used = 0;
+                    p.fence = UINT64_MAX;
+                    g_P12.page_index = (int)i;
+                    break;
+                }
+            }
+            if (g_P12.page_index < 0)
+            {
+                ImP12_State::page p = {};
+                p.size = std::max<UINT64>(32ull << 20, (size + 0xFFFF) & ~0xFFFFull);
+                D3D12_HEAP_PROPERTIES hp = {};
+                hp.Type = D3D12_HEAP_TYPE_UPLOAD;
+                D3D12_RESOURCE_DESC rd = {};
+                rd.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+                rd.Width = p.size;
+                rd.Height = 1;
+                rd.DepthOrArraySize = 1;
+                rd.MipLevels = 1;
+                rd.SampleDesc.Count = 1;
+                rd.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+                if (FAILED(g_GfxData.pDevice->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &rd, D3D12_RESOURCE_STATE_GENERIC_READ, NULL,
+                                                                      IID_PPV_ARGS(&p.res))))
+                    return false;
+                D3D12_RANGE none = { 0, 0 };
+                p.res->Map(0, &none, (void**)&p.cpu);
+                p.fence = UINT64_MAX;
+                g_P12.pages.push_back(p);
+                g_P12.page_index = (int)g_P12.pages.size() - 1;
+            }
+        }
+        ImP12_State::page& p = g_P12.pages[(size_t)g_P12.page_index];
+        p.fence = UINT64_MAX;
+        const UINT64 at = (p.used + align - 1) & ~(align - 1);
+        p.used = at + size;
+        out->res = p.res;
+        out->offset = at;
+        out->cpu = p.cpu + at;
+        out->gpu = p.res->GetGPUVirtualAddress() + at;
+        return true;
+    }
+
+    // ---- Transient descriptor tables ---------------------------------------------------------------------------
+    D3D12_GPU_DESCRIPTOR_HANDLE ImP12_Table(const D3D12_CPU_DESCRIPTOR_HANDLE* src, UINT count)
+    {
+        if (g_P12.transient_head + count > g_P12.transient_cap)
+        {
+            // Wrap: everything recorded before the previous wrap must be complete.
+            ImP12_Wait(g_P12.transient_wrap_fence);
+            g_P12.transient_wrap_fence = ImP12_NextFence();
+            g_P12.transient_head = 0;
+        }
+        const UINT at = g_P12.transient_head;
+        g_P12.transient_head += count;
+        D3D12_CPU_DESCRIPTOR_HANDLE dst = g_P12.transient->GetCPUDescriptorHandleForHeapStart();
+        dst.ptr += (SIZE_T)at * g_P12.transient_stride;
+        for (UINT i = 0; i < count; i++)
+        {
+            D3D12_CPU_DESCRIPTOR_HANDLE d = dst;
+            d.ptr += (SIZE_T)i * g_P12.transient_stride;
+            g_GfxData.pDevice->CopyDescriptorsSimple(1, d, src[i], D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+        }
+        D3D12_GPU_DESCRIPTOR_HANDLE gpu = g_P12.transient->GetGPUDescriptorHandleForHeapStart();
+        gpu.ptr += (UINT64)at * g_P12.transient_stride;
+        return gpu;
+    }
+
+    // ---- Textures ----------------------------------------------------------------------------------------------
+    ImP12_Texture* ImP12_Find(ImTextureID id)
+    {
+        auto it = g_P12.textures.find((UINT64)id);
+        return it == g_P12.textures.end() ? NULL : &it->second;
+    }
+
+    void ImP12_Transition(ID3D12GraphicsCommandList* list, ImP12_Texture& t, D3D12_RESOURCE_STATES to)
+    {
+        if (t.cur == to)
+            return;
+        D3D12_RESOURCE_BARRIER b = {};
+        b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+        b.Transition.pResource = t.res;
+        b.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+        b.Transition.StateBefore = t.cur;
+        b.Transition.StateAfter = to;
+        list->ResourceBarrier(1, &b);
+        t.cur = to;
+    }
+
+    int ImP12_Bpp(DXGI_FORMAT f)
+    {
+        switch (f)
+        {
+        case DXGI_FORMAT_R8_UNORM: return 1;
+        case DXGI_FORMAT_R8G8_UNORM: case DXGI_FORMAT_R16_UNORM: case DXGI_FORMAT_R16_FLOAT: return 2;
+        case DXGI_FORMAT_R8G8B8A8_UNORM: case DXGI_FORMAT_R8G8B8A8_UNORM_SRGB: case DXGI_FORMAT_B8G8R8A8_UNORM: case DXGI_FORMAT_R16G16_UNORM:
+        case DXGI_FORMAT_R16G16_FLOAT: case DXGI_FORMAT_R32_FLOAT: case DXGI_FORMAT_R10G10B10A2_UNORM: return 4;
+        case DXGI_FORMAT_R16G16B16A16_UNORM: case DXGI_FORMAT_R16G16B16A16_FLOAT: case DXGI_FORMAT_R32G32_FLOAT: return 8;
+        case DXGI_FORMAT_R32G32B32_FLOAT: return 12;
+        case DXGI_FORMAT_R32G32B32A32_FLOAT: return 16;
+        default: return 0;
+        }
+    }
+
+    // Creates a texture with its ImGui SRV and CPU-side views. flags: UAV and/or render target.
+    ImTextureID ImP12_CreateTexture(const ImPlatform_TextureDesc* desc, D3D12_RESOURCE_FLAGS flags, bool depth)
+    {
+        if (!desc || !desc->width || !desc->height || !ImP12_Init())
+            return NULL;
+        int bpp_unused = 0;
+        const DXGI_FORMAT format = ImPlatform_GetD3D12Format(desc->format, &bpp_unused);
+        ImP12_Texture t;
+        t.format = format;
+        t.w = desc->width;
+        t.h = desc->height;
+        t.bpp = (UINT)ImP12_Bpp(format);
+        t.rest = t.cur = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+        D3D12_HEAP_PROPERTIES hp = {};
+        hp.Type = D3D12_HEAP_TYPE_DEFAULT;
+        D3D12_RESOURCE_DESC rd = {};
+        rd.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+        rd.Width = t.w;
+        rd.Height = t.h;
+        rd.DepthOrArraySize = 1;
+        rd.MipLevels = 1;
+        rd.Format = format;
+        rd.SampleDesc.Count = 1;
+        rd.Flags = flags;
+        D3D12_CLEAR_VALUE cv = {};
+        cv.Format = format;
+        if (FAILED(g_GfxData.pDevice->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &rd, t.cur,
+                                                              (flags & D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET) ? &cv : NULL, IID_PPV_ARGS(&t.res))))
+            return NULL;
+        g_SrvDescHeapAlloc.Alloc(&t.srv_vis_cpu, &t.srv_vis_gpu);
+        D3D12_SHADER_RESOURCE_VIEW_DESC sd = {};
+        sd.Format = format;
+        sd.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+        sd.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        sd.Texture2D.MipLevels = 1;
+        g_GfxData.pDevice->CreateShaderResourceView(t.res, &sd, t.srv_vis_cpu);
+        if (!g_P12.cpu_srv.alloc(&t.srv))
+            return NULL;
+        g_GfxData.pDevice->CreateShaderResourceView(t.res, &sd, t.srv);
+        if (flags & D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS)
+        {
+            g_P12.cpu_srv.alloc(&t.uav);
+            D3D12_UNORDERED_ACCESS_VIEW_DESC ud = {};
+            ud.Format = format;
+            ud.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
+            g_GfxData.pDevice->CreateUnorderedAccessView(t.res, NULL, &ud, t.uav);
+        }
+        if (flags & D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET)
+        {
+            g_P12.rtv.alloc(&t.rtv);
+            g_GfxData.pDevice->CreateRenderTargetView(t.res, NULL, t.rtv);
+        }
+        if (depth)
+        {
+            D3D12_RESOURCE_DESC dd = rd;
+            dd.Format = DXGI_FORMAT_D32_FLOAT;
+            dd.Flags = D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL | D3D12_RESOURCE_FLAG_DENY_SHADER_RESOURCE;
+            D3D12_CLEAR_VALUE dv = {};
+            dv.Format = DXGI_FORMAT_D32_FLOAT;
+            dv.DepthStencil.Depth = 1.0f;
+            if (FAILED(g_GfxData.pDevice->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &dd, D3D12_RESOURCE_STATE_DEPTH_WRITE, &dv, IID_PPV_ARGS(&t.depth))))
+                return NULL;
+            g_P12.dsv.alloc(&t.dsv);
+            g_GfxData.pDevice->CreateDepthStencilView(t.depth, NULL, t.dsv);
+        }
+        const ImTextureID id = (ImTextureID)t.srv_vis_gpu.ptr;
+        g_P12.textures[(UINT64)id] = t;
+        return id;
+    }
+
+    bool ImP12_Upload_Region(ImP12_Texture& t, const void* data, UINT x, UINT y, UINT w, UINT h)
+    {
+        if (!data || !w || !h || x + w > t.w || y + h > t.h || !t.bpp)
+            return false;
+        ID3D12GraphicsCommandList* list = ImP12_List();
+        if (!list)
+            return false;
+        const UINT row = w * t.bpp, pitch = (row + D3D12_TEXTURE_DATA_PITCH_ALIGNMENT - 1) & ~(D3D12_TEXTURE_DATA_PITCH_ALIGNMENT - 1);
+        ImP12_Upload up;
+        if (!ImP12_Alloc((UINT64)pitch * h, D3D12_TEXTURE_DATA_PLACEMENT_ALIGNMENT, &up))
+            return false;
+        for (UINT r = 0; r < h; r++)
+            memcpy(up.cpu + (size_t)r * pitch, (const uint8_t*)data + (size_t)r * row, row);
+        D3D12_TEXTURE_COPY_LOCATION src = {}, dst = {};
+        src.pResource = up.res;
+        src.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+        src.PlacedFootprint.Offset = up.offset;
+        src.PlacedFootprint.Footprint.Format = t.format;
+        src.PlacedFootprint.Footprint.Width = w;
+        src.PlacedFootprint.Footprint.Height = h;
+        src.PlacedFootprint.Footprint.Depth = 1;
+        src.PlacedFootprint.Footprint.RowPitch = pitch;
+        dst.pResource = t.res;
+        dst.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+        ImP12_Transition(list, t, D3D12_RESOURCE_STATE_COPY_DEST);
+        list->CopyTextureRegion(&dst, x, y, 0, &src, NULL);
+        ImP12_Transition(list, t, t.rest);
+        return true;
+    }
+
+    // ---- Readback ----------------------------------------------------------------------------------------------
+    struct ImP12_Readback { ID3D12Resource* buffer; UINT64 fence; UINT w, h, bpp, pitch; };
+
+    ImP12_Readback* ImP12_StartRead(ImTextureID texture, UINT x, UINT y, UINT w, UINT h)
+    {
+        ImP12_Texture* t = ImP12_Find(texture);
+        if (!t || !w || !h || x + w > t->w || y + h > t->h || !t->bpp)
+            return NULL;
+        ID3D12GraphicsCommandList* list = ImP12_List();
+        if (!list)
+            return NULL;
+        const UINT pitch = (w * t->bpp + D3D12_TEXTURE_DATA_PITCH_ALIGNMENT - 1) & ~(D3D12_TEXTURE_DATA_PITCH_ALIGNMENT - 1);
+        D3D12_HEAP_PROPERTIES hp = {};
+        hp.Type = D3D12_HEAP_TYPE_READBACK;
+        D3D12_RESOURCE_DESC rd = {};
+        rd.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+        rd.Width = (UINT64)pitch * h;
+        rd.Height = 1;
+        rd.DepthOrArraySize = 1;
+        rd.MipLevels = 1;
+        rd.SampleDesc.Count = 1;
+        rd.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+        ID3D12Resource* buffer = NULL;
+        if (FAILED(g_GfxData.pDevice->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &rd, D3D12_RESOURCE_STATE_COPY_DEST, NULL, IID_PPV_ARGS(&buffer))))
+            return NULL;
+        D3D12_TEXTURE_COPY_LOCATION src = {}, dst = {};
+        src.pResource = t->res;
+        src.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+        dst.pResource = buffer;
+        dst.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+        dst.PlacedFootprint.Footprint.Format = t->format;
+        dst.PlacedFootprint.Footprint.Width = w;
+        dst.PlacedFootprint.Footprint.Height = h;
+        dst.PlacedFootprint.Footprint.Depth = 1;
+        dst.PlacedFootprint.Footprint.RowPitch = pitch;
+        const D3D12_BOX box = { x, y, 0, x + w, y + h, 1 };
+        ImP12_Transition(list, *t, D3D12_RESOURCE_STATE_COPY_SOURCE);
+        list->CopyTextureRegion(&dst, 0, 0, 0, &src, &box);
+        ImP12_Transition(list, *t, t->rest);
+        ImP12_Readback* r = new ImP12_Readback{ buffer, ImP12_Flush(), w, h, t->bpp, pitch };
+        return r;
+    }
+
+    bool ImP12_FinishRead(ImP12_Readback* r, void* out, size_t out_size)
+    {
+        const size_t row = (size_t)r->w * r->bpp;
+        if (out_size < row * r->h)
+            return false;
+        uint8_t* mapped = NULL;
+        D3D12_RANGE range = { 0, (SIZE_T)r->pitch * r->h };
+        if (FAILED(r->buffer->Map(0, &range, (void**)&mapped)))
+            return false;
+        for (UINT y = 0; y < r->h; y++)
+            memcpy((uint8_t*)out + y * row, mapped + (size_t)y * r->pitch, row);
+        D3D12_RANGE none = { 0, 0 };
+        r->buffer->Unmap(0, &none);
+        return true;
+    }
+}
+
+// Submits pending work ahead of the frame's command list (called by ImPlatform_GfxAPIRender).
+static void ImPlatform_DX12_FlushWork() { ImP12_Flush(); }
+
+IMPLATFORM_API ImTextureID ImPlatform_CreateTexture(const void* pixel_data, const ImPlatform_TextureDesc* desc)
+{
+    if (!desc || !pixel_data)
+        return NULL;
+    const ImTextureID id = ImP12_CreateTexture(desc, D3D12_RESOURCE_FLAG_NONE, false);
+    ImP12_Texture* t = id ? ImP12_Find(id) : NULL;
+    if (t && !ImP12_Upload_Region(*t, pixel_data, 0, 0, t->w, t->h))
+        return NULL;
+    return id;
+}
+
+IMPLATFORM_API bool ImPlatform_UpdateTexture(ImTextureID texture_id, const void* pixel_data, unsigned int x, unsigned int y,
+                                             unsigned int width, unsigned int height)
+{
+    ImP12_Texture* t = ImP12_Find(texture_id);
+    return t && ImP12_Upload_Region(*t, pixel_data, x, y, width, height);
+}
+
+IMPLATFORM_API bool ImPlatform_CopyTexture(ImTextureID dst_id, ImTextureID src_id)
+{
+    ImP12_Texture* dst = ImP12_Find(dst_id);
+    ImP12_Texture* src = ImP12_Find(src_id);
+    ID3D12GraphicsCommandList* list = dst && src && dst != src ? ImP12_List() : NULL;
+    if (!list || dst->w != src->w || dst->h != src->h || dst->format != src->format)
+        return false;
+    ImP12_Transition(list, *dst, D3D12_RESOURCE_STATE_COPY_DEST);
+    ImP12_Transition(list, *src, D3D12_RESOURCE_STATE_COPY_SOURCE);
+    list->CopyResource(dst->res, src->res);
+    ImP12_Transition(list, *dst, dst->rest);
+    ImP12_Transition(list, *src, src->rest);
+    return true;
+}
+
+IMPLATFORM_API void ImPlatform_DestroyTexture(ImTextureID texture_id)
+{
+    auto it = g_P12.textures.find((UINT64)texture_id);
+    if (it == g_P12.textures.end())
+        return;
+    if (g_P12.active_rt == &it->second)
+        g_P12.active_rt = NULL;
+    ImP12_Release r = {};
+    r.texture = true;
+    r.tex = it->second;
+    r.fence = ImP12_NextFence();        // Frame lists may still sample it: released after the next submission completes.
+    (g_P12.open ? g_P12.pending_releases : g_P12.releases).push_back(r);
+    g_P12.textures.erase(it);
+}
+
+IMPLATFORM_API ImTextureID ImPlatform_CreateRenderTexture(const ImPlatform_TextureDesc* desc)
+{
+    return ImP12_CreateTexture(desc, D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET, false);
+}
+
+IMPLATFORM_API ImTextureID ImPlatform_CreateRenderTextureWithDepth(const ImPlatform_TextureDesc* desc)
+{
+    return ImP12_CreateTexture(desc, D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET, true);
+}
+
+IMPLATFORM_API bool ImPlatform_BeginRenderToTexture(ImTextureID texture)
+{
+    ImP12_Texture* t = ImP12_Find(texture);
+    ID3D12GraphicsCommandList* list = t && t->rtv.ptr ? ImP12_List() : NULL;
+    if (!list)
+        return false;
+    ImP12_Transition(list, *t, D3D12_RESOURCE_STATE_RENDER_TARGET);
+    const float clear[4] = { 0, 0, 0, 0 };
+    list->ClearRenderTargetView(t->rtv, clear, 0, NULL);
+    if (t->dsv.ptr)
+        list->ClearDepthStencilView(t->dsv, D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0, 0, NULL);
+    list->OMSetRenderTargets(1, &t->rtv, FALSE, t->dsv.ptr ? &t->dsv : NULL);
+    D3D12_VIEWPORT vp = { 0, 0, (float)t->w, (float)t->h, 0, 1 };
+    D3D12_RECT sc = { 0, 0, (LONG)t->w, (LONG)t->h };
+    list->RSSetViewports(1, &vp);
+    list->RSSetScissorRects(1, &sc);
+    g_P12.active_rt = t;
+    return true;
+}
+
+IMPLATFORM_API void ImPlatform_EndRenderToTexture(void)
+{
+    if (!g_P12.active_rt || !g_P12.open)
+        return;
+    ImP12_Transition(g_P12.list, *g_P12.active_rt, g_P12.active_rt->rest);
+    g_P12.active_rt = NULL;
+}
+
+// ---- Vertex / index buffers (upload heap, persistently mapped) -------------------------------------------------
+struct ImPlatform_BufferData_DX12
+{
+    ID3D12Resource* res;
+    uint8_t* cpu;
+    UINT64 size;
+    ImPlatform_VertexBufferDesc vb_desc;
+    ImPlatform_IndexBufferDesc ib_desc;
+    std::vector<ImPlatform_VertexAttribute> attributes;
+    std::vector<std::string> semantics;
+    bool is_index;
+};
+
+static ImPlatform_BufferData_DX12* ImP12_CreateBuffer(const void* data, UINT64 size)
+{
+    if (!data || !size || !ImP12_Init())
+        return NULL;
+    ImPlatform_BufferData_DX12* b = new ImPlatform_BufferData_DX12();
+    b->size = size;
+    D3D12_HEAP_PROPERTIES hp = {};
+    hp.Type = D3D12_HEAP_TYPE_UPLOAD;
+    D3D12_RESOURCE_DESC rd = {};
+    rd.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+    rd.Width = size;
+    rd.Height = 1;
+    rd.DepthOrArraySize = 1;
+    rd.MipLevels = 1;
+    rd.SampleDesc.Count = 1;
+    rd.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+    if (FAILED(g_GfxData.pDevice->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &rd, D3D12_RESOURCE_STATE_GENERIC_READ, NULL, IID_PPV_ARGS(&b->res))))
+    {
+        delete b;
+        return NULL;
+    }
+    D3D12_RANGE none = { 0, 0 };
+    b->res->Map(0, &none, (void**)&b->cpu);
+    memcpy(b->cpu, data, (size_t)size);
+    return b;
+}
+
+IMPLATFORM_API ImPlatform_VertexBuffer ImPlatform_CreateVertexBuffer(const void* vertex_data, const ImPlatform_VertexBufferDesc* desc)
+{
+    if (!desc || !desc->attributes || !desc->attribute_count)
+        return NULL;
+    ImPlatform_BufferData_DX12* b = ImP12_CreateBuffer(vertex_data, (UINT64)desc->vertex_count * desc->vertex_stride);
+    if (!b)
+        return NULL;
+    b->vb_desc = *desc;
+    for (unsigned i = 0; i < desc->attribute_count; i++)
+    {
+        b->attributes.push_back(desc->attributes[i]);
+        b->semantics.push_back(desc->attributes[i].semantic_name ? desc->attributes[i].semantic_name : "");
+    }
+    b->vb_desc.attributes = b->attributes.data();
+    return (ImPlatform_VertexBuffer)b;
+}
+
+IMPLATFORM_API bool ImPlatform_UpdateVertexBuffer(ImPlatform_VertexBuffer vertex_buffer, const void* vertex_data, unsigned int vertex_count, unsigned int offset)
+{
+    ImPlatform_BufferData_DX12* b = (ImPlatform_BufferData_DX12*)vertex_buffer;
+    const UINT64 stride = b ? b->vb_desc.vertex_stride : 0, at = (UINT64)offset * stride, bytes = (UINT64)vertex_count * stride;
+    if (!b || !vertex_data || at + bytes > b->size)
+        return false;
+    memcpy(b->cpu + at, vertex_data, (size_t)bytes);    // Callers must not update a buffer the GPU still reads.
+    return true;
+}
+
+IMPLATFORM_API void ImPlatform_DestroyVertexBuffer(ImPlatform_VertexBuffer vertex_buffer)
+{
+    ImPlatform_BufferData_DX12* b = (ImPlatform_BufferData_DX12*)vertex_buffer;
+    if (!b)
+        return;
+    ImP12_DeferRelease(b->res);
+    delete b;
+}
+
+IMPLATFORM_API ImPlatform_IndexBuffer ImPlatform_CreateIndexBuffer(const void* index_data, const ImPlatform_IndexBufferDesc* desc)
+{
+    if (!desc)
+        return NULL;
+    const UINT64 isize = desc->format == ImPlatform_IndexFormat_UInt16 ? 2 : 4;
+    ImPlatform_BufferData_DX12* b = ImP12_CreateBuffer(index_data, (UINT64)desc->index_count * isize);
+    if (!b)
+        return NULL;
+    b->ib_desc = *desc;
+    b->is_index = true;
+    return (ImPlatform_IndexBuffer)b;
+}
+
+IMPLATFORM_API bool ImPlatform_UpdateIndexBuffer(ImPlatform_IndexBuffer index_buffer, const void* index_data, unsigned int index_count, unsigned int offset)
+{
+    ImPlatform_BufferData_DX12* b = (ImPlatform_BufferData_DX12*)index_buffer;
+    const UINT64 isize = b && b->ib_desc.format == ImPlatform_IndexFormat_UInt16 ? 2 : 4, at = (UINT64)offset * isize, bytes = (UINT64)index_count * isize;
+    if (!b || !index_data || at + bytes > b->size)
+        return false;
+    memcpy(b->cpu + at, index_data, (size_t)bytes);
+    return true;
+}
+
+IMPLATFORM_API void ImPlatform_DestroyIndexBuffer(ImPlatform_IndexBuffer index_buffer)
+{
+    ImPlatform_DestroyVertexBuffer((ImPlatform_VertexBuffer)index_buffer);
+}
+
+IMPLATFORM_API bool ImPlatform_CreateVertexInputLayout(ImPlatform_VertexBuffer vertex_buffer, ImPlatform_ShaderProgram program)
+{
+    return vertex_buffer && program;    // The layout is part of the pipeline state, built from the attributes at draw time.
+}
+
+IMPLATFORM_API void ImPlatform_BindVertexBuffer(ImPlatform_VertexBuffer) {}
+IMPLATFORM_API void ImPlatform_BindIndexBuffer(ImPlatform_IndexBuffer) {}
+IMPLATFORM_API void ImPlatform_BindBuffers(ImPlatform_VertexBuffer, ImPlatform_IndexBuffer) {}
+IMPLATFORM_API void ImPlatform_DrawIndexed(unsigned int, unsigned int, unsigned int) {}     // Use ImPlatform_DrawMesh on DX12.
+
+// ---- Readback ---------------------------------------------------------------------------------------------------
+IMPLATFORM_API bool ImPlatform_SupportsReadback(void) { return true; }
+
+IMPLATFORM_API bool ImPlatform_ReadTexture(ImTextureID texture, unsigned int x, unsigned int y, unsigned int width, unsigned int height,
+                                           void* out_pixels, size_t out_size)
+{
+    if (!out_pixels)
+        return false;
+    ImP12_Readback* r = ImP12_StartRead(texture, x, y, width, height);
+    if (!r)
+        return false;
+    ImP12_Wait(r->fence);
+    const bool ok = ImP12_FinishRead(r, out_pixels, out_size);
+    r->buffer->Release();
+    delete r;
+    return ok;
+}
+
+IMPLATFORM_API ImPlatform_Readback ImPlatform_BeginReadTexture(ImTextureID texture, unsigned int x, unsigned int y, unsigned int width, unsigned int height)
+{
+    return (ImPlatform_Readback)ImP12_StartRead(texture, x, y, width, height);
+}
+
+IMPLATFORM_API int ImPlatform_PollReadback(ImPlatform_Readback readback, void* out_pixels, size_t out_size)
+{
+    ImP12_Readback* r = (ImP12_Readback*)readback;
+    if (!r || !out_pixels)
+        return -1;
+    if (!ImP12_Done(r->fence))
+        return 0;
+    return ImP12_FinishRead(r, out_pixels, out_size) ? 1 : -1;
+}
+
+IMPLATFORM_API void ImPlatform_ReleaseReadback(ImPlatform_Readback readback)
+{
+    ImP12_Readback* r = (ImP12_Readback*)readback;
+    if (!r)
+        return;
+    ImP12_DeferRelease(r->buffer);      // The copy may still be in flight.
+    delete r;
+}
+
+// ---- Compute ----------------------------------------------------------------------------------------------------
+IMPLATFORM_API bool ImPlatform_SupportsCompute(void) { return true; }
+
+IMPLATFORM_API ImTextureID ImPlatform_CreateStorageTexture(const void* pixel_data, const ImPlatform_TextureDesc* desc)
+{
+    const ImTextureID id = ImP12_CreateTexture(desc, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS, false);     // Committed: starts zeroed.
+    ImP12_Texture* t = id ? ImP12_Find(id) : NULL;
+    if (t && pixel_data && !ImP12_Upload_Region(*t, pixel_data, 0, 0, t->w, t->h))
+        return NULL;
+    return id;
+}
+
+IMPLATFORM_API bool ImPlatform_DispatchCompute(ImPlatform_Shader compute_shader, const ImTextureID* inputs, unsigned int input_count,
+                                               const ImTextureID* outputs, unsigned int output_count, const void* constants,
+                                               unsigned int constants_size, unsigned int groups_x, unsigned int groups_y, unsigned int groups_z)
+{
+    ImPlatform_ShaderData_DX12* cs = (ImPlatform_ShaderData_DX12*)compute_shader;
+    if (!cs || cs->stage != ImPlatform_ShaderStage_Compute || !cs->pBlob || input_count > 8 || output_count > 8 || (input_count && !inputs)
+        || (output_count && !outputs) || (constants_size && !constants))
+        return false;
+    ID3D12GraphicsCommandList* list = ImP12_List();
+    if (!list)
+        return false;
+    if (!cs->pComputePSO)
+    {
+        D3D12_COMPUTE_PIPELINE_STATE_DESC pd = {};
+        pd.pRootSignature = g_P12.compute_rs;
+        pd.CS = { cs->pBlob->GetBufferPointer(), cs->pBlob->GetBufferSize() };
+        if (FAILED(g_GfxData.pDevice->CreateComputePipelineState(&pd, IID_PPV_ARGS(&cs->pComputePSO))))
+            return false;
+    }
+    ImP12_Texture* ins[8] = {};
+    ImP12_Texture* outs[8] = {};
+    D3D12_CPU_DESCRIPTOR_HANDLE srvs[8], uavs[8];
+    for (int i = 0; i < 8; i++)
+    {
+        srvs[i] = g_P12.null_srv;
+        uavs[i] = g_P12.null_uav;
+    }
+    for (unsigned i = 0; i < input_count; i++)
+    {
+        ins[i] = ImP12_Find(inputs[i]);
+        if (!ins[i])
+            return false;
+        srvs[i] = ins[i]->srv;
+    }
+    for (unsigned i = 0; i < output_count; i++)
+    {
+        outs[i] = ImP12_Find(outputs[i]);
+        if (!outs[i] || !outs[i]->uav.ptr)
+            return false;       // Not a storage texture.
+        uavs[i] = outs[i]->uav;
+    }
+    ImP12_Upload cb = {};
+    if (constants_size)
+    {
+        if (!ImP12_Alloc((constants_size + 255u) & ~255u, 256, &cb))
+            return false;
+        memcpy(cb.cpu, constants, constants_size);
+    }
+    else if (!ImP12_Alloc(256, 256, &cb))
+        return false;
+    for (unsigned i = 0; i < input_count; i++)
+        ImP12_Transition(list, *ins[i], D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+    for (unsigned i = 0; i < output_count; i++)
+        ImP12_Transition(list, *outs[i], D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+    list->SetComputeRootSignature(g_P12.compute_rs);
+    list->SetPipelineState(cs->pComputePSO);
+    list->SetComputeRootConstantBufferView(0, cb.gpu);
+    list->SetComputeRootDescriptorTable(1, ImP12_Table(srvs, 8));
+    list->SetComputeRootDescriptorTable(2, ImP12_Table(uavs, 8));
+    list->Dispatch(groups_x, groups_y, groups_z);
+    for (unsigned i = 0; i < output_count; i++)
+        ImP12_Transition(list, *outs[i], outs[i]->rest);
+    for (unsigned i = 0; i < input_count; i++)
+        ImP12_Transition(list, *ins[i], ins[i]->rest);
+    return true;
+}
+
+// ---- Depth-tested drawing ---------------------------------------------------------------------------------------
+IMPLATFORM_API bool ImPlatform_SupportsDepthDraw(void) { return true; }
+
+IMPLATFORM_API bool ImPlatform_DrawMesh(const ImPlatform_DrawMeshDesc* desc)
+{
+    if (!desc || !desc->program || !desc->vertices || !desc->indices || desc->texture_count > 4 || (desc->texture_count && !desc->textures)
+        || !g_P12.active_rt)
+        return false;
+    ImPlatform_ShaderProgramData_DX12* prog = (ImPlatform_ShaderProgramData_DX12*)desc->program;
+    ImPlatform_BufferData_DX12* vb = (ImPlatform_BufferData_DX12*)desc->vertices;
+    ImPlatform_BufferData_DX12* ib = (ImPlatform_BufferData_DX12*)desc->indices;
+    if (!prog->pVSBlob || !prog->pPSBlob || vb->is_index || !ib->is_index || desc->index_count > ib->ib_desc.index_count)
+        return false;
+    ID3D12GraphicsCommandList* list = ImP12_List();
+    if (!list)
+        return false;
+    // Pipeline per (program, layout, target format, depth, blend, cull).
+    static std::unordered_map<std::string, ID3D12PipelineState*> pso_cache;
+    ImP12_Texture& rt = *g_P12.active_rt;
+    char key[256];
+    snprintf(key, sizeof(key), "%p|%u|%d|%d%d%d%d|%d", (void*)prog, vb->vb_desc.vertex_stride, (int)rt.format, desc->depth_test, desc->depth_write,
+             desc->alpha_blend, desc->cull_back, rt.dsv.ptr != 0);
+    std::string k = key;
+    for (const ImPlatform_VertexAttribute& a : vb->attributes)
+        k += "|" + std::to_string((int)a.format) + ":" + std::to_string(a.offset);
+    ID3D12PipelineState*& pso = pso_cache[k];
+    if (!pso)
+    {
+        std::vector<D3D12_INPUT_ELEMENT_DESC> layout;
+        std::vector<std::pair<std::string, UINT>> names;     // Semantic name and index ("TEXCOORD1" -> TEXCOORD, 1).
+        for (size_t i = 0; i < vb->attributes.size(); i++)
+        {
+            std::string s = vb->semantics[i];
+            UINT index = 0;
+            while (!s.empty() && s.back() >= '0' && s.back() <= '9')
+                s.pop_back();
+            if (s.size() < vb->semantics[i].size())
+                index = (UINT)atoi(vb->semantics[i].c_str() + s.size());
+            names.push_back({ s, index });
+        }
+        for (size_t i = 0; i < vb->attributes.size(); i++)
+        {
+            DXGI_FORMAT f = DXGI_FORMAT_R32G32B32_FLOAT;
+            switch (vb->attributes[i].format)
+            {
+            case ImPlatform_VertexFormat_Float: f = DXGI_FORMAT_R32_FLOAT; break;
+            case ImPlatform_VertexFormat_Float2: f = DXGI_FORMAT_R32G32_FLOAT; break;
+            case ImPlatform_VertexFormat_Float3: f = DXGI_FORMAT_R32G32B32_FLOAT; break;
+            case ImPlatform_VertexFormat_Float4: f = DXGI_FORMAT_R32G32B32A32_FLOAT; break;
+            case ImPlatform_VertexFormat_UByte4: f = DXGI_FORMAT_R8G8B8A8_UINT; break;
+            case ImPlatform_VertexFormat_UByte4N: f = DXGI_FORMAT_R8G8B8A8_UNORM; break;
+            default: break;
+            }
+            layout.push_back({ names[i].first.c_str(), names[i].second, f, 0, vb->attributes[i].offset, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 });
+        }
+        D3D12_GRAPHICS_PIPELINE_STATE_DESC pd = {};
+        pd.pRootSignature = g_P12.graphics_rs;
+        pd.VS = { prog->pVSBlob->GetBufferPointer(), prog->pVSBlob->GetBufferSize() };
+        pd.PS = { prog->pPSBlob->GetBufferPointer(), prog->pPSBlob->GetBufferSize() };
+        pd.InputLayout = { layout.data(), (UINT)layout.size() };
+        pd.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+        pd.NumRenderTargets = 1;
+        pd.RTVFormats[0] = rt.format;
+        pd.DSVFormat = rt.dsv.ptr ? DXGI_FORMAT_D32_FLOAT : DXGI_FORMAT_UNKNOWN;
+        pd.SampleDesc.Count = 1;
+        pd.SampleMask = UINT_MAX;
+        pd.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
+        pd.RasterizerState.CullMode = desc->cull_back ? D3D12_CULL_MODE_BACK : D3D12_CULL_MODE_NONE;
+        pd.RasterizerState.FrontCounterClockwise = TRUE;
+        pd.RasterizerState.DepthClipEnable = TRUE;
+        D3D12_RENDER_TARGET_BLEND_DESC& b = pd.BlendState.RenderTarget[0];
+        b.BlendEnable = desc->alpha_blend;
+        b.SrcBlend = D3D12_BLEND_SRC_ALPHA;
+        b.DestBlend = D3D12_BLEND_INV_SRC_ALPHA;
+        b.BlendOp = D3D12_BLEND_OP_ADD;
+        b.SrcBlendAlpha = D3D12_BLEND_ONE;
+        b.DestBlendAlpha = D3D12_BLEND_INV_SRC_ALPHA;
+        b.BlendOpAlpha = D3D12_BLEND_OP_ADD;
+        b.LogicOp = D3D12_LOGIC_OP_NOOP;
+        b.RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
+        pd.DepthStencilState.DepthEnable = rt.dsv.ptr && (desc->depth_test || desc->depth_write);
+        pd.DepthStencilState.DepthWriteMask = desc->depth_write ? D3D12_DEPTH_WRITE_MASK_ALL : D3D12_DEPTH_WRITE_MASK_ZERO;
+        pd.DepthStencilState.DepthFunc = desc->depth_test ? D3D12_COMPARISON_FUNC_LESS_EQUAL : D3D12_COMPARISON_FUNC_ALWAYS;
+        if (FAILED(g_GfxData.pDevice->CreateGraphicsPipelineState(&pd, IID_PPV_ARGS(&pso))))
+        {
+            pso = NULL;
+            pso_cache.erase(k);
+            return false;
+        }
+    }
+    ImP12_Upload vcb = {}, pcb = {};
+    if (!ImP12_Alloc(std::max(256u, (desc->vs_constants_size + 255u) & ~255u), 256, &vcb) || !ImP12_Alloc(std::max(256u, (desc->ps_constants_size + 255u) & ~255u), 256, &pcb))
+        return false;
+    if (desc->vs_constants_size)
+        memcpy(vcb.cpu, desc->vs_constants, desc->vs_constants_size);
+    if (desc->ps_constants_size)
+        memcpy(pcb.cpu, desc->ps_constants, desc->ps_constants_size);
+    D3D12_CPU_DESCRIPTOR_HANDLE srvs[4] = { g_P12.null_srv, g_P12.null_srv, g_P12.null_srv, g_P12.null_srv };
+    for (unsigned i = 0; i < desc->texture_count; i++)
+    {
+        ImP12_Texture* t = ImP12_Find(desc->textures[i]);
+        if (!t || t == &rt)
+            return false;
+        srvs[i] = t->srv;       // Resting textures are shader-readable.
+    }
+    list->SetGraphicsRootSignature(g_P12.graphics_rs);
+    list->SetPipelineState(pso);
+    list->SetGraphicsRootConstantBufferView(0, vcb.gpu);
+    list->SetGraphicsRootConstantBufferView(1, pcb.gpu);
+    list->SetGraphicsRootDescriptorTable(2, ImP12_Table(srvs, 4));
+    D3D12_VERTEX_BUFFER_VIEW vbv = { vb->res->GetGPUVirtualAddress(), (UINT)vb->size, vb->vb_desc.vertex_stride };
+    D3D12_INDEX_BUFFER_VIEW ibv = { ib->res->GetGPUVirtualAddress(), (UINT)ib->size,
+                                    ib->ib_desc.format == ImPlatform_IndexFormat_UInt16 ? DXGI_FORMAT_R16_UINT : DXGI_FORMAT_R32_UINT };
+    list->IASetVertexBuffers(0, 1, &vbv);
+    list->IASetIndexBuffer(&ibv);
+    list->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    list->DrawIndexedInstanced(desc->index_count, 1, 0, 0, 0);
+    return true;
+}
+
+// Releases everything the resource layer still holds (after the GPU is idle, at shutdown).
+static void ImPlatform_DX12_ReleaseAll()
+{
+    if (!g_P12.ready)
+        return;
+    for (ImP12_Release& r : g_P12.pending_releases)
+        g_P12.releases.push_back(r);
+    g_P12.pending_releases.clear();
+    for (ImP12_Release& r : g_P12.releases)
+        r.fence = 0;
+    ImP12_ProcessReleases();
+    for (auto& kv : g_P12.textures)
+    {
+        if (kv.second.res) kv.second.res->Release();
+        if (kv.second.depth) kv.second.depth->Release();
+    }
+    g_P12.textures.clear();
+    for (auto& p : g_P12.pages)
+        p.res->Release();
+    g_P12.pages.clear();
+    for (auto& a : g_P12.allocators)
+        if (a) a->Release();
+    if (g_P12.list) g_P12.list->Release();
+    if (g_P12.transient) g_P12.transient->Release();
+    for (ImP12_Simple_Alloc* h : { &g_P12.cpu_srv, &g_P12.rtv, &g_P12.dsv })
+        if (h->heap) h->heap->Release();
+    if (g_P12.compute_rs) g_P12.compute_rs->Release();
+    if (g_P12.graphics_rs) g_P12.graphics_rs->Release();
+    g_P12 = ImP12_State();
 }
 
 #endif // IM_GFX_DIRECTX12

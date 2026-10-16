@@ -1610,6 +1610,88 @@ IMPLATFORM_API bool ImPlatform_ReadTexture(ImTextureID texture, unsigned int x, 
     return true;
 }
 
+// Non-blocking readback: the region is copied into a staging texture and an event query marks the copy; polling
+// maps the staging texture only once the query reports completion (never stalls).
+struct ImPlatform_Readback_t
+{
+    ID3D11Texture2D* staging;
+    ID3D11Query* done;
+    unsigned int width, height, bpp;
+};
+
+IMPLATFORM_API ImPlatform_Readback ImPlatform_BeginReadTexture(ImTextureID texture, unsigned int x, unsigned int y, unsigned int width, unsigned int height)
+{
+    if (!texture || !width || !height || !g_GfxData.pDevice || !g_GfxData.pDeviceContext)
+        return NULL;
+    ID3D11Resource* res = NULL;
+    ((ID3D11ShaderResourceView*)texture)->GetResource(&res);
+    ID3D11Texture2D* tex = NULL;
+    if (!res || FAILED(res->QueryInterface(__uuidof(ID3D11Texture2D), (void**)&tex)) || !tex)
+    {
+        if (res) res->Release();
+        return NULL;
+    }
+    res->Release();
+    D3D11_TEXTURE2D_DESC desc;
+    tex->GetDesc(&desc);
+    const int bpp = ImPlatform_DX11_BytesPerPixel(desc.Format);
+    D3D11_TEXTURE2D_DESC sd = {};
+    sd.Width = width;
+    sd.Height = height;
+    sd.MipLevels = 1;
+    sd.ArraySize = 1;
+    sd.Format = desc.Format;
+    sd.SampleDesc.Count = 1;
+    sd.Usage = D3D11_USAGE_STAGING;
+    sd.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+    ImPlatform_Readback_t* r = new ImPlatform_Readback_t();
+    D3D11_QUERY_DESC qd = { D3D11_QUERY_EVENT, 0 };
+    if (!bpp || x + width > desc.Width || y + height > desc.Height || FAILED(g_GfxData.pDevice->CreateTexture2D(&sd, NULL, &r->staging))
+        || FAILED(g_GfxData.pDevice->CreateQuery(&qd, &r->done)))
+    {
+        if (r->staging) r->staging->Release();
+        delete r;
+        tex->Release();
+        return NULL;
+    }
+    D3D11_BOX box = { x, y, 0, x + width, y + height, 1 };
+    g_GfxData.pDeviceContext->CopySubresourceRegion(r->staging, 0, 0, 0, 0, tex, 0, &box);
+    g_GfxData.pDeviceContext->End(r->done);
+    tex->Release();
+    r->width = width;
+    r->height = height;
+    r->bpp = (unsigned int)bpp;
+    return r;
+}
+
+IMPLATFORM_API int ImPlatform_PollReadback(ImPlatform_Readback r, void* out_pixels, size_t out_size)
+{
+    if (!r || !out_pixels || out_size < (size_t)r->width * r->height * r->bpp)
+        return -1;
+    if (g_GfxData.pDeviceContext->GetData(r->done, NULL, 0, D3D11_ASYNC_GETDATA_DONOTFLUSH) != S_OK)
+        return 0;
+    D3D11_MAPPED_SUBRESOURCE mapped;
+    const HRESULT hr = g_GfxData.pDeviceContext->Map(r->staging, 0, D3D11_MAP_READ, D3D11_MAP_FLAG_DO_NOT_WAIT, &mapped);
+    if (hr == DXGI_ERROR_WAS_STILL_DRAWING)
+        return 0;
+    if (FAILED(hr))
+        return -1;
+    const size_t row = (size_t)r->width * r->bpp;
+    for (unsigned int y = 0; y < r->height; y++)
+        memcpy((unsigned char*)out_pixels + y * row, (const unsigned char*)mapped.pData + (size_t)y * mapped.RowPitch, row);
+    g_GfxData.pDeviceContext->Unmap(r->staging, 0);
+    return 1;
+}
+
+IMPLATFORM_API void ImPlatform_ReleaseReadback(ImPlatform_Readback r)
+{
+    if (!r)
+        return;
+    r->staging->Release();
+    r->done->Release();
+    delete r;
+}
+
 // ------------------- Compute -------------------
 IMPLATFORM_API bool ImPlatform_SupportsCompute(void) { return true; }
 

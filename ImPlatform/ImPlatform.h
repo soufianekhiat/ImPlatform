@@ -915,7 +915,7 @@ IMPLATFORM_API void ImPlatform_DrawCustomShaderQuad(
 // ============================================================================
 // Readback and Compute API (optional capabilities)
 // ============================================================================
-// Query support first: backends without it return false / NULL. Implemented on DirectX 11.
+// Query support first: backends without it return false / NULL. Implemented on DirectX 11 and DirectX 12.
 
 IMPLATFORM_API bool ImPlatform_SupportsReadback(void);
 
@@ -925,6 +925,15 @@ IMPLATFORM_API bool ImPlatform_SupportsReadback(void);
 // out_size must be at least width * height * bytes per pixel.
 IMPLATFORM_API bool ImPlatform_ReadTexture(ImTextureID texture, unsigned int x, unsigned int y,
                                            unsigned int width, unsigned int height, void* out_pixels, size_t out_size);
+
+// Non-blocking readback: the copy is queued (and submitted) now; poll until it reports ready, typically one or two
+// frames later. Poll returns 1 when out_pixels was filled, 0 while the GPU is still working, -1 on failure.
+// Release every readback (also after a successful poll). Same pixel layout as ImPlatform_ReadTexture.
+typedef struct ImPlatform_Readback_t* ImPlatform_Readback;
+IMPLATFORM_API ImPlatform_Readback ImPlatform_BeginReadTexture(ImTextureID texture, unsigned int x, unsigned int y,
+                                                               unsigned int width, unsigned int height);
+IMPLATFORM_API int  ImPlatform_PollReadback(ImPlatform_Readback readback, void* out_pixels, size_t out_size);
+IMPLATFORM_API void ImPlatform_ReleaseReadback(ImPlatform_Readback readback);
 
 IMPLATFORM_API bool ImPlatform_SupportsCompute(void);
 
@@ -943,7 +952,7 @@ IMPLATFORM_API bool ImPlatform_DispatchCompute(ImPlatform_Shader compute_shader,
                                                unsigned int groups_x, unsigned int groups_y, unsigned int groups_z);
 
 // ============================================================================
-// Depth-tested immediate drawing (optional capability; implemented on DirectX 11)
+// Depth-tested immediate drawing (optional capability; implemented on DirectX 11 and DirectX 12)
 // ============================================================================
 // Meshes drawn into a render texture with a depth buffer, outside the ImGui render callbacks (e.g. a 3D viewport
 // rendered before ImGui::Render and shown with ImGui::Image).
@@ -1234,7 +1243,10 @@ ImPlatform_BorderlessParams g_BorderlessParams = { 5, 100, 100, true, true };
 #endif
 
 // Backends without readback/compute (IM_GFX_CUSTOM applications provide their own).
-#if IM_CURRENT_GFX != IM_GFX_DIRECTX11 && IM_CURRENT_GFX != IM_GFX_CUSTOM
+#if IM_CURRENT_GFX != IM_GFX_DIRECTX11 && IM_CURRENT_GFX != IM_GFX_DIRECTX12 && IM_CURRENT_GFX != IM_GFX_CUSTOM
+IMPLATFORM_API ImPlatform_Readback ImPlatform_BeginReadTexture(ImTextureID, unsigned int, unsigned int, unsigned int, unsigned int) { return NULL; }
+IMPLATFORM_API int  ImPlatform_PollReadback(ImPlatform_Readback, void*, size_t) { return -1; }
+IMPLATFORM_API void ImPlatform_ReleaseReadback(ImPlatform_Readback) {}
 IMPLATFORM_API bool ImPlatform_SupportsReadback(void) { return false; }
 IMPLATFORM_API bool ImPlatform_ReadTexture(ImTextureID, unsigned int, unsigned int, unsigned int, unsigned int, void*, size_t) { return false; }
 IMPLATFORM_API bool ImPlatform_SupportsCompute(void) { return false; }
