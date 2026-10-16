@@ -952,6 +952,17 @@ IMPLATFORM_API bool ImPlatform_DispatchCompute(ImPlatform_Shader compute_shader,
                                                unsigned int groups_x, unsigned int groups_y, unsigned int groups_z);
 
 // ============================================================================
+// Device loss (implemented on DirectX 11 and DirectX 12; other backends report false)
+// ============================================================================
+// True once the graphics device has been removed or reset (driver update, TDR, unplugged adapter): every GPU
+// resource is gone and further rendering fails. The application keeps its CPU data and must recreate the device
+// (or restart) to draw again.
+IMPLATFORM_API bool ImPlatform_GfxDeviceLost(void);
+// Testing aid: removes the device on purpose where the API allows it (DirectX 12: ID3D12Device5::RemoveDevice);
+// returns false when unsupported.
+IMPLATFORM_API bool ImPlatform_GfxDebugRemoveDevice(void);
+
+// ============================================================================
 // Depth-tested immediate drawing (optional capability; implemented on DirectX 11 and DirectX 12)
 // ============================================================================
 // Meshes drawn into a render texture with a depth buffer, outside the ImGui render callbacks (e.g. a 3D viewport
@@ -1254,6 +1265,8 @@ IMPLATFORM_API ImTextureID ImPlatform_CreateStorageTexture(const void*, const Im
 IMPLATFORM_API bool ImPlatform_DispatchCompute(ImPlatform_Shader, const ImTextureID*, unsigned int, const ImTextureID*, unsigned int,
                                                const void*, unsigned int, unsigned int, unsigned int, unsigned int) { return false; }
 IMPLATFORM_API bool ImPlatform_SupportsDepthDraw(void) { return false; }
+IMPLATFORM_API bool ImPlatform_GfxDeviceLost(void) { return false; }
+IMPLATFORM_API bool ImPlatform_GfxDebugRemoveDevice(void) { return false; }
 IMPLATFORM_API ImTextureID ImPlatform_CreateRenderTextureWithDepth(const ImPlatform_TextureDesc*) { return (ImTextureID)0; }
 IMPLATFORM_API bool ImPlatform_DrawMesh(const ImPlatform_DrawMeshDesc*) { return false; }
 #endif

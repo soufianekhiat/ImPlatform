@@ -2420,6 +2420,21 @@ IMPLATFORM_API bool ImPlatform_DispatchCompute(ImPlatform_Shader compute_shader,
 }
 
 // ---- Depth-tested drawing ---------------------------------------------------------------------------------------
+IMPLATFORM_API bool ImPlatform_GfxDeviceLost(void)
+{
+    return g_GfxData.pDevice && g_GfxData.pDevice->GetDeviceRemovedReason() != S_OK;
+}
+
+IMPLATFORM_API bool ImPlatform_GfxDebugRemoveDevice(void)
+{
+    ID3D12Device5* d5 = NULL;
+    if (!g_GfxData.pDevice || FAILED(g_GfxData.pDevice->QueryInterface(IID_PPV_ARGS(&d5))))
+        return false;
+    d5->RemoveDevice();
+    d5->Release();
+    return true;
+}
+
 IMPLATFORM_API bool ImPlatform_SupportsDepthDraw(void) { return true; }
 
 IMPLATFORM_API bool ImPlatform_DrawMesh(const ImPlatform_DrawMeshDesc* desc)

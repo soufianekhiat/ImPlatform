@@ -2003,6 +2003,13 @@ IMPLATFORM_API bool ImPlatform_SetShaderTexture(ImPlatform_ShaderProgram program
 }
 
 // ------------------- Depth-tested immediate drawing -------------------
+IMPLATFORM_API bool ImPlatform_GfxDeviceLost(void)
+{
+    return g_GfxData.pDevice && g_GfxData.pDevice->GetDeviceRemovedReason() != S_OK;
+}
+
+IMPLATFORM_API bool ImPlatform_GfxDebugRemoveDevice(void) { return false; }     // No supported way on DirectX 11.
+
 IMPLATFORM_API bool ImPlatform_SupportsDepthDraw(void) { return true; }
 
 IMPLATFORM_API ImTextureID ImPlatform_CreateRenderTextureWithDepth(const ImPlatform_TextureDesc* desc)
