@@ -913,6 +913,36 @@ IMPLATFORM_API void ImPlatform_DrawCustomShaderQuad(
 );
 
 // ============================================================================
+// Readback and Compute API (optional capabilities)
+// ============================================================================
+// Query support first: backends without it return false / NULL. Implemented on DirectX 11.
+
+IMPLATFORM_API bool ImPlatform_SupportsReadback(void);
+
+// Copy a width x height region of a 2D texture (from ImPlatform_CreateTexture, ImPlatform_CreateRenderTexture or
+// ImPlatform_CreateStorageTexture) to CPU memory: rows tightly packed, in the texture's pixel format.
+// Synchronous: returns once the GPU work writing the texture has completed (it doubles as a fence).
+// out_size must be at least width * height * bytes per pixel.
+IMPLATFORM_API bool ImPlatform_ReadTexture(ImTextureID texture, unsigned int x, unsigned int y,
+                                           unsigned int width, unsigned int height, void* out_pixels, size_t out_size);
+
+IMPLATFORM_API bool ImPlatform_SupportsCompute(void);
+
+// Create a texture that compute shaders can write (UAV / storage image) and that ImGui can draw.
+// pixel_data may be NULL (the texture starts zeroed). Destroy with ImPlatform_DestroyTexture.
+IMPLATFORM_API ImTextureID ImPlatform_CreateStorageTexture(const void* pixel_data, const ImPlatform_TextureDesc* desc);
+
+// Run a compute shader (ImPlatform_CreateShader with ImPlatform_ShaderStage_Compute).
+// HLSL bindings: inputs -> t0.. (read-only), outputs -> u0.. (storage textures), constants -> b0 (may be NULL),
+// s0 = linear clamp sampler. Bindings are cleared afterwards so outputs can be drawn or read back.
+// Call outside the ImGui render callbacks (e.g. before ImGui::Render); work is ordered with later drawing.
+IMPLATFORM_API bool ImPlatform_DispatchCompute(ImPlatform_Shader compute_shader,
+                                               const ImTextureID* inputs, unsigned int input_count,
+                                               const ImTextureID* outputs, unsigned int output_count,
+                                               const void* constants, unsigned int constants_size,
+                                               unsigned int groups_x, unsigned int groups_y, unsigned int groups_z);
+
+// ============================================================================
 // Core API Functions
 // ============================================================================
 
@@ -1171,6 +1201,16 @@ ImPlatform_BorderlessParams g_BorderlessParams = { 5, 100, 100, true, true };
     // graphics entry points (see IM_GFX_CUSTOM at the top of this file).
 #else
     #error "Unknown or unsupported IM_CURRENT_GFX backend"
+#endif
+
+// Backends without readback/compute (IM_GFX_CUSTOM applications provide their own).
+#if IM_CURRENT_GFX != IM_GFX_DIRECTX11 && IM_CURRENT_GFX != IM_GFX_CUSTOM
+IMPLATFORM_API bool ImPlatform_SupportsReadback(void) { return false; }
+IMPLATFORM_API bool ImPlatform_ReadTexture(ImTextureID, unsigned int, unsigned int, unsigned int, unsigned int, void*, size_t) { return false; }
+IMPLATFORM_API bool ImPlatform_SupportsCompute(void) { return false; }
+IMPLATFORM_API ImTextureID ImPlatform_CreateStorageTexture(const void*, const ImPlatform_TextureDesc*) { return (ImTextureID)0; }
+IMPLATFORM_API bool ImPlatform_DispatchCompute(ImPlatform_Shader, const ImTextureID*, unsigned int, const ImTextureID*, unsigned int,
+                                               const void*, unsigned int, unsigned int, unsigned int, unsigned int) { return false; }
 #endif
 
 // Include platform backend implementation
