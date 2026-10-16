@@ -943,6 +943,36 @@ IMPLATFORM_API bool ImPlatform_DispatchCompute(ImPlatform_Shader compute_shader,
                                                unsigned int groups_x, unsigned int groups_y, unsigned int groups_z);
 
 // ============================================================================
+// Depth-tested immediate drawing (optional capability; implemented on DirectX 11)
+// ============================================================================
+// Meshes drawn into a render texture with a depth buffer, outside the ImGui render callbacks (e.g. a 3D viewport
+// rendered before ImGui::Render and shown with ImGui::Image).
+
+IMPLATFORM_API bool ImPlatform_SupportsDepthDraw(void);
+
+// Like ImPlatform_CreateRenderTexture, plus a 32-bit depth buffer that ImPlatform_BeginRenderToTexture binds and
+// clears to 1 (far). Destroy with ImPlatform_DestroyTexture.
+IMPLATFORM_API ImTextureID ImPlatform_CreateRenderTextureWithDepth(const ImPlatform_TextureDesc* desc);
+
+typedef struct ImPlatform_DrawMeshDesc {
+    ImPlatform_ShaderProgram program;       // Vertex + fragment program; HLSL constants at b0 in each stage.
+    ImPlatform_VertexBuffer  vertices;      // With an input layout (ImPlatform_CreateVertexInputLayout).
+    ImPlatform_IndexBuffer   indices;
+    unsigned int index_count;
+    const void*  vs_constants;  unsigned int vs_constants_size;
+    const void*  ps_constants;  unsigned int ps_constants_size;
+    const ImTextureID* textures; unsigned int texture_count;   // Pixel stage t0..; s0 = linear clamp sampler.
+    bool depth_test;        // Less-equal against the bound depth buffer.
+    bool depth_write;
+    bool alpha_blend;       // Straight alpha "over"; otherwise opaque.
+    bool cull_back;         // Counterclockwise front faces are kept.
+} ImPlatform_DrawMeshDesc;
+
+// One indexed triangle-list draw into the current render target (call between ImPlatform_BeginRenderToTexture and
+// ImPlatform_EndRenderToTexture). Returns false when unsupported or on invalid input.
+IMPLATFORM_API bool ImPlatform_DrawMesh(const ImPlatform_DrawMeshDesc* desc);
+
+// ============================================================================
 // Core API Functions
 // ============================================================================
 
@@ -1211,6 +1241,9 @@ IMPLATFORM_API bool ImPlatform_SupportsCompute(void) { return false; }
 IMPLATFORM_API ImTextureID ImPlatform_CreateStorageTexture(const void*, const ImPlatform_TextureDesc*) { return (ImTextureID)0; }
 IMPLATFORM_API bool ImPlatform_DispatchCompute(ImPlatform_Shader, const ImTextureID*, unsigned int, const ImTextureID*, unsigned int,
                                                const void*, unsigned int, unsigned int, unsigned int, unsigned int) { return false; }
+IMPLATFORM_API bool ImPlatform_SupportsDepthDraw(void) { return false; }
+IMPLATFORM_API ImTextureID ImPlatform_CreateRenderTextureWithDepth(const ImPlatform_TextureDesc*) { return (ImTextureID)0; }
+IMPLATFORM_API bool ImPlatform_DrawMesh(const ImPlatform_DrawMeshDesc*) { return false; }
 #endif
 
 // Include platform backend implementation

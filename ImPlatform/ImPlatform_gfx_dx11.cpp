@@ -27,6 +27,7 @@ unsigned int g_ImPlatform_BackbufferH = 0;
 struct ImPlatform_RTTracking_DX11 {
     ID3D11ShaderResourceView*  pSRV;
     ID3D11RenderTargetView*    pRTV;
+    ID3D11DepthStencilView*    pDSV;    // Optional (ImPlatform_CreateRenderTextureWithDepth).
     unsigned int               width, height;
     ImPlatform_RTTracking_DX11* next;
 };
@@ -806,8 +807,10 @@ IMPLATFORM_API bool ImPlatform_BeginRenderToTexture(ImTextureID texture)
     ID3D11ShaderResourceView* nullSRV = NULL;
     g_GfxData.pDeviceContext->PSSetShaderResources(0, 1, &nullSRV);
 
-    // Set new render target
-    g_GfxData.pDeviceContext->OMSetRenderTargets(1, &entry->pRTV, NULL);
+    // Set new render target (and its depth buffer, cleared to far)
+    g_GfxData.pDeviceContext->OMSetRenderTargets(1, &entry->pRTV, entry->pDSV);
+    if (entry->pDSV)
+        g_GfxData.pDeviceContext->ClearDepthStencilView(entry->pDSV, D3D11_CLEAR_DEPTH, 1.0f, 0);
 
     // Set viewport and scissor to match texture size
     D3D11_VIEWPORT vp = {};
@@ -908,6 +911,17 @@ IMPLATFORM_API void ImPlatform_DestroyTexture(ImTextureID texture_id)
         return;
 
     ID3D11ShaderResourceView* pSRV = (ID3D11ShaderResourceView*)texture_id;
+    for (ImPlatform_RTTracking_DX11** e = &g_RTTrackingHead; *e; e = &(*e)->next)
+        if ((*e)->pSRV == pSRV)
+        {
+            ImPlatform_RTTracking_DX11* dead = *e;
+            *e = dead->next;
+            dead->pRTV->Release();
+            if (dead->pDSV)
+                dead->pDSV->Release();
+            delete dead;
+            break;
+        }
     for (ImPlatform_StorageTracking_DX11** e = &g_StorageTrackingHead; *e; e = &(*e)->next)
         if ((*e)->pSRV == pSRV)
         {
@@ -1903,6 +1917,150 @@ IMPLATFORM_API bool ImPlatform_SetShaderTexture(ImPlatform_ShaderProgram program
     ID3D11ShaderResourceView* pSRV = (ID3D11ShaderResourceView*)texture;
     g_GfxData.pDeviceContext->PSSetShaderResources(slot, 1, &pSRV);
 
+    return true;
+}
+
+// ------------------- Depth-tested immediate drawing -------------------
+IMPLATFORM_API bool ImPlatform_SupportsDepthDraw(void) { return true; }
+
+IMPLATFORM_API ImTextureID ImPlatform_CreateRenderTextureWithDepth(const ImPlatform_TextureDesc* desc)
+{
+    ImTextureID tex = ImPlatform_CreateRenderTexture(desc);
+    if (!tex)
+        return NULL;
+    ImPlatform_RTTracking_DX11* entry = g_RTTrackingHead;
+    while (entry && entry->pSRV != (ID3D11ShaderResourceView*)tex)
+        entry = entry->next;
+    D3D11_TEXTURE2D_DESC dd = {};
+    dd.Width = desc->width;
+    dd.Height = desc->height;
+    dd.MipLevels = 1;
+    dd.ArraySize = 1;
+    dd.Format = DXGI_FORMAT_D32_FLOAT;
+    dd.SampleDesc.Count = 1;
+    dd.Usage = D3D11_USAGE_DEFAULT;
+    dd.BindFlags = D3D11_BIND_DEPTH_STENCIL;
+    ID3D11Texture2D* depth = NULL;
+    if (!entry || FAILED(g_GfxData.pDevice->CreateTexture2D(&dd, NULL, &depth)) || !depth)
+    {
+        ImPlatform_DestroyTexture(tex);
+        return NULL;
+    }
+    const HRESULT hr = g_GfxData.pDevice->CreateDepthStencilView(depth, NULL, &entry->pDSV);
+    depth->Release();
+    if (FAILED(hr))
+    {
+        ImPlatform_DestroyTexture(tex);
+        return NULL;
+    }
+    return tex;
+}
+
+IMPLATFORM_API bool ImPlatform_DrawMesh(const ImPlatform_DrawMeshDesc* desc)
+{
+    ID3D11DeviceContext* ctx = g_GfxData.pDeviceContext;
+    if (!desc || !desc->program || !desc->vertices || !desc->indices || !ctx || desc->texture_count > 16
+        || (desc->texture_count && !desc->textures))
+        return false;
+    ImPlatform_ShaderProgramData_DX11* prog = (ImPlatform_ShaderProgramData_DX11*)desc->program;
+    ImPlatform_BufferData_DX11* vb = (ImPlatform_BufferData_DX11*)desc->vertices;
+    ImPlatform_BufferData_DX11* ib = (ImPlatform_BufferData_DX11*)desc->indices;
+    if (!prog->pVertexShader || !prog->pPixelShader || !vb->pVertexBuffer || !vb->pInputLayout || !ib->pIndexBuffer
+        || desc->index_count > ib->ib_desc.index_count)
+        return false;
+
+    // Fixed-function states, created once.
+    static ID3D11DepthStencilState* depth_states[2][2] = {};    // [test][write]
+    static ID3D11BlendState* blend_states[2] = {};              // [alpha]
+    static ID3D11RasterizerState* raster_states[2] = {};        // [cull back]
+    const int dt = desc->depth_test ? 1 : 0, dw = desc->depth_write ? 1 : 0, ab = desc->alpha_blend ? 1 : 0, cb = desc->cull_back ? 1 : 0;
+    if (!depth_states[dt][dw])
+    {
+        D3D11_DEPTH_STENCIL_DESC d = {};
+        d.DepthEnable = dt || dw;
+        d.DepthWriteMask = dw ? D3D11_DEPTH_WRITE_MASK_ALL : D3D11_DEPTH_WRITE_MASK_ZERO;
+        d.DepthFunc = dt ? D3D11_COMPARISON_LESS_EQUAL : D3D11_COMPARISON_ALWAYS;
+        g_GfxData.pDevice->CreateDepthStencilState(&d, &depth_states[dt][dw]);
+    }
+    if (!blend_states[ab])
+    {
+        D3D11_BLEND_DESC b = {};
+        b.RenderTarget[0].BlendEnable = ab;
+        b.RenderTarget[0].SrcBlend = D3D11_BLEND_SRC_ALPHA;
+        b.RenderTarget[0].DestBlend = D3D11_BLEND_INV_SRC_ALPHA;
+        b.RenderTarget[0].BlendOp = D3D11_BLEND_OP_ADD;
+        b.RenderTarget[0].SrcBlendAlpha = D3D11_BLEND_ONE;
+        b.RenderTarget[0].DestBlendAlpha = D3D11_BLEND_INV_SRC_ALPHA;
+        b.RenderTarget[0].BlendOpAlpha = D3D11_BLEND_OP_ADD;
+        b.RenderTarget[0].RenderTargetWriteMask = D3D11_COLOR_WRITE_ENABLE_ALL;
+        g_GfxData.pDevice->CreateBlendState(&b, &blend_states[ab]);
+    }
+    if (!raster_states[cb])
+    {
+        D3D11_RASTERIZER_DESC r = {};
+        r.FillMode = D3D11_FILL_SOLID;
+        r.CullMode = cb ? D3D11_CULL_BACK : D3D11_CULL_NONE;
+        r.FrontCounterClockwise = TRUE;
+        r.DepthClipEnable = TRUE;
+        g_GfxData.pDevice->CreateRasterizerState(&r, &raster_states[cb]);
+    }
+    if (!depth_states[dt][dw] || !blend_states[ab] || !raster_states[cb])
+        return false;
+
+    // Per-draw constant buffers (16-byte padded).
+    auto make_cb = [&](const void* data, unsigned int size) -> ID3D11Buffer* {
+        if (!data || !size)
+            return NULL;
+        D3D11_BUFFER_DESC bd = {};
+        bd.ByteWidth = (size + 15u) & ~15u;
+        bd.Usage = D3D11_USAGE_DEFAULT;
+        bd.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
+        void* padded = calloc(1, bd.ByteWidth);
+        if (!padded)
+            return NULL;
+        memcpy(padded, data, size);
+        D3D11_SUBRESOURCE_DATA init = { padded, 0, 0 };
+        ID3D11Buffer* buf = NULL;
+        g_GfxData.pDevice->CreateBuffer(&bd, &init, &buf);
+        free(padded);
+        return buf;
+    };
+    ID3D11Buffer* vcb = make_cb(desc->vs_constants, desc->vs_constants_size);
+    ID3D11Buffer* pcb = make_cb(desc->ps_constants, desc->ps_constants_size);
+
+    const UINT stride = vb->vb_desc.vertex_stride, offset = 0;
+    ctx->IASetInputLayout(vb->pInputLayout);
+    ctx->IASetVertexBuffers(0, 1, &vb->pVertexBuffer, &stride, &offset);
+    ctx->IASetIndexBuffer(ib->pIndexBuffer, ib->ib_desc.format == ImPlatform_IndexFormat_UInt16 ? DXGI_FORMAT_R16_UINT : DXGI_FORMAT_R32_UINT, 0);
+    ctx->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    ctx->VSSetShader(prog->pVertexShader, NULL, 0);
+    ctx->PSSetShader(prog->pPixelShader, NULL, 0);
+    ctx->GSSetShader(NULL, NULL, 0);
+    ctx->HSSetShader(NULL, NULL, 0);
+    ctx->DSSetShader(NULL, NULL, 0);
+    ctx->VSSetConstantBuffers(0, 1, &vcb);
+    ctx->PSSetConstantBuffers(0, 1, &pcb);
+    ID3D11ShaderResourceView* srvs[16] = {};
+    for (unsigned int i = 0; i < desc->texture_count; i++)
+        srvs[i] = (ID3D11ShaderResourceView*)desc->textures[i];
+    if (desc->texture_count)
+        ctx->PSSetShaderResources(0, desc->texture_count, srvs);
+    if (g_Samplers[1][0])
+        ctx->PSSetSamplers(0, 1, &g_Samplers[1][0]);
+    const float factor[4] = { 0, 0, 0, 0 };
+    ctx->OMSetDepthStencilState(depth_states[dt][dw], 0);
+    ctx->OMSetBlendState(blend_states[ab], factor, 0xffffffff);
+    ctx->RSSetState(raster_states[cb]);
+    ctx->DrawIndexed(desc->index_count, 0, 0);
+
+    // Unbind inputs so the textures can be render targets later.
+    ID3D11ShaderResourceView* none[16] = {};
+    if (desc->texture_count)
+        ctx->PSSetShaderResources(0, desc->texture_count, none);
+    if (vcb)
+        vcb->Release();
+    if (pcb)
+        pcb->Release();
     return true;
 }
 
