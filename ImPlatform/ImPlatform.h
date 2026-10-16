@@ -1161,6 +1161,8 @@ typedef struct ImPlatform_PenSample {
     bool   has_tilt;
     bool   in_contact;      // Tip touching the surface (false while hovering).
     bool   eraser;          // Inverted pen / eraser end.
+    bool   has_rotation;
+    float  rotation;        // Barrel rotation, degrees clockwise in [0, 360); valid when has_rotation.
 } ImPlatform_PenSample;
 
 IMPLATFORM_API bool ImPlatform_SupportsPen(void);

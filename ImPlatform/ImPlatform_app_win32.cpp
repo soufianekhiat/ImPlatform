@@ -59,6 +59,8 @@ static void ImPlatform_Win32_PenMessage(HWND hWnd, WPARAM wParam)
         s.time = (double)h.pointerInfo.PerformanceCount / (double)freq.QuadPart;
         s.in_contact = (h.pointerInfo.pointerFlags & POINTER_FLAG_INCONTACT) != 0;
         s.eraser = (h.penFlags & (PEN_FLAG_INVERTED | PEN_FLAG_ERASER)) != 0;
+        s.has_rotation = (h.penMask & PEN_MASK_ROTATION) != 0;
+        s.rotation = (float)h.rotation;
         ImPlatform_Pen_Push(&s);
     }
 }
