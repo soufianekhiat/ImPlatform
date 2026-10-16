@@ -961,6 +961,10 @@ IMPLATFORM_API bool ImPlatform_GfxDeviceLost(void);
 // Testing aid: removes the device on purpose where the API allows it (DirectX 12: ID3D12Device5::RemoveDevice);
 // returns false when unsupported.
 IMPLATFORM_API bool ImPlatform_GfxDebugRemoveDevice(void);
+// Recreates the device, swap chain and ImGui renderer backend on the same window (DirectX 12; other backends return
+// false). Call between frames, after destroying every texture, shader, program and buffer created on the old device:
+// they are all invalid afterwards and their IDs may be handed out again. Returns false when no device could be created.
+IMPLATFORM_API bool ImPlatform_GfxRecreateDevice(void);
 
 // ============================================================================
 // Depth-tested immediate drawing (optional capability; implemented on DirectX 11 and DirectX 12)
@@ -1267,6 +1271,7 @@ IMPLATFORM_API bool ImPlatform_DispatchCompute(ImPlatform_Shader, const ImTextur
 IMPLATFORM_API bool ImPlatform_SupportsDepthDraw(void) { return false; }
 IMPLATFORM_API bool ImPlatform_GfxDeviceLost(void) { return false; }
 IMPLATFORM_API bool ImPlatform_GfxDebugRemoveDevice(void) { return false; }
+IMPLATFORM_API bool ImPlatform_GfxRecreateDevice(void) { return false; }
 IMPLATFORM_API ImTextureID ImPlatform_CreateRenderTextureWithDepth(const ImPlatform_TextureDesc*) { return (ImTextureID)0; }
 IMPLATFORM_API bool ImPlatform_DrawMesh(const ImPlatform_DrawMeshDesc*) { return false; }
 #endif

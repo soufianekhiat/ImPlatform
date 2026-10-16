@@ -2470,6 +2470,39 @@ IMPLATFORM_API bool ImPlatform_GfxDebugRemoveDevice(void)
     return true;
 }
 
+// The renderer backend's shutdown destroys every platform window; the main window stays, with its platform data.
+static void (*g_RecreatePlatformDestroy)(ImGuiViewport*) = nullptr;
+static void ImPlatform_DestroySecondaryWindow(ImGuiViewport* viewport)
+{
+    if (viewport != ImGui::GetMainViewport() && g_RecreatePlatformDestroy)
+        g_RecreatePlatformDestroy(viewport);
+}
+
+IMPLATFORM_API bool ImPlatform_GfxRecreateDevice(void)
+{
+    // Everything recorded or owned on the old device goes first (a removed device completes its fences at once).
+    ImPlatform_DX12_ReleaseAll();
+    g_CurrentFrameCtx = NULL;
+    ImGuiViewport* main_viewport = ImGui::GetMainViewport();
+    void* platform_user_data = main_viewport->PlatformUserData;
+    void* platform_handle = main_viewport->PlatformHandle;
+    void* platform_handle_raw = main_viewport->PlatformHandleRaw;
+    ImGuiPlatformIO& platform_io = ImGui::GetPlatformIO();
+    g_RecreatePlatformDestroy = platform_io.Platform_DestroyWindow;
+    platform_io.Platform_DestroyWindow = ImPlatform_DestroySecondaryWindow;
+    ImGui_ImplDX12_Shutdown();
+    platform_io.Platform_DestroyWindow = g_RecreatePlatformDestroy;
+    main_viewport->PlatformUserData = platform_user_data;
+    main_viewport->PlatformHandle = platform_handle;
+    main_viewport->PlatformHandleRaw = platform_handle_raw;
+#ifdef IMGUI_HAS_VIEWPORT
+    g_OriginalRendererRenderWindow = nullptr;   // ImPlatform_GfxViewportPost wraps the new backend's callback again.
+#endif
+    ImPlatform_Gfx_CleanupDevice_DX12(&g_GfxData);
+    g_GfxData = ImPlatform_GfxData_DX12();      // Frame fences restart from zero with the new fence.
+    return ImPlatform_InitGfxAPI() && ImPlatform_InitGfx();
+}
+
 IMPLATFORM_API bool ImPlatform_SupportsDepthDraw(void) { return true; }
 
 IMPLATFORM_API bool ImPlatform_DrawMesh(const ImPlatform_DrawMeshDesc* desc)
