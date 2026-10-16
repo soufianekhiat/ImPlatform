@@ -2011,6 +2011,8 @@ IMPLATFORM_API bool ImPlatform_GfxDeviceLost(void)
 IMPLATFORM_API bool ImPlatform_GfxDebugRemoveDevice(void) { return false; }     // No supported way on DirectX 11.
 IMPLATFORM_API bool ImPlatform_GfxRecreateDevice(void) { return false; }
 IMPLATFORM_API void ImPlatform_GfxDebugSetMemoryLimit(size_t) {}
+IMPLATFORM_API void ImPlatform_GfxDebugFailTextureStep(int) {}
+IMPLATFORM_API void ImPlatform_GfxDebugLiveCounts(size_t* resources, size_t* descriptors) { if (resources) *resources = 0; if (descriptors) *descriptors = 0; }
 
 IMPLATFORM_API bool ImPlatform_SupportsDepthDraw(void) { return true; }
 

@@ -968,6 +968,12 @@ IMPLATFORM_API bool ImPlatform_GfxRecreateDevice(void);
 // Testing aid: texture creation fails, as on device memory exhaustion, once the textures created through ImPlatform
 // would exceed `bytes` (0 removes the limit). DirectX 12; ignored elsewhere.
 IMPLATFORM_API void ImPlatform_GfxDebugSetMemoryLimit(size_t bytes);
+// Testing aids for allocation rollback (DirectX 12; ignored elsewhere, counts 0). FailTextureStep: the next texture
+// creation fails at allocation step `step` (0 resource, 1 ImGui-visible SRV, 2 CPU SRV, 3 UAV, 4 RTV, 5 depth resource,
+// 6 DSV, 7 initial upload; -1 none). LiveCounts drains the GPU, processes deferred releases, then reports the live
+// texture resources and allocated descriptors.
+IMPLATFORM_API void ImPlatform_GfxDebugFailTextureStep(int step);
+IMPLATFORM_API void ImPlatform_GfxDebugLiveCounts(size_t* resources, size_t* descriptors);
 
 // ============================================================================
 // Depth-tested immediate drawing (optional capability; implemented on DirectX 11 and DirectX 12)
@@ -1276,6 +1282,8 @@ IMPLATFORM_API bool ImPlatform_GfxDeviceLost(void) { return false; }
 IMPLATFORM_API bool ImPlatform_GfxDebugRemoveDevice(void) { return false; }
 IMPLATFORM_API bool ImPlatform_GfxRecreateDevice(void) { return false; }
 IMPLATFORM_API void ImPlatform_GfxDebugSetMemoryLimit(size_t) {}
+IMPLATFORM_API void ImPlatform_GfxDebugFailTextureStep(int) {}
+IMPLATFORM_API void ImPlatform_GfxDebugLiveCounts(size_t* resources, size_t* descriptors) { if (resources) *resources = 0; if (descriptors) *descriptors = 0; }
 IMPLATFORM_API ImTextureID ImPlatform_CreateRenderTextureWithDepth(const ImPlatform_TextureDesc*) { return (ImTextureID)0; }
 IMPLATFORM_API bool ImPlatform_DrawMesh(const ImPlatform_DrawMeshDesc*) { return false; }
 #endif
