@@ -1053,6 +1053,36 @@ IMPLATFORM_API void ImPlatform_SetDropFileCallback(ImPlatform_DropFileCallback c
 #endif // IMPLATFORM_APP_SUPPORT_DROP_FILE
 
 // ============================================================================
+// Pen / Stylus Input API
+// ============================================================================
+// Pressure and tilt from pen digitizers (Dear ImGui carries no pressure axis). Pen moves still reach ImGui as mouse
+// events; this adds the pen-only axes and every hardware sample between frames (coalesced history).
+// Implemented on Win32 (Windows Ink pointer messages: WM_POINTER*, GetPointerPenInfoHistory); other platforms
+// report ImPlatform_SupportsPen() == false.
+
+typedef struct ImPlatform_PenSample {
+    float  x, y;            // Client-area pixels (same space as ImGui::GetMousePos()).
+    float  pressure;        // [0, 1]; -1 when the device reports none.
+    float  tilt_x, tilt_y;  // Degrees in [-90, 90] (+x right, +y toward the user); valid when has_tilt.
+    double time;            // Seconds on ImPlatform_GetPenClock()'s clock.
+    bool   has_tilt;
+    bool   in_contact;      // Tip touching the surface (false while hovering).
+    bool   eraser;          // Inverted pen / eraser end.
+} ImPlatform_PenSample;
+
+IMPLATFORM_API bool ImPlatform_SupportsPen(void);
+
+// Latest pen state. Returns false when no pen is in range (out is left unchanged).
+IMPLATFORM_API bool ImPlatform_GetPenState(ImPlatform_PenSample* out);
+
+// Copies the pen samples received since the previous call, oldest first, and removes them. Returns the count written.
+// Samples beyond max_count stay queued; the queue keeps the most recent 1024 when nobody consumes it.
+IMPLATFORM_API int ImPlatform_ConsumePenSamples(ImPlatform_PenSample* out, int max_count);
+
+// Current time on the clock of ImPlatform_PenSample::time (e.g. to compute a sample's age).
+IMPLATFORM_API double ImPlatform_GetPenClock(void);
+
+// ============================================================================
 // DPI / High-DPI Support
 // ============================================================================
 
@@ -1357,6 +1387,74 @@ void ImPlatform_NotifyFileDrop(const char* utf8_path, ImVec2 client_pos)
         g_DropFileCallback(utf8_path, client_pos, g_DropFileCallbackUserData);
 }
 #endif // IMPLATFORM_APP_SUPPORT_DROP_FILE
+
+// ============================================================================
+// Pen Input Implementation (platform backends feed it through ImPlatform_Pen_* in ImPlatform_Internal.h)
+// ============================================================================
+
+#define IMPLATFORM_PEN_QUEUE 1024
+static ImPlatform_PenSample g_PenQueue[IMPLATFORM_PEN_QUEUE];
+static int                  g_PenQueueFirst = 0, g_PenQueueCount = 0;
+static ImPlatform_PenSample g_PenState;
+static bool                 g_PenInRange = false;
+
+void ImPlatform_Pen_Push(const ImPlatform_PenSample* sample)
+{
+    g_PenState = *sample;
+    g_PenInRange = true;
+    if (g_PenQueueCount == IMPLATFORM_PEN_QUEUE)
+    {
+        g_PenQueueFirst = (g_PenQueueFirst + 1) % IMPLATFORM_PEN_QUEUE;     // Drop the oldest.
+        g_PenQueueCount--;
+    }
+    g_PenQueue[(g_PenQueueFirst + g_PenQueueCount++) % IMPLATFORM_PEN_QUEUE] = *sample;
+}
+
+void ImPlatform_Pen_Leave(void)
+{
+    g_PenInRange = false;
+}
+
+IMPLATFORM_API bool ImPlatform_SupportsPen(void)
+{
+#if IM_CURRENT_PLATFORM == IM_PLATFORM_WIN32
+    return true;
+#else
+    return false;
+#endif
+}
+
+IMPLATFORM_API bool ImPlatform_GetPenState(ImPlatform_PenSample* out)
+{
+    if (!out || !g_PenInRange)
+        return false;
+    *out = g_PenState;
+    return true;
+}
+
+IMPLATFORM_API int ImPlatform_ConsumePenSamples(ImPlatform_PenSample* out, int max_count)
+{
+    int n = 0;
+    while (out && n < max_count && g_PenQueueCount > 0)
+    {
+        out[n++] = g_PenQueue[g_PenQueueFirst];
+        g_PenQueueFirst = (g_PenQueueFirst + 1) % IMPLATFORM_PEN_QUEUE;
+        g_PenQueueCount--;
+    }
+    return n;
+}
+
+IMPLATFORM_API double ImPlatform_GetPenClock(void)
+{
+#if IM_CURRENT_PLATFORM == IM_PLATFORM_WIN32
+    LARGE_INTEGER now, freq;
+    ::QueryPerformanceCounter(&now);
+    ::QueryPerformanceFrequency(&freq);
+    return (double)now.QuadPart / (double)freq.QuadPart;
+#else
+    return ImGui::GetTime();
+#endif
+}
 
 // ============================================================================
 // Common Helper Functions (C++ inline implementations)
