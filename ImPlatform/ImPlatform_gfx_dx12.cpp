@@ -1585,7 +1585,6 @@ namespace
         ImP12_Simple_Alloc rtv, dsv;
         ID3D12DescriptorHeap* transient = NULL;     // Shader-visible ring for per-op tables.
         UINT transient_stride = 0, transient_cap = 0, transient_head = 0;
-        UINT64 transient_wrap_fence = 0;
         D3D12_CPU_DESCRIPTOR_HANDLE null_srv = {}, null_uav = {};
         // Root signatures.
         ID3D12RootSignature* compute_rs = NULL;
@@ -1783,10 +1782,32 @@ namespace
     }
 
     // Submits recorded work; returns the fence value that marks its completion (0 when nothing was recorded).
+    // Every texture leaves the work list in its resting state (ImGui and later lists sample it there). Uploads,
+    // copies and dispatches leave textures in their last state so consecutive work on them needs no barrier pairs.
+    void ImP12_RestoreStates()
+    {
+        std::vector<D3D12_RESOURCE_BARRIER> bs;
+        for (auto& [id, t] : g_P12.textures)
+            if (t.cur != t.rest)
+            {
+                D3D12_RESOURCE_BARRIER b = {};
+                b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+                b.Transition.pResource = t.res;
+                b.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+                b.Transition.StateBefore = t.cur;
+                b.Transition.StateAfter = t.rest;
+                bs.push_back(b);
+                t.cur = t.rest;
+            }
+        if (!bs.empty())
+            g_P12.list->ResourceBarrier((UINT)bs.size(), bs.data());
+    }
+
     UINT64 ImP12_Flush()
     {
         if (!g_P12.open)
             return 0;
+        ImP12_RestoreStates();
         ImP12_DumpMessages();
         g_P12.list->Close();
         g_GfxData.pCommandQueue->ExecuteCommandLists(1, (ID3D12CommandList* const*)&g_P12.list);
@@ -1874,15 +1895,34 @@ namespace
     }
 
     // ---- Transient descriptor tables ---------------------------------------------------------------------------
+    // Makes room for `count` table entries before a command is recorded. Wrapping reuses entries that recorded (even not
+    // yet submitted) commands still read, so the open list is submitted and the GPU drained first (once per
+    // transient_cap entries); an open render-to-texture pass is bound again on the new list.
+    void ImP12_Transition(ID3D12GraphicsCommandList* list, ImP12_Texture& t, D3D12_RESOURCE_STATES to);
+
+    void ImP12_ReserveTransient(UINT count)
+    {
+        if (g_P12.transient_head + count <= g_P12.transient_cap)
+            return;
+        ImP12_Texture* rt = g_P12.active_rt;
+        ImP12_Flush();
+        ImP12_Wait(g_GfxData.uFenceLastSignaledValue);
+        g_P12.transient_head = 0;
+        if (rt)
+        {
+            ID3D12GraphicsCommandList* list = ImP12_List();
+            ImP12_Transition(list, *rt, D3D12_RESOURCE_STATE_RENDER_TARGET);
+            list->OMSetRenderTargets(1, &rt->rtv, FALSE, rt->dsv.ptr ? &rt->dsv : NULL);
+            D3D12_VIEWPORT vp = { 0, 0, (float)rt->w, (float)rt->h, 0, 1 };
+            D3D12_RECT sc = { 0, 0, (LONG)rt->w, (LONG)rt->h };
+            list->RSSetViewports(1, &vp);
+            list->RSSetScissorRects(1, &sc);
+        }
+    }
+
+    // Copies a descriptor table into the transient ring (room reserved by ImP12_ReserveTransient beforehand).
     D3D12_GPU_DESCRIPTOR_HANDLE ImP12_Table(const D3D12_CPU_DESCRIPTOR_HANDLE* src, UINT count)
     {
-        if (g_P12.transient_head + count > g_P12.transient_cap)
-        {
-            // Wrap: everything recorded before the previous wrap must be complete.
-            ImP12_Wait(g_P12.transient_wrap_fence);
-            g_P12.transient_wrap_fence = ImP12_NextFence();
-            g_P12.transient_head = 0;
-        }
         const UINT at = g_P12.transient_head;
         g_P12.transient_head += count;
         D3D12_CPU_DESCRIPTOR_HANDLE dst = g_P12.transient->GetCPUDescriptorHandleForHeapStart();
@@ -2030,8 +2070,7 @@ namespace
         dst.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
         ImP12_Transition(list, t, D3D12_RESOURCE_STATE_COPY_DEST);
         list->CopyTextureRegion(&dst, x, y, 0, &src, NULL);
-        ImP12_Transition(list, t, t.rest);
-        return true;
+        return true;        // Back to its resting state when the work list is submitted (ImP12_RestoreStates).
     }
 
     // ---- Readback ----------------------------------------------------------------------------------------------
@@ -2126,8 +2165,7 @@ IMPLATFORM_API bool ImPlatform_CopyTexture(ImTextureID dst_id, ImTextureID src_i
     ImP12_Transition(list, *dst, D3D12_RESOURCE_STATE_COPY_DEST);
     ImP12_Transition(list, *src, D3D12_RESOURCE_STATE_COPY_SOURCE);
     list->CopyResource(dst->res, src->res);
-    ImP12_Transition(list, *dst, dst->rest);
-    ImP12_Transition(list, *src, src->rest);
+    // Resting states are restored at submission (ImP12_RestoreStates).
     return true;
 }
 
@@ -2360,6 +2398,7 @@ IMPLATFORM_API bool ImPlatform_DispatchCompute(ImPlatform_Shader compute_shader,
     if (!cs || cs->stage != ImPlatform_ShaderStage_Compute || !cs->pBlob || input_count > 8 || output_count > 8 || (input_count && !inputs)
         || (output_count && !outputs) || (constants_size && !constants))
         return false;
+    ImP12_ReserveTransient(16);
     ID3D12GraphicsCommandList* list = ImP12_List();
     if (!list)
         return false;
@@ -2412,11 +2451,7 @@ IMPLATFORM_API bool ImPlatform_DispatchCompute(ImPlatform_Shader compute_shader,
     list->SetComputeRootDescriptorTable(1, ImP12_Table(srvs, 8));
     list->SetComputeRootDescriptorTable(2, ImP12_Table(uavs, 8));
     list->Dispatch(groups_x, groups_y, groups_z);
-    for (unsigned i = 0; i < output_count; i++)
-        ImP12_Transition(list, *outs[i], outs[i]->rest);
-    for (unsigned i = 0; i < input_count; i++)
-        ImP12_Transition(list, *ins[i], ins[i]->rest);
-    return true;
+    return true;        // Textures keep their states for the next dispatch; resting states return at submission.
 }
 
 // ---- Depth-tested drawing ---------------------------------------------------------------------------------------
@@ -2447,6 +2482,7 @@ IMPLATFORM_API bool ImPlatform_DrawMesh(const ImPlatform_DrawMeshDesc* desc)
     ImPlatform_BufferData_DX12* ib = (ImPlatform_BufferData_DX12*)desc->indices;
     if (!prog->pVSBlob || !prog->pPSBlob || vb->is_index || !ib->is_index || desc->index_count > ib->ib_desc.index_count)
         return false;
+    ImP12_ReserveTransient(4);
     ID3D12GraphicsCommandList* list = ImP12_List();
     if (!list)
         return false;
@@ -2537,7 +2573,8 @@ IMPLATFORM_API bool ImPlatform_DrawMesh(const ImPlatform_DrawMeshDesc* desc)
         ImP12_Texture* t = ImP12_Find(desc->textures[i]);
         if (!t || t == &rt)
             return false;
-        srvs[i] = t->srv;       // Resting textures are shader-readable.
+        ImP12_Transition(list, *t, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+        srvs[i] = t->srv;
     }
     list->SetGraphicsRootSignature(g_P12.graphics_rs);
     list->SetPipelineState(pso);
