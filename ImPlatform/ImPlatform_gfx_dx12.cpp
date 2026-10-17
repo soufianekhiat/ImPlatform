@@ -8,6 +8,7 @@
 #include <stdio.h>
 #include <d3dcompiler.h>
 #include <string>
+#include <algorithm>
 #include <unordered_map>
 #pragma comment(lib, "d3dcompiler.lib")
 
@@ -2125,6 +2126,9 @@ namespace
     // says nothing about the copy (a removed device reports every fence complete; a new device restarts the timeline).
     UINT64 g_P12_Generation = 1;
     struct ImP12_Readback { ID3D12Resource* buffer; UINT64 fence; UINT w, h, bpp, pitch; UINT64 generation; };
+    // Asynchronous readbacks not yet released: device recreation releases their buffers (a buffer keeps the old device
+    // alive, and the adapter would hand the removed device back); their handles stay valid and fail when polled.
+    std::vector<ImP12_Readback*> g_P12_Readbacks;
 
     bool ImP12_ReadbackValid(const ImP12_Readback* r)
     {
@@ -2414,7 +2418,10 @@ IMPLATFORM_API bool ImPlatform_ReadTexture(ImTextureID texture, unsigned int x, 
 
 IMPLATFORM_API ImPlatform_Readback ImPlatform_BeginReadTexture(ImTextureID texture, unsigned int x, unsigned int y, unsigned int width, unsigned int height)
 {
-    return (ImPlatform_Readback)ImP12_StartRead(texture, x, y, width, height);
+    ImP12_Readback* r = ImP12_StartRead(texture, x, y, width, height);
+    if (r)
+        g_P12_Readbacks.push_back(r);
+    return (ImPlatform_Readback)r;
 }
 
 IMPLATFORM_API int ImPlatform_PollReadback(ImPlatform_Readback readback, void* out_pixels, size_t out_size)
@@ -2432,7 +2439,10 @@ IMPLATFORM_API void ImPlatform_ReleaseReadback(ImPlatform_Readback readback)
     ImP12_Readback* r = (ImP12_Readback*)readback;
     if (!r)
         return;
-    if (r->generation == g_P12_Generation)
+    g_P12_Readbacks.erase(std::remove(g_P12_Readbacks.begin(), g_P12_Readbacks.end(), r), g_P12_Readbacks.end());
+    if (!r->buffer)
+        ;                                   // Released by device recreation.
+    else if (r->generation == g_P12_Generation)
         ImP12_DeferRelease(r->buffer);      // The copy may still be in flight.
     else
         r->buffer->Release();               // Its device is gone: nothing can still use it.
@@ -2559,6 +2569,12 @@ IMPLATFORM_API bool ImPlatform_GfxRecreateDevice(void)
     // Everything recorded or owned on the old device goes first (a removed device completes its fences at once).
     ImPlatform_DX12_ReleaseAll();
     g_P12_Generation++;     // Outstanding readbacks of the old device now fail instead of reading the new fence.
+    for (ImP12_Readback* r : g_P12_Readbacks)
+    {
+        r->buffer->Release();
+        r->buffer = nullptr;
+    }
+    g_P12_Readbacks.clear();
     g_CurrentFrameCtx = NULL;
     ImGuiViewport* main_viewport = ImGui::GetMainViewport();
     void* platform_user_data = main_viewport->PlatformUserData;
@@ -2632,8 +2648,8 @@ IMPLATFORM_API bool ImPlatform_DrawMesh(const ImPlatform_DrawMeshDesc* desc)
     snprintf(key, sizeof(key), "%u|%d|%d%d%d%d|%d", vb->vb_desc.vertex_stride, (int)rt.format, desc->depth_test, desc->depth_write,
              desc->alpha_blend, desc->cull_back, rt.dsv.ptr != 0);
     std::string k = key;
-    for (const ImPlatform_VertexAttribute& a : vb->attributes)
-        k += "|" + std::to_string((int)a.format) + ":" + std::to_string(a.offset);
+    for (size_t i = 0; i < vb->attributes.size(); i++)     // The whole input layout: format, offset and semantic.
+        k += "|" + std::to_string((int)vb->attributes[i].format) + ":" + std::to_string(vb->attributes[i].offset) + ":" + vb->semantics[i];
     ID3D12PipelineState*& pso = prog->meshPSOs[k];
     if (!pso)
     {

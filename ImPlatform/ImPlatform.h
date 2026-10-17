@@ -963,7 +963,9 @@ IMPLATFORM_API bool ImPlatform_GfxDeviceLost(void);
 IMPLATFORM_API bool ImPlatform_GfxDebugRemoveDevice(void);
 // Recreates the device, swap chain and ImGui renderer backend on the same window (DirectX 12; other backends return
 // false). Call between frames, after destroying every texture, shader, program and buffer created on the old device:
-// they are all invalid afterwards and their IDs may be handed out again. Returns false when no device could be created.
+// they are all invalid afterwards and their IDs may be handed out again. Outstanding asynchronous readbacks are released
+// by the recreation itself (their handles then report -1 when polled; release them as usual). Returns false when no
+// device could be created.
 IMPLATFORM_API bool ImPlatform_GfxRecreateDevice(void);
 // Testing aid: texture creation fails, as on device memory exhaustion, once the textures created through ImPlatform
 // would exceed `bytes` (0 removes the limit). DirectX 12; ignored elsewhere.
@@ -971,7 +973,10 @@ IMPLATFORM_API void ImPlatform_GfxDebugSetMemoryLimit(size_t bytes);
 // Testing aids for allocation rollback (DirectX 12; ignored elsewhere, counts 0). FailTextureStep: the next texture
 // creation fails at allocation step `step` (0 resource, 1 ImGui-visible SRV, 2 CPU SRV, 3 UAV, 4 RTV, 5 depth resource,
 // 6 DSV, 7 initial upload; -1 none). LiveCounts drains the GPU, processes deferred releases, then reports the live
-// texture resources and allocated descriptors.
+// texture resources and allocated descriptors. All testing aids: call on the graphics thread (the one creating textures
+// and rendering); disabled by default; an injected failure is consumed by the next texture creation and must be reset
+// step leaves it armed: reset it with -1). LiveCounts waits for the GPU to go idle: for tests and diagnostics, never
+// for routine per-frame use.
 IMPLATFORM_API void ImPlatform_GfxDebugFailTextureStep(int step);
 IMPLATFORM_API void ImPlatform_GfxDebugLiveCounts(size_t* resources, size_t* descriptors);
 
