@@ -22,6 +22,9 @@
 #include <dxgidebug.h>
 #pragma comment(lib, "dxguid.lib")
 #endif
+#include <dxgi1_6.h>
+
+static char g_P12_AdapterName[256] = "";     // ImPlatform_GfxAdapterName (UTF-8).
 
 #define APP_SRV_HEAP_SIZE 8192     // ImGui textures plus application textures (ImPlatform_CreateTexture and friends)
 
@@ -223,10 +226,47 @@ bool ImPlatform_Gfx_CreateDevice_DX12(HWND hWnd, ImPlatform_GfxData_DX12* pData)
         pdx12Debug->EnableDebugLayer();
 #endif
 
-    // Create device
+    // Create device on the high-performance adapter: hybrid systems (laptops) otherwise default to the integrated GPU.
+    // IMPLATFORM_GPU=default keeps the system's default adapter.
     D3D_FEATURE_LEVEL featureLevel = D3D_FEATURE_LEVEL_11_0;
-    if (D3D12CreateDevice(NULL, featureLevel, IID_PPV_ARGS(&pData->pDevice)) != S_OK)
-        return false;
+    IDXGIAdapter1* adapter = NULL;
+    {
+        const char* pref = getenv("IMPLATFORM_GPU");
+        IDXGIFactory6* factory6 = NULL;
+        if (!(pref && strcmp(pref, "default") == 0) && SUCCEEDED(CreateDXGIFactory1(IID_PPV_ARGS(&factory6))))
+        {
+            if (FAILED(factory6->EnumAdapterByGpuPreference(0, DXGI_GPU_PREFERENCE_HIGH_PERFORMANCE, IID_PPV_ARGS(&adapter))))
+                adapter = NULL;
+            factory6->Release();
+        }
+    }
+    if (D3D12CreateDevice(adapter, featureLevel, IID_PPV_ARGS(&pData->pDevice)) != S_OK)
+    {
+        if (adapter)
+            adapter->Release();
+        adapter = NULL;
+        if (D3D12CreateDevice(NULL, featureLevel, IID_PPV_ARGS(&pData->pDevice)) != S_OK)
+            return false;
+    }
+    {
+        // The adapter actually used (the device's LUID), for diagnostics and benchmark reports.
+        g_P12_AdapterName[0] = 0;
+        IDXGIFactory4* factory4 = NULL;
+        IDXGIAdapter1* used = NULL;
+        if (SUCCEEDED(CreateDXGIFactory1(IID_PPV_ARGS(&factory4))))
+        {
+            if (SUCCEEDED(factory4->EnumAdapterByLuid(pData->pDevice->GetAdapterLuid(), IID_PPV_ARGS(&used))))
+            {
+                DXGI_ADAPTER_DESC1 desc;
+                if (SUCCEEDED(used->GetDesc1(&desc)))
+                    WideCharToMultiByte(CP_UTF8, 0, desc.Description, -1, g_P12_AdapterName, (int)sizeof(g_P12_AdapterName), NULL, NULL);
+                used->Release();
+            }
+            factory4->Release();
+        }
+    }
+    if (adapter)
+        adapter->Release();
 
 #ifdef DX12_ENABLE_DEBUG_LAYER
     if (pdx12Debug != NULL)
@@ -755,6 +795,7 @@ struct ImPlatform_ShaderData_DX12
     ID3DBlob* pBlob;                    // Compiled shader bytecode
     ImPlatform_ShaderStage stage;       // Shader stage (vertex/pixel/compute)
     ID3D12PipelineState* pComputePSO;   // Compute stage: created on the first dispatch
+    std::string label;                  // "<cache_key>/<entry>" (GPU timings)
 };
 
 // Internal shader program structure for DX12
@@ -870,6 +911,7 @@ IMPLATFORM_API ImPlatform_Shader ImPlatform_CreateShader(const ImPlatform_Shader
     {
         // Source-compile path with optional disk cache.
         const char* entry = desc->entry_point ? desc->entry_point : "main";
+        shader_data->label = std::string(desc->cache_key ? desc->cache_key : "shader") + "/" + entry;
         size_t source_len = strlen(desc->source_code);
         char cache_path[512];
 
@@ -2121,6 +2163,34 @@ namespace
         return true;        // Back to its resting state when the work list is submitted (ImP12_RestoreStates).
     }
 
+// ---- GPU timer (ImPlatform_GfxDebugGpuTimer): a timestamp pair around every compute dispatch while enabled -------
+    struct ImP12_Timer
+    {
+        bool on = false;
+        ID3D12QueryHeap* heap = NULL;
+        ID3D12Resource* buffer = NULL;
+        size_t count = 0, capacity = 1u << 16;
+        std::vector<std::string> labels, returned;
+    };
+    ImP12_Timer g_P12_Timer;
+
+    // Timestamp pair around non-dispatch GPU work (copies, clears) while the timer runs.
+    bool ImP12_TimeBegin(ID3D12GraphicsCommandList* list)
+    {
+        if (!g_P12_Timer.on || !g_P12_Timer.heap || g_P12_Timer.count + 2 > g_P12_Timer.capacity)
+            return false;
+        list->EndQuery(g_P12_Timer.heap, D3D12_QUERY_TYPE_TIMESTAMP, (UINT)g_P12_Timer.count);
+        return true;
+    }
+    void ImP12_TimeEnd(ID3D12GraphicsCommandList* list, bool begun, const char* label)
+    {
+        if (!begun)
+            return;
+        list->EndQuery(g_P12_Timer.heap, D3D12_QUERY_TYPE_TIMESTAMP, (UINT)g_P12_Timer.count + 1);
+        g_P12_Timer.labels.push_back(label);
+        g_P12_Timer.count += 2;
+    }
+
     // ---- Readback ----------------------------------------------------------------------------------------------
     // A readback belongs to the device generation it was recorded on: after device loss or recreation its fence value
     // says nothing about the copy (a removed device reports every fence complete; a new device restarts the timeline).
@@ -2168,9 +2238,11 @@ namespace
         dst.PlacedFootprint.Footprint.Depth = 1;
         dst.PlacedFootprint.Footprint.RowPitch = pitch;
         const D3D12_BOX box = { x, y, 0, x + w, y + h, 1 };
+        const bool timed = ImP12_TimeBegin(list);
         ImP12_Transition(list, *t, D3D12_RESOURCE_STATE_COPY_SOURCE);
         list->CopyTextureRegion(&dst, 0, 0, 0, &src, &box);
         ImP12_Transition(list, *t, t->rest);
+        ImP12_TimeEnd(list, timed, "readback copy");
         ImP12_Readback* r = new ImP12_Readback{ buffer, ImP12_Flush(), w, h, t->bpp, pitch, g_P12_Generation };
         return r;
     }
@@ -2536,8 +2608,79 @@ IMPLATFORM_API bool ImPlatform_DispatchCompute(ImPlatform_Shader compute_shader,
     list->SetComputeRootConstantBufferView(0, cb.gpu);
     list->SetComputeRootDescriptorTable(1, ImP12_Table(srvs, 8));
     list->SetComputeRootDescriptorTable(2, ImP12_Table(uavs, 8));
+    const bool timed = g_P12_Timer.on && g_P12_Timer.heap && g_P12_Timer.count + 2 <= g_P12_Timer.capacity;
+    if (timed)
+        list->EndQuery(g_P12_Timer.heap, D3D12_QUERY_TYPE_TIMESTAMP, (UINT)g_P12_Timer.count);
     list->Dispatch(groups_x, groups_y, groups_z);
+    if (timed)
+    {
+        list->EndQuery(g_P12_Timer.heap, D3D12_QUERY_TYPE_TIMESTAMP, (UINT)g_P12_Timer.count + 1);
+        g_P12_Timer.labels.push_back(cs->label);
+        g_P12_Timer.count += 2;
+    }
     return true;        // Textures keep their states for the next dispatch; resting states return at submission.
+}
+
+IMPLATFORM_API void ImPlatform_GfxDebugGpuTimer(bool enable)
+{
+    ImP12_Timer& t = g_P12_Timer;
+    t.on = enable;
+    t.count = 0;
+    t.labels.clear();
+    if (!enable || t.heap || !g_GfxData.pDevice)
+        return;
+    D3D12_QUERY_HEAP_DESC qd = {};
+    qd.Type = D3D12_QUERY_HEAP_TYPE_TIMESTAMP;
+    qd.Count = (UINT)t.capacity;
+    D3D12_HEAP_PROPERTIES hp = {};
+    hp.Type = D3D12_HEAP_TYPE_READBACK;
+    D3D12_RESOURCE_DESC rd = {};
+    rd.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+    rd.Width = t.capacity * sizeof(UINT64);
+    rd.Height = rd.DepthOrArraySize = rd.MipLevels = 1;
+    rd.SampleDesc.Count = 1;
+    rd.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+    if (FAILED(g_GfxData.pDevice->CreateQueryHeap(&qd, IID_PPV_ARGS(&t.heap)))
+        || FAILED(g_GfxData.pDevice->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &rd, D3D12_RESOURCE_STATE_COPY_DEST, NULL, IID_PPV_ARGS(&t.buffer))))
+    {
+        if (t.heap) t.heap->Release();
+        if (t.buffer) t.buffer->Release();
+        t.heap = NULL;
+        t.buffer = NULL;
+        t.on = false;
+    }
+}
+
+IMPLATFORM_API size_t ImPlatform_GfxDebugGpuTimings(ImPlatform_GpuTiming* out, size_t max)
+{
+    ImP12_Timer& t = g_P12_Timer;
+    if (!t.heap || !t.count)
+        return 0;
+    ImP12_ReserveTransient(1);
+    ID3D12GraphicsCommandList* list = ImP12_List();
+    if (!list)
+        return 0;
+    list->ResolveQueryData(t.heap, D3D12_QUERY_TYPE_TIMESTAMP, 0, (UINT)t.count, t.buffer, 0);
+    ImP12_Wait(ImP12_Flush());
+    UINT64 freq = 1;
+    g_GfxData.pCommandQueue->GetTimestampFrequency(&freq);
+    const UINT64* ts = NULL;
+    const D3D12_RANGE range = { 0, t.count * sizeof(UINT64) };
+    size_t n = 0;
+    t.returned.swap(t.labels);      // Returned labels stay valid; new dispatches start a fresh list.
+    t.labels.clear();
+    if (SUCCEEDED(t.buffer->Map(0, &range, (void**)&ts)))
+    {
+        for (size_t k = 0; k + 1 < t.count && n < max; k += 2, n++)
+        {
+            out[n].label = t.returned[k / 2].c_str();
+            out[n].ms = (double)(ts[k + 1] - ts[k]) * 1000.0 / (double)freq;
+        }
+        const D3D12_RANGE none = { 0, 0 };
+        t.buffer->Unmap(0, &none);
+    }
+    t.count = 0;        // Labels stay valid until the next call or ImPlatform_GfxDebugGpuTimer.
+    return n;
 }
 
 // ---- Depth-tested drawing ---------------------------------------------------------------------------------------
@@ -2568,6 +2711,9 @@ IMPLATFORM_API bool ImPlatform_GfxRecreateDevice(void)
 {
     // Everything recorded or owned on the old device goes first (a removed device completes its fences at once).
     ImPlatform_DX12_ReleaseAll();
+    if (g_P12_Timer.heap) g_P12_Timer.heap->Release();
+    if (g_P12_Timer.buffer) g_P12_Timer.buffer->Release();
+    g_P12_Timer = ImP12_Timer();
     g_P12_Generation++;     // Outstanding readbacks of the old device now fail instead of reading the new fence.
     for (ImP12_Readback* r : g_P12_Readbacks)
     {
@@ -2604,6 +2750,11 @@ IMPLATFORM_API void ImPlatform_GfxDebugSetMemoryLimit(size_t bytes)
 IMPLATFORM_API void ImPlatform_GfxDebugFailTextureStep(int step)
 {
     g_P12_DebugFailStep = step;
+}
+
+IMPLATFORM_API const char* ImPlatform_GfxAdapterName(void)
+{
+    return g_P12_AdapterName;
 }
 
 IMPLATFORM_API void ImPlatform_GfxDebugLiveCounts(size_t* resources, size_t* descriptors)

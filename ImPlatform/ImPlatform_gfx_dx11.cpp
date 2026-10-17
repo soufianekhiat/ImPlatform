@@ -2012,6 +2012,10 @@ IMPLATFORM_API bool ImPlatform_GfxDebugRemoveDevice(void) { return false; }     
 IMPLATFORM_API bool ImPlatform_GfxRecreateDevice(void) { return false; }
 IMPLATFORM_API void ImPlatform_GfxDebugSetMemoryLimit(size_t) {}
 IMPLATFORM_API void ImPlatform_GfxDebugFailTextureStep(int) {}
+IMPLATFORM_API const char* ImPlatform_GfxAdapterName(void) { return ""; }
+IMPLATFORM_API void ImPlatform_GfxDebugGpuTimer(bool) {}
+IMPLATFORM_API size_t ImPlatform_GfxDebugGpuTimings(ImPlatform_GpuTiming*, size_t) { return 0; }
+
 IMPLATFORM_API void ImPlatform_GfxDebugLiveCounts(size_t* resources, size_t* descriptors) { if (resources) *resources = 0; if (descriptors) *descriptors = 0; }
 
 IMPLATFORM_API bool ImPlatform_SupportsDepthDraw(void) { return true; }

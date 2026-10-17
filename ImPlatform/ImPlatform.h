@@ -979,6 +979,16 @@ IMPLATFORM_API void ImPlatform_GfxDebugSetMemoryLimit(size_t bytes);
 // for routine per-frame use.
 IMPLATFORM_API void ImPlatform_GfxDebugFailTextureStep(int step);
 IMPLATFORM_API void ImPlatform_GfxDebugLiveCounts(size_t* resources, size_t* descriptors);
+// Name of the graphics adapter the device runs on (UTF-8; "" when unknown). DirectX 12 prefers the high-performance
+// adapter on hybrid systems (environment IMPLATFORM_GPU=default keeps the system default).
+IMPLATFORM_API const char* ImPlatform_GfxAdapterName(void);
+// Testing aid (DirectX 12; elsewhere no timings): GpuTimer(true) starts timestamping every compute dispatch (a GPU timestamp
+// pair around it, up to 32768 dispatches); GpuTimings resolves them (waits for the GPU: diagnostics only, never per
+// frame), fills up to `max` entries in dispatch order and starts over. Labels are "<cache_key>/<entry>" and stay valid
+// until the next call of either function.
+typedef struct ImPlatform_GpuTiming { const char* label; double ms; } ImPlatform_GpuTiming;
+IMPLATFORM_API void ImPlatform_GfxDebugGpuTimer(bool enable);
+IMPLATFORM_API size_t ImPlatform_GfxDebugGpuTimings(ImPlatform_GpuTiming* out, size_t max);
 
 // ============================================================================
 // Depth-tested immediate drawing (optional capability; implemented on DirectX 11 and DirectX 12)
@@ -1321,6 +1331,9 @@ IMPLATFORM_API bool ImPlatform_GfxRecreateDevice(void) { return false; }
 IMPLATFORM_API void ImPlatform_GfxDebugSetMemoryLimit(size_t) {}
 IMPLATFORM_API void ImPlatform_GfxDebugFailTextureStep(int) {}
 IMPLATFORM_API void ImPlatform_GfxDebugLiveCounts(size_t* resources, size_t* descriptors) { if (resources) *resources = 0; if (descriptors) *descriptors = 0; }
+IMPLATFORM_API const char* ImPlatform_GfxAdapterName(void) { return ""; }
+IMPLATFORM_API void ImPlatform_GfxDebugGpuTimer(bool) {}
+IMPLATFORM_API size_t ImPlatform_GfxDebugGpuTimings(ImPlatform_GpuTiming*, size_t) { return 0; }
 IMPLATFORM_API ImTextureID ImPlatform_CreateRenderTextureWithDepth(const ImPlatform_TextureDesc*) { return (ImTextureID)0; }
 IMPLATFORM_API bool ImPlatform_DrawMesh(const ImPlatform_DrawMeshDesc*) { return false; }
 #endif
