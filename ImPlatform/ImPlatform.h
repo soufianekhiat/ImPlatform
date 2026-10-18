@@ -933,6 +933,10 @@ typedef struct ImPlatform_Readback_t* ImPlatform_Readback;
 IMPLATFORM_API ImPlatform_Readback ImPlatform_BeginReadTexture(ImTextureID texture, unsigned int x, unsigned int y,
                                                                unsigned int width, unsigned int height);
 IMPLATFORM_API int  ImPlatform_PollReadback(ImPlatform_Readback readback, void* out_pixels, size_t out_size);
+// As PollReadback without the copy: when ready (1), *pixels points at the rows (*row_pitch bytes apart, at least
+// width * bytes per pixel) until the readback is released. Reading them needs no further API calls, so worker threads
+// may consume them (convert or copy in parallel).
+IMPLATFORM_API int  ImPlatform_MapReadback(ImPlatform_Readback readback, const void** pixels, size_t* row_pitch);
 IMPLATFORM_API void ImPlatform_ReleaseReadback(ImPlatform_Readback readback);
 
 IMPLATFORM_API bool ImPlatform_SupportsCompute(void);
@@ -1317,6 +1321,7 @@ ImPlatform_BorderlessParams g_BorderlessParams = { 5, 100, 100, true, true };
 #if IM_CURRENT_GFX != IM_GFX_DIRECTX11 && IM_CURRENT_GFX != IM_GFX_DIRECTX12 && IM_CURRENT_GFX != IM_GFX_CUSTOM
 IMPLATFORM_API ImPlatform_Readback ImPlatform_BeginReadTexture(ImTextureID, unsigned int, unsigned int, unsigned int, unsigned int) { return NULL; }
 IMPLATFORM_API int  ImPlatform_PollReadback(ImPlatform_Readback, void*, size_t) { return -1; }
+IMPLATFORM_API int  ImPlatform_MapReadback(ImPlatform_Readback, const void**, size_t*) { return -1; }
 IMPLATFORM_API void ImPlatform_ReleaseReadback(ImPlatform_Readback) {}
 IMPLATFORM_API bool ImPlatform_SupportsReadback(void) { return false; }
 IMPLATFORM_API bool ImPlatform_ReadTexture(ImTextureID, unsigned int, unsigned int, unsigned int, unsigned int, void*, size_t) { return false; }

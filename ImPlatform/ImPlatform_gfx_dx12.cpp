@@ -2195,7 +2195,23 @@ namespace
     // A readback belongs to the device generation it was recorded on: after device loss or recreation its fence value
     // says nothing about the copy (a removed device reports every fence complete; a new device restarts the timeline).
     UINT64 g_P12_Generation = 1;
-    struct ImP12_Readback { ID3D12Resource* buffer; UINT64 fence; UINT w, h, bpp, pitch; UINT64 generation; };
+    struct ImP12_Readback { ID3D12Resource* buffer; UINT64 fence; UINT w, h, bpp, pitch; UINT64 generation; uint8_t* mapped; };
+    // Released readback buffers kept for reuse (by exact size, once the copy that wrote them has completed): a fresh
+    // committed buffer must be made resident and zeroed before the copy runs, which cost more than the copy itself
+    // for large readbacks. They stay mapped (persistent mapping is allowed on readback heaps): mapping a large buffer
+    // again faults in every page on the next read. Bounded; device recreation and shutdown release them.
+    struct ImP12_PooledReadback { ID3D12Resource* buffer; UINT64 size, fence; uint8_t* mapped; };
+    std::vector<ImP12_PooledReadback> g_P12_ReadbackPool;
+    UINT64 g_P12_ReadbackPoolBytes = 0;
+    const UINT64 readback_pool_cap = (UINT64)256 << 20;
+
+    void ImP12_ReleaseReadbackPool()
+    {
+        for (const ImP12_PooledReadback& b : g_P12_ReadbackPool)
+            b.buffer->Release();
+        g_P12_ReadbackPool.clear();
+        g_P12_ReadbackPoolBytes = 0;
+    }
     // Asynchronous readbacks not yet released: device recreation releases their buffers (a buffer keeps the old device
     // alive, and the adapter would hand the removed device back); their handles stay valid and fail when polled.
     std::vector<ImP12_Readback*> g_P12_Readbacks;
@@ -2225,7 +2241,17 @@ namespace
         rd.SampleDesc.Count = 1;
         rd.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
         ID3D12Resource* buffer = NULL;
-        if (FAILED(g_GfxData.pDevice->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &rd, D3D12_RESOURCE_STATE_COPY_DEST, NULL, IID_PPV_ARGS(&buffer))))
+        uint8_t* mapped = NULL;
+        for (size_t k = 0; k < g_P12_ReadbackPool.size(); k++)
+            if (g_P12_ReadbackPool[k].size == rd.Width && ImP12_Done(g_P12_ReadbackPool[k].fence))
+            {
+                buffer = g_P12_ReadbackPool[k].buffer;
+                mapped = g_P12_ReadbackPool[k].mapped;
+                g_P12_ReadbackPoolBytes -= rd.Width;
+                g_P12_ReadbackPool.erase(g_P12_ReadbackPool.begin() + k);
+                break;
+            }
+        if (!buffer && FAILED(g_GfxData.pDevice->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &rd, D3D12_RESOURCE_STATE_COPY_DEST, NULL, IID_PPV_ARGS(&buffer))))
             return NULL;
         D3D12_TEXTURE_COPY_LOCATION src = {}, dst = {};
         src.pResource = t->res;
@@ -2243,7 +2269,7 @@ namespace
         list->CopyTextureRegion(&dst, 0, 0, 0, &src, &box);
         ImP12_Transition(list, *t, t->rest);
         ImP12_TimeEnd(list, timed, "readback copy");
-        ImP12_Readback* r = new ImP12_Readback{ buffer, ImP12_Flush(), w, h, t->bpp, pitch, g_P12_Generation };
+        ImP12_Readback* r = new ImP12_Readback{ buffer, ImP12_Flush(), w, h, t->bpp, pitch, g_P12_Generation, mapped };
         return r;
     }
 
@@ -2252,14 +2278,15 @@ namespace
         const size_t row = (size_t)r->w * r->bpp;
         if (out_size < row * r->h)
             return false;
-        uint8_t* mapped = NULL;
+        // Mapped once and kept mapped (released buffers are unmapped by their release).
         D3D12_RANGE range = { 0, (SIZE_T)r->pitch * r->h };
-        if (FAILED(r->buffer->Map(0, &range, (void**)&mapped)))
+        if (!r->mapped && FAILED(r->buffer->Map(0, &range, (void**)&r->mapped)))
             return false;
-        for (UINT y = 0; y < r->h; y++)
-            memcpy((uint8_t*)out + y * row, mapped + (size_t)y * r->pitch, row);
-        D3D12_RANGE none = { 0, 0 };
-        r->buffer->Unmap(0, &none);
+        if (row == r->pitch)
+            memcpy(out, r->mapped, row * r->h);
+        else
+            for (UINT y = 0; y < r->h; y++)
+                memcpy((uint8_t*)out + y * row, r->mapped + (size_t)y * r->pitch, row);
         return true;
     }
 }
@@ -2506,14 +2533,42 @@ IMPLATFORM_API int ImPlatform_PollReadback(ImPlatform_Readback readback, void* o
     return ImP12_FinishRead(r, out_pixels, out_size) ? 1 : -1;
 }
 
+IMPLATFORM_API int ImPlatform_MapReadback(ImPlatform_Readback readback, const void** pixels, size_t* row_pitch)
+{
+    ImP12_Readback* r = (ImP12_Readback*)readback;
+    if (!r || !pixels || !row_pitch || !ImP12_ReadbackValid(r))
+        return -1;
+    if (!ImP12_Done(r->fence))
+        return 0;
+    D3D12_RANGE range = { 0, (SIZE_T)r->pitch * r->h };
+    if (!r->mapped && FAILED(r->buffer->Map(0, &range, (void**)&r->mapped)))
+        return -1;
+    *pixels = r->mapped;
+    *row_pitch = r->pitch;
+    return 1;
+}
+
 IMPLATFORM_API void ImPlatform_ReleaseReadback(ImPlatform_Readback readback)
 {
     ImP12_Readback* r = (ImP12_Readback*)readback;
     if (!r)
         return;
     g_P12_Readbacks.erase(std::remove(g_P12_Readbacks.begin(), g_P12_Readbacks.end(), r), g_P12_Readbacks.end());
+    const UINT64 size = (UINT64)r->pitch * r->h;
     if (!r->buffer)
         ;                                   // Released by device recreation.
+    else if (r->generation == g_P12_Generation && size <= readback_pool_cap / 2)
+    {
+        // Kept for reuse once its copy has completed (the oldest pooled buffers go first beyond the cap).
+        g_P12_ReadbackPool.push_back({ r->buffer, size, r->fence, r->mapped });
+        g_P12_ReadbackPoolBytes += size;
+        while (g_P12_ReadbackPoolBytes > readback_pool_cap)
+        {
+            ImP12_DeferRelease(g_P12_ReadbackPool.front().buffer);
+            g_P12_ReadbackPoolBytes -= g_P12_ReadbackPool.front().size;
+            g_P12_ReadbackPool.erase(g_P12_ReadbackPool.begin());
+        }
+    }
     else if (r->generation == g_P12_Generation)
         ImP12_DeferRelease(r->buffer);      // The copy may still be in flight.
     else
@@ -2902,6 +2957,7 @@ static void ImPlatform_DX12_ReleaseAll()
 {
     if (!g_P12.ready)
         return;
+    ImP12_ReleaseReadbackPool();        // Pooled buffers' copies completed before reuse; idle by now.
     for (ImP12_Release& r : g_P12.pending_releases)
         g_P12.releases.push_back(r);
     g_P12.pending_releases.clear();

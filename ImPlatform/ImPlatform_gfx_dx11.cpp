@@ -1617,6 +1617,7 @@ struct ImPlatform_Readback_t
     ID3D11Texture2D* staging;
     ID3D11Query* done;
     unsigned int width, height, bpp;
+    D3D11_MAPPED_SUBRESOURCE mapped;    // ImPlatform_MapReadback: kept mapped until release.
 };
 
 IMPLATFORM_API ImPlatform_Readback ImPlatform_BeginReadTexture(ImTextureID texture, unsigned int x, unsigned int y, unsigned int width, unsigned int height)
@@ -1683,10 +1684,34 @@ IMPLATFORM_API int ImPlatform_PollReadback(ImPlatform_Readback r, void* out_pixe
     return 1;
 }
 
+IMPLATFORM_API int ImPlatform_MapReadback(ImPlatform_Readback r, const void** pixels, size_t* row_pitch)
+{
+    if (!r || !pixels || !row_pitch)
+        return -1;
+    if (!r->mapped.pData)
+    {
+        if (g_GfxData.pDeviceContext->GetData(r->done, NULL, 0, D3D11_ASYNC_GETDATA_DONOTFLUSH) != S_OK)
+            return 0;
+        const HRESULT hr = g_GfxData.pDeviceContext->Map(r->staging, 0, D3D11_MAP_READ, D3D11_MAP_FLAG_DO_NOT_WAIT, &r->mapped);
+        if (hr == DXGI_ERROR_WAS_STILL_DRAWING)
+            return 0;
+        if (FAILED(hr))
+        {
+            r->mapped.pData = NULL;
+            return -1;
+        }
+    }
+    *pixels = r->mapped.pData;
+    *row_pitch = r->mapped.RowPitch;
+    return 1;
+}
+
 IMPLATFORM_API void ImPlatform_ReleaseReadback(ImPlatform_Readback r)
 {
     if (!r)
         return;
+    if (r->mapped.pData)
+        g_GfxData.pDeviceContext->Unmap(r->staging, 0);
     r->staging->Release();
     r->done->Release();
     delete r;
