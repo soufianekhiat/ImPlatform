@@ -241,7 +241,24 @@ IM_GFX_DIRECTX12    // DirectX 12
 IM_GFX_VULKAN       // Vulkan
 IM_GFX_METAL        // Metal (macOS/iOS)
 IM_GFX_WGPU         // WebGPU
+IM_GFX_CUSTOM       // No built-in backend: the application provides its own
 ```
+
+### Custom (or no) Graphics Backend
+
+`IM_GFX_CUSTOM` keeps ImPlatform's platform layer (window, input, DPI, title bar) and compiles
+none of its graphics backends. The application links its own implementation of the graphics
+entry points (`ImPlatform_InitGfxAPI`, `ImPlatform_GfxAPINewFrame`, `ImPlatform_GfxAPIRender`,
+`ImPlatform_GfxAPISwapBuffer`, textures, shaders, buffers...) plus:
+
+```cpp
+// Called by the platform layer (Win32, GLFW, SDL2, SDL3) when the window's framebuffer is resized.
+void ImPlatform_Gfx_OnResize_Custom(unsigned int uWidth, unsigned int uHeight);
+```
+
+The `IMPLATFORM_GFX_SUPPORT_*` feature flags default to 1 and can each be predefined to 0
+to describe what the application's backend supports. With GLFW the window is created with
+`GLFW_NO_API`.
 
 ### Predefined Combinations
 

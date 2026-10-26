@@ -249,6 +249,15 @@ IMPLATFORM_API bool ImPlatform_PlatformEvents(void)
             SDL_GetWindowSizeInPixels(g_AppData.pWindow, &fb_w, &fb_h);
             ImPlatform_Gfx_OnResize_DX11(ImPlatform_Gfx_GetData_DX11(), (unsigned int)fb_w, (unsigned int)fb_h);
         }
+#elif defined(IM_CURRENT_GFX) && (IM_CURRENT_GFX == IM_GFX_CUSTOM)
+        // The application's backend owns its swap chain: tell it the window's new size in pixels.
+        if (event.type == SDL_EVENT_WINDOW_RESIZED &&
+            event.window.windowID == SDL_GetWindowID(g_AppData.pWindow))
+        {
+            int fb_w = 0, fb_h = 0;
+            SDL_GetWindowSizeInPixels(g_AppData.pWindow, &fb_w, &fb_h);
+            ImPlatform_Gfx_OnResize_Custom((unsigned int)fb_w, (unsigned int)fb_h);
+        }
 #endif
 #if IMPLATFORM_APP_SUPPORT_DROP_FILE
         if (event.type == SDL_EVENT_DROP_FILE && event.drop.data)

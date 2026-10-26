@@ -9,6 +9,12 @@
 //   IM_PLATFORM_WIN32, IM_PLATFORM_GLFW, IM_PLATFORM_APPLE
 // Available graphics APIs:
 //   IM_GFX_OPENGL3, IM_GFX_DIRECTX11, IM_GFX_DIRECTX12, IM_GFX_VULKAN, IM_GFX_METAL, IM_GFX_WGPU
+//   IM_GFX_CUSTOM: the APPLICATION provides the graphics backend. ImPlatform compiles no
+//     graphics backend; the application links its own implementation of the ImPlatform_*
+//     graphics entry points (InitGfxAPI, GfxAPINewFrame/Render/SwapBuffer, textures, shaders,
+//     buffers...) and of ImPlatform_Gfx_OnResize_Custom, which the platform layer calls when
+//     the window is resized. The platform layer (window, input, DPI, title bar) is ImPlatform's
+//     as usual. Feature flags below default to "supported" and can be predefined to 0.
 //
 // Or use predefined combinations:
 //   IM_TARGET_WIN32_DX11, IM_TARGET_WIN32_DX12, IM_TARGET_WIN32_OPENGL3
@@ -74,12 +80,39 @@
 #define IM_GFX_VULKAN       ( 1u << 5u )
 #define IM_GFX_METAL        ( 1u << 6u )
 #define IM_GFX_WGPU         ( 1u << 7u )
+#define IM_GFX_CUSTOM       ( 1u << 8u )
 
 #define IM_GFX_MASK         0x0000FFFFu
 
 // Graphics API feature support flags
 // These indicate which features are supported by each backend
-#if defined(IM_CURRENT_GFX)
+#if defined(IM_CURRENT_GFX) && (IM_CURRENT_GFX == IM_GFX_CUSTOM)
+    // The application's backend declares what it supports; everything by default.
+    #ifndef IMPLATFORM_GFX_SUPPORT_CUSTOM_SHADER
+        #define IMPLATFORM_GFX_SUPPORT_CUSTOM_SHADER 1
+    #endif
+    #ifndef IMPLATFORM_GFX_SUPPORT_BGRA_FORMATS
+        #define IMPLATFORM_GFX_SUPPORT_BGRA_FORMATS 1
+    #endif
+    #ifndef IMPLATFORM_GFX_SUPPORT_HALF_FLOAT_FORMATS
+        #define IMPLATFORM_GFX_SUPPORT_HALF_FLOAT_FORMATS 1
+    #endif
+    #ifndef IMPLATFORM_GFX_SUPPORT_RGB_EXTENDED
+        #define IMPLATFORM_GFX_SUPPORT_RGB_EXTENDED 1
+    #endif
+    #ifndef IMPLATFORM_GFX_SUPPORT_SRGB_FORMATS
+        #define IMPLATFORM_GFX_SUPPORT_SRGB_FORMATS 1
+    #endif
+    #ifndef IMPLATFORM_GFX_SUPPORT_PACKED_FORMATS
+        #define IMPLATFORM_GFX_SUPPORT_PACKED_FORMATS 1
+    #endif
+    #ifndef IMPLATFORM_GFX_SUPPORT_DEPTH_FORMATS
+        #define IMPLATFORM_GFX_SUPPORT_DEPTH_FORMATS 1
+    #endif
+    #ifndef IMPLATFORM_GFX_SUPPORT_INTEGER_FORMATS
+        #define IMPLATFORM_GFX_SUPPORT_INTEGER_FORMATS 1
+    #endif
+#elif defined(IM_CURRENT_GFX)
     #if (IM_CURRENT_GFX == IM_GFX_OPENGL3) || \
         (IM_CURRENT_GFX == IM_GFX_DIRECTX9) || \
         (IM_CURRENT_GFX == IM_GFX_DIRECTX10) || \
@@ -902,6 +935,66 @@ IMPLATFORM_API void ImPlatform_DrawCustomShaderQuad(
 IMPLATFORM_API void ImPlatform_DrawQuadNow(ImPlatform_ShaderProgram program, ImVec4 dst_rect, ImVec4 uv_rect);
 
 // ============================================================================
+// Readback and Compute API (optional capabilities)
+// ============================================================================
+// Query support first: backends without it return false / NULL. Implemented on DirectX 11.
+
+IMPLATFORM_API bool ImPlatform_SupportsReadback(void);
+
+// Copy a width x height region of a 2D texture (from ImPlatform_CreateTexture, ImPlatform_CreateRenderTexture or
+// ImPlatform_CreateStorageTexture) to CPU memory: rows tightly packed, in the texture's pixel format.
+// Synchronous: returns once the GPU work writing the texture has completed (it doubles as a fence).
+// out_size must be at least width * height * bytes per pixel.
+IMPLATFORM_API bool ImPlatform_ReadTexture(ImTextureID texture, unsigned int x, unsigned int y,
+                                           unsigned int width, unsigned int height, void* out_pixels, size_t out_size);
+
+IMPLATFORM_API bool ImPlatform_SupportsCompute(void);
+
+// Create a texture that compute shaders can write (UAV / storage image) and that ImGui can draw.
+// pixel_data may be NULL (the texture starts zeroed). Destroy with ImPlatform_DestroyTexture.
+IMPLATFORM_API ImTextureID ImPlatform_CreateStorageTexture(const void* pixel_data, const ImPlatform_TextureDesc* desc);
+
+// Run a compute shader (ImPlatform_CreateShader with ImPlatform_ShaderStage_Compute).
+// HLSL bindings: inputs -> t0.. (read-only), outputs -> u0.. (storage textures), constants -> b0 (may be NULL),
+// s0 = linear clamp sampler. Bindings are cleared afterwards so outputs can be drawn or read back.
+// Call outside the ImGui render callbacks (e.g. before ImGui::Render); work is ordered with later drawing.
+IMPLATFORM_API bool ImPlatform_DispatchCompute(ImPlatform_Shader compute_shader,
+                                               const ImTextureID* inputs, unsigned int input_count,
+                                               const ImTextureID* outputs, unsigned int output_count,
+                                               const void* constants, unsigned int constants_size,
+                                               unsigned int groups_x, unsigned int groups_y, unsigned int groups_z);
+
+// ============================================================================
+// Depth-tested immediate drawing (optional capability; implemented on DirectX 11)
+// ============================================================================
+// Meshes drawn into a render texture with a depth buffer, outside the ImGui render callbacks (e.g. a 3D viewport
+// rendered before ImGui::Render and shown with ImGui::Image).
+
+IMPLATFORM_API bool ImPlatform_SupportsDepthDraw(void);
+
+// Like ImPlatform_CreateRenderTexture, plus a 32-bit depth buffer that ImPlatform_BeginRenderToTexture binds and
+// clears to 1 (far). Destroy with ImPlatform_DestroyTexture.
+IMPLATFORM_API ImTextureID ImPlatform_CreateRenderTextureWithDepth(const ImPlatform_TextureDesc* desc);
+
+typedef struct ImPlatform_DrawMeshDesc {
+    ImPlatform_ShaderProgram program;       // Vertex + fragment program; HLSL constants at b0 in each stage.
+    ImPlatform_VertexBuffer  vertices;      // With an input layout (ImPlatform_CreateVertexInputLayout).
+    ImPlatform_IndexBuffer   indices;
+    unsigned int index_count;
+    const void*  vs_constants;  unsigned int vs_constants_size;
+    const void*  ps_constants;  unsigned int ps_constants_size;
+    const ImTextureID* textures; unsigned int texture_count;   // Pixel stage t0..; s0 = linear clamp sampler.
+    bool depth_test;        // Less-equal against the bound depth buffer.
+    bool depth_write;
+    bool alpha_blend;       // Straight alpha "over"; otherwise opaque.
+    bool cull_back;         // Counterclockwise front faces are kept.
+} ImPlatform_DrawMeshDesc;
+
+// One indexed triangle-list draw into the current render target (call between ImPlatform_BeginRenderToTexture and
+// ImPlatform_EndRenderToTexture). Returns false when unsupported or on invalid input.
+IMPLATFORM_API bool ImPlatform_DrawMesh(const ImPlatform_DrawMeshDesc* desc);
+
+// ============================================================================
 // Core API Functions
 // ============================================================================
 
@@ -1156,8 +1249,24 @@ ImPlatform_BorderlessParams g_BorderlessParams = { 5, 100, 100, true, true };
     #include "ImPlatform_gfx_metal.mm"
 #elif IM_CURRENT_GFX == IM_GFX_WGPU
     #include "ImPlatform_gfx_wgpu.cpp"
+#elif IM_CURRENT_GFX == IM_GFX_CUSTOM
+    // No backend here: the application links its own implementation of the
+    // graphics entry points (see IM_GFX_CUSTOM at the top of this file).
 #else
     #error "Unknown or unsupported IM_CURRENT_GFX backend"
+#endif
+
+// Backends without readback/compute (IM_GFX_CUSTOM applications provide their own).
+#if IM_CURRENT_GFX != IM_GFX_DIRECTX11 && IM_CURRENT_GFX != IM_GFX_CUSTOM
+IMPLATFORM_API bool ImPlatform_SupportsReadback(void) { return false; }
+IMPLATFORM_API bool ImPlatform_ReadTexture(ImTextureID, unsigned int, unsigned int, unsigned int, unsigned int, void*, size_t) { return false; }
+IMPLATFORM_API bool ImPlatform_SupportsCompute(void) { return false; }
+IMPLATFORM_API ImTextureID ImPlatform_CreateStorageTexture(const void*, const ImPlatform_TextureDesc*) { return (ImTextureID)0; }
+IMPLATFORM_API bool ImPlatform_DispatchCompute(ImPlatform_Shader, const ImTextureID*, unsigned int, const ImTextureID*, unsigned int,
+                                               const void*, unsigned int, unsigned int, unsigned int, unsigned int) { return false; }
+IMPLATFORM_API bool ImPlatform_SupportsDepthDraw(void) { return false; }
+IMPLATFORM_API ImTextureID ImPlatform_CreateRenderTextureWithDepth(const ImPlatform_TextureDesc*) { return (ImTextureID)0; }
+IMPLATFORM_API bool ImPlatform_DrawMesh(const ImPlatform_DrawMeshDesc*) { return false; }
 #endif
 
 // Include platform backend implementation

@@ -72,8 +72,8 @@ IMPLATFORM_API bool ImPlatform_CreateWindow(char const* pWindowsName, ImVec2 con
         glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
         glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 0);
     #endif
-#elif (IM_CURRENT_GFX == IM_GFX_VULKAN) || (IM_CURRENT_GFX == IM_GFX_WGPU) || (IM_CURRENT_GFX == IM_GFX_METAL)
-    // Vulkan/WebGPU/Metal don't use OpenGL context
+#elif (IM_CURRENT_GFX == IM_GFX_VULKAN) || (IM_CURRENT_GFX == IM_GFX_WGPU) || (IM_CURRENT_GFX == IM_GFX_METAL) || (IM_CURRENT_GFX == IM_GFX_CUSTOM)
+    // Vulkan/WebGPU/Metal/the application's own backend don't use an OpenGL context
     glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
 #endif
 
@@ -144,6 +144,13 @@ IMPLATFORM_API bool ImPlatform_CreateWindow(char const* pWindowsName, ImVec2 con
 #if IM_CURRENT_GFX == IM_GFX_OPENGL3
     glfwMakeContextCurrent(g_AppData.pWindow);
     glfwSwapInterval(1); // Enable vsync
+#elif IM_CURRENT_GFX == IM_GFX_CUSTOM
+    // The application's backend owns its swap chain: tell it the framebuffer's new size.
+    // (imgui_impl_glfw installs no framebuffer-size callback, so this chains nothing.)
+    glfwSetFramebufferSizeCallback(g_AppData.pWindow, [](GLFWwindow*, int w, int h)
+    {
+        ImPlatform_Gfx_OnResize_Custom((unsigned int)w, (unsigned int)h);
+    });
 #endif
 
     return true;

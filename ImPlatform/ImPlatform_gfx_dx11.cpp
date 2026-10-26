@@ -27,6 +27,7 @@ unsigned int g_ImPlatform_BackbufferH = 0;
 struct ImPlatform_RTTracking_DX11 {
     ID3D11ShaderResourceView*  pSRV;
     ID3D11RenderTargetView*    pRTV;
+    ID3D11DepthStencilView*    pDSV;    // Optional (ImPlatform_CreateRenderTextureWithDepth).
     unsigned int               width, height;
     ImPlatform_RTTracking_DX11* next;
 };
@@ -35,6 +36,7 @@ static ImPlatform_RTTracking_DX11* g_RTTrackingHead = NULL;
 // Render-target stack (Push/PopRenderTarget; Begin/EndRenderToTexture use it too)
 struct ImPlatform_SavedTarget_DX11 {
     ID3D11RenderTargetView* pRTV;
+    ID3D11DepthStencilView* pDSV;
     D3D11_VIEWPORT          viewport;
     D3D11_RECT              scissor;
 };
@@ -47,6 +49,14 @@ static ID3D11Buffer* g_QuadIB = NULL;
 static ID3D11Buffer* g_QuadCB = NULL;
 // ImPlatform_CopyCurrentTarget: resolve target for MSAA render targets
 static ID3D11Texture2D* g_ResolveTex = NULL;
+
+// Storage texture tracking (SRV <-> UAV pairs)
+struct ImPlatform_StorageTracking_DX11 {
+    ID3D11ShaderResourceView*  pSRV;
+    ID3D11UnorderedAccessView* pUAV;
+    ImPlatform_StorageTracking_DX11* next;
+};
+static ImPlatform_StorageTracking_DX11* g_StorageTrackingHead = NULL;
 
 // Sampler table: [filter][wrap] — filter: 0=Nearest,1=Linear  wrap: 0=Clamp,1=Repeat,2=Mirror
 static ID3D11SamplerState* g_Samplers[2][3]  = {};
@@ -802,7 +812,7 @@ IMPLATFORM_API bool ImPlatform_PushRenderTarget(ImTextureID texture, bool clear)
     // Save the current target, viewport and scissor
     ImPlatform_SavedTarget_DX11& saved = g_TargetStack[g_TargetDepth++];
     UINT numViewports = 1, numScissors = 1;
-    g_GfxData.pDeviceContext->OMGetRenderTargets(1, &saved.pRTV, NULL);
+    g_GfxData.pDeviceContext->OMGetRenderTargets(1, &saved.pRTV, &saved.pDSV);
     g_GfxData.pDeviceContext->RSGetViewports(&numViewports, &saved.viewport);
     g_GfxData.pDeviceContext->RSGetScissorRects(&numScissors, &saved.scissor);
 
@@ -810,7 +820,10 @@ IMPLATFORM_API bool ImPlatform_PushRenderTarget(ImTextureID texture, bool clear)
     ID3D11ShaderResourceView* nullSRVs[8] = {};
     g_GfxData.pDeviceContext->PSSetShaderResources(0, 8, nullSRVs);
 
-    g_GfxData.pDeviceContext->OMSetRenderTargets(1, &entry->pRTV, NULL);
+    // New render target and its depth buffer (ImPlatform_CreateRenderTextureWithDepth), cleared to far
+    g_GfxData.pDeviceContext->OMSetRenderTargets(1, &entry->pRTV, entry->pDSV);
+    if (entry->pDSV)
+        g_GfxData.pDeviceContext->ClearDepthStencilView(entry->pDSV, D3D11_CLEAR_DEPTH, 1.0f, 0);
     D3D11_VIEWPORT vp = {};
     vp.Width = (float)entry->width;
     vp.Height = (float)entry->height;
@@ -832,12 +845,15 @@ IMPLATFORM_API void ImPlatform_PopRenderTarget(void)
     if (!g_GfxData.pDeviceContext || g_TargetDepth <= 0)
         return;
     ImPlatform_SavedTarget_DX11& saved = g_TargetStack[--g_TargetDepth];
-    g_GfxData.pDeviceContext->OMSetRenderTargets(1, &saved.pRTV, NULL);
+    g_GfxData.pDeviceContext->OMSetRenderTargets(1, &saved.pRTV, saved.pDSV);
     g_GfxData.pDeviceContext->RSSetViewports(1, &saved.viewport);
     g_GfxData.pDeviceContext->RSSetScissorRects(1, &saved.scissor);
     if (saved.pRTV)
         saved.pRTV->Release();
+    if (saved.pDSV)
+        saved.pDSV->Release();
     saved.pRTV = NULL;
+    saved.pDSV = NULL;
 }
 
 IMPLATFORM_API bool ImPlatform_BeginRenderToTexture(ImTextureID texture) { return ImPlatform_PushRenderTarget(texture, true); }
@@ -999,6 +1015,26 @@ IMPLATFORM_API void ImPlatform_DestroyTexture(ImTextureID texture_id)
         return;
 
     ID3D11ShaderResourceView* pSRV = (ID3D11ShaderResourceView*)texture_id;
+    for (ImPlatform_RTTracking_DX11** e = &g_RTTrackingHead; *e; e = &(*e)->next)
+        if ((*e)->pSRV == pSRV)
+        {
+            ImPlatform_RTTracking_DX11* dead = *e;
+            *e = dead->next;
+            dead->pRTV->Release();
+            if (dead->pDSV)
+                dead->pDSV->Release();
+            delete dead;
+            break;
+        }
+    for (ImPlatform_StorageTracking_DX11** e = &g_StorageTrackingHead; *e; e = &(*e)->next)
+        if ((*e)->pSRV == pSRV)
+        {
+            ImPlatform_StorageTracking_DX11* dead = *e;
+            *e = dead->next;
+            dead->pUAV->Release();
+            delete dead;
+            break;
+        }
     pSRV->Release();
 }
 
@@ -1298,6 +1334,7 @@ struct ImPlatform_ShaderData_DX11
     {
         ID3D11VertexShader* pVertexShader;
         ID3D11PixelShader* pPixelShader;
+        ID3D11ComputeShader* pComputeShader;
     };
     ImPlatform_ShaderStage stage;
     ID3DBlob* pBlob; // Keep blob for input layout creation
@@ -1454,6 +1491,8 @@ IMPLATFORM_API ImPlatform_Shader ImPlatform_CreateShader(const ImPlatform_Shader
         target = "vs_5_0";
     else if (desc->stage == ImPlatform_ShaderStage_Fragment)
         target = "ps_5_0";
+    else if (desc->stage == ImPlatform_ShaderStage_Compute)
+        target = "cs_5_0";
     else
     {
         delete shader_data;
@@ -1550,6 +1589,14 @@ IMPLATFORM_API ImPlatform_Shader ImPlatform_CreateShader(const ImPlatform_Shader
             NULL,
             &shader_data->pVertexShader);
     }
+    else if (desc->stage == ImPlatform_ShaderStage_Compute)
+    {
+        hr = g_GfxData.pDevice->CreateComputeShader(
+            shader_data->pBlob->GetBufferPointer(),
+            shader_data->pBlob->GetBufferSize(),
+            NULL,
+            &shader_data->pComputeShader);
+    }
     else
     {
         hr = g_GfxData.pDevice->CreatePixelShader(
@@ -1580,11 +1627,210 @@ IMPLATFORM_API void ImPlatform_DestroyShader(ImPlatform_Shader shader)
         shader_data->pVertexShader->Release();
     else if (shader_data->stage == ImPlatform_ShaderStage_Fragment && shader_data->pPixelShader)
         shader_data->pPixelShader->Release();
+    else if (shader_data->stage == ImPlatform_ShaderStage_Compute && shader_data->pComputeShader)
+        shader_data->pComputeShader->Release();
 
     if (shader_data->pBlob)
         shader_data->pBlob->Release();
 
     delete shader_data;
+}
+
+// ------------------- Readback -------------------
+static int ImPlatform_DX11_BytesPerPixel(DXGI_FORMAT format)
+{
+    switch (format)
+    {
+    case DXGI_FORMAT_R8_UNORM: return 1;
+    case DXGI_FORMAT_R8G8_UNORM: case DXGI_FORMAT_R16_UNORM: case DXGI_FORMAT_R16_FLOAT: return 2;
+    case DXGI_FORMAT_R8G8B8A8_UNORM: case DXGI_FORMAT_B8G8R8A8_UNORM: case DXGI_FORMAT_R16G16_UNORM:
+    case DXGI_FORMAT_R16G16_FLOAT: case DXGI_FORMAT_R32_FLOAT: return 4;
+    case DXGI_FORMAT_R16G16B16A16_UNORM: case DXGI_FORMAT_R16G16B16A16_FLOAT: case DXGI_FORMAT_R32G32_FLOAT: return 8;
+    case DXGI_FORMAT_R32G32B32A32_FLOAT: return 16;
+    default: return 0;
+    }
+}
+
+IMPLATFORM_API bool ImPlatform_SupportsReadback(void) { return true; }
+
+IMPLATFORM_API bool ImPlatform_ReadTexture(ImTextureID texture, unsigned int x, unsigned int y,
+                                           unsigned int width, unsigned int height, void* out_pixels, size_t out_size)
+{
+    if (!texture || !out_pixels || !width || !height || !g_GfxData.pDevice || !g_GfxData.pDeviceContext)
+        return false;
+
+    ID3D11Resource* pResource = NULL;
+    ((ID3D11ShaderResourceView*)texture)->GetResource(&pResource);
+    if (!pResource)
+        return false;
+    ID3D11Texture2D* pTexture = NULL;
+    HRESULT hr = pResource->QueryInterface(__uuidof(ID3D11Texture2D), (void**)&pTexture);
+    pResource->Release();
+    if (FAILED(hr) || !pTexture)
+        return false;
+
+    D3D11_TEXTURE2D_DESC desc;
+    pTexture->GetDesc(&desc);
+    const size_t bpp = (size_t)ImPlatform_DX11_BytesPerPixel(desc.Format);
+    if (!bpp || x + width > desc.Width || y + height > desc.Height || out_size < (size_t)width * height * bpp)
+    {
+        pTexture->Release();
+        return false;
+    }
+
+    // Copy the region to a staging texture, then map it (Map waits for the copy: the GPU work is complete).
+    D3D11_TEXTURE2D_DESC sd = {};
+    sd.Width = width;
+    sd.Height = height;
+    sd.MipLevels = 1;
+    sd.ArraySize = 1;
+    sd.Format = desc.Format;
+    sd.SampleDesc.Count = 1;
+    sd.Usage = D3D11_USAGE_STAGING;
+    sd.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+    ID3D11Texture2D* pStaging = NULL;
+    hr = g_GfxData.pDevice->CreateTexture2D(&sd, NULL, &pStaging);
+    if (FAILED(hr) || !pStaging)
+    {
+        pTexture->Release();
+        return false;
+    }
+    D3D11_BOX box = { x, y, 0, x + width, y + height, 1 };
+    g_GfxData.pDeviceContext->CopySubresourceRegion(pStaging, 0, 0, 0, 0, pTexture, 0, &box);
+    pTexture->Release();
+
+    D3D11_MAPPED_SUBRESOURCE mapped;
+    hr = g_GfxData.pDeviceContext->Map(pStaging, 0, D3D11_MAP_READ, 0, &mapped);
+    if (FAILED(hr))
+    {
+        pStaging->Release();
+        return false;
+    }
+    const size_t row = (size_t)width * bpp;
+    for (unsigned int r = 0; r < height; r++)
+        memcpy((unsigned char*)out_pixels + r * row, (const unsigned char*)mapped.pData + (size_t)r * mapped.RowPitch, row);
+    g_GfxData.pDeviceContext->Unmap(pStaging, 0);
+    pStaging->Release();
+    return true;
+}
+
+// ------------------- Compute -------------------
+IMPLATFORM_API bool ImPlatform_SupportsCompute(void) { return true; }
+
+IMPLATFORM_API ImTextureID ImPlatform_CreateStorageTexture(const void* pixel_data, const ImPlatform_TextureDesc* desc)
+{
+    if (!desc || !desc->width || !desc->height || !g_GfxData.pDevice)
+        return NULL;
+
+    int bytes_per_pixel;
+    DXGI_FORMAT format = ImPlatform_GetD3D11Format(desc->format, &bytes_per_pixel);
+
+    D3D11_TEXTURE2D_DESC tex_desc = {};
+    tex_desc.Width = desc->width;
+    tex_desc.Height = desc->height;
+    tex_desc.MipLevels = 1;
+    tex_desc.ArraySize = 1;
+    tex_desc.Format = format;
+    tex_desc.SampleDesc.Count = 1;
+    tex_desc.Usage = D3D11_USAGE_DEFAULT;
+    tex_desc.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_UNORDERED_ACCESS;
+
+    D3D11_SUBRESOURCE_DATA sub = {};
+    sub.pSysMem = pixel_data;
+    sub.SysMemPitch = desc->width * bytes_per_pixel;
+    ID3D11Texture2D* pTexture = NULL;
+    HRESULT hr = g_GfxData.pDevice->CreateTexture2D(&tex_desc, pixel_data ? &sub : NULL, &pTexture);
+    if (FAILED(hr) || !pTexture)
+        return NULL;
+
+    ID3D11ShaderResourceView* pSRV = NULL;
+    ID3D11UnorderedAccessView* pUAV = NULL;
+    hr = g_GfxData.pDevice->CreateShaderResourceView(pTexture, NULL, &pSRV);
+    if (SUCCEEDED(hr))
+        hr = g_GfxData.pDevice->CreateUnorderedAccessView(pTexture, NULL, &pUAV);
+    pTexture->Release();
+    if (FAILED(hr) || !pSRV || !pUAV)
+    {
+        if (pSRV) pSRV->Release();
+        if (pUAV) pUAV->Release();
+        return NULL;
+    }
+
+    ImPlatform_StorageTracking_DX11* entry = new ImPlatform_StorageTracking_DX11();
+    entry->pSRV = pSRV;
+    entry->pUAV = pUAV;
+    entry->next = g_StorageTrackingHead;
+    g_StorageTrackingHead = entry;
+    return (ImTextureID)pSRV;
+}
+
+IMPLATFORM_API bool ImPlatform_DispatchCompute(ImPlatform_Shader compute_shader,
+                                               const ImTextureID* inputs, unsigned int input_count,
+                                               const ImTextureID* outputs, unsigned int output_count,
+                                               const void* constants, unsigned int constants_size,
+                                               unsigned int groups_x, unsigned int groups_y, unsigned int groups_z)
+{
+    ImPlatform_ShaderData_DX11* cs = (ImPlatform_ShaderData_DX11*)compute_shader;
+    ID3D11DeviceContext* ctx = g_GfxData.pDeviceContext;
+    if (!cs || cs->stage != ImPlatform_ShaderStage_Compute || !cs->pComputeShader || !ctx
+        || input_count > D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT || output_count > D3D11_PS_CS_UAV_REGISTER_COUNT
+        || (input_count && !inputs) || (output_count && !outputs) || (constants_size && !constants))
+        return false;
+
+    ID3D11UnorderedAccessView* uavs[D3D11_PS_CS_UAV_REGISTER_COUNT] = {};
+    for (unsigned int i = 0; i < output_count; i++)
+    {
+        for (ImPlatform_StorageTracking_DX11* e = g_StorageTrackingHead; e; e = e->next)
+            if (e->pSRV == (ID3D11ShaderResourceView*)outputs[i])
+                uavs[i] = e->pUAV;
+        if (!uavs[i])
+            return false;     // Not a storage texture.
+    }
+
+    ID3D11Buffer* cb = NULL;
+    if (constants_size)
+    {
+        D3D11_BUFFER_DESC bd = {};
+        bd.ByteWidth = (constants_size + 15u) & ~15u;
+        bd.Usage = D3D11_USAGE_DEFAULT;
+        bd.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
+        void* padded = calloc(1, bd.ByteWidth);
+        if (!padded)
+            return false;
+        memcpy(padded, constants, constants_size);
+        D3D11_SUBRESOURCE_DATA init = { padded, 0, 0 };
+        HRESULT hr = g_GfxData.pDevice->CreateBuffer(&bd, &init, &cb);
+        free(padded);
+        if (FAILED(hr))
+            return false;
+    }
+
+    // An output may still be bound as a pixel shader input from drawing: unbind it before binding the UAV.
+    ID3D11ShaderResourceView* null_srvs[D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT] = {};
+    ctx->PSSetShaderResources(0, 1, null_srvs);
+    ctx->CSSetShader(cs->pComputeShader, NULL, 0);
+    if (input_count)
+        ctx->CSSetShaderResources(0, input_count, (ID3D11ShaderResourceView* const*)inputs);
+    if (output_count)
+        ctx->CSSetUnorderedAccessViews(0, output_count, uavs, NULL);
+    if (cb)
+        ctx->CSSetConstantBuffers(0, 1, &cb);
+    if (g_Samplers[1][0])
+        ctx->CSSetSamplers(0, 1, &g_Samplers[1][0]);
+    ctx->Dispatch(groups_x, groups_y, groups_z);
+
+    // Clear bindings so outputs can be sampled by the next draw.
+    ID3D11UnorderedAccessView* null_uavs[D3D11_PS_CS_UAV_REGISTER_COUNT] = {};
+    ID3D11Buffer* null_cb = NULL;
+    ctx->CSSetShader(NULL, NULL, 0);
+    if (input_count)
+        ctx->CSSetShaderResources(0, input_count, null_srvs);
+    if (output_count)
+        ctx->CSSetUnorderedAccessViews(0, output_count, null_uavs, NULL);
+    ctx->CSSetConstantBuffers(0, 1, &null_cb);
+    if (cb)
+        cb->Release();
+    return true;
 }
 
 IMPLATFORM_API ImPlatform_ShaderProgram ImPlatform_CreateShaderProgram(ImPlatform_Shader vertex_shader, ImPlatform_Shader fragment_shader)
@@ -1775,6 +2021,150 @@ IMPLATFORM_API bool ImPlatform_SetShaderTexture(ImPlatform_ShaderProgram program
     ID3D11ShaderResourceView* pSRV = (ID3D11ShaderResourceView*)texture;
     g_GfxData.pDeviceContext->PSSetShaderResources(slot, 1, &pSRV);
 
+    return true;
+}
+
+// ------------------- Depth-tested immediate drawing -------------------
+IMPLATFORM_API bool ImPlatform_SupportsDepthDraw(void) { return true; }
+
+IMPLATFORM_API ImTextureID ImPlatform_CreateRenderTextureWithDepth(const ImPlatform_TextureDesc* desc)
+{
+    ImTextureID tex = ImPlatform_CreateRenderTexture(desc);
+    if (!tex)
+        return NULL;
+    ImPlatform_RTTracking_DX11* entry = g_RTTrackingHead;
+    while (entry && entry->pSRV != (ID3D11ShaderResourceView*)tex)
+        entry = entry->next;
+    D3D11_TEXTURE2D_DESC dd = {};
+    dd.Width = desc->width;
+    dd.Height = desc->height;
+    dd.MipLevels = 1;
+    dd.ArraySize = 1;
+    dd.Format = DXGI_FORMAT_D32_FLOAT;
+    dd.SampleDesc.Count = 1;
+    dd.Usage = D3D11_USAGE_DEFAULT;
+    dd.BindFlags = D3D11_BIND_DEPTH_STENCIL;
+    ID3D11Texture2D* depth = NULL;
+    if (!entry || FAILED(g_GfxData.pDevice->CreateTexture2D(&dd, NULL, &depth)) || !depth)
+    {
+        ImPlatform_DestroyTexture(tex);
+        return NULL;
+    }
+    const HRESULT hr = g_GfxData.pDevice->CreateDepthStencilView(depth, NULL, &entry->pDSV);
+    depth->Release();
+    if (FAILED(hr))
+    {
+        ImPlatform_DestroyTexture(tex);
+        return NULL;
+    }
+    return tex;
+}
+
+IMPLATFORM_API bool ImPlatform_DrawMesh(const ImPlatform_DrawMeshDesc* desc)
+{
+    ID3D11DeviceContext* ctx = g_GfxData.pDeviceContext;
+    if (!desc || !desc->program || !desc->vertices || !desc->indices || !ctx || desc->texture_count > 16
+        || (desc->texture_count && !desc->textures))
+        return false;
+    ImPlatform_ShaderProgramData_DX11* prog = (ImPlatform_ShaderProgramData_DX11*)desc->program;
+    ImPlatform_BufferData_DX11* vb = (ImPlatform_BufferData_DX11*)desc->vertices;
+    ImPlatform_BufferData_DX11* ib = (ImPlatform_BufferData_DX11*)desc->indices;
+    if (!prog->pVertexShader || !prog->pPixelShader || !vb->pVertexBuffer || !vb->pInputLayout || !ib->pIndexBuffer
+        || desc->index_count > ib->ib_desc.index_count)
+        return false;
+
+    // Fixed-function states, created once.
+    static ID3D11DepthStencilState* depth_states[2][2] = {};    // [test][write]
+    static ID3D11BlendState* blend_states[2] = {};              // [alpha]
+    static ID3D11RasterizerState* raster_states[2] = {};        // [cull back]
+    const int dt = desc->depth_test ? 1 : 0, dw = desc->depth_write ? 1 : 0, ab = desc->alpha_blend ? 1 : 0, cb = desc->cull_back ? 1 : 0;
+    if (!depth_states[dt][dw])
+    {
+        D3D11_DEPTH_STENCIL_DESC d = {};
+        d.DepthEnable = dt || dw;
+        d.DepthWriteMask = dw ? D3D11_DEPTH_WRITE_MASK_ALL : D3D11_DEPTH_WRITE_MASK_ZERO;
+        d.DepthFunc = dt ? D3D11_COMPARISON_LESS_EQUAL : D3D11_COMPARISON_ALWAYS;
+        g_GfxData.pDevice->CreateDepthStencilState(&d, &depth_states[dt][dw]);
+    }
+    if (!blend_states[ab])
+    {
+        D3D11_BLEND_DESC b = {};
+        b.RenderTarget[0].BlendEnable = ab;
+        b.RenderTarget[0].SrcBlend = D3D11_BLEND_SRC_ALPHA;
+        b.RenderTarget[0].DestBlend = D3D11_BLEND_INV_SRC_ALPHA;
+        b.RenderTarget[0].BlendOp = D3D11_BLEND_OP_ADD;
+        b.RenderTarget[0].SrcBlendAlpha = D3D11_BLEND_ONE;
+        b.RenderTarget[0].DestBlendAlpha = D3D11_BLEND_INV_SRC_ALPHA;
+        b.RenderTarget[0].BlendOpAlpha = D3D11_BLEND_OP_ADD;
+        b.RenderTarget[0].RenderTargetWriteMask = D3D11_COLOR_WRITE_ENABLE_ALL;
+        g_GfxData.pDevice->CreateBlendState(&b, &blend_states[ab]);
+    }
+    if (!raster_states[cb])
+    {
+        D3D11_RASTERIZER_DESC r = {};
+        r.FillMode = D3D11_FILL_SOLID;
+        r.CullMode = cb ? D3D11_CULL_BACK : D3D11_CULL_NONE;
+        r.FrontCounterClockwise = TRUE;
+        r.DepthClipEnable = TRUE;
+        g_GfxData.pDevice->CreateRasterizerState(&r, &raster_states[cb]);
+    }
+    if (!depth_states[dt][dw] || !blend_states[ab] || !raster_states[cb])
+        return false;
+
+    // Per-draw constant buffers (16-byte padded).
+    auto make_cb = [&](const void* data, unsigned int size) -> ID3D11Buffer* {
+        if (!data || !size)
+            return NULL;
+        D3D11_BUFFER_DESC bd = {};
+        bd.ByteWidth = (size + 15u) & ~15u;
+        bd.Usage = D3D11_USAGE_DEFAULT;
+        bd.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
+        void* padded = calloc(1, bd.ByteWidth);
+        if (!padded)
+            return NULL;
+        memcpy(padded, data, size);
+        D3D11_SUBRESOURCE_DATA init = { padded, 0, 0 };
+        ID3D11Buffer* buf = NULL;
+        g_GfxData.pDevice->CreateBuffer(&bd, &init, &buf);
+        free(padded);
+        return buf;
+    };
+    ID3D11Buffer* vcb = make_cb(desc->vs_constants, desc->vs_constants_size);
+    ID3D11Buffer* pcb = make_cb(desc->ps_constants, desc->ps_constants_size);
+
+    const UINT stride = vb->vb_desc.vertex_stride, offset = 0;
+    ctx->IASetInputLayout(vb->pInputLayout);
+    ctx->IASetVertexBuffers(0, 1, &vb->pVertexBuffer, &stride, &offset);
+    ctx->IASetIndexBuffer(ib->pIndexBuffer, ib->ib_desc.format == ImPlatform_IndexFormat_UInt16 ? DXGI_FORMAT_R16_UINT : DXGI_FORMAT_R32_UINT, 0);
+    ctx->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    ctx->VSSetShader(prog->pVertexShader, NULL, 0);
+    ctx->PSSetShader(prog->pPixelShader, NULL, 0);
+    ctx->GSSetShader(NULL, NULL, 0);
+    ctx->HSSetShader(NULL, NULL, 0);
+    ctx->DSSetShader(NULL, NULL, 0);
+    ctx->VSSetConstantBuffers(0, 1, &vcb);
+    ctx->PSSetConstantBuffers(0, 1, &pcb);
+    ID3D11ShaderResourceView* srvs[16] = {};
+    for (unsigned int i = 0; i < desc->texture_count; i++)
+        srvs[i] = (ID3D11ShaderResourceView*)desc->textures[i];
+    if (desc->texture_count)
+        ctx->PSSetShaderResources(0, desc->texture_count, srvs);
+    if (g_Samplers[1][0])
+        ctx->PSSetSamplers(0, 1, &g_Samplers[1][0]);
+    const float factor[4] = { 0, 0, 0, 0 };
+    ctx->OMSetDepthStencilState(depth_states[dt][dw], 0);
+    ctx->OMSetBlendState(blend_states[ab], factor, 0xffffffff);
+    ctx->RSSetState(raster_states[cb]);
+    ctx->DrawIndexed(desc->index_count, 0, 0);
+
+    // Unbind inputs so the textures can be render targets later.
+    ID3D11ShaderResourceView* none[16] = {};
+    if (desc->texture_count)
+        ctx->PSSetShaderResources(0, desc->texture_count, none);
+    if (vcb)
+        vcb->Release();
+    if (pcb)
+        pcb->Release();
     return true;
 }
 
