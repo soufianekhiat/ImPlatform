@@ -1452,6 +1452,87 @@ IMPLATFORM_API void ImPlatform_PopShaderConstants(void* handle)
     (void)handle;
 }
 
+// ============================================================================
+// Readback (no compute: cs_4_0 cannot write typed UAV textures, so storage textures stay DX11+)
+// ============================================================================
+#define IMPLATFORM_GFX_HAS_READBACK 1
+static int ImPlatform_DX10_BytesPerPixel(DXGI_FORMAT format)
+{
+    switch (format)
+    {
+    case DXGI_FORMAT_R8_UNORM: return 1;
+    case DXGI_FORMAT_R8G8_UNORM: case DXGI_FORMAT_R16_UNORM: case DXGI_FORMAT_R16_FLOAT: return 2;
+    case DXGI_FORMAT_R8G8B8A8_UNORM: case DXGI_FORMAT_B8G8R8A8_UNORM: case DXGI_FORMAT_R16G16_UNORM:
+    case DXGI_FORMAT_R16G16_FLOAT: case DXGI_FORMAT_R32_FLOAT: return 4;
+    case DXGI_FORMAT_R16G16B16A16_UNORM: case DXGI_FORMAT_R16G16B16A16_FLOAT: case DXGI_FORMAT_R32G32_FLOAT: return 8;
+    case DXGI_FORMAT_R32G32B32A32_FLOAT: return 16;
+    default: return 0;
+    }
+}
+
+IMPLATFORM_API bool ImPlatform_SupportsReadback(void) { return true; }
+
+IMPLATFORM_API bool ImPlatform_ReadTexture(ImTextureID texture, unsigned int x, unsigned int y,
+                                           unsigned int width, unsigned int height, void* out_pixels, size_t out_size)
+{
+    if (!texture || !out_pixels || !width || !height || !g_GfxData.pDevice)
+        return false;
+
+    ID3D10Resource* pResource = NULL;
+    ((ID3D10ShaderResourceView*)texture)->GetResource(&pResource);
+    if (!pResource)
+        return false;
+    ID3D10Texture2D* pTexture = NULL;
+    HRESULT hr = pResource->QueryInterface(__uuidof(ID3D10Texture2D), (void**)&pTexture);
+    pResource->Release();
+    if (FAILED(hr) || !pTexture)
+        return false;
+
+    D3D10_TEXTURE2D_DESC desc;
+    pTexture->GetDesc(&desc);
+    const size_t bpp = (size_t)ImPlatform_DX10_BytesPerPixel(desc.Format);
+    if (!bpp || x + width > desc.Width || y + height > desc.Height || out_size < (size_t)width * height * bpp)
+    {
+        pTexture->Release();
+        return false;
+    }
+
+    // Copy the region to a staging texture, then map it (Map waits for the copy: the GPU work is complete).
+    D3D10_TEXTURE2D_DESC sd = {};
+    sd.Width = width;
+    sd.Height = height;
+    sd.MipLevels = 1;
+    sd.ArraySize = 1;
+    sd.Format = desc.Format;
+    sd.SampleDesc.Count = 1;
+    sd.Usage = D3D10_USAGE_STAGING;
+    sd.CPUAccessFlags = D3D10_CPU_ACCESS_READ;
+    ID3D10Texture2D* pStaging = NULL;
+    hr = g_GfxData.pDevice->CreateTexture2D(&sd, NULL, &pStaging);
+    if (FAILED(hr) || !pStaging)
+    {
+        pTexture->Release();
+        return false;
+    }
+    D3D10_BOX box = { x, y, 0, x + width, y + height, 1 };
+    g_GfxData.pDevice->CopySubresourceRegion(pStaging, 0, 0, 0, 0, pTexture, 0, &box);
+    pTexture->Release();
+
+    D3D10_MAPPED_TEXTURE2D mapped;
+    hr = pStaging->Map(0, D3D10_MAP_READ, 0, &mapped);
+    if (FAILED(hr))
+    {
+        pStaging->Release();
+        return false;
+    }
+    const size_t row = (size_t)width * bpp;
+    for (unsigned int r = 0; r < height; r++)
+        memcpy((unsigned char*)out_pixels + r * row, (const unsigned char*)mapped.pData + (size_t)r * mapped.RowPitch, row);
+    pStaging->Unmap(0);
+    pStaging->Release();
+    return true;
+}
+
 // shortcut: render-target stack, current-target copy and immediate quad are implemented on DX11 and
 // OpenGL3 only; here they report "unsupported" until this backend gets them (see ImPlatform_GetCaps).
 IMPLATFORM_API bool ImPlatform_PushRenderTarget(ImTextureID texture, bool clear) { (void)texture; (void)clear; return false; }

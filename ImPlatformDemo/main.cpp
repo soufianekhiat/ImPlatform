@@ -69,7 +69,7 @@ static void OnDpiChanged(float new_scale, void* /*user_data*/)
 static int ImPlatformDemo_ComputeTest()
 {
 	printf( "compute test: readback=%d compute=%d\n", (int)ImPlatform_SupportsReadback(), (int)ImPlatform_SupportsCompute() );
-	if ( !ImPlatform_SupportsReadback() || !ImPlatform_SupportsCompute() )
+	if ( !ImPlatform_SupportsReadback() )
 	{
 		printf( "SKIP: not supported on this backend\n" );
 		return 2;
@@ -84,6 +84,16 @@ static int ImPlatformDemo_ComputeTest()
 		}
 	ImPlatform_TextureDesc desc = ImPlatform_TextureDesc_Default( N, N );
 	ImTextureID input  = ImPlatform_CreateTexture( in_px, &desc );
+	if ( !ImPlatform_SupportsCompute() )
+	{
+		// Readback only: a sub-rectangle of the input comes back unchanged
+		const bool read = input && ImPlatform_ReadTexture( input, 8, 16, 32, 16, out_px, sizeof( out_px ) );
+		int bad = read ? 0 : 1;
+		for ( unsigned int y = 0; read && y < 16; ++y )
+			bad += memcmp( out_px + y * 32 * 4, in_px + ( ( y + 16 ) * N + 8 ) * 4, 32 * 4 ) != 0;
+		printf( bad ? "FAIL (readback only, %d bad rows)\n" : "PASS (readback only)\n", bad );
+		return bad ? 1 : 0;
+	}
 	ImTextureID output = ImPlatform_CreateStorageTexture( NULL, &desc );
 
 	ImPlatform_ShaderDesc sd = {};
