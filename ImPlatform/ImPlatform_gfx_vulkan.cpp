@@ -51,6 +51,35 @@ struct ImPlatform_RTTracking_Vulkan {
     ImPlatform_RTTracking_Vulkan* next;
 };
 static ImPlatform_RTTracking_Vulkan* g_RTTrackingHead  = NULL;
+
+// Every texture ImPlatform creates, by its ImTextureID (the descriptor set): readback and compute need
+// the image behind it, which a descriptor set does not give back.
+struct ImPlatform_TexReg_Vulkan {
+    VkDescriptorSet         id;
+    VkImage                 image;
+    VkImageView             view;
+    VkFormat                format;
+    unsigned int            width, height, bpp;
+    VkImageLayout           idleLayout;   // layout between uses; storage textures stay GENERAL
+    bool                    storage;
+    ImPlatform_TexReg_Vulkan* next;
+};
+static ImPlatform_TexReg_Vulkan* g_TexRegHead = NULL;
+static void ImPlatform_Vulkan_RegisterTexture(VkDescriptorSet id, VkImage image, VkImageView view, VkFormat format,
+                                              unsigned int w, unsigned int h, int bpp, VkImageLayout idle, bool storage)
+{
+    ImPlatform_TexReg_Vulkan* e = new ImPlatform_TexReg_Vulkan();
+    e->id = id; e->image = image; e->view = view; e->format = format; e->width = w; e->height = h; e->bpp = (unsigned int)bpp;
+    e->idleLayout = idle; e->storage = storage; e->next = g_TexRegHead;
+    g_TexRegHead = e;
+}
+static ImPlatform_TexReg_Vulkan* ImPlatform_Vulkan_FindTexture(ImTextureID id)
+{
+    for (ImPlatform_TexReg_Vulkan* e = g_TexRegHead; e; e = e->next)
+        if (e->id == (VkDescriptorSet)id)
+            return e;
+    return NULL;
+}
 static ImPlatform_RTTracking_Vulkan* g_ActiveRTEntry   = NULL;
 static ImGui_ImplVulkanH_Window g_MainWindowData;  // Don't use = {} - let constructor run!
 static bool g_SwapChainRebuild = false;
@@ -58,6 +87,10 @@ static bool g_FrameBegun = false;               // Main viewport command buffer 
 static uint32_t g_QueueFamily = (uint32_t)-1;
 static VkCommandPool g_UploadCommandPool = VK_NULL_HANDLE;     // Dedicated pool for texture uploads (never touch the frame command buffers)
 static VkCommandBuffer g_UploadCommandBuffer = VK_NULL_HANDLE;
+// Compute: layout shared by every compute shader (see ImPlatform_Vulkan_ComputeLayout)
+static VkDescriptorSetLayout g_ComputeSetLayout      = VK_NULL_HANDLE;
+static VkPipelineLayout      g_ComputePipelineLayout = VK_NULL_HANDLE;
+static VkSampler             g_ComputeSampler        = VK_NULL_HANDLE;
 
 // Uniform block API state
 static ImPlatform_ShaderProgram g_CurrentUniformBlockProgram = nullptr;
@@ -961,6 +994,9 @@ IMPLATFORM_API void ImPlatform_ShutdownWindow(void)
         g_UploadCommandPool = VK_NULL_HANDLE;
         g_UploadCommandBuffer = VK_NULL_HANDLE;
     }
+    if (g_ComputePipelineLayout) { vkDestroyPipelineLayout(g_GfxData.device, g_ComputePipelineLayout, g_Allocator); g_ComputePipelineLayout = VK_NULL_HANDLE; }
+    if (g_ComputeSetLayout)      { vkDestroyDescriptorSetLayout(g_GfxData.device, g_ComputeSetLayout, g_Allocator); g_ComputeSetLayout = VK_NULL_HANDLE; }
+    if (g_ComputeSampler)        { vkDestroySampler(g_GfxData.device, g_ComputeSampler, g_Allocator); g_ComputeSampler = VK_NULL_HANDLE; }
 
     ImGui_ImplVulkan_Shutdown();
     ImGui_ImplVulkanH_DestroyWindow(g_GfxData.instance, g_GfxData.device, &g_MainWindowData, g_Allocator);
@@ -1217,7 +1253,7 @@ IMPLATFORM_API ImTextureID ImPlatform_CreateTexture(const void* pixel_data, cons
         image_info.arrayLayers = 1;
         image_info.samples = VK_SAMPLE_COUNT_1_BIT;
         image_info.tiling = VK_IMAGE_TILING_OPTIMAL;
-        image_info.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+        image_info.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
         image_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
         image_info.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
         err = vkCreateImage(g_GfxData.device, &image_info, g_Allocator, &image);
@@ -1388,9 +1424,9 @@ IMPLATFORM_API ImTextureID ImPlatform_CreateTexture(const void* pixel_data, cons
     vkDestroyBuffer(g_GfxData.device, staging_buffer, g_Allocator);
     vkFreeMemory(g_GfxData.device, staging_memory, g_Allocator);
 
-    // Note: We're leaking image and image_memory here as we have no way to track them
-    // A production implementation would need a texture registry
-    // The descriptor set is the handle we return
+    // Note: image and image_memory are never freed (DestroyTexture only unregisters the descriptor set)
+    ImPlatform_Vulkan_RegisterTexture(descriptor_set, image, image_view, format, desc->width, desc->height, bytes_per_pixel,
+                                      VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, false);
 
     return (ImTextureID)descriptor_set;
 }
@@ -1426,7 +1462,7 @@ IMPLATFORM_API ImTextureID ImPlatform_CreateRenderTexture(const ImPlatform_Textu
         image_info.arrayLayers   = 1;
         image_info.samples       = VK_SAMPLE_COUNT_1_BIT;
         image_info.tiling        = VK_IMAGE_TILING_OPTIMAL;
-        image_info.usage         = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+        image_info.usage         = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
         image_info.sharingMode   = VK_SHARING_MODE_EXCLUSIVE;
         image_info.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
         err = vkCreateImage(g_GfxData.device, &image_info, g_Allocator, &image);
@@ -1571,6 +1607,10 @@ IMPLATFORM_API ImTextureID ImPlatform_CreateRenderTexture(const ImPlatform_Textu
     entry->format        = format;
     entry->next          = g_RTTrackingHead;
     g_RTTrackingHead     = entry;
+    // shortcut: the image is UNDEFINED until its first render pass, so reading it back before that
+    // reads garbage (and trips the validation layer); transition it at creation if that ever matters.
+    ImPlatform_Vulkan_RegisterTexture(descriptorSet, image, imageView, format, desc->width, desc->height, bytes_per_pixel,
+                                      VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, false);
 
     return (ImTextureID)descriptorSet;
 }
@@ -1690,6 +1730,7 @@ struct ImPlatform_ShaderData_Vulkan
 {
     VkShaderModule shaderModule;
     ImPlatform_ShaderStage stage;
+    VkPipeline computePipeline;     // Compute stage: created on first dispatch
 };
 
 struct ImPlatform_ShaderProgramData_Vulkan
@@ -1771,6 +1812,8 @@ IMPLATFORM_API void ImPlatform_DestroyShader(ImPlatform_Shader shader)
 
     ImPlatform_ShaderData_Vulkan* shader_data = (ImPlatform_ShaderData_Vulkan*)shader;
 
+    if (shader_data->computePipeline)
+        vkDestroyPipeline(g_GfxData.device, shader_data->computePipeline, g_Allocator);
     if (shader_data->shaderModule)
         vkDestroyShaderModule(g_GfxData.device, shader_data->shaderModule, g_Allocator);
 
@@ -2350,6 +2393,405 @@ IMPLATFORM_API void ImPlatform_PushSampler(ImPlatform_TextureFilter filter, ImPl
 IMPLATFORM_API void ImPlatform_PopSampler(void)
 {
     ImPlatform_PopSampler_StdCallbacks();
+}
+
+// ============================================================================
+// Readback and compute
+// ============================================================================
+// shortcut: each call records the upload command buffer and waits for the queue to idle (like
+// ImPlatform_CreateTexture): simple and ordered with frames, at the cost of a GPU sync per call.
+#define IMPLATFORM_GFX_HAS_READBACK 1
+#define IMPLATFORM_GFX_HAS_COMPUTE  1
+enum { ImPlatform_Vulkan_MaxComputeInputs = 8, ImPlatform_Vulkan_MaxComputeOutputs = 8 };
+
+static VkCommandBuffer ImPlatform_Vulkan_BeginOneShot()
+{
+    if (g_UploadCommandPool == VK_NULL_HANDLE)
+    {
+        VkCommandPoolCreateInfo pool_info = {};
+        pool_info.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
+        pool_info.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
+        pool_info.queueFamilyIndex = g_QueueFamily;
+        if (vkCreateCommandPool(g_GfxData.device, &pool_info, g_Allocator, &g_UploadCommandPool) != VK_SUCCESS)
+            return VK_NULL_HANDLE;
+        VkCommandBufferAllocateInfo cb_info = {};
+        cb_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+        cb_info.commandPool = g_UploadCommandPool;
+        cb_info.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+        cb_info.commandBufferCount = 1;
+        if (vkAllocateCommandBuffers(g_GfxData.device, &cb_info, &g_UploadCommandBuffer) != VK_SUCCESS)
+            return VK_NULL_HANDLE;
+    }
+    vkResetCommandBuffer(g_UploadCommandBuffer, 0);
+    VkCommandBufferBeginInfo begin_info = {};
+    begin_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    begin_info.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    return vkBeginCommandBuffer(g_UploadCommandBuffer, &begin_info) == VK_SUCCESS ? g_UploadCommandBuffer : VK_NULL_HANDLE;
+}
+static bool ImPlatform_Vulkan_EndOneShot(VkCommandBuffer cb)
+{
+    vkEndCommandBuffer(cb);
+    VkSubmitInfo submit_info = {};
+    submit_info.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    submit_info.commandBufferCount = 1;
+    submit_info.pCommandBuffers = &cb;
+    if (vkQueueSubmit(g_GfxData.queue, 1, &submit_info, VK_NULL_HANDLE) != VK_SUCCESS)
+        return false;
+    return vkQueueWaitIdle(g_GfxData.queue) == VK_SUCCESS;
+}
+static void ImPlatform_Vulkan_ImageBarrier(VkCommandBuffer cb, VkImage image, VkImageLayout from, VkImageLayout to,
+                                           VkPipelineStageFlags dst_stage, VkAccessFlags dst_access)
+{
+    VkImageMemoryBarrier b = {};
+    b.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    b.oldLayout = from;
+    b.newLayout = to;
+    b.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    b.image = image;
+    b.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    b.subresourceRange.levelCount = 1;
+    b.subresourceRange.layerCount = 1;
+    b.srcAccessMask = VK_ACCESS_MEMORY_WRITE_BIT;
+    b.dstAccessMask = dst_access;
+    vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, dst_stage, 0, 0, NULL, 0, NULL, 1, &b);
+}
+// Host-visible, coherent buffer (staging, readback, constants)
+static bool ImPlatform_Vulkan_CreateHostBuffer(VkDeviceSize size, VkBufferUsageFlags usage, VkBuffer* buf, VkDeviceMemory* mem)
+{
+    VkBufferCreateInfo bi = {};
+    bi.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+    bi.size = size;
+    bi.usage = usage;
+    bi.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    if (vkCreateBuffer(g_GfxData.device, &bi, g_Allocator, buf) != VK_SUCCESS)
+        return false;
+    VkMemoryRequirements req;
+    vkGetBufferMemoryRequirements(g_GfxData.device, *buf, &req);
+    VkMemoryAllocateInfo ai = {};
+    ai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+    ai.allocationSize = req.size;
+    ai.memoryTypeIndex = ImPlatform_FindMemoryType(VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, req.memoryTypeBits);
+    if (ai.memoryTypeIndex == 0xFFFFFFFF || vkAllocateMemory(g_GfxData.device, &ai, g_Allocator, mem) != VK_SUCCESS)
+    {
+        vkDestroyBuffer(g_GfxData.device, *buf, g_Allocator);
+        return false;
+    }
+    vkBindBufferMemory(g_GfxData.device, *buf, *mem, 0);
+    return true;
+}
+static void ImPlatform_Vulkan_DestroyHostBuffer(VkBuffer buf, VkDeviceMemory mem)
+{
+    vkDestroyBuffer(g_GfxData.device, buf, g_Allocator);
+    vkFreeMemory(g_GfxData.device, mem, g_Allocator);
+}
+
+IMPLATFORM_API bool ImPlatform_SupportsReadback(void) { return g_GfxData.device != VK_NULL_HANDLE; }
+
+IMPLATFORM_API bool ImPlatform_ReadTexture(ImTextureID texture, unsigned int x, unsigned int y,
+                                           unsigned int width, unsigned int height, void* out_pixels, size_t out_size)
+{
+    ImPlatform_TexReg_Vulkan* t = ImPlatform_Vulkan_FindTexture(texture);
+    const VkDeviceSize size = (VkDeviceSize)width * height * (t ? t->bpp : 0);
+    if (!t || !out_pixels || !width || !height || !g_GfxData.device
+        || x + width > t->width || y + height > t->height || out_size < (size_t)size)
+        return false;
+
+    VkBuffer buf;
+    VkDeviceMemory mem;
+    if (!ImPlatform_Vulkan_CreateHostBuffer(size, VK_BUFFER_USAGE_TRANSFER_DST_BIT, &buf, &mem))
+        return false;
+    VkCommandBuffer cb = ImPlatform_Vulkan_BeginOneShot();
+    if (!cb)
+    {
+        ImPlatform_Vulkan_DestroyHostBuffer(buf, mem);
+        return false;
+    }
+    ImPlatform_Vulkan_ImageBarrier(cb, t->image, t->idleLayout, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_READ_BIT);
+    VkBufferImageCopy region = {};
+    region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    region.imageSubresource.layerCount = 1;
+    region.imageOffset = { (int32_t)x, (int32_t)y, 0 };
+    region.imageExtent = { width, height, 1 };
+    vkCmdCopyImageToBuffer(cb, t->image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, buf, 1, &region);
+    ImPlatform_Vulkan_ImageBarrier(cb, t->image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, t->idleLayout, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_ACCESS_MEMORY_READ_BIT);
+    VkMemoryBarrier host = {};
+    host.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+    host.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    host.dstAccessMask = VK_ACCESS_HOST_READ_BIT;
+    vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_HOST_BIT, 0, 1, &host, 0, NULL, 0, NULL);
+    bool ok = ImPlatform_Vulkan_EndOneShot(cb);
+
+    void* mapped = NULL;
+    ok = ok && vkMapMemory(g_GfxData.device, mem, 0, size, 0, &mapped) == VK_SUCCESS;
+    if (ok)
+    {
+        memcpy(out_pixels, mapped, (size_t)size);   // rows are tightly packed (bufferRowLength 0)
+        vkUnmapMemory(g_GfxData.device, mem);
+    }
+    ImPlatform_Vulkan_DestroyHostBuffer(buf, mem);
+    return ok;
+}
+
+IMPLATFORM_API bool ImPlatform_SupportsCompute(void) { return g_GfxData.device != VK_NULL_HANDLE; }
+
+IMPLATFORM_API ImTextureID ImPlatform_CreateStorageTexture(const void* pixel_data, const ImPlatform_TextureDesc* desc)
+{
+    if (!desc || !desc->width || !desc->height || !g_GfxData.device)
+        return NULL;
+    int bpp = 0;
+    const VkFormat format = ImPlatform_GetVulkanFormat(desc->format, &bpp);
+
+    VkImageCreateInfo ii = {};
+    ii.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+    ii.imageType = VK_IMAGE_TYPE_2D;
+    ii.format = format;
+    ii.extent = { desc->width, desc->height, 1 };
+    ii.mipLevels = 1;
+    ii.arrayLayers = 1;
+    ii.samples = VK_SAMPLE_COUNT_1_BIT;
+    ii.tiling = VK_IMAGE_TILING_OPTIMAL;
+    ii.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+    ii.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    ii.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    VkImage image;
+    if (vkCreateImage(g_GfxData.device, &ii, g_Allocator, &image) != VK_SUCCESS)
+        return NULL;
+    VkMemoryRequirements req;
+    vkGetImageMemoryRequirements(g_GfxData.device, image, &req);
+    VkMemoryAllocateInfo ai = {};
+    ai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+    ai.allocationSize = req.size;
+    ai.memoryTypeIndex = ImPlatform_FindMemoryType(VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, req.memoryTypeBits);
+    VkDeviceMemory memory;
+    if (vkAllocateMemory(g_GfxData.device, &ai, g_Allocator, &memory) != VK_SUCCESS)
+    {
+        vkDestroyImage(g_GfxData.device, image, g_Allocator);
+        return NULL;
+    }
+    vkBindImageMemory(g_GfxData.device, image, memory, 0);
+
+    VkImageViewCreateInfo vi = {};
+    vi.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+    vi.image = image;
+    vi.viewType = VK_IMAGE_VIEW_TYPE_2D;
+    vi.format = format;
+    vi.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    vi.subresourceRange.levelCount = 1;
+    vi.subresourceRange.layerCount = 1;
+    VkImageView view;
+    if (vkCreateImageView(g_GfxData.device, &vi, g_Allocator, &view) != VK_SUCCESS)
+    {
+        vkFreeMemory(g_GfxData.device, memory, g_Allocator);
+        vkDestroyImage(g_GfxData.device, image, g_Allocator);
+        return NULL;
+    }
+
+    // Fill with the pixels, or clear to zero (the texture starts zeroed, as on DX11); it lives in GENERAL,
+    // where it can be both sampled and written as a storage image.
+    const VkDeviceSize upload_size = (VkDeviceSize)desc->width * desc->height * bpp;
+    VkBuffer staging = VK_NULL_HANDLE;
+    VkDeviceMemory staging_mem = VK_NULL_HANDLE;
+    bool ok = !pixel_data || ImPlatform_Vulkan_CreateHostBuffer(upload_size, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, &staging, &staging_mem);
+    void* mapped = NULL;
+    if (ok && pixel_data && vkMapMemory(g_GfxData.device, staging_mem, 0, upload_size, 0, &mapped) == VK_SUCCESS)
+    {
+        memcpy(mapped, pixel_data, (size_t)upload_size);
+        vkUnmapMemory(g_GfxData.device, staging_mem);
+    }
+    VkCommandBuffer cb = ok ? ImPlatform_Vulkan_BeginOneShot() : VK_NULL_HANDLE;
+    if (cb)
+    {
+        ImPlatform_Vulkan_ImageBarrier(cb, image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT);
+        if (pixel_data)
+        {
+            VkBufferImageCopy region = {};
+            region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+            region.imageSubresource.layerCount = 1;
+            region.imageExtent = { desc->width, desc->height, 1 };
+            vkCmdCopyBufferToImage(cb, staging, image, VK_IMAGE_LAYOUT_GENERAL, 1, &region);
+        }
+        else
+        {
+            VkClearColorValue zero = {};
+            VkImageSubresourceRange range = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+            vkCmdClearColorImage(cb, image, VK_IMAGE_LAYOUT_GENERAL, &zero, 1, &range);
+        }
+        ImPlatform_Vulkan_ImageBarrier(cb, image, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_GENERAL, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_ACCESS_MEMORY_READ_BIT);
+        ok = ImPlatform_Vulkan_EndOneShot(cb);
+    }
+    else
+        ok = false;
+    if (staging)
+        ImPlatform_Vulkan_DestroyHostBuffer(staging, staging_mem);
+    VkDescriptorSet ds = ok ? ImGui_ImplVulkan_AddTexture(view, VK_IMAGE_LAYOUT_GENERAL) : VK_NULL_HANDLE;
+    if (!ds)
+    {
+        vkDestroyImageView(g_GfxData.device, view, g_Allocator);
+        vkFreeMemory(g_GfxData.device, memory, g_Allocator);
+        vkDestroyImage(g_GfxData.device, image, g_Allocator);
+        return NULL;
+    }
+    ImPlatform_Vulkan_RegisterTexture(ds, image, view, format, desc->width, desc->height, bpp, VK_IMAGE_LAYOUT_GENERAL, true);
+    return (ImTextureID)ds;
+}
+
+// One layout shared by every compute shader (set 0): binding 0 = uniform buffer (the constants),
+// bindings 1..8 = combined image samplers for the inputs (linear clamp), 9..16 = storage images for the outputs.
+static bool ImPlatform_Vulkan_ComputeLayout()
+{
+    if (g_ComputePipelineLayout)
+        return true;
+    VkSamplerCreateInfo si = {};
+    si.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+    si.magFilter = si.minFilter = VK_FILTER_LINEAR;
+    si.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+    si.addressModeU = si.addressModeV = si.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    si.maxLod = VK_LOD_CLAMP_NONE;
+    if (!g_ComputeSampler && vkCreateSampler(g_GfxData.device, &si, g_Allocator, &g_ComputeSampler) != VK_SUCCESS)
+        return false;
+    VkDescriptorSetLayoutBinding b[1 + ImPlatform_Vulkan_MaxComputeInputs + ImPlatform_Vulkan_MaxComputeOutputs] = {};
+    for (uint32_t i = 0; i < IM_ARRAYSIZE(b); i++)
+    {
+        b[i].binding = i;
+        b[i].descriptorType = i == 0 ? VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER
+                            : i <= ImPlatform_Vulkan_MaxComputeInputs ? VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER
+                            : VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+        b[i].descriptorCount = 1;
+        b[i].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+    }
+    VkDescriptorSetLayoutCreateInfo li = {};
+    li.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+    li.bindingCount = IM_ARRAYSIZE(b);
+    li.pBindings = b;
+    if (!g_ComputeSetLayout && vkCreateDescriptorSetLayout(g_GfxData.device, &li, g_Allocator, &g_ComputeSetLayout) != VK_SUCCESS)
+        return false;
+    VkPipelineLayoutCreateInfo pi = {};
+    pi.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+    pi.setLayoutCount = 1;
+    pi.pSetLayouts = &g_ComputeSetLayout;
+    return vkCreatePipelineLayout(g_GfxData.device, &pi, g_Allocator, &g_ComputePipelineLayout) == VK_SUCCESS;
+}
+
+IMPLATFORM_API bool ImPlatform_DispatchCompute(ImPlatform_Shader compute_shader,
+                                               const ImTextureID* inputs, unsigned int input_count,
+                                               const ImTextureID* outputs, unsigned int output_count,
+                                               const void* constants, unsigned int constants_size,
+                                               unsigned int groups_x, unsigned int groups_y, unsigned int groups_z)
+{
+    ImPlatform_ShaderData_Vulkan* cs = (ImPlatform_ShaderData_Vulkan*)compute_shader;
+    if (!cs || cs->stage != ImPlatform_ShaderStage_Compute || !cs->shaderModule || !g_GfxData.device
+        || input_count > ImPlatform_Vulkan_MaxComputeInputs || output_count > ImPlatform_Vulkan_MaxComputeOutputs
+        || (input_count && !inputs) || (output_count && !outputs) || (constants_size && !constants)
+        || !ImPlatform_Vulkan_ComputeLayout())
+        return false;
+    ImPlatform_TexReg_Vulkan* in[ImPlatform_Vulkan_MaxComputeInputs] = {};
+    ImPlatform_TexReg_Vulkan* out[ImPlatform_Vulkan_MaxComputeOutputs] = {};
+    for (unsigned int i = 0; i < input_count; i++)
+        if (!(in[i] = ImPlatform_Vulkan_FindTexture(inputs[i])))
+            return false;
+    for (unsigned int i = 0; i < output_count; i++)
+        if (!(out[i] = ImPlatform_Vulkan_FindTexture(outputs[i])) || !out[i]->storage)
+            return false;     // not a storage texture
+    if (!cs->computePipeline)
+    {
+        VkComputePipelineCreateInfo ci = {};
+        ci.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
+        ci.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        ci.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+        ci.stage.module = cs->shaderModule;
+        ci.stage.pName = "main";
+        ci.layout = g_ComputePipelineLayout;
+        if (vkCreateComputePipelines(g_GfxData.device, g_VulkanPipelineCache, 1, &ci, g_Allocator, &cs->computePipeline) != VK_SUCCESS)
+            return false;
+    }
+
+    // Per-dispatch descriptor pool: freed once the dispatch has completed
+    VkDescriptorPoolSize sizes[3] = {
+        { VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1 },
+        { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, ImPlatform_Vulkan_MaxComputeInputs },
+        { VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, ImPlatform_Vulkan_MaxComputeOutputs } };
+    VkDescriptorPoolCreateInfo pci = {};
+    pci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+    pci.maxSets = 1;
+    pci.poolSizeCount = 3;
+    pci.pPoolSizes = sizes;
+    VkDescriptorPool pool;
+    if (vkCreateDescriptorPool(g_GfxData.device, &pci, g_Allocator, &pool) != VK_SUCCESS)
+        return false;
+    VkDescriptorSetAllocateInfo dai = {};
+    dai.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+    dai.descriptorPool = pool;
+    dai.descriptorSetCount = 1;
+    dai.pSetLayouts = &g_ComputeSetLayout;
+    VkDescriptorSet set;
+    VkBuffer ubo = VK_NULL_HANDLE;
+    VkDeviceMemory ubo_mem = VK_NULL_HANDLE;
+    bool ok = vkAllocateDescriptorSets(g_GfxData.device, &dai, &set) == VK_SUCCESS;
+    if (ok && constants_size)
+    {
+        void* mapped = NULL;
+        ok = ImPlatform_Vulkan_CreateHostBuffer(constants_size, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, &ubo, &ubo_mem)
+          && vkMapMemory(g_GfxData.device, ubo_mem, 0, constants_size, 0, &mapped) == VK_SUCCESS;
+        if (ok)
+        {
+            memcpy(mapped, constants, constants_size);
+            vkUnmapMemory(g_GfxData.device, ubo_mem);
+        }
+    }
+    VkCommandBuffer cb = ok ? ImPlatform_Vulkan_BeginOneShot() : VK_NULL_HANDLE;
+    if (cb)
+    {
+        VkWriteDescriptorSet w[1 + ImPlatform_Vulkan_MaxComputeInputs + ImPlatform_Vulkan_MaxComputeOutputs] = {};
+        VkDescriptorImageInfo img[ImPlatform_Vulkan_MaxComputeInputs + ImPlatform_Vulkan_MaxComputeOutputs] = {};
+        VkDescriptorBufferInfo bi = { ubo, 0, VK_WHOLE_SIZE };
+        uint32_t n = 0;
+        if (ubo)
+        {
+            w[n].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            w[n].dstSet = set;
+            w[n].dstBinding = 0;
+            w[n].descriptorCount = 1;
+            w[n].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+            w[n].pBufferInfo = &bi;
+            n++;
+        }
+        for (unsigned int i = 0; i < input_count + output_count; i++)
+        {
+            const bool is_in = i < input_count;
+            ImPlatform_TexReg_Vulkan* t = is_in ? in[i] : out[i - input_count];
+            img[i].sampler = is_in ? g_ComputeSampler : VK_NULL_HANDLE;
+            img[i].imageView = t->view;
+            img[i].imageLayout = t->idleLayout;   // inputs sample in their idle layout, outputs are GENERAL
+            w[n].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            w[n].dstSet = set;
+            w[n].dstBinding = is_in ? 1 + i : 1 + ImPlatform_Vulkan_MaxComputeInputs + (i - input_count);
+            w[n].descriptorCount = 1;
+            w[n].descriptorType = is_in ? VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER : VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+            w[n].pImageInfo = &img[i];
+            n++;
+        }
+        vkUpdateDescriptorSets(g_GfxData.device, n, w, 0, NULL);
+
+        VkMemoryBarrier mb = {};
+        mb.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+        mb.srcAccessMask = VK_ACCESS_MEMORY_WRITE_BIT;
+        mb.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+        vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1, &mb, 0, NULL, 0, NULL);
+        vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, cs->computePipeline);
+        vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE, g_ComputePipelineLayout, 0, 1, &set, 0, NULL);
+        vkCmdDispatch(cb, groups_x, groups_y, groups_z);
+        mb.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+        mb.dstAccessMask = VK_ACCESS_MEMORY_READ_BIT;
+        vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 1, &mb, 0, NULL, 0, NULL);
+        ok = ImPlatform_Vulkan_EndOneShot(cb);
+    }
+    else
+        ok = false;
+    if (ubo)
+        ImPlatform_Vulkan_DestroyHostBuffer(ubo, ubo_mem);
+    vkDestroyDescriptorPool(g_GfxData.device, pool, g_Allocator);
+    return ok;
 }
 
 // shortcut: render-target stack, current-target copy and immediate quad are implemented on DX11 and
