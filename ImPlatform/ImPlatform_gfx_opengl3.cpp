@@ -214,6 +214,13 @@ static PFNGLGENSAMPLERSPROC       glGenSamplers_Ptr       = NULL;
 static PFNGLDELETESAMPLERSPROC    glDeleteSamplers_Ptr    = NULL;
 static PFNGLBINDSAMPLERPROC       glBindSampler_Ptr       = NULL;
 static PFNGLSAMPLERPARAMETERIPROC glSamplerParameteri_Ptr = NULL;
+// Uniform buffers (GL 3.1): Slang emits every HLSL cbuffer as a std140 uniform
+// block, at the binding of its register (b0 = vertexBuffer, b1 = parameters).
+#ifndef GL_UNIFORM_BUFFER
+#define GL_UNIFORM_BUFFER 0x8A11
+#endif
+typedef void (APIENTRYP PFNIMPGLBINDBUFFERBASEPROC)(GLenum target, GLuint index, GLuint buffer);
+static PFNIMPGLBINDBUFFERBASEPROC glBindBufferBase_Ptr = NULL;
 static PFNGLPROGRAMBINARYPROC     glProgramBinary_Ptr     = NULL;
 static PFNGLGETPROGRAMBINARYPROC  glGetProgramBinary_Ptr  = NULL;
 
@@ -478,6 +485,7 @@ IMPLATFORM_API bool ImPlatform_InitGfx(void)
     glDeleteSamplers_Ptr    = (PFNGLDELETESAMPLERSPROC)imgl3wGetProcAddress("glDeleteSamplers");
     glBindSampler_Ptr       = (PFNGLBINDSAMPLERPROC)imgl3wGetProcAddress("glBindSampler");
     glSamplerParameteri_Ptr = (PFNGLSAMPLERPARAMETERIPROC)imgl3wGetProcAddress("glSamplerParameteri");
+    glBindBufferBase_Ptr    = (PFNIMPGLBINDBUFFERBASEPROC)imgl3wGetProcAddress("glBindBufferBase");
 
     // Program binary cache (GL 4.1+), disabled when unavailable
     glProgramBinary_Ptr    = (PFNGLPROGRAMBINARYPROC)imgl3wGetProcAddress("glProgramBinary");
@@ -1570,7 +1578,48 @@ struct ImPlatform_ShaderProgramData_GL
     GLuint fragment_shader;
     ImPlatform_UniformData_GL uniforms[8];  // Support up to 8 uniforms
     int uniform_count;
+    // Raw parameter block, as on D3D11 (pixel constant buffer b1): uploaded to a
+    // uniform buffer at binding 1 when the shader is activated.
+    void*        cb_data;
+    unsigned int cb_size;
+    GLuint       cb_ubo;
 };
+
+// Projection matrix block (binding 0, HLSL `cbuffer vertexBuffer : register(b0)`),
+// same bytes as the D3D11 backend's vertex constant buffer.
+static GLuint g_ProjectionUBO = 0;
+
+static void ImPlatform_GL_BindUniformBlocks(ImPlatform_ShaderProgramData_GL* program_data, const ImDrawData* draw_data)
+{
+    if (!glBindBufferBase_Ptr)
+        return;
+    if (draw_data)
+    {
+        float L = draw_data->DisplayPos.x, R = draw_data->DisplayPos.x + draw_data->DisplaySize.x;
+        float T = draw_data->DisplayPos.y, B = draw_data->DisplayPos.y + draw_data->DisplaySize.y;
+        const float mvp[4][4] = {
+            { 2.0f / (R - L),     0.0f,              0.0f, 0.0f },
+            { 0.0f,               2.0f / (T - B),    0.0f, 0.0f },
+            { 0.0f,               0.0f,              0.5f, 0.0f },
+            { (R + L) / (L - R),  (T + B) / (B - T), 0.5f, 1.0f },
+        };
+        if (!g_ProjectionUBO)
+            glGenBuffers(1, &g_ProjectionUBO);
+        glBindBuffer(GL_UNIFORM_BUFFER, g_ProjectionUBO);
+        glBufferData(GL_UNIFORM_BUFFER, sizeof(mvp), mvp, GL_DYNAMIC_DRAW);
+        glBindBufferBase_Ptr(GL_UNIFORM_BUFFER, 0, g_ProjectionUBO);
+    }
+    if (program_data->cb_data && program_data->cb_size)
+    {
+        if (!program_data->cb_ubo)
+            glGenBuffers(1, &program_data->cb_ubo);
+        glBindBuffer(GL_UNIFORM_BUFFER, program_data->cb_ubo);
+        glBufferData(GL_UNIFORM_BUFFER, (program_data->cb_size + 15) & ~15u, NULL, GL_DYNAMIC_DRAW);
+        glBufferSubData(GL_UNIFORM_BUFFER, 0, program_data->cb_size, program_data->cb_data);
+        glBindBufferBase_Ptr(GL_UNIFORM_BUFFER, 1, program_data->cb_ubo);
+    }
+    glBindBuffer(GL_UNIFORM_BUFFER, 0);
+}
 
 // Global state for uniform block batching
 static ImPlatform_ShaderProgram g_CurrentUniformBlockProgram = nullptr;
@@ -1877,6 +1926,9 @@ IMPLATFORM_API void ImPlatform_DestroyShaderProgram(ImPlatform_ShaderProgram pro
 
         glDeleteProgram(program_data->program_id);
     }
+    if (program_data->cb_ubo)
+        glDeleteBuffers(1, &program_data->cb_ubo);
+    free(program_data->cb_data);
 
     delete program_data;
 }
@@ -1893,12 +1945,27 @@ IMPLATFORM_API void ImPlatform_BindShaderProgram(ImPlatform_ShaderProgram progra
     glUseProgram(program_data->program_id);
 }
 
+// Raw block for the uniform buffer at binding 1 (whole cbuffer struct, as D3D11).
+static void ImPlatform_GL_StoreBlock(ImPlatform_ShaderProgramData_GL* program_data, const void* data, unsigned int size)
+{
+    if (program_data->cb_size < size || !program_data->cb_data)
+    {
+        free(program_data->cb_data);
+        program_data->cb_data = malloc(size);
+    }
+    memcpy(program_data->cb_data, data, size);
+    program_data->cb_size = size;
+}
+
 IMPLATFORM_API bool ImPlatform_SetShaderUniform(ImPlatform_ShaderProgram program, const char* name, const void* data, unsigned int size)
 {
-    if (!program || !name || !data || size > sizeof(float) * 16)
+    if (!program || !name || !data || size == 0)
         return false;
 
     ImPlatform_ShaderProgramData_GL* program_data = (ImPlatform_ShaderProgramData_GL*)program;
+    ImPlatform_GL_StoreBlock(program_data, data, size);
+    if (size > sizeof(float) * 16)
+        return true; // a whole cbuffer: only the uniform block can take it
 
     // Find existing uniform or add new one
     int uniform_index = -1;
@@ -1929,21 +1996,45 @@ IMPLATFORM_API bool ImPlatform_SetShaderUniform(ImPlatform_ShaderProgram program
     return true;
 }
 
+static ImVector<char> g_UniformBlockBytes; // accumulated block (D3D11 packing: back to back)
+
 IMPLATFORM_API void ImPlatform_BeginUniformBlock(ImPlatform_ShaderProgram program)
 {
     if (!program)
         return;
 
     g_CurrentUniformBlockProgram = program;
+    g_UniformBlockBytes.resize(0);
 }
 
 IMPLATFORM_API bool ImPlatform_SetUniform(const char* name, const void* data, unsigned int size)
 {
-    if (!g_CurrentUniformBlockProgram)
+    if (!g_CurrentUniformBlockProgram || !data || size == 0)
         return false; // BeginUniformBlock not called
 
-    // Delegate to existing SetShaderUniform which handles storage
-    return ImPlatform_SetShaderUniform(g_CurrentUniformBlockProgram, name, data, size);
+    const int at = g_UniformBlockBytes.Size;
+    g_UniformBlockBytes.resize(at + (int)size);
+    memcpy(g_UniformBlockBytes.Data + at, data, size);
+    // Named uniform too, for GLSL written with plain (non-block) uniforms.
+    if (name && size <= sizeof(float) * 16)
+    {
+        ImPlatform_ShaderProgramData_GL* program_data = (ImPlatform_ShaderProgramData_GL*)g_CurrentUniformBlockProgram;
+        int idx = -1;
+        for (int i = 0; i < program_data->uniform_count; i++)
+            if (strcmp(program_data->uniforms[i].name, name) == 0) { idx = i; break; }
+        if (idx == -1 && program_data->uniform_count < 8)
+        {
+            idx = program_data->uniform_count++;
+            strncpy(program_data->uniforms[idx].name, name, 63);
+            program_data->uniforms[idx].name[63] = '\0';
+        }
+        if (idx != -1)
+        {
+            program_data->uniforms[idx].size = size;
+            memcpy(program_data->uniforms[idx].data, data, size);
+        }
+    }
+    return true;
 }
 
 IMPLATFORM_API void ImPlatform_EndUniformBlock(ImPlatform_ShaderProgram program)
@@ -1951,10 +2042,9 @@ IMPLATFORM_API void ImPlatform_EndUniformBlock(ImPlatform_ShaderProgram program)
     if (!program || program != g_CurrentUniformBlockProgram)
         return;
 
-    // For OpenGL3, uniforms are already stored and will be applied
-    // in the callback when the shader is activated
-    // Nothing more to do here
-
+    if (g_UniformBlockBytes.Size > 0)
+        ImPlatform_GL_StoreBlock((ImPlatform_ShaderProgramData_GL*)program, g_UniformBlockBytes.Data, (unsigned int)g_UniformBlockBytes.Size);
+    g_UniformBlockBytes.resize(0);
     g_CurrentUniformBlockProgram = nullptr;
 }
 
@@ -1972,10 +2062,24 @@ IMPLATFORM_API bool ImPlatform_SetShaderTexture(ImPlatform_ShaderProgram program
     glBindTexture(GL_TEXTURE_2D, (GLuint)(intptr_t)texture);
 
     // For shaders without explicit binding (legacy sampler uniforms), set the unit.
+    // Slang-generated GLSL suffixes resource names with "_0".
+    GLint prev_program = 0;
+    glGetIntegerv(GL_CURRENT_PROGRAM, &prev_program);
+    glUseProgram(program_data->program_id);
     GLint location = glGetUniformLocation(program_data->program_id, name);
+    if (location == -1)
+    {
+        char suffixed[96];
+        snprintf(suffixed, sizeof(suffixed), "%s_0", name);
+        location = glGetUniformLocation(program_data->program_id, suffixed);
+    }
     if (location != -1)
         glUniform1i(location, slot);
+    glUseProgram((GLuint)prev_program);
 
+    // ImGui's renderer binds each draw command's texture to the ACTIVE unit:
+    // leave unit 0 active so it does not land on this slot.
+    glActiveTexture(GL_TEXTURE0);
     return true;
 }
 
@@ -1997,6 +2101,7 @@ static void ImPlatform_SetCustomShader(const ImDrawList* parent_list, const ImDr
 
     // Use cached draw data for correct viewport projection in multi-viewport mode
     ImDrawData* draw_data = g_CurrentDrawData;
+    ImPlatform_GL_BindUniformBlocks(program_data, draw_data);
     if (!draw_data) return;
 
     float L = draw_data->DisplayPos.x;
@@ -2054,6 +2159,7 @@ IMPLATFORM_API void ImPlatform_BeginCustomShader_Render(ImPlatform_ShaderProgram
     ImDrawData* draw_data = g_CurrentDrawData;
     if (!draw_data)
         draw_data = ImGui::GetDrawData();
+    ImPlatform_GL_BindUniformBlocks(program_data, draw_data);
     if (!draw_data) return;
 
     float L = draw_data->DisplayPos.x;
@@ -2117,13 +2223,24 @@ IMPLATFORM_API void ImPlatform_EndCustomShader(ImDrawList* draw)
 
 IMPLATFORM_API void* ImPlatform_PushShaderConstants(const void* data, unsigned int size)
 {
-    (void)data; (void)size;
-    return nullptr;
+    if (!data || size == 0 || !glBindBufferBase_Ptr)
+        return nullptr;
+    GLuint ubo = 0;
+    glGenBuffers(1, &ubo);
+    glBindBuffer(GL_UNIFORM_BUFFER, ubo);
+    glBufferData(GL_UNIFORM_BUFFER, (size + 15) & ~15u, NULL, GL_STATIC_DRAW);
+    glBufferSubData(GL_UNIFORM_BUFFER, 0, size, data);
+    glBindBuffer(GL_UNIFORM_BUFFER, 0);
+    glBindBufferBase_Ptr(GL_UNIFORM_BUFFER, 1, ubo);
+    return (void*)(intptr_t)ubo;
 }
 
 IMPLATFORM_API void ImPlatform_PopShaderConstants(void* handle)
 {
-    (void)handle;
+    if (!handle)
+        return;
+    GLuint ubo = (GLuint)(intptr_t)handle;
+    glDeleteBuffers(1, &ubo);
 }
 
 // ============================================================================
