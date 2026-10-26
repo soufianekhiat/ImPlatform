@@ -1673,6 +1673,12 @@ IMPLATFORM_API bool ImPlatform_UpdateIndexBuffer(ImPlatform_IndexBuffer /*index_
 IMPLATFORM_API void ImPlatform_DestroyIndexBuffer(ImPlatform_IndexBuffer /*index_buffer*/) {}
 IMPLATFORM_API void ImPlatform_BindVertexBuffer(ImPlatform_VertexBuffer /*vertex_buffer*/) {}
 IMPLATFORM_API void ImPlatform_BindIndexBuffer(ImPlatform_IndexBuffer /*index_buffer*/) {}
+IMPLATFORM_API void ImPlatform_BindBuffers(ImPlatform_VertexBuffer vertex_buffer, ImPlatform_IndexBuffer index_buffer)
+{
+    ImPlatform_BindVertexBuffer(vertex_buffer);
+    ImPlatform_BindIndexBuffer(index_buffer);
+}
+
 IMPLATFORM_API void ImPlatform_DrawIndexed(unsigned int /*primitive_type*/, unsigned int /*index_count*/, unsigned int /*start_index*/) {}
 
 // ============================================================================

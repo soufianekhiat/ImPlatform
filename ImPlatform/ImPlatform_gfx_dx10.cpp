@@ -926,6 +926,12 @@ IMPLATFORM_API void ImPlatform_BindIndexBuffer(ImPlatform_IndexBuffer index_buff
     g_GfxData.pDevice->IASetIndexBuffer(buffer->pIndexBuffer, format, 0);
 }
 
+IMPLATFORM_API void ImPlatform_BindBuffers(ImPlatform_VertexBuffer vertex_buffer, ImPlatform_IndexBuffer index_buffer)
+{
+    ImPlatform_BindVertexBuffer(vertex_buffer);
+    ImPlatform_BindIndexBuffer(index_buffer);
+}
+
 IMPLATFORM_API void ImPlatform_DrawIndexed(unsigned int primitive_type, unsigned int index_count, unsigned int start_index)
 {
     D3D10_PRIMITIVE_TOPOLOGY topology;
