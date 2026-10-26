@@ -194,6 +194,28 @@ ImGui::Image(texture, ImVec2(256, 256));
 ImPlatform_DestroyTexture(texture);
 ```
 
+#### Readback and Compute (optional capabilities)
+
+```cpp
+if (ImPlatform_SupportsCompute())
+{
+    ImTextureID out = ImPlatform_CreateStorageTexture(NULL, &tex_desc);       // zeroed, drawable by ImGui
+    ImPlatform_DispatchCompute(cs, &in, 1, &out, 1, &params, sizeof(params), w / 8, h / 8, 1);
+}
+if (ImPlatform_SupportsReadback())
+    ImPlatform_ReadTexture(out, 0, 0, w, h, pixels, sizeof(pixels));        // synchronous
+```
+
+| Backend | Readback | Compute |
+|---|---|---|
+| DirectX 11, DirectX 12, Vulkan | yes | yes |
+| OpenGL 3 | yes | OpenGL 4.3+ (checked at runtime) |
+| DirectX 10 | yes | no (cs_4_0 cannot write textures) |
+| DirectX 9, Metal, WebGPU | no | no |
+
+Shader bindings per backend are listed above `ImPlatform_DispatchCompute` in `ImPlatform.h`.
+`ImPlatformDemo --compute-test` runs the same dispatch + readback check on any backend (exit code 0 pass, 1 fail, 2 unsupported).
+
 #### Custom Title Bar (when `IMPLATFORM_APP_SUPPORT_CUSTOM_TITLEBAR` is enabled)
 
 ```cpp
@@ -249,7 +271,9 @@ IM_GFX_CUSTOM       // No built-in backend: the application provides its own
 `IM_GFX_CUSTOM` keeps ImPlatform's platform layer (window, input, DPI, title bar) and compiles
 none of its graphics backends. The application links its own implementation of the graphics
 entry points (`ImPlatform_InitGfxAPI`, `ImPlatform_GfxAPINewFrame`, `ImPlatform_GfxAPIRender`,
-`ImPlatform_GfxAPISwapBuffer`, textures, shaders, buffers...) plus:
+`ImPlatform_GfxAPISwapBuffer`, textures, shaders, buffers, the render-target stack
+`ImPlatform_PushRenderTarget` / `PopRenderTarget` / `CopyCurrentTarget` / `GetCurrentTargetSize` /
+`DrawQuadNow`, and the optional readback / compute / depth-draw functions, stubbed or real) plus:
 
 ```cpp
 // Called by the platform layer (Win32, GLFW, SDL2, SDL3) when the window's framebuffer is resized.
