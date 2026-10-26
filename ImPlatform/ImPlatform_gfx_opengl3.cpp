@@ -251,9 +251,51 @@ struct ImPlatform_RTTracking_GL {
 static ImPlatform_RTTracking_GL* g_RTTrackingHead = nullptr;
 
 // Saved GL state for Begin/EndRenderToTexture
-static GLint g_SavedFBO      = 0;
-static GLint g_SavedViewport[4] = {};
-static GLuint g_RTFbo        = 0;
+// Render-target stack (Push/PopRenderTarget; Begin/EndRenderToTexture use it too).
+struct ImPlatform_SavedTarget_GL { GLint fbo; GLint viewport[4]; GLint scissor[4]; GLboolean scissorOn; GLuint ownFbo; };
+static ImPlatform_SavedTarget_GL g_TargetStack[8] = {};
+static int                       g_TargetDepth = 0;
+
+// Framebuffer entry points (not in Dear ImGui's stripped loader), loaded on first use.
+#ifndef GL_READ_FRAMEBUFFER
+#define GL_READ_FRAMEBUFFER          0x8CA8
+#endif
+#ifndef GL_DRAW_FRAMEBUFFER
+#define GL_DRAW_FRAMEBUFFER          0x8CA9
+#endif
+#ifndef GL_READ_FRAMEBUFFER_BINDING
+#define GL_READ_FRAMEBUFFER_BINDING  0x8CAA
+#endif
+#ifndef GL_DRAW_FRAMEBUFFER_BINDING
+#define GL_DRAW_FRAMEBUFFER_BINDING  0x8CA6
+#endif
+struct ImPlatform_FboFns_GL
+{
+    void (APIENTRYP Gen)(GLsizei, GLuint*);
+    void (APIENTRYP Delete)(GLsizei, const GLuint*);
+    void (APIENTRYP Bind)(GLenum, GLuint);
+    void (APIENTRYP Texture2D)(GLenum, GLenum, GLenum, GLuint, GLint);
+    void (APIENTRYP Blit)(GLint, GLint, GLint, GLint, GLint, GLint, GLint, GLint, GLbitfield, GLenum);
+};
+static const ImPlatform_FboFns_GL* ImPlatform_GL_Fbo()
+{
+    static ImPlatform_FboFns_GL fns = {};
+    static bool loaded = false;
+    if (!loaded)
+    {
+        loaded = true;
+        *(void**)&fns.Gen       = (void*)imgl3wGetProcAddress("glGenFramebuffers");
+        *(void**)&fns.Delete    = (void*)imgl3wGetProcAddress("glDeleteFramebuffers");
+        *(void**)&fns.Bind      = (void*)imgl3wGetProcAddress("glBindFramebuffer");
+        *(void**)&fns.Texture2D = (void*)imgl3wGetProcAddress("glFramebufferTexture2D");
+        *(void**)&fns.Blit      = (void*)imgl3wGetProcAddress("glBlitFramebuffer");
+    }
+    return (fns.Gen && fns.Delete && fns.Bind && fns.Texture2D && fns.Blit) ? &fns : NULL;
+}
+
+// ImPlatform_DrawQuadNow resources (created on first use)
+static GLuint g_QuadVAO = 0, g_QuadVBO = 0, g_QuadIBO = 0;
+static GLuint g_CopyFbo = 0;
 
 // Cached draw data for custom shader callbacks (needed for multi-viewport support)
 static ImDrawData* g_CurrentDrawData = nullptr;
@@ -1165,65 +1207,122 @@ IMPLATFORM_API ImTextureID ImPlatform_CreateRenderTexture(const ImPlatform_Textu
     return (ImTextureID)(intptr_t)tex;
 }
 
-IMPLATFORM_API bool ImPlatform_BeginRenderToTexture(ImTextureID texture)
+IMPLATFORM_API bool ImPlatform_PushRenderTarget(ImTextureID texture, bool clear)
 {
-    if (!texture)
+    const ImPlatform_FboFns_GL* fbo = ImPlatform_GL_Fbo();
+    if (!texture || !fbo || g_TargetDepth >= IM_ARRAYSIZE(g_TargetStack))
         return false;
-
     GLuint tex = (GLuint)(intptr_t)texture;
-
     ImPlatform_RTTracking_GL* entry = g_RTTrackingHead;
     while (entry) { if (entry->tex == tex) break; entry = entry->next; }
     if (!entry) return false;
 
-    // Load FBO functions via proc address (same pattern as CopyTexture)
-    typedef void (APIENTRYP PFNGLGENFRAMEBUFFERSPROC_LOCAL)(GLsizei, GLuint*);
-    typedef void (APIENTRYP PFNGLBINDFRAMEBUFFERPROC_LOCAL)(GLenum, GLuint);
-    typedef void (APIENTRYP PFNGLFRAMEBUFFERTEXTURE2DPROC_LOCAL)(GLenum, GLenum, GLenum, GLuint, GLint);
-    static PFNGLGENFRAMEBUFFERSPROC_LOCAL     glGenFramebuffers_fn     = (PFNGLGENFRAMEBUFFERSPROC_LOCAL)imgl3wGetProcAddress("glGenFramebuffers");
-    static PFNGLBINDFRAMEBUFFERPROC_LOCAL     glBindFramebuffer_fn     = (PFNGLBINDFRAMEBUFFERPROC_LOCAL)imgl3wGetProcAddress("glBindFramebuffer");
-    static PFNGLFRAMEBUFFERTEXTURE2DPROC_LOCAL glFramebufferTexture2D_fn = (PFNGLFRAMEBUFFERTEXTURE2DPROC_LOCAL)imgl3wGetProcAddress("glFramebufferTexture2D");
-    if (!glGenFramebuffers_fn || !glBindFramebuffer_fn || !glFramebufferTexture2D_fn)
-        return false;
+    ImPlatform_SavedTarget_GL& saved = g_TargetStack[g_TargetDepth++];
+    glGetIntegerv(GL_FRAMEBUFFER_BINDING, &saved.fbo);
+    glGetIntegerv(GL_VIEWPORT, saved.viewport);
+    glGetIntegerv(GL_SCISSOR_BOX, saved.scissor);
+    saved.scissorOn = glIsEnabled(GL_SCISSOR_TEST);
 
-    // Save current state
-    glGetIntegerv(GL_FRAMEBUFFER_BINDING, &g_SavedFBO);
-    glGetIntegerv(GL_VIEWPORT, g_SavedViewport);
-
-    // Create and bind FBO targeting the render texture
-    glGenFramebuffers_fn(1, &g_RTFbo);
-    glBindFramebuffer_fn(GL_FRAMEBUFFER, g_RTFbo);
-    glFramebufferTexture2D_fn(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, tex, 0);
-
+    fbo->Gen(1, &saved.ownFbo);
+    fbo->Bind(GL_FRAMEBUFFER, saved.ownFbo);
+    fbo->Texture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, tex, 0);
     glViewport(0, 0, (GLsizei)entry->width, (GLsizei)entry->height);
-
-    glClearColor(0.f, 0.f, 0.f, 0.f);
-    glClear(GL_COLOR_BUFFER_BIT);
-
+    glScissor(0, 0, (GLsizei)entry->width, (GLsizei)entry->height);
+    if (clear)
+    {
+        glClearColor(0.f, 0.f, 0.f, 0.f);
+        glClear(GL_COLOR_BUFFER_BIT);
+    }
     return true;
 }
 
-IMPLATFORM_API void ImPlatform_EndRenderToTexture(void)
+IMPLATFORM_API void ImPlatform_PopRenderTarget(void)
 {
-    if (!g_RTFbo)
+    const ImPlatform_FboFns_GL* fbo = ImPlatform_GL_Fbo();
+    if (!fbo || g_TargetDepth <= 0)
         return;
+    ImPlatform_SavedTarget_GL& saved = g_TargetStack[--g_TargetDepth];
+    fbo->Bind(GL_FRAMEBUFFER, (GLuint)saved.fbo);
+    fbo->Delete(1, &saved.ownFbo);
+    saved.ownFbo = 0;
+    glViewport(saved.viewport[0], saved.viewport[1], saved.viewport[2], saved.viewport[3]);
+    glScissor(saved.scissor[0], saved.scissor[1], saved.scissor[2], saved.scissor[3]);
+    if (saved.scissorOn) glEnable(GL_SCISSOR_TEST); else glDisable(GL_SCISSOR_TEST);
+}
 
-    typedef void (APIENTRYP PFNGLBINDFRAMEBUFFERPROC_LOCAL)(GLenum, GLuint);
-    typedef void (APIENTRYP PFNGLDELETEFRAMEBUFFERSPROC_LOCAL)(GLsizei, const GLuint*);
-    static PFNGLBINDFRAMEBUFFERPROC_LOCAL   glBindFramebuffer_fn   = (PFNGLBINDFRAMEBUFFERPROC_LOCAL)imgl3wGetProcAddress("glBindFramebuffer");
-    static PFNGLDELETEFRAMEBUFFERSPROC_LOCAL glDeleteFramebuffers_fn = (PFNGLDELETEFRAMEBUFFERSPROC_LOCAL)imgl3wGetProcAddress("glDeleteFramebuffers");
+IMPLATFORM_API bool ImPlatform_BeginRenderToTexture(ImTextureID texture) { return ImPlatform_PushRenderTarget(texture, true); }
+IMPLATFORM_API void ImPlatform_EndRenderToTexture(void)                  { ImPlatform_PopRenderTarget(); }
 
-    if (glDeleteFramebuffers_fn) glDeleteFramebuffers_fn(1, &g_RTFbo);
-    g_RTFbo = 0;
+// The viewport is the full target while Dear ImGui renders a viewport and after a push.
+IMPLATFORM_API void ImPlatform_GetCurrentTargetSize(unsigned int* width, unsigned int* height)
+{
+    GLint vp[4] = {};
+    glGetIntegerv(GL_VIEWPORT, vp);
+    if (width)  *width  = (unsigned int)vp[2];
+    if (height) *height = (unsigned int)vp[3];
+}
 
-    if (glBindFramebuffer_fn) glBindFramebuffer_fn(GL_FRAMEBUFFER, (GLuint)g_SavedFBO);
+// Window framebuffers are stored bottom-up: copies from them are flipped so `dst` reads top-down
+// like any texture. Pushed render textures drawn by ImPlatform_DrawQuadNow are already top-down.
+// shortcut: textures filled by Dear ImGui itself inside Begin/EndRenderToTexture stay bottom-up on GL,
+// so a copy from them comes out flipped; a flipped projection while rendering into them would fix it.
+static inline int ImPlatform_Min3(int a, int b, int c) { int m = a < b ? a : b; return m < c ? m : c; }
 
-    glViewport(g_SavedViewport[0], g_SavedViewport[1], g_SavedViewport[2], g_SavedViewport[3]);
+IMPLATFORM_API bool ImPlatform_CopyCurrentTarget(ImTextureID dst, int src_x, int src_y, int w, int h, int dst_x, int dst_y)
+{
+    const ImPlatform_FboFns_GL* fbo = ImPlatform_GL_Fbo();
+    if (!dst || !fbo || !glGetTexLevelParameteriv_Ptr)
+        return false;
+    GLuint dstTex = (GLuint)(intptr_t)dst;
+    GLint dw = 0, dh = 0, prevTex = 0;
+    glGetIntegerv(GL_TEXTURE_BINDING_2D, &prevTex);
+    glBindTexture(GL_TEXTURE_2D, dstTex);
+    glGetTexLevelParameteriv_Ptr(GL_TEXTURE_2D, 0, GL_TEXTURE_WIDTH, &dw);
+    glGetTexLevelParameteriv_Ptr(GL_TEXTURE_2D, 0, GL_TEXTURE_HEIGHT, &dh);
+    glBindTexture(GL_TEXTURE_2D, (GLuint)prevTex);
+    unsigned int tw = 0, th = 0;
+    ImPlatform_GetCurrentTargetSize(&tw, &th);
+
+    if (src_x < 0) { w += src_x; dst_x -= src_x; src_x = 0; }
+    if (src_y < 0) { h += src_y; dst_y -= src_y; src_y = 0; }
+    if (dst_x < 0) { w += dst_x; src_x -= dst_x; dst_x = 0; }
+    if (dst_y < 0) { h += dst_y; src_y -= dst_y; dst_y = 0; }
+    w = ImPlatform_Min3(w, (int)tw - src_x, dw - dst_x);
+    h = ImPlatform_Min3(h, (int)th - src_y, dh - dst_y);
+    if (w <= 0 || h <= 0)
+        return false;
+
+    GLint drawFbo = 0, readFbo = 0;
+    glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &drawFbo);
+    glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING, &readFbo);
+    const GLboolean scissorOn = glIsEnabled(GL_SCISSOR_TEST);
+    glDisable(GL_SCISSOR_TEST); // blits honour the scissor box
+
+    if (!g_CopyFbo)
+        fbo->Gen(1, &g_CopyFbo);
+    fbo->Bind(GL_DRAW_FRAMEBUFFER, g_CopyFbo);
+    fbo->Texture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, dstTex, 0);
+    fbo->Bind(GL_READ_FRAMEBUFFER, (GLuint)drawFbo);
+    const bool flip = (drawFbo == 0);
+    const GLint sy0 = flip ? (GLint)th - (src_y + h) : src_y;
+    // A blit to a multisampled source resolves it (same size, flip allowed on the destination side).
+    fbo->Blit(src_x, sy0, src_x + w, sy0 + h,
+              dst_x, flip ? dst_y + h : dst_y, dst_x + w, flip ? dst_y : dst_y + h,
+              GL_COLOR_BUFFER_BIT, GL_NEAREST);
+
+    fbo->Bind(GL_DRAW_FRAMEBUFFER, (GLuint)drawFbo);
+    fbo->Bind(GL_READ_FRAMEBUFFER, (GLuint)readFbo);
+    if (scissorOn) glEnable(GL_SCISSOR_TEST);
+    return true;
 }
 
 IMPLATFORM_API bool ImPlatform_CopyBackbuffer(ImTextureID dst) { (void)dst; return false; }
 IMPLATFORM_API void ImPlatform_GetBackbufferSize(unsigned int* width, unsigned int* height)
 {
+    // No swap-chain object on GL: the main window's framebuffer is the display size in pixels.
+    const ImGuiIO& io = ImGui::GetIO();
+    g_ImPlatform_BackbufferW = (unsigned int)(io.DisplaySize.x * io.DisplayFramebufferScale.x);
+    g_ImPlatform_BackbufferH = (unsigned int)(io.DisplaySize.y * io.DisplayFramebufferScale.y);
     if (width)  *width  = g_ImPlatform_BackbufferW;
     if (height) *height = g_ImPlatform_BackbufferH;
 }
@@ -1589,26 +1688,32 @@ struct ImPlatform_ShaderProgramData_GL
 // same bytes as the D3D11 backend's vertex constant buffer.
 static GLuint g_ProjectionUBO = 0;
 
+// Upload an orthographic projection (D3D11 vertex-constant layout) to the block at binding 0.
+static void ImPlatform_GL_SetProjectionBlock(float L, float R, float T, float B)
+{
+    if (!glBindBufferBase_Ptr)
+        return;
+    const float mvp[4][4] = {
+        { 2.0f / (R - L),     0.0f,              0.0f, 0.0f },
+        { 0.0f,               2.0f / (T - B),    0.0f, 0.0f },
+        { 0.0f,               0.0f,              0.5f, 0.0f },
+        { (R + L) / (L - R),  (T + B) / (B - T), 0.5f, 1.0f },
+    };
+    if (!g_ProjectionUBO)
+        glGenBuffers(1, &g_ProjectionUBO);
+    glBindBuffer(GL_UNIFORM_BUFFER, g_ProjectionUBO);
+    glBufferData(GL_UNIFORM_BUFFER, sizeof(mvp), mvp, GL_DYNAMIC_DRAW);
+    glBindBufferBase_Ptr(GL_UNIFORM_BUFFER, 0, g_ProjectionUBO);
+    glBindBuffer(GL_UNIFORM_BUFFER, 0);
+}
+
 static void ImPlatform_GL_BindUniformBlocks(ImPlatform_ShaderProgramData_GL* program_data, const ImDrawData* draw_data)
 {
     if (!glBindBufferBase_Ptr)
         return;
     if (draw_data)
-    {
-        float L = draw_data->DisplayPos.x, R = draw_data->DisplayPos.x + draw_data->DisplaySize.x;
-        float T = draw_data->DisplayPos.y, B = draw_data->DisplayPos.y + draw_data->DisplaySize.y;
-        const float mvp[4][4] = {
-            { 2.0f / (R - L),     0.0f,              0.0f, 0.0f },
-            { 0.0f,               2.0f / (T - B),    0.0f, 0.0f },
-            { 0.0f,               0.0f,              0.5f, 0.0f },
-            { (R + L) / (L - R),  (T + B) / (B - T), 0.5f, 1.0f },
-        };
-        if (!g_ProjectionUBO)
-            glGenBuffers(1, &g_ProjectionUBO);
-        glBindBuffer(GL_UNIFORM_BUFFER, g_ProjectionUBO);
-        glBufferData(GL_UNIFORM_BUFFER, sizeof(mvp), mvp, GL_DYNAMIC_DRAW);
-        glBindBufferBase_Ptr(GL_UNIFORM_BUFFER, 0, g_ProjectionUBO);
-    }
+        ImPlatform_GL_SetProjectionBlock(draw_data->DisplayPos.x, draw_data->DisplayPos.x + draw_data->DisplaySize.x,
+                                         draw_data->DisplayPos.y, draw_data->DisplayPos.y + draw_data->DisplaySize.y);
     if (program_data->cb_data && program_data->cb_size)
     {
         if (!program_data->cb_ubo)
@@ -2221,26 +2326,93 @@ IMPLATFORM_API void ImPlatform_EndCustomShader(ImDrawList* draw)
     draw->AddCallback(ImGui::GetPlatformIO().DrawCallback_ResetRenderState, NULL);
 }
 
+IMPLATFORM_API void ImPlatform_DrawQuadNow(ImPlatform_ShaderProgram program, ImVec4 dst_rect, ImVec4 uv_rect)
+{
+    if (!program)
+        return;
+    if (!g_QuadVAO)
+    {
+        // ImDrawVert at Dear ImGui's attribute locations: 0 Position, 1 UV, 2 Color
+        const unsigned short idx[6] = { 0, 1, 2, 0, 2, 3 };
+        glGenVertexArrays(1, &g_QuadVAO);
+        glGenBuffers(1, &g_QuadVBO);
+        glGenBuffers(1, &g_QuadIBO);
+        glBindVertexArray(g_QuadVAO);
+        glBindBuffer(GL_ARRAY_BUFFER, g_QuadVBO);
+        glBufferData(GL_ARRAY_BUFFER, 4 * sizeof(ImDrawVert), NULL, GL_STREAM_DRAW);
+        glEnableVertexAttribArray(0);
+        glEnableVertexAttribArray(1);
+        glEnableVertexAttribArray(2);
+        glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, sizeof(ImDrawVert), (void*)offsetof(ImDrawVert, pos));
+        glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, sizeof(ImDrawVert), (void*)offsetof(ImDrawVert, uv));
+        glVertexAttribPointer(2, 4, GL_UNSIGNED_BYTE, GL_TRUE, sizeof(ImDrawVert), (void*)offsetof(ImDrawVert, col));
+        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, g_QuadIBO);
+        glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(idx), idx, GL_STATIC_DRAW);
+        glBindVertexArray(0);
+    }
+
+    // Program, its named uniforms and parameter block
+    ImPlatform_BeginCustomShader_Render(program);
+
+    // Projection for the current target in its pixels. Render textures are flipped so they
+    // store top-down, like every other texture (see ImPlatform_CopyCurrentTarget).
+    unsigned int tw = 0, th = 0;
+    ImPlatform_GetCurrentTargetSize(&tw, &th);
+    if (tw == 0 || th == 0)
+        return;
+    GLint fb = 0;
+    glGetIntegerv(GL_FRAMEBUFFER_BINDING, &fb);
+    const float T = fb ? (float)th : 0.0f, B = fb ? 0.0f : (float)th;
+    ImPlatform_GL_SetProjectionBlock(0.0f, (float)tw, T, B);
+    ImPlatform_ShaderProgramData_GL* program_data = (ImPlatform_ShaderProgramData_GL*)program;
+    GLint proj_loc = glGetUniformLocation(program_data->program_id, "ProjMtx");
+    if (proj_loc != -1)
+    {
+        const float R = (float)tw;
+        const float ortho[4][4] = {
+            { 2.0f / R, 0.0f,            0.0f, 0.0f },
+            { 0.0f,     2.0f / (T - B),  0.0f, 0.0f },
+            { 0.0f,     0.0f,           -1.0f, 0.0f },
+            { -1.0f,    (T + B) / (B - T), 0.0f, 1.0f },
+        };
+        glUniformMatrix4fv(proj_loc, 1, GL_FALSE, &ortho[0][0]);
+    }
+
+    const ImU32 white = IM_COL32_WHITE;
+    ImDrawVert v[4];
+    v[0].pos = ImVec2(dst_rect.x, dst_rect.y); v[0].uv = ImVec2(uv_rect.x, uv_rect.y); v[0].col = white;
+    v[1].pos = ImVec2(dst_rect.z, dst_rect.y); v[1].uv = ImVec2(uv_rect.z, uv_rect.y); v[1].col = white;
+    v[2].pos = ImVec2(dst_rect.z, dst_rect.w); v[2].uv = ImVec2(uv_rect.z, uv_rect.w); v[2].col = white;
+    v[3].pos = ImVec2(dst_rect.x, dst_rect.w); v[3].uv = ImVec2(uv_rect.x, uv_rect.w); v[3].col = white;
+    glBindVertexArray(g_QuadVAO);
+    glBindBuffer(GL_ARRAY_BUFFER, g_QuadVBO);
+    glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(v), v);
+    glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_SHORT, (void*)0);
+    glBindVertexArray(0);
+}
+
+// One buffer, re-specified per push: callers may pop before drawing (as on D3D11, where the bound
+// buffer stays alive), and deleting a GL buffer would unbind it. Re-specifying orphans the old
+// storage, so draws already issued keep their data.
+static GLuint g_PushConstantsUBO = 0;
+
 IMPLATFORM_API void* ImPlatform_PushShaderConstants(const void* data, unsigned int size)
 {
     if (!data || size == 0 || !glBindBufferBase_Ptr)
         return nullptr;
-    GLuint ubo = 0;
-    glGenBuffers(1, &ubo);
-    glBindBuffer(GL_UNIFORM_BUFFER, ubo);
-    glBufferData(GL_UNIFORM_BUFFER, (size + 15) & ~15u, NULL, GL_STATIC_DRAW);
+    if (!g_PushConstantsUBO)
+        glGenBuffers(1, &g_PushConstantsUBO);
+    glBindBuffer(GL_UNIFORM_BUFFER, g_PushConstantsUBO);
+    glBufferData(GL_UNIFORM_BUFFER, (size + 15) & ~15u, NULL, GL_STREAM_DRAW);
     glBufferSubData(GL_UNIFORM_BUFFER, 0, size, data);
     glBindBuffer(GL_UNIFORM_BUFFER, 0);
-    glBindBufferBase_Ptr(GL_UNIFORM_BUFFER, 1, ubo);
-    return (void*)(intptr_t)ubo;
+    glBindBufferBase_Ptr(GL_UNIFORM_BUFFER, 1, g_PushConstantsUBO);
+    return (void*)(intptr_t)g_PushConstantsUBO;
 }
 
 IMPLATFORM_API void ImPlatform_PopShaderConstants(void* handle)
 {
-    if (!handle)
-        return;
-    GLuint ubo = (GLuint)(intptr_t)handle;
-    glDeleteBuffers(1, &ubo);
+    (void)handle; // the buffer is reused by the next push
 }
 
 // ============================================================================

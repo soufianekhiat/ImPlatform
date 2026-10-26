@@ -536,6 +536,21 @@ IMPLATFORM_API bool ImPlatform_BeginRenderToTexture(ImTextureID texture);
 // Restore the backbuffer as the active render target.
 IMPLATFORM_API void ImPlatform_EndRenderToTexture(void);
 
+// Render-target stack, usable from inside an ImDrawCallback (multi-pass effects such as a bloom
+// or blur cascade). Push makes `texture` (from ImPlatform_CreateRenderTexture) the current target
+// with a full-size viewport and scissor, clearing it to transparent when `clear` is true; Pop
+// restores the previous target. Nests up to 8 deep. Begin/EndRenderToTexture = Push(t, true)/Pop.
+IMPLATFORM_API bool ImPlatform_PushRenderTarget(ImTextureID texture, bool clear);
+IMPLATFORM_API void ImPlatform_PopRenderTarget(void);
+
+// Copy a rectangle of the current render target (the viewport being rendered, main or secondary,
+// or the pushed render texture) into `dst`, from inside an ImDrawCallback. Coordinates are in
+// pixels, top-left origin; the rectangle is clipped to both surfaces and MSAA is resolved.
+// Returns false when nothing was copied or the backend does not support it.
+IMPLATFORM_API bool ImPlatform_CopyCurrentTarget(ImTextureID dst, int src_x, int src_y, int w, int h, int dst_x, int dst_y);
+// Size in pixels of the current render target.
+IMPLATFORM_API void ImPlatform_GetCurrentTargetSize(unsigned int* width, unsigned int* height);
+
 // Destroy a texture and free its resources
 // texture_id: Texture to destroy
 IMPLATFORM_API void ImPlatform_DestroyTexture(
@@ -878,6 +893,13 @@ IMPLATFORM_API void ImPlatform_EndCustomShader(
 IMPLATFORM_API void ImPlatform_DrawCustomShaderQuad(
     ImPlatform_ShaderProgram program
 );
+
+// Draw a quad now (not queued in a draw list) with `program` and its pending uniforms / textures,
+// e.g. one pass of a blur cascade inside an ImDrawCallback:
+// dst_rect = (x0, y0, x1, y1) in pixels of the current target, uv_rect = (u0, v0, u1, v1).
+// Changes vertex / index buffers and shaders: follow it with ImDrawCallback_ResetRenderState
+// (ImPlatform_EndCustomShader adds one) before Dear ImGui draws again.
+IMPLATFORM_API void ImPlatform_DrawQuadNow(ImPlatform_ShaderProgram program, ImVec4 dst_rect, ImVec4 uv_rect);
 
 // ============================================================================
 // Core API Functions

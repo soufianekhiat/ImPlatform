@@ -2137,4 +2137,13 @@ IMPLATFORM_API void ImPlatform_PopSampler(void)
     ImPlatform_PopSampler_StdCallbacks();
 }
 
+// shortcut: render-target stack, current-target copy and immediate quad are implemented on DX11 and
+// OpenGL3 only; here they report "unsupported" until this backend gets them (see ImPlatform_GetCaps).
+IMPLATFORM_API bool ImPlatform_PushRenderTarget(ImTextureID texture, bool clear) { (void)texture; (void)clear; return false; }
+IMPLATFORM_API void ImPlatform_PopRenderTarget(void) {}
+IMPLATFORM_API bool ImPlatform_CopyCurrentTarget(ImTextureID dst, int src_x, int src_y, int w, int h, int dst_x, int dst_y)
+{ (void)dst; (void)src_x; (void)src_y; (void)w; (void)h; (void)dst_x; (void)dst_y; return false; }
+IMPLATFORM_API void ImPlatform_GetCurrentTargetSize(unsigned int* width, unsigned int* height) { if (width) *width = 0; if (height) *height = 0; }
+IMPLATFORM_API void ImPlatform_DrawQuadNow(ImPlatform_ShaderProgram program, ImVec4 dst_rect, ImVec4 uv_rect) { (void)program; (void)dst_rect; (void)uv_rect; }
+
 #endif // IM_GFX_WGPU

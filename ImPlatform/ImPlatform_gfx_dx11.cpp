@@ -32,11 +32,21 @@ struct ImPlatform_RTTracking_DX11 {
 };
 static ImPlatform_RTTracking_DX11* g_RTTrackingHead = NULL;
 
-// Saved render target for Begin/EndRenderToTexture
-static ID3D11RenderTargetView* g_SavedRTV = NULL;
-static D3D11_VIEWPORT          g_SavedViewport = {};
-static D3D11_RECT              g_SavedScissor = {};
-static UINT                    g_SavedScissorCount = 0;
+// Render-target stack (Push/PopRenderTarget; Begin/EndRenderToTexture use it too)
+struct ImPlatform_SavedTarget_DX11 {
+    ID3D11RenderTargetView* pRTV;
+    D3D11_VIEWPORT          viewport;
+    D3D11_RECT              scissor;
+};
+static ImPlatform_SavedTarget_DX11 g_TargetStack[8] = {};
+static int                         g_TargetDepth = 0;
+
+// ImPlatform_DrawQuadNow resources (created on first use)
+static ID3D11Buffer* g_QuadVB = NULL;
+static ID3D11Buffer* g_QuadIB = NULL;
+static ID3D11Buffer* g_QuadCB = NULL;
+// ImPlatform_CopyCurrentTarget: resolve target for MSAA render targets
+static ID3D11Texture2D* g_ResolveTex = NULL;
 
 // Sampler table: [filter][wrap] — filter: 0=Nearest,1=Linear  wrap: 0=Clamp,1=Repeat,2=Mirror
 static ID3D11SamplerState* g_Samplers[2][3]  = {};
@@ -416,6 +426,10 @@ IMPLATFORM_API void ImPlatform_ShutdownWindow(void)
     for (int f = 0; f < 2; ++f)
         for (int w = 0; w < 3; ++w)
             if (g_Samplers[f][w]) { g_Samplers[f][w]->Release(); g_Samplers[f][w] = nullptr; }
+    if (g_QuadVB)     { g_QuadVB->Release();     g_QuadVB = nullptr; }
+    if (g_QuadIB)     { g_QuadIB->Release();     g_QuadIB = nullptr; }
+    if (g_QuadCB)     { g_QuadCB->Release();     g_QuadCB = nullptr; }
+    if (g_ResolveTex) { g_ResolveTex->Release(); g_ResolveTex = nullptr; }
     ImGui_ImplDX11_Shutdown();
     ImPlatform_Gfx_CleanupDevice_DX11(&g_GfxData);
 }
@@ -775,63 +789,148 @@ IMPLATFORM_API ImTextureID ImPlatform_CreateRenderTexture(const ImPlatform_Textu
     return (ImTextureID)pSRV;
 }
 
-IMPLATFORM_API bool ImPlatform_BeginRenderToTexture(ImTextureID texture)
+IMPLATFORM_API bool ImPlatform_PushRenderTarget(ImTextureID texture, bool clear)
 {
-    if (!texture || !g_GfxData.pDeviceContext)
+    if (!texture || !g_GfxData.pDeviceContext || g_TargetDepth >= IM_ARRAYSIZE(g_TargetStack))
         return false;
 
     ID3D11ShaderResourceView* pSRV = (ID3D11ShaderResourceView*)texture;
-
-    // Find tracked RTV
     ImPlatform_RTTracking_DX11* entry = g_RTTrackingHead;
     while (entry) { if (entry->pSRV == pSRV) break; entry = entry->next; }
     if (!entry) return false;
 
-    // Save current render target, viewport, and scissor
-    UINT numViewports = 1;
-    g_GfxData.pDeviceContext->OMGetRenderTargets(1, &g_SavedRTV, NULL);
-    g_GfxData.pDeviceContext->RSGetViewports(&numViewports, &g_SavedViewport);
-    g_SavedScissorCount = 1;
-    g_GfxData.pDeviceContext->RSGetScissorRects(&g_SavedScissorCount, &g_SavedScissor);
+    // Save the current target, viewport and scissor
+    ImPlatform_SavedTarget_DX11& saved = g_TargetStack[g_TargetDepth++];
+    UINT numViewports = 1, numScissors = 1;
+    g_GfxData.pDeviceContext->OMGetRenderTargets(1, &saved.pRTV, NULL);
+    g_GfxData.pDeviceContext->RSGetViewports(&numViewports, &saved.viewport);
+    g_GfxData.pDeviceContext->RSGetScissorRects(&numScissors, &saved.scissor);
 
-    // Unbind the SRV from pixel shader so it can be used as RT (D3D11 validation)
-    ID3D11ShaderResourceView* nullSRV = NULL;
-    g_GfxData.pDeviceContext->PSSetShaderResources(0, 1, &nullSRV);
+    // A texture bound as a shader input cannot be a render target (D3D11 validation)
+    ID3D11ShaderResourceView* nullSRVs[8] = {};
+    g_GfxData.pDeviceContext->PSSetShaderResources(0, 8, nullSRVs);
 
-    // Set new render target
     g_GfxData.pDeviceContext->OMSetRenderTargets(1, &entry->pRTV, NULL);
-
-    // Set viewport and scissor to match texture size
     D3D11_VIEWPORT vp = {};
     vp.Width = (float)entry->width;
     vp.Height = (float)entry->height;
     vp.MaxDepth = 1.0f;
     g_GfxData.pDeviceContext->RSSetViewports(1, &vp);
-
     D3D11_RECT scissor = { 0, 0, (LONG)entry->width, (LONG)entry->height };
     g_GfxData.pDeviceContext->RSSetScissorRects(1, &scissor);
 
-    // Clear the render texture
-    float clearColor[4] = { 0, 0, 0, 0 };
-    g_GfxData.pDeviceContext->ClearRenderTargetView(entry->pRTV, clearColor);
-
+    if (clear)
+    {
+        float clearColor[4] = { 0, 0, 0, 0 };
+        g_GfxData.pDeviceContext->ClearRenderTargetView(entry->pRTV, clearColor);
+    }
     return true;
 }
 
-IMPLATFORM_API void ImPlatform_EndRenderToTexture(void)
+IMPLATFORM_API void ImPlatform_PopRenderTarget(void)
 {
-    if (!g_GfxData.pDeviceContext) return;
+    if (!g_GfxData.pDeviceContext || g_TargetDepth <= 0)
+        return;
+    ImPlatform_SavedTarget_DX11& saved = g_TargetStack[--g_TargetDepth];
+    g_GfxData.pDeviceContext->OMSetRenderTargets(1, &saved.pRTV, NULL);
+    g_GfxData.pDeviceContext->RSSetViewports(1, &saved.viewport);
+    g_GfxData.pDeviceContext->RSSetScissorRects(1, &saved.scissor);
+    if (saved.pRTV)
+        saved.pRTV->Release();
+    saved.pRTV = NULL;
+}
 
-    // Restore saved render target and viewport
-    if (g_SavedRTV)
+IMPLATFORM_API bool ImPlatform_BeginRenderToTexture(ImTextureID texture) { return ImPlatform_PushRenderTarget(texture, true); }
+IMPLATFORM_API void ImPlatform_EndRenderToTexture(void)                  { ImPlatform_PopRenderTarget(); }
+
+// Texture behind the current render target view (AddRef'd), or NULL.
+static ID3D11Texture2D* ImPlatform_GetCurrentTargetTexture_DX11()
+{
+    ID3D11RenderTargetView* pRTV = NULL;
+    g_GfxData.pDeviceContext->OMGetRenderTargets(1, &pRTV, NULL);
+    if (!pRTV)
+        return NULL;
+    ID3D11Resource* pRes = NULL;
+    pRTV->GetResource(&pRes);
+    pRTV->Release();
+    if (!pRes)
+        return NULL;
+    ID3D11Texture2D* pTex = NULL;
+    pRes->QueryInterface(__uuidof(ID3D11Texture2D), (void**)&pTex);
+    pRes->Release();
+    return pTex;
+}
+
+IMPLATFORM_API void ImPlatform_GetCurrentTargetSize(unsigned int* width, unsigned int* height)
+{
+    D3D11_TEXTURE2D_DESC desc = {};
+    if (ID3D11Texture2D* pTex = g_GfxData.pDeviceContext ? ImPlatform_GetCurrentTargetTexture_DX11() : NULL)
     {
-        g_GfxData.pDeviceContext->OMSetRenderTargets(1, &g_SavedRTV, NULL);
-        g_GfxData.pDeviceContext->RSSetViewports(1, &g_SavedViewport);
-        if (g_SavedScissorCount > 0)
-            g_GfxData.pDeviceContext->RSSetScissorRects(1, &g_SavedScissor);
-        g_SavedRTV->Release();
-        g_SavedRTV = NULL;
+        pTex->GetDesc(&desc);
+        pTex->Release();
     }
+    if (width)  *width  = desc.Width;
+    if (height) *height = desc.Height;
+}
+
+static inline int ImPlatform_Min3(int a, int b, int c) { int m = a < b ? a : b; return m < c ? m : c; }
+
+IMPLATFORM_API bool ImPlatform_CopyCurrentTarget(ImTextureID dst, int src_x, int src_y, int w, int h, int dst_x, int dst_y)
+{
+    if (!dst || !g_GfxData.pDeviceContext)
+        return false;
+    ID3D11Texture2D* pSrc = ImPlatform_GetCurrentTargetTexture_DX11();
+    if (!pSrc)
+        return false;
+    ID3D11Resource* pDstRes = NULL;
+    ((ID3D11ShaderResourceView*)dst)->GetResource(&pDstRes);
+    ID3D11Texture2D* pDst = NULL;
+    if (pDstRes) { pDstRes->QueryInterface(__uuidof(ID3D11Texture2D), (void**)&pDst); pDstRes->Release(); }
+    if (!pDst) { pSrc->Release(); return false; }
+
+    D3D11_TEXTURE2D_DESC sd = {}, dd = {};
+    pSrc->GetDesc(&sd);
+    pDst->GetDesc(&dd);
+
+    // Clip the rectangle to both surfaces
+    if (src_x < 0) { w += src_x; dst_x -= src_x; src_x = 0; }
+    if (src_y < 0) { h += src_y; dst_y -= src_y; src_y = 0; }
+    if (dst_x < 0) { w += dst_x; src_x -= dst_x; dst_x = 0; }
+    if (dst_y < 0) { h += dst_y; src_y -= dst_y; dst_y = 0; }
+    w = ImPlatform_Min3(w, (int)sd.Width - src_x, (int)dd.Width - dst_x);
+    h = ImPlatform_Min3(h, (int)sd.Height - src_y, (int)dd.Height - dst_y);
+    bool copied = false;
+    if (w > 0 && h > 0)
+    {
+        ID3D11Texture2D* pFrom = pSrc;
+        if (sd.SampleDesc.Count > 1)
+        {
+            // MSAA target: resolve the whole surface first (cached per size / format)
+            D3D11_TEXTURE2D_DESC rd = {};
+            if (g_ResolveTex) g_ResolveTex->GetDesc(&rd);
+            if (!g_ResolveTex || rd.Width != sd.Width || rd.Height != sd.Height || rd.Format != sd.Format)
+            {
+                if (g_ResolveTex) { g_ResolveTex->Release(); g_ResolveTex = NULL; }
+                rd = sd;
+                rd.SampleDesc.Count = 1; rd.SampleDesc.Quality = 0;
+                rd.BindFlags = 0; rd.MiscFlags = 0; rd.CPUAccessFlags = 0;
+                rd.Usage = D3D11_USAGE_DEFAULT;
+                g_GfxData.pDevice->CreateTexture2D(&rd, NULL, &g_ResolveTex);
+            }
+            if (g_ResolveTex)
+                g_GfxData.pDeviceContext->ResolveSubresource(g_ResolveTex, 0, pSrc, 0, sd.Format);
+            pFrom = g_ResolveTex;
+        }
+        if (pFrom)
+        {
+            D3D11_BOX box = { (UINT)src_x, (UINT)src_y, 0, (UINT)(src_x + w), (UINT)(src_y + h), 1 };
+            g_GfxData.pDeviceContext->CopySubresourceRegion(pDst, 0, (UINT)dst_x, (UINT)dst_y, 0, pFrom, 0, &box);
+            copied = true;
+        }
+    }
+    pDst->Release();
+    pSrc->Release();
+    return copied;
 }
 
 IMPLATFORM_API bool ImPlatform_CopyBackbuffer(ImTextureID dst)
@@ -1743,6 +1842,75 @@ IMPLATFORM_API void ImPlatform_BeginCustomShader_Render(ImPlatform_ShaderProgram
         // Even if not dirty, ensure the constant buffer is bound
         g_GfxData.pDeviceContext->PSSetConstantBuffers(1, 1, &program_data->pPixelConstantBuffer);
     }
+}
+
+IMPLATFORM_API void ImPlatform_DrawQuadNow(ImPlatform_ShaderProgram program, ImVec4 dst_rect, ImVec4 uv_rect)
+{
+    if (!program || !g_GfxData.pDevice || !g_GfxData.pDeviceContext)
+        return;
+    ID3D11DeviceContext* ctx = g_GfxData.pDeviceContext;
+    if (!g_QuadVB)
+    {
+        D3D11_BUFFER_DESC bd = {};
+        bd.ByteWidth = 4 * sizeof(ImDrawVert);
+        bd.Usage = D3D11_USAGE_DYNAMIC;
+        bd.BindFlags = D3D11_BIND_VERTEX_BUFFER;
+        bd.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
+        g_GfxData.pDevice->CreateBuffer(&bd, NULL, &g_QuadVB);
+        const unsigned short idx[6] = { 0, 1, 2, 0, 2, 3 };
+        D3D11_BUFFER_DESC ib = {};
+        ib.ByteWidth = sizeof(idx);
+        ib.Usage = D3D11_USAGE_IMMUTABLE;
+        ib.BindFlags = D3D11_BIND_INDEX_BUFFER;
+        D3D11_SUBRESOURCE_DATA init = { idx, 0, 0 };
+        g_GfxData.pDevice->CreateBuffer(&ib, &init, &g_QuadIB);
+        D3D11_BUFFER_DESC cb = {};
+        cb.ByteWidth = 64;
+        cb.Usage = D3D11_USAGE_DYNAMIC;
+        cb.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
+        cb.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
+        g_GfxData.pDevice->CreateBuffer(&cb, NULL, &g_QuadCB);
+    }
+    if (!g_QuadVB || !g_QuadIB || !g_QuadCB)
+        return;
+
+    // Program, input layout and its pending pixel constants (b1)
+    ImPlatform_BeginCustomShader_Render(program);
+
+    // Projection for the current target, in its pixels (b0, as Dear ImGui's backend lays it out)
+    unsigned int tw = 0, th = 0;
+    ImPlatform_GetCurrentTargetSize(&tw, &th);
+    if (tw == 0 || th == 0)
+        return;
+    const float L = 0.0f, R = (float)tw, T = 0.0f, B = (float)th;
+    const float mvp[4][4] = {
+        { 2.0f / (R - L),     0.0f,              0.0f, 0.0f },
+        { 0.0f,               2.0f / (T - B),    0.0f, 0.0f },
+        { 0.0f,               0.0f,              0.5f, 0.0f },
+        { (R + L) / (L - R),  (T + B) / (B - T), 0.5f, 1.0f },
+    };
+    D3D11_MAPPED_SUBRESOURCE mapped;
+    if (ctx->Map(g_QuadCB, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped) != S_OK)
+        return;
+    memcpy(mapped.pData, mvp, sizeof(mvp));
+    ctx->Unmap(g_QuadCB, 0);
+
+    if (ctx->Map(g_QuadVB, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped) != S_OK)
+        return;
+    ImDrawVert* v = (ImDrawVert*)mapped.pData;
+    const ImU32 white = IM_COL32_WHITE;
+    v[0].pos = ImVec2(dst_rect.x, dst_rect.y); v[0].uv = ImVec2(uv_rect.x, uv_rect.y); v[0].col = white;
+    v[1].pos = ImVec2(dst_rect.z, dst_rect.y); v[1].uv = ImVec2(uv_rect.z, uv_rect.y); v[1].col = white;
+    v[2].pos = ImVec2(dst_rect.z, dst_rect.w); v[2].uv = ImVec2(uv_rect.z, uv_rect.w); v[2].col = white;
+    v[3].pos = ImVec2(dst_rect.x, dst_rect.w); v[3].uv = ImVec2(uv_rect.x, uv_rect.w); v[3].col = white;
+    ctx->Unmap(g_QuadVB, 0);
+
+    const UINT stride = sizeof(ImDrawVert), offset = 0;
+    ctx->IASetVertexBuffers(0, 1, &g_QuadVB, &stride, &offset);
+    ctx->IASetIndexBuffer(g_QuadIB, DXGI_FORMAT_R16_UINT, 0);
+    ctx->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    ctx->VSSetConstantBuffers(0, 1, &g_QuadCB);
+    ctx->DrawIndexed(6, 0, 0);
 }
 
 IMPLATFORM_API void* ImPlatform_PushShaderConstants(const void* data, unsigned int size)
