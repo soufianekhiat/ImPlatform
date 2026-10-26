@@ -44,6 +44,7 @@ extern "C" {
 #endif
 
 #include <stdio.h>
+#include <string.h>
 #include <math.h>
 
 // DPI change callback - rescale ImGui style when DPI changes at runtime
@@ -62,8 +63,78 @@ static void OnDpiChanged(float new_scale, void* /*user_data*/)
 #include <stb_image.h>
 #endif
 
-int main()
+// --compute-test: storage texture + compute dispatch + readback, the same check on every backend.
+// Reads an input texture (t0), writes a storage texture (u0) with a constant from b0, reads it back.
+// Exit code: 0 pass, 1 fail, 2 unsupported here.
+static int ImPlatformDemo_ComputeTest()
 {
+	printf( "compute test: readback=%d compute=%d\n", (int)ImPlatform_SupportsReadback(), (int)ImPlatform_SupportsCompute() );
+	if ( !ImPlatform_SupportsReadback() || !ImPlatform_SupportsCompute() )
+	{
+		printf( "SKIP: not supported on this backend\n" );
+		return 2;
+	}
+	const unsigned int N = 64;
+	static unsigned char in_px[ 64 * 64 * 4 ], out_px[ 64 * 64 * 4 ];
+	for ( unsigned int y = 0; y < N; ++y )
+		for ( unsigned int x = 0; x < N; ++x )
+		{
+			unsigned char* q = in_px + ( y * N + x ) * 4;
+			q[ 0 ] = (unsigned char)( x * 3 ); q[ 1 ] = (unsigned char)( y * 3 ); q[ 2 ] = 7; q[ 3 ] = 255;
+		}
+	ImPlatform_TextureDesc desc = ImPlatform_TextureDesc_Default( N, N );
+	ImTextureID input  = ImPlatform_CreateTexture( in_px, &desc );
+	ImTextureID output = ImPlatform_CreateStorageTexture( NULL, &desc );
+
+	ImPlatform_ShaderDesc sd = {};
+	sd.stage = ImPlatform_ShaderStage_Compute;
+	sd.entry_point = "main";
+#if IM_CURRENT_GFX == IM_GFX_OPENGL3
+	sd.format = ImPlatform_ShaderFormat_GLSL;
+	sd.source_code =
+		"#version 430\n"
+		"layout(local_size_x = 8, local_size_y = 8) in;\n"
+		"layout(binding = 0) uniform sampler2D inTex;\n"
+		"layout(rgba8, binding = 0) uniform writeonly image2D outTex;\n"
+		"layout(std140, binding = 0) uniform Params { vec4 p; };\n"
+		"void main() {\n"
+		"    ivec2 q = ivec2(gl_GlobalInvocationID.xy);\n"
+		"    vec4 c = texelFetch(inTex, q, 0);\n"
+		"    imageStore(outTex, q, vec4(c.r, c.g, p.z, 1.0));\n"
+		"}\n";
+#else
+	sd.format = ImPlatform_ShaderFormat_HLSL;
+	sd.source_code =
+		"Texture2D<float4> inTex : register(t0);\n"
+		"RWTexture2D<float4> outTex : register(u0);\n"
+		"cbuffer Params : register(b0) { float4 p; };\n"
+		"[numthreads(8, 8, 1)] void main(uint3 id : SV_DispatchThreadID) {\n"
+		"    float4 c = inTex.Load(int3(id.xy, 0));\n"
+		"    outTex[id.xy] = float4(c.r, c.g, p.z, 1.0);\n"
+		"}\n";
+#endif
+	ImPlatform_Shader cs = ImPlatform_CreateShader( &sd );
+	const float params[ 4 ] = { 0.0f, 0.0f, 0.5f, 0.0f };
+	const bool dispatched = cs && input && output
+		&& ImPlatform_DispatchCompute( cs, &input, 1, &output, 1, params, sizeof( params ), N / 8, N / 8, 1 );
+	const bool read = dispatched && ImPlatform_ReadTexture( output, 0, 0, N, N, out_px, sizeof( out_px ) );
+	printf( "shader=%d input=%d output=%d dispatched=%d read=%d\n", cs != NULL, input != (ImTextureID)0, output != (ImTextureID)0, (int)dispatched, (int)read );
+	int bad = read ? 0 : 1;
+	for ( unsigned int i = 0; read && i < N * N; ++i )
+	{
+		const unsigned char* a = in_px + i * 4;
+		const unsigned char* b = out_px + i * 4;
+		const bool ok = b[ 0 ] == a[ 0 ] && b[ 1 ] == a[ 1 ] && ( b[ 2 ] == 127 || b[ 2 ] == 128 ) && b[ 3 ] == 255;
+		if ( !ok && bad++ < 4 )
+			printf( "  pixel (%u,%u): got %u %u %u %u, want %u %u 128 255\n", i % N, i / N, b[ 0 ], b[ 1 ], b[ 2 ], b[ 3 ], a[ 0 ], a[ 1 ] );
+	}
+	printf( bad ? "FAIL (%d bad pixels)\n" : "PASS\n", bad );
+	return bad ? 1 : 0;
+}
+
+int main( int argc, char** argv )
+{
+	const bool computeTest = argc > 1 && strcmp( argv[ 1 ], "--compute-test" ) == 0;
 	// Configure borderless window with custom titlebar
 	ImPlatform_EnableCustomTitleBar();
 	{
@@ -197,6 +268,8 @@ int main()
 		fprintf( stderr, "ImPlatform: Cannot initialize graphics.\n" );
 		return 1;
 	}
+	if ( computeTest )
+		return ImPlatformDemo_ComputeTest();
 
 	// Create test textures using new Texture Creation API
 #ifdef IMGUI_HAS_TEXTURES

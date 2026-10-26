@@ -105,6 +105,7 @@ add_library(imgui STATIC
     ${IMGUI_DIR}/imgui_draw.cpp
     ${IMGUI_DIR}/imgui_tables.cpp
     ${IMGUI_DIR}/imgui_widgets.cpp
+    ${IMGUI_DIR}/imgui_stacklayout.cpp
 )
 target_include_directories(imgui PUBLIC ${IMGUI_DIR})
 # Propagate DearWidgets' imconfig overrides to every consumer of the imgui target.

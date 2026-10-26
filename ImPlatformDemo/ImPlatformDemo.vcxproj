@@ -281,6 +281,7 @@
     <ClCompile Include="..\imgui\imgui_draw.cpp" />
     <ClCompile Include="..\imgui\imgui_tables.cpp" />
     <ClCompile Include="..\imgui\imgui_widgets.cpp" />
+    <ClCompile Include="..\imgui\imgui_stacklayout.cpp" />
     <!-- ImGui Backend Files - Platform -->
     <ClCompile Include="..\imgui\backends\imgui_impl_win32.cpp">
       <ExcludedFromBuild Condition="'$(Configuration)'=='GLFW_OpenGL3'">true</ExcludedFromBuild>

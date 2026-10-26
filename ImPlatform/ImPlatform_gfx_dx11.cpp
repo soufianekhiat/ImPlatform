@@ -1651,6 +1651,9 @@ static int ImPlatform_DX11_BytesPerPixel(DXGI_FORMAT format)
     }
 }
 
+#define IMPLATFORM_GFX_HAS_READBACK   1
+#define IMPLATFORM_GFX_HAS_COMPUTE    1
+#define IMPLATFORM_GFX_HAS_DEPTH_DRAW 1
 IMPLATFORM_API bool ImPlatform_SupportsReadback(void) { return true; }
 
 IMPLATFORM_API bool ImPlatform_ReadTexture(ImTextureID texture, unsigned int x, unsigned int y,

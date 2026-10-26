@@ -937,7 +937,8 @@ IMPLATFORM_API void ImPlatform_DrawQuadNow(ImPlatform_ShaderProgram program, ImV
 // ============================================================================
 // Readback and Compute API (optional capabilities)
 // ============================================================================
-// Query support first: backends without it return false / NULL. Implemented on DirectX 11.
+// Query support first: backends without it return false / NULL.
+// Readback: DirectX 10, 11, 12, OpenGL 3, Vulkan. Compute: DirectX 11, 12, OpenGL 4.3+, Vulkan.
 
 IMPLATFORM_API bool ImPlatform_SupportsReadback(void);
 
@@ -957,6 +958,8 @@ IMPLATFORM_API ImTextureID ImPlatform_CreateStorageTexture(const void* pixel_dat
 // Run a compute shader (ImPlatform_CreateShader with ImPlatform_ShaderStage_Compute).
 // HLSL bindings: inputs -> t0.. (read-only), outputs -> u0.. (storage textures), constants -> b0 (may be NULL),
 // s0 = linear clamp sampler. Bindings are cleared afterwards so outputs can be drawn or read back.
+// GLSL (OpenGL 4.3): inputs -> sampler2D at binding 0.., outputs -> image2D at binding 0.. (format qualifier
+// matching the texture, e.g. rgba8), constants -> std140 uniform block at binding 0.
 // Call outside the ImGui render callbacks (e.g. before ImGui::Render); work is ordered with later drawing.
 IMPLATFORM_API bool ImPlatform_DispatchCompute(ImPlatform_Shader compute_shader,
                                                const ImTextureID* inputs, unsigned int input_count,
@@ -1256,17 +1259,24 @@ ImPlatform_BorderlessParams g_BorderlessParams = { 5, 100, 100, true, true };
     #error "Unknown or unsupported IM_CURRENT_GFX backend"
 #endif
 
-// Backends without readback/compute (IM_GFX_CUSTOM applications provide their own).
-#if IM_CURRENT_GFX != IM_GFX_DIRECTX11 && IM_CURRENT_GFX != IM_GFX_CUSTOM
+// Optional capabilities a backend does not implement (it defines IMPLATFORM_GFX_HAS_READBACK,
+// _COMPUTE or _DEPTH_DRAW for those it does). IM_GFX_CUSTOM applications provide their own.
+#if IM_CURRENT_GFX != IM_GFX_CUSTOM
+#ifndef IMPLATFORM_GFX_HAS_READBACK
 IMPLATFORM_API bool ImPlatform_SupportsReadback(void) { return false; }
 IMPLATFORM_API bool ImPlatform_ReadTexture(ImTextureID, unsigned int, unsigned int, unsigned int, unsigned int, void*, size_t) { return false; }
+#endif
+#ifndef IMPLATFORM_GFX_HAS_COMPUTE
 IMPLATFORM_API bool ImPlatform_SupportsCompute(void) { return false; }
 IMPLATFORM_API ImTextureID ImPlatform_CreateStorageTexture(const void*, const ImPlatform_TextureDesc*) { return (ImTextureID)0; }
 IMPLATFORM_API bool ImPlatform_DispatchCompute(ImPlatform_Shader, const ImTextureID*, unsigned int, const ImTextureID*, unsigned int,
                                                const void*, unsigned int, unsigned int, unsigned int, unsigned int) { return false; }
+#endif
+#ifndef IMPLATFORM_GFX_HAS_DEPTH_DRAW
 IMPLATFORM_API bool ImPlatform_SupportsDepthDraw(void) { return false; }
 IMPLATFORM_API ImTextureID ImPlatform_CreateRenderTextureWithDepth(const ImPlatform_TextureDesc*) { return (ImTextureID)0; }
 IMPLATFORM_API bool ImPlatform_DrawMesh(const ImPlatform_DrawMeshDesc*) { return false; }
+#endif
 #endif
 
 // Include platform backend implementation
