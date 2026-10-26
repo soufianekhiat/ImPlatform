@@ -11,7 +11,7 @@
 // ============================================================================
 
 // Helper function for checking if window is maximized (used by both titlebar and app backends)
-bool ImPlatform_IsMaximized(void)
+IMPLATFORM_API bool ImPlatform_IsMaximized(void)
 {
 #if defined(IM_CURRENT_PLATFORM) && (IM_CURRENT_PLATFORM == IM_PLATFORM_WIN32)
     ImPlatform_AppData_Win32* pData = ImPlatform_App_GetData_Win32();

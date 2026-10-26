@@ -20,11 +20,6 @@ extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg
 
 // Forward declarations from internal header are already included
 
-#if IMPLATFORM_APP_SUPPORT_CUSTOM_TITLEBAR
-// Forward declaration - defined in ImPlatform_titlebar.cpp
-bool ImPlatform_IsMaximized(void);
-#endif
-
 // Win32 message handler
 static LRESULT WINAPI WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
 {

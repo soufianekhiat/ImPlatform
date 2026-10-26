@@ -970,6 +970,7 @@ IMPLATFORM_API void ImPlatform_DrawCustomMenuBarDefault(void);
 // Window control functions
 IMPLATFORM_API void ImPlatform_MinimizeApp(void);
 IMPLATFORM_API void ImPlatform_MaximizeApp(void);
+IMPLATFORM_API bool ImPlatform_IsMaximized(void);
 IMPLATFORM_API void ImPlatform_CloseApp(void);
 
 // Custom titlebar rendering
