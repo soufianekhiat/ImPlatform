@@ -372,11 +372,11 @@ void ImPlatform_Gfx_OnResize_DX10(struct ImPlatform_GfxData_DX10* pData, unsigne
 struct ImPlatform_GfxData_DX10* ImPlatform_Gfx_GetData_DX10(void);
 #endif
 
-#if defined(IM_CURRENT_GFX) && (IM_CURRENT_GFX == IM_GFX_DIRECTX11)
-// Pen input queue (ImPlatform.h implementation), fed by platform backends.
+// Pen input queue (ImPlatform.h implementation), fed by platform backends (every graphics API).
 void ImPlatform_Pen_Push(const struct ImPlatform_PenSample* sample);
 void ImPlatform_Pen_Leave(void);
 
+#if defined(IM_CURRENT_GFX) && (IM_CURRENT_GFX == IM_GFX_DIRECTX11)
 bool ImPlatform_Gfx_CreateDevice_DX11(void* hWnd, struct ImPlatform_GfxData_DX11* pData);
 void ImPlatform_Gfx_CleanupDevice_DX11(struct ImPlatform_GfxData_DX11* pData);
 void ImPlatform_Gfx_OnResize_DX11(struct ImPlatform_GfxData_DX11* pData, unsigned int uWidth, unsigned int uHeight);
