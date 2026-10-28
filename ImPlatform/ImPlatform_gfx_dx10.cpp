@@ -245,9 +245,105 @@ IMPLATFORM_API bool ImPlatform_GfxAPIClear(ImVec4 const vClearColor)
 }
 
 // ImPlatform API - GfxAPIRender
+// Render pass queued by ImPlatform_QueueRenderPass(), run at the start of ImPlatform_GfxAPIRender()
+static ImTextureID g_PassTarget = NULL;
+static ImDrawData* g_PassDrawData = NULL;
+static bool        g_PassClear = false;
+
+static ImPlatform_RTTracking_DX10* ImPlatform_FindRT_DX10(ImTextureID texture)
+{
+    ImPlatform_RTTracking_DX10* entry = g_RTTrackingHead;
+    while (entry && entry->pSRV != (ID3D10ShaderResourceView*)texture)
+        entry = entry->next;
+    return entry;
+}
+
+IMPLATFORM_API ImPlatform_PixelFormat ImPlatform_GetRenderPassFormat(void) { return ImPlatform_PixelFormat_RGBA8; }
+
+IMPLATFORM_API bool ImPlatform_QueueRenderPass(ImTextureID target, ImDrawData* draw_data, bool clear)
+{
+    if (!ImPlatform_FindRT_DX10(target) || !draw_data)
+        return false;
+    g_PassTarget = target;
+    g_PassDrawData = draw_data;
+    g_PassClear = clear;
+    return true;
+}
+
+static void ImPlatform_RunRenderPass()
+{
+    ImDrawData* draw_data = g_PassDrawData;
+    g_PassDrawData = NULL;
+    ImPlatform_RTTracking_DX10* entry = ImPlatform_FindRT_DX10(g_PassTarget);
+    if (!draw_data || !entry)       // Destroyed since it was queued.
+        return;
+    ID3D10Device* dev = g_GfxData.pDevice;
+    ID3D10ShaderResourceView* nullSRV = NULL;
+    dev->PSSetShaderResources(0, 1, &nullSRV);      // Not bound as an input while it is the target.
+    dev->OMSetRenderTargets(1, &entry->pRTV, NULL);
+    if (g_PassClear)
+    {
+        const float transparent[4] = { 0, 0, 0, 0 };
+        dev->ClearRenderTargetView(entry->pRTV, transparent);
+    }
+    if (draw_data->Textures == NULL)
+        draw_data->Textures = &ImGui::GetPlatformIO().Textures;     // The frame's texture updates, before they are drawn.
+    ImGui_ImplDX10_RenderDrawData(draw_data);       // Its viewport and projection come from the draw data.
+    dev->OMSetRenderTargets(1, &g_GfxData.pRenderTargetView, NULL);
+}
+
+static ID3D10BlendState* g_PremultipliedBlend = NULL;
+static ID3D10BlendState* g_BlendStack[8] = {};
+static int               g_BlendDepth = 0;
+
+IMPLATFORM_API void ImPlatform_PushPremultipliedAlpha(ImDrawList* draw)
+{
+    if (!g_PremultipliedBlend && g_GfxData.pDevice)
+    {
+        D3D10_BLEND_DESC desc = {};
+        desc.BlendEnable[0] = TRUE;
+        desc.SrcBlend = D3D10_BLEND_ONE;
+        desc.DestBlend = D3D10_BLEND_INV_SRC_ALPHA;
+        desc.BlendOp = D3D10_BLEND_OP_ADD;
+        desc.SrcBlendAlpha = D3D10_BLEND_ONE;
+        desc.DestBlendAlpha = D3D10_BLEND_INV_SRC_ALPHA;
+        desc.BlendOpAlpha = D3D10_BLEND_OP_ADD;
+        desc.RenderTargetWriteMask[0] = D3D10_COLOR_WRITE_ENABLE_ALL;
+        g_GfxData.pDevice->CreateBlendState(&desc, &g_PremultipliedBlend);
+    }
+    (draw ? draw : ImGui::GetWindowDrawList())->AddCallback([](const ImDrawList*, const ImDrawCmd*)
+    {
+        ID3D10BlendState* old = NULL;
+        FLOAT factor[4];
+        UINT mask;
+        g_GfxData.pDevice->OMGetBlendState(&old, factor, &mask);      // Adds a reference.
+        if (g_BlendDepth < IM_ARRAYSIZE(g_BlendStack))
+            g_BlendStack[g_BlendDepth++] = old;
+        else if (old)
+            old->Release();
+        const float zero[4] = { 0, 0, 0, 0 };
+        g_GfxData.pDevice->OMSetBlendState(g_PremultipliedBlend, zero, 0xffffffff);
+    }, NULL);
+}
+
+IMPLATFORM_API void ImPlatform_PopPremultipliedAlpha(ImDrawList* draw)
+{
+    (draw ? draw : ImGui::GetWindowDrawList())->AddCallback([](const ImDrawList*, const ImDrawCmd*)
+    {
+        if (g_BlendDepth <= 0)
+            return;
+        ID3D10BlendState* saved = g_BlendStack[--g_BlendDepth];
+        const float zero[4] = { 0, 0, 0, 0 };
+        g_GfxData.pDevice->OMSetBlendState(saved, zero, 0xffffffff);
+        if (saved)
+            saved->Release();
+    }, NULL);
+}
+
 IMPLATFORM_API bool ImPlatform_GfxAPIRender(ImVec4 const vClearColor)
 {
     (void)vClearColor; // Not used for DX10
+    ImPlatform_RunRenderPass();
     ImGui_ImplDX10_RenderDrawData(ImGui::GetDrawData());
     return true;
 }

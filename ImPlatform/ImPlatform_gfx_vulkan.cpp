@@ -48,6 +48,7 @@ struct ImPlatform_RTTracking_Vulkan {
     VkCommandBuffer     commandBuffer;
     unsigned int        width, height;
     VkFormat            format;
+    bool                rendered;       // A render pass wrote it (before that its layout is undefined).
     ImPlatform_RTTracking_Vulkan* next;
 };
 static ImPlatform_RTTracking_Vulkan* g_RTTrackingHead  = NULL;
@@ -622,7 +623,7 @@ IMPLATFORM_API bool ImPlatform_InitGfx(void)
     init_info.PipelineCache = g_VulkanPipelineCache;
     init_info.DescriptorPool = g_GfxData.descriptorPool;
     init_info.MinImageCount = g_GfxData.minImageCount;
-    init_info.ImageCount = g_MainWindowData.ImageCount;
+    init_info.ImageCount = g_MainWindowData.ImageCount * 2;     // Its buffers turn per render: a render pass and the frame.
     init_info.Allocator = g_Allocator;
     init_info.CheckVkResultFn = check_vk_result;
 
@@ -802,6 +803,9 @@ IMPLATFORM_API void ImPlatform_GfxAPINewFrame(void)
 
 // ImPlatform API - GfxAPIClear
 // Acquires the next swapchain image and begins recording the main viewport command buffer (upstream FrameRender, first half)
+static void ImPlatform_RunRenderPass(VkCommandBuffer cmd);
+static void ImPlatform_ReleaseRenderPasses();
+
 IMPLATFORM_API bool ImPlatform_GfxAPIClear(ImVec4 const vClearColor)
 {
     g_FrameBegun = false;
@@ -844,6 +848,7 @@ IMPLATFORM_API bool ImPlatform_GfxAPIClear(ImVec4 const vClearColor)
         err = vkBeginCommandBuffer(fd->CommandBuffer, &info);
         check_vk_result(err);
     }
+    ImPlatform_RunRenderPass(fd->CommandBuffer);   // Queued by ImPlatform_QueueRenderPass(): outside the frame's render pass.
     {
         VkRenderPassBeginInfo info = {};
         info.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
@@ -961,6 +966,7 @@ IMPLATFORM_API bool ImPlatform_GfxAPISwapBuffer(void)
 IMPLATFORM_API void ImPlatform_ShutdownGfxAPI(void)
 {
     vkDeviceWaitIdle(g_GfxData.device);
+    ImPlatform_ReleaseRenderPasses();
 }
 
 // ImPlatform API - ShutdownWindow
@@ -1615,6 +1621,259 @@ IMPLATFORM_API ImTextureID ImPlatform_CreateRenderTexture(const ImPlatform_Textu
     return (ImTextureID)descriptorSet;
 }
 
+// Render passes: recorded on the frame's command buffer before its render pass. Targets have the swapchain's format
+// (render pass compatibility with the ImGui pipeline); the ImGui backend's buffers turn per render (ImageCount doubled
+// at init), so a pass never reuses buffers the GPU may still read.
+static ImTextureID  g_PassTarget = 0;
+static ImDrawData*  g_PassDrawData = NULL;
+static bool         g_PassClear = false;
+static VkRenderPass g_PassLoadRenderPass = VK_NULL_HANDLE;     // Keeps the target's content (LOAD).
+static VkFormat     g_PassLoadFormat = VK_FORMAT_UNDEFINED;
+
+static ImPlatform_RTTracking_Vulkan* ImPlatform_FindRT_Vulkan(ImTextureID texture)
+{
+    ImPlatform_RTTracking_Vulkan* entry = g_RTTrackingHead;
+    while (entry && entry->descriptorSet != (VkDescriptorSet)texture)
+        entry = entry->next;
+    return entry;
+}
+
+IMPLATFORM_API ImPlatform_PixelFormat ImPlatform_GetRenderPassFormat(void)
+{
+    return g_MainWindowData.SurfaceFormat.format == VK_FORMAT_B8G8R8A8_UNORM ? ImPlatform_PixelFormat_BGRA8 : ImPlatform_PixelFormat_RGBA8;
+}
+
+IMPLATFORM_API bool ImPlatform_QueueRenderPass(ImTextureID target, ImDrawData* draw_data, bool clear)
+{
+    ImPlatform_RTTracking_Vulkan* entry = ImPlatform_FindRT_Vulkan(target);
+    if (!entry || !draw_data || entry->format != g_MainWindowData.SurfaceFormat.format)
+        return false;
+    g_PassTarget = target;
+    g_PassDrawData = draw_data;
+    g_PassClear = clear;
+    return true;
+}
+
+// A render pass compatible with the targets' (same format), loading their content from shader reads.
+static VkRenderPass ImPlatform_PassLoadRenderPass(VkFormat format)
+{
+    if (g_PassLoadRenderPass != VK_NULL_HANDLE && g_PassLoadFormat == format)
+        return g_PassLoadRenderPass;
+    if (g_PassLoadRenderPass != VK_NULL_HANDLE)
+    {
+        vkDeviceWaitIdle(g_GfxData.device);
+        vkDestroyRenderPass(g_GfxData.device, g_PassLoadRenderPass, g_Allocator);
+        g_PassLoadRenderPass = VK_NULL_HANDLE;
+    }
+    VkAttachmentDescription attachment = {};
+    attachment.format         = format;
+    attachment.samples        = VK_SAMPLE_COUNT_1_BIT;
+    attachment.loadOp         = VK_ATTACHMENT_LOAD_OP_LOAD;
+    attachment.storeOp        = VK_ATTACHMENT_STORE_OP_STORE;
+    attachment.stencilLoadOp  = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+    attachment.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+    attachment.initialLayout  = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    attachment.finalLayout    = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    VkAttachmentReference color_ref = { 0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL };
+    VkSubpassDescription subpass = {};
+    subpass.pipelineBindPoint    = VK_PIPELINE_BIND_POINT_GRAPHICS;
+    subpass.colorAttachmentCount = 1;
+    subpass.pColorAttachments    = &color_ref;
+    VkSubpassDependency dep = {};
+    dep.srcSubpass    = VK_SUBPASS_EXTERNAL;
+    dep.dstSubpass    = 0;
+    dep.srcStageMask  = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+    dep.dstStageMask  = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+    dep.srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    dep.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+    VkRenderPassCreateInfo rp_info = {};
+    rp_info.sType           = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
+    rp_info.attachmentCount = 1;
+    rp_info.pAttachments    = &attachment;
+    rp_info.subpassCount    = 1;
+    rp_info.pSubpasses      = &subpass;
+    rp_info.dependencyCount = 1;
+    rp_info.pDependencies   = &dep;
+    if (vkCreateRenderPass(g_GfxData.device, &rp_info, g_Allocator, &g_PassLoadRenderPass) != VK_SUCCESS)
+        g_PassLoadRenderPass = VK_NULL_HANDLE;
+    g_PassLoadFormat = format;
+    return g_PassLoadRenderPass;
+}
+
+static void ImPlatform_RunRenderPass(VkCommandBuffer cmd)
+{
+    ImDrawData* draw_data = g_PassDrawData;
+    g_PassDrawData = NULL;
+    ImPlatform_RTTracking_Vulkan* entry = draw_data ? ImPlatform_FindRT_Vulkan(g_PassTarget) : NULL;
+    if (!entry)     // Destroyed since it was queued.
+        return;
+    const bool clear = g_PassClear || !entry->rendered;    // Undefined content: cleared the first time.
+    VkRenderPass render_pass = clear ? entry->renderPass : ImPlatform_PassLoadRenderPass(entry->format);
+    if (render_pass == VK_NULL_HANDLE)
+        return;
+    if (draw_data->OwnerViewport == NULL)
+        draw_data->OwnerViewport = ImGui::GetMainViewport();     // The backend keeps its buffers per viewport.
+    if (draw_data->Textures == NULL)
+        draw_data->Textures = &ImGui::GetPlatformIO().Textures;     // The frame's texture updates, before they are drawn.
+    VkClearValue transparent = {};
+    VkRenderPassBeginInfo info = {};
+    info.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+    info.renderPass = render_pass;
+    info.framebuffer = entry->framebuffer;
+    info.renderArea.extent.width = entry->width;
+    info.renderArea.extent.height = entry->height;
+    info.clearValueCount = clear ? 1 : 0;
+    info.pClearValues = &transparent;
+    vkCmdBeginRenderPass(cmd, &info, VK_SUBPASS_CONTENTS_INLINE);
+    ImDrawData* saved_draw_data = g_CurrentDrawData;
+    g_CurrentDrawData = draw_data;                      // Custom shaders project with it.
+    g_CurrentCommandBuffer = cmd;
+    ImGui_ImplVulkan_RenderDrawData(draw_data, cmd);   // Its viewport and projection come from the draw data.
+    g_CurrentCommandBuffer = VK_NULL_HANDLE;
+    g_CurrentDrawData = saved_draw_data;
+    vkCmdEndRenderPass(cmd);
+    entry->rendered = true;
+}
+
+// Premultiplied alpha: blending is part of the pipelines, so an ImGui-layout program un-premultiplies the texels
+// instead, and the straight alpha blending composites them as premultiplied (the vertex color tints and fades them).
+// SPIR-V (glslangValidator -V, spirv-opt --strip-debug) of the ImGui-layout vertex shader (push constant mat4
+// ProjectionMatrix; aPos, aUV, aColor at locations 0, 1, 2) and of:
+//   layout(binding = 0) uniform sampler2D Texture;
+//   layout(location = 0) in vec4 vColor;  layout(location = 1) in vec2 vUV;  layout(location = 0) out vec4 FragColor;
+//   void main() { vec4 t = texture(Texture, vUV); vec3 rgb = t.a > 0.0 ? t.rgb / t.a : vec3(0.0);
+//                 FragColor = vec4(rgb * vColor.rgb, t.a * vColor.a); }
+static const unsigned int g_UnpremultiplyVert[] = {
+    0x07230203, 0x00010000, 0x0008000b, 0x0000002b, 0x00000000, 0x00020011, 0x00000001, 0x0006000b,
+    0x00000001, 0x4c534c47, 0x6474732e, 0x3035342e, 0x00000000, 0x0003000e, 0x00000000, 0x00000001,
+    0x000b000f, 0x00000000, 0x00000004, 0x6e69616d, 0x00000000, 0x00000009, 0x0000000b, 0x0000000f,
+    0x00000011, 0x00000018, 0x00000022, 0x00040047, 0x00000009, 0x0000001e, 0x00000000, 0x00040047,
+    0x0000000b, 0x0000001e, 0x00000002, 0x00040047, 0x0000000f, 0x0000001e, 0x00000001, 0x00040047,
+    0x00000011, 0x0000001e, 0x00000001, 0x00030047, 0x00000016, 0x00000002, 0x00050048, 0x00000016,
+    0x00000000, 0x0000000b, 0x00000000, 0x00050048, 0x00000016, 0x00000001, 0x0000000b, 0x00000001,
+    0x00050048, 0x00000016, 0x00000002, 0x0000000b, 0x00000003, 0x00050048, 0x00000016, 0x00000003,
+    0x0000000b, 0x00000004, 0x00030047, 0x0000001c, 0x00000002, 0x00040048, 0x0000001c, 0x00000000,
+    0x00000005, 0x00050048, 0x0000001c, 0x00000000, 0x00000007, 0x00000010, 0x00050048, 0x0000001c,
+    0x00000000, 0x00000023, 0x00000000, 0x00040047, 0x00000022, 0x0000001e, 0x00000000, 0x00020013,
+    0x00000002, 0x00030021, 0x00000003, 0x00000002, 0x00030016, 0x00000006, 0x00000020, 0x00040017,
+    0x00000007, 0x00000006, 0x00000004, 0x00040020, 0x00000008, 0x00000003, 0x00000007, 0x0004003b,
+    0x00000008, 0x00000009, 0x00000003, 0x00040020, 0x0000000a, 0x00000001, 0x00000007, 0x0004003b,
+    0x0000000a, 0x0000000b, 0x00000001, 0x00040017, 0x0000000d, 0x00000006, 0x00000002, 0x00040020,
+    0x0000000e, 0x00000003, 0x0000000d, 0x0004003b, 0x0000000e, 0x0000000f, 0x00000003, 0x00040020,
+    0x00000010, 0x00000001, 0x0000000d, 0x0004003b, 0x00000010, 0x00000011, 0x00000001, 0x00040015,
+    0x00000013, 0x00000020, 0x00000000, 0x0004002b, 0x00000013, 0x00000014, 0x00000001, 0x0004001c,
+    0x00000015, 0x00000006, 0x00000014, 0x0006001e, 0x00000016, 0x00000007, 0x00000006, 0x00000015,
+    0x00000015, 0x00040020, 0x00000017, 0x00000003, 0x00000016, 0x0004003b, 0x00000017, 0x00000018,
+    0x00000003, 0x00040015, 0x00000019, 0x00000020, 0x00000001, 0x0004002b, 0x00000019, 0x0000001a,
+    0x00000000, 0x00040018, 0x0000001b, 0x00000007, 0x00000004, 0x0003001e, 0x0000001c, 0x0000001b,
+    0x00040020, 0x0000001d, 0x00000009, 0x0000001c, 0x0004003b, 0x0000001d, 0x0000001e, 0x00000009,
+    0x00040020, 0x0000001f, 0x00000009, 0x0000001b, 0x0004003b, 0x00000010, 0x00000022, 0x00000001,
+    0x0004002b, 0x00000006, 0x00000024, 0x00000000, 0x0004002b, 0x00000006, 0x00000025, 0x3f800000,
+    0x00050036, 0x00000002, 0x00000004, 0x00000000, 0x00000003, 0x000200f8, 0x00000005, 0x0004003d,
+    0x00000007, 0x0000000c, 0x0000000b, 0x0003003e, 0x00000009, 0x0000000c, 0x0004003d, 0x0000000d,
+    0x00000012, 0x00000011, 0x0003003e, 0x0000000f, 0x00000012, 0x00050041, 0x0000001f, 0x00000020,
+    0x0000001e, 0x0000001a, 0x0004003d, 0x0000001b, 0x00000021, 0x00000020, 0x0004003d, 0x0000000d,
+    0x00000023, 0x00000022, 0x00050051, 0x00000006, 0x00000026, 0x00000023, 0x00000000, 0x00050051,
+    0x00000006, 0x00000027, 0x00000023, 0x00000001, 0x00070050, 0x00000007, 0x00000028, 0x00000026,
+    0x00000027, 0x00000024, 0x00000025, 0x00050091, 0x00000007, 0x00000029, 0x00000021, 0x00000028,
+    0x00050041, 0x00000008, 0x0000002a, 0x00000018, 0x0000001a, 0x0003003e, 0x0000002a, 0x00000029,
+    0x000100fd, 0x00010038
+};
+static const unsigned int g_UnpremultiplyFrag[] = {
+    0x07230203, 0x00010000, 0x0008000b, 0x0000003d, 0x00000000, 0x00020011, 0x00000001, 0x0006000b,
+    0x00000001, 0x4c534c47, 0x6474732e, 0x3035342e, 0x00000000, 0x0003000e, 0x00000000, 0x00000001,
+    0x0008000f, 0x00000004, 0x00000004, 0x6e69616d, 0x00000000, 0x00000011, 0x0000002c, 0x0000002f,
+    0x00030010, 0x00000004, 0x00000007, 0x00040047, 0x0000000d, 0x00000021, 0x00000000, 0x00040047,
+    0x0000000d, 0x00000022, 0x00000000, 0x00040047, 0x00000011, 0x0000001e, 0x00000001, 0x00040047,
+    0x0000002c, 0x0000001e, 0x00000000, 0x00040047, 0x0000002f, 0x0000001e, 0x00000000, 0x00020013,
+    0x00000002, 0x00030021, 0x00000003, 0x00000002, 0x00030016, 0x00000006, 0x00000020, 0x00040017,
+    0x00000007, 0x00000006, 0x00000004, 0x00040020, 0x00000008, 0x00000007, 0x00000007, 0x00090019,
+    0x0000000a, 0x00000006, 0x00000001, 0x00000000, 0x00000000, 0x00000000, 0x00000001, 0x00000000,
+    0x0003001b, 0x0000000b, 0x0000000a, 0x00040020, 0x0000000c, 0x00000000, 0x0000000b, 0x0004003b,
+    0x0000000c, 0x0000000d, 0x00000000, 0x00040017, 0x0000000f, 0x00000006, 0x00000002, 0x00040020,
+    0x00000010, 0x00000001, 0x0000000f, 0x0004003b, 0x00000010, 0x00000011, 0x00000001, 0x00040017,
+    0x00000014, 0x00000006, 0x00000003, 0x00040020, 0x00000015, 0x00000007, 0x00000014, 0x00040015,
+    0x00000017, 0x00000020, 0x00000000, 0x0004002b, 0x00000017, 0x00000018, 0x00000003, 0x00040020,
+    0x00000019, 0x00000007, 0x00000006, 0x0004002b, 0x00000006, 0x0000001c, 0x00000000, 0x00020014,
+    0x0000001d, 0x0006002c, 0x00000014, 0x00000029, 0x0000001c, 0x0000001c, 0x0000001c, 0x00040020,
+    0x0000002b, 0x00000003, 0x00000007, 0x0004003b, 0x0000002b, 0x0000002c, 0x00000003, 0x00040020,
+    0x0000002e, 0x00000001, 0x00000007, 0x0004003b, 0x0000002e, 0x0000002f, 0x00000001, 0x00040020,
+    0x00000035, 0x00000001, 0x00000006, 0x00050036, 0x00000002, 0x00000004, 0x00000000, 0x00000003,
+    0x000200f8, 0x00000005, 0x0004003b, 0x00000008, 0x00000009, 0x00000007, 0x0004003b, 0x00000015,
+    0x00000016, 0x00000007, 0x0004003b, 0x00000015, 0x0000001f, 0x00000007, 0x0004003d, 0x0000000b,
+    0x0000000e, 0x0000000d, 0x0004003d, 0x0000000f, 0x00000012, 0x00000011, 0x00050057, 0x00000007,
+    0x00000013, 0x0000000e, 0x00000012, 0x0003003e, 0x00000009, 0x00000013, 0x00050041, 0x00000019,
+    0x0000001a, 0x00000009, 0x00000018, 0x0004003d, 0x00000006, 0x0000001b, 0x0000001a, 0x000500ba,
+    0x0000001d, 0x0000001e, 0x0000001b, 0x0000001c, 0x000300f7, 0x00000021, 0x00000000, 0x000400fa,
+    0x0000001e, 0x00000020, 0x00000028, 0x000200f8, 0x00000020, 0x0004003d, 0x00000007, 0x00000022,
+    0x00000009, 0x0008004f, 0x00000014, 0x00000023, 0x00000022, 0x00000022, 0x00000000, 0x00000001,
+    0x00000002, 0x00050041, 0x00000019, 0x00000024, 0x00000009, 0x00000018, 0x0004003d, 0x00000006,
+    0x00000025, 0x00000024, 0x00060050, 0x00000014, 0x00000026, 0x00000025, 0x00000025, 0x00000025,
+    0x00050088, 0x00000014, 0x00000027, 0x00000023, 0x00000026, 0x0003003e, 0x0000001f, 0x00000027,
+    0x000200f9, 0x00000021, 0x000200f8, 0x00000028, 0x0003003e, 0x0000001f, 0x00000029, 0x000200f9,
+    0x00000021, 0x000200f8, 0x00000021, 0x0004003d, 0x00000014, 0x0000002a, 0x0000001f, 0x0003003e,
+    0x00000016, 0x0000002a, 0x0004003d, 0x00000014, 0x0000002d, 0x00000016, 0x0004003d, 0x00000007,
+    0x00000030, 0x0000002f, 0x0008004f, 0x00000014, 0x00000031, 0x00000030, 0x00000030, 0x00000000,
+    0x00000001, 0x00000002, 0x00050085, 0x00000014, 0x00000032, 0x0000002d, 0x00000031, 0x00050041,
+    0x00000019, 0x00000033, 0x00000009, 0x00000018, 0x0004003d, 0x00000006, 0x00000034, 0x00000033,
+    0x00050041, 0x00000035, 0x00000036, 0x0000002f, 0x00000018, 0x0004003d, 0x00000006, 0x00000037,
+    0x00000036, 0x00050085, 0x00000006, 0x00000038, 0x00000034, 0x00000037, 0x00050051, 0x00000006,
+    0x00000039, 0x00000032, 0x00000000, 0x00050051, 0x00000006, 0x0000003a, 0x00000032, 0x00000001,
+    0x00050051, 0x00000006, 0x0000003b, 0x00000032, 0x00000002, 0x00070050, 0x00000007, 0x0000003c,
+    0x00000039, 0x0000003a, 0x0000003b, 0x00000038, 0x0003003e, 0x0000002c, 0x0000003c, 0x000100fd,
+    0x00010038
+};
+static ImPlatform_ShaderProgram g_UnpremultiplyProgram = NULL;
+static ImPlatform_Shader        g_UnpremultiplyShaders[2] = {};
+
+static ImPlatform_ShaderProgram ImPlatform_UnpremultiplyProgram()
+{
+    if (g_UnpremultiplyProgram)
+        return g_UnpremultiplyProgram;
+    ImPlatform_ShaderDesc vs = {}, ps = {};
+    vs.stage = ImPlatform_ShaderStage_Vertex;
+    ps.stage = ImPlatform_ShaderStage_Fragment;
+    vs.format = ps.format = ImPlatform_ShaderFormat_SPIRV;
+    vs.entry_point = ps.entry_point = "main";
+    vs.bytecode = g_UnpremultiplyVert;
+    vs.bytecode_size = sizeof(g_UnpremultiplyVert);
+    ps.bytecode = g_UnpremultiplyFrag;
+    ps.bytecode_size = sizeof(g_UnpremultiplyFrag);
+    ImPlatform_Shader v = g_UnpremultiplyShaders[0] = ImPlatform_CreateShader(&vs);
+    ImPlatform_Shader f = g_UnpremultiplyShaders[1] = ImPlatform_CreateShader(&ps);
+    if (v && f)
+        g_UnpremultiplyProgram = ImPlatform_CreateShaderProgram(v, f);
+    return g_UnpremultiplyProgram;
+}
+
+IMPLATFORM_API void ImPlatform_PushPremultipliedAlpha(ImDrawList* draw)
+{
+    if (ImPlatform_ShaderProgram program = ImPlatform_UnpremultiplyProgram())
+        ImPlatform_BeginCustomShader(draw ? draw : ImGui::GetWindowDrawList(), program);
+}
+
+IMPLATFORM_API void ImPlatform_PopPremultipliedAlpha(ImDrawList* draw)
+{
+    if (g_UnpremultiplyProgram)
+        ImPlatform_EndCustomShader(draw ? draw : ImGui::GetWindowDrawList());
+}
+
+static void ImPlatform_ReleaseRenderPasses()
+{
+    if (g_PassLoadRenderPass != VK_NULL_HANDLE)
+        vkDestroyRenderPass(g_GfxData.device, g_PassLoadRenderPass, g_Allocator);
+    g_PassLoadRenderPass = VK_NULL_HANDLE;
+    if (g_UnpremultiplyProgram)
+        ImPlatform_DestroyShaderProgram(g_UnpremultiplyProgram);
+    g_UnpremultiplyProgram = NULL;
+    for (ImPlatform_Shader& shader : g_UnpremultiplyShaders)
+    {
+        if (shader)
+            ImPlatform_DestroyShader(shader);
+        shader = NULL;
+    }
+}
+
 IMPLATFORM_API bool ImPlatform_BeginRenderToTexture(ImTextureID texture)
 {
     if (!texture || !g_GfxData.device)
@@ -1696,9 +1955,35 @@ IMPLATFORM_API void ImPlatform_DestroyTexture(ImTextureID texture_id)
     // Remove from ImGui's texture registry
     VkDescriptorSet descriptor_set = (VkDescriptorSet)texture_id;
     ImGui_ImplVulkan_RemoveTexture(descriptor_set);
+    for (ImPlatform_TexReg_Vulkan** e = &g_TexRegHead; *e; e = &(*e)->next)
+        if ((*e)->id == descriptor_set)
+        {
+            ImPlatform_TexReg_Vulkan* dead = *e;
+            *e = dead->next;
+            delete dead;
+            break;
+        }
 
-    // Note: We're not cleaning up the image, image_memory, image_view, or sampler
-    // because we don't track them. A production implementation would need proper tracking.
+    // Render textures own all their objects (frames in flight may still use them: the device is idled first)
+    for (ImPlatform_RTTracking_Vulkan** e = &g_RTTrackingHead; *e; e = &(*e)->next)
+        if ((*e)->descriptorSet == descriptor_set)
+        {
+            ImPlatform_RTTracking_Vulkan* rt = *e;
+            *e = rt->next;
+            vkDeviceWaitIdle(g_GfxData.device);
+            vkFreeCommandBuffers(g_GfxData.device, rt->commandPool, 1, &rt->commandBuffer);
+            vkDestroyCommandPool(g_GfxData.device, rt->commandPool, g_Allocator);
+            vkDestroyFramebuffer(g_GfxData.device, rt->framebuffer, g_Allocator);
+            vkDestroyRenderPass(g_GfxData.device, rt->renderPass, g_Allocator);
+            vkDestroyImageView(g_GfxData.device, rt->imageView, g_Allocator);
+            vkDestroyImage(g_GfxData.device, rt->image, g_Allocator);
+            vkFreeMemory(g_GfxData.device, rt->imageMemory, g_Allocator);
+            delete rt;
+            return;
+        }
+
+    // shortcut: textures from ImPlatform_CreateTexture keep their image, memory and view (not tracked); track them
+    // when they are created and destroyed often.
 }
 
 // ============================================================================
@@ -2259,13 +2544,13 @@ static void ImPlatform_SetCustomShader(const ImDrawList* parent_list, const ImDr
     float T = draw_data->DisplayPos.y;
     float B = draw_data->DisplayPos.y + draw_data->DisplaySize.y;
 
-    // Create orthographic projection matrix
+    // Orthographic projection; Vulkan's clip space points down, the top (T) maps to -1 as in ImGui's backend
     float mvp[4][4] =
     {
         { 2.0f/(R-L),   0.0f,           0.0f,       0.0f },
-        { 0.0f,         2.0f/(T-B),     0.0f,       0.0f },
+        { 0.0f,         2.0f/(B-T),     0.0f,       0.0f },
         { 0.0f,         0.0f,          -1.0f,       0.0f },
-        { (R+L)/(L-R),  (T+B)/(B-T),    0.0f,       1.0f },
+        { (R+L)/(L-R),  (T+B)/(T-B),    0.0f,       1.0f },
     };
 
     // Push projection matrix (offset 0, 64 bytes)
@@ -2322,13 +2607,13 @@ IMPLATFORM_API void ImPlatform_BeginCustomShader_Render(ImPlatform_ShaderProgram
     float T = draw_data->DisplayPos.y;
     float B = draw_data->DisplayPos.y + draw_data->DisplaySize.y;
 
-    // Create orthographic projection matrix
+    // Orthographic projection; Vulkan's clip space points down, the top (T) maps to -1 as in ImGui's backend
     float mvp[4][4] =
     {
         { 2.0f/(R-L),   0.0f,           0.0f,       0.0f },
-        { 0.0f,         2.0f/(T-B),     0.0f,       0.0f },
+        { 0.0f,         2.0f/(B-T),     0.0f,       0.0f },
         { 0.0f,         0.0f,          -1.0f,       0.0f },
-        { (R+L)/(L-R),  (T+B)/(B-T),    0.0f,       1.0f },
+        { (R+L)/(L-R),  (T+B)/(T-B),    0.0f,       1.0f },
     };
 
     // Push projection matrix (offset 0, 64 bytes)

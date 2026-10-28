@@ -28,6 +28,20 @@ struct ImPlatform_RTTracking_DX9 {
 };
 static ImPlatform_RTTracking_DX9* g_RTTrackingHead = NULL;
 
+static ImPlatform_RTTracking_DX9* ImPlatform_FindRT_DX9(ImTextureID texture)
+{
+    ImPlatform_RTTracking_DX9* entry = g_RTTrackingHead;
+    while (entry && entry->pTexture != (LPDIRECT3DTEXTURE9)texture)
+        entry = entry->next;
+    return entry;
+}
+
+// Render pass queued by ImPlatform_QueueRenderPass(), run at the start of ImPlatform_GfxAPIRender() (inside the scene)
+static ImTextureID g_PassTarget = NULL;
+static ImDrawData* g_PassDrawData = NULL;
+static bool        g_PassClear = false;
+static void        ImPlatform_RunRenderPass();
+
 // Saved render target for Begin/EndRenderToTexture
 static IDirect3DSurface9* g_SavedSurface  = NULL;
 static D3DVIEWPORT9       g_SavedViewport = {};
@@ -226,6 +240,7 @@ IMPLATFORM_API bool ImPlatform_GfxAPIRender(ImVec4 const vClearColor)
 {
     (void)vClearColor;
 
+    ImPlatform_RunRenderPass();
     ImGui_ImplDX9_RenderDrawData(ImGui::GetDrawData());
     g_GfxData.pDevice->EndScene();
 
@@ -578,6 +593,111 @@ IMPLATFORM_API bool ImPlatform_CopyTexture(ImTextureID dst, ImTextureID src)
     pDstSurf->Release();
     pSrcSurf->Release();
     return SUCCEEDED(hr);
+}
+
+// D3DFMT_A8R8G8B8 render targets: BGRA in memory.
+IMPLATFORM_API ImPlatform_PixelFormat ImPlatform_GetRenderPassFormat(void) { return ImPlatform_PixelFormat_BGRA8; }
+
+IMPLATFORM_API bool ImPlatform_QueueRenderPass(ImTextureID target, ImDrawData* draw_data, bool clear)
+{
+    if (!ImPlatform_FindRT_DX9(target) || !draw_data)
+        return false;
+    g_PassTarget = target;
+    g_PassDrawData = draw_data;
+    g_PassClear = clear;
+    return true;
+}
+
+static void ImPlatform_RunRenderPass()
+{
+    ImDrawData* draw_data = g_PassDrawData;
+    g_PassDrawData = NULL;
+    ImPlatform_RTTracking_DX9* entry = ImPlatform_FindRT_DX9(g_PassTarget);
+    if (!draw_data || !entry)       // Destroyed since it was queued.
+        return;
+    LPDIRECT3DDEVICE9 dev = g_GfxData.pDevice;
+    IDirect3DSurface9* saved = NULL;
+    dev->GetRenderTarget(0, &saved);
+    dev->SetTexture(0, NULL);       // Not bound as an input while it is the target.
+    dev->SetRenderTarget(0, entry->pSurface);
+    if (g_PassClear)
+        dev->Clear(0, NULL, D3DCLEAR_TARGET, D3DCOLOR_ARGB(0, 0, 0, 0), 1.0f, 0);
+    if (draw_data->Textures == NULL)
+        draw_data->Textures = &ImGui::GetPlatformIO().Textures;     // The frame's texture updates, before they are drawn.
+    ImGui_ImplDX9_RenderDrawData(draw_data);        // Its viewport and projection come from the draw data.
+    dev->SetRenderTarget(0, saved);
+    if (saved)
+        saved->Release();
+}
+
+static DWORD g_BlendStack[8] = {};
+static int   g_BlendDepth = 0;
+
+IMPLATFORM_API void ImPlatform_PushPremultipliedAlpha(ImDrawList* draw)
+{
+    (draw ? draw : ImGui::GetWindowDrawList())->AddCallback([](const ImDrawList*, const ImDrawCmd*)
+    {
+        DWORD src = D3DBLEND_SRCALPHA;
+        g_GfxData.pDevice->GetRenderState(D3DRS_SRCBLEND, &src);
+        if (g_BlendDepth < IM_ARRAYSIZE(g_BlendStack))
+            g_BlendStack[g_BlendDepth++] = src;
+        g_GfxData.pDevice->SetRenderState(D3DRS_SRCBLEND, D3DBLEND_ONE);    // Alpha already blends ONE, INV_SRC_ALPHA.
+    }, NULL);
+}
+
+IMPLATFORM_API void ImPlatform_PopPremultipliedAlpha(ImDrawList* draw)
+{
+    (draw ? draw : ImGui::GetWindowDrawList())->AddCallback([](const ImDrawList*, const ImDrawCmd*)
+    {
+        if (g_BlendDepth > 0)
+            g_GfxData.pDevice->SetRenderState(D3DRS_SRCBLEND, g_BlendStack[--g_BlendDepth]);
+    }, NULL);
+}
+
+// Readback (synchronous): render targets through a system memory copy, other textures locked directly. Rows come out
+// as stored (BGRA for D3DFMT_A8R8G8B8).
+#define IMPLATFORM_GFX_HAS_READBACK 1
+IMPLATFORM_API bool ImPlatform_SupportsReadback(void) { return g_GfxData.pDevice != NULL; }
+IMPLATFORM_API bool ImPlatform_ReadTexture(ImTextureID texture, unsigned int x, unsigned int y,
+                                           unsigned int width, unsigned int height, void* out_pixels, size_t out_size)
+{
+    LPDIRECT3DTEXTURE9 tex = (LPDIRECT3DTEXTURE9)texture;
+    D3DSURFACE_DESC desc;
+    if (!tex || !out_pixels || !width || !height || FAILED(tex->GetLevelDesc(0, &desc)))
+        return false;
+    const unsigned int bpp = desc.Format == D3DFMT_A8R8G8B8 || desc.Format == D3DFMT_X8R8G8B8 ? 4 : desc.Format == D3DFMT_L8 || desc.Format == D3DFMT_A8 ? 1 : 0;
+    if (!bpp || x + width > desc.Width || y + height > desc.Height || out_size < (size_t)width * height * bpp)
+        return false;
+    IDirect3DSurface9* src = NULL;
+    IDirect3DSurface9* sys = NULL;
+    if (FAILED(tex->GetSurfaceLevel(0, &src)))
+        return false;
+    IDirect3DSurface9* lock = src;
+    if (desc.Pool == D3DPOOL_DEFAULT)       // Render targets: copied to system memory first.
+    {
+        if (FAILED(g_GfxData.pDevice->CreateOffscreenPlainSurface(desc.Width, desc.Height, desc.Format, D3DPOOL_SYSTEMMEM, &sys, NULL))
+            || FAILED(g_GfxData.pDevice->GetRenderTargetData(src, sys)))
+        {
+            if (sys)
+                sys->Release();
+            src->Release();
+            return false;
+        }
+        lock = sys;
+    }
+    RECT r = { (LONG)x, (LONG)y, (LONG)(x + width), (LONG)(y + height) };
+    D3DLOCKED_RECT locked;
+    const bool ok = SUCCEEDED(lock->LockRect(&locked, &r, D3DLOCK_READONLY));
+    if (ok)
+    {
+        for (unsigned int row = 0; row < height; ++row)
+            memcpy((unsigned char*)out_pixels + (size_t)row * width * bpp, (const unsigned char*)locked.pBits + (size_t)row * locked.Pitch, (size_t)width * bpp);
+        lock->UnlockRect();
+    }
+    if (sys)
+        sys->Release();
+    src->Release();
+    return ok;
 }
 
 IMPLATFORM_API void ImPlatform_DestroyTexture(ImTextureID texture_id)

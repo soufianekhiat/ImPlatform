@@ -584,6 +584,23 @@ IMPLATFORM_API bool ImPlatform_CopyCurrentTarget(ImTextureID dst, int src_x, int
 // Size in pixels of the current render target.
 IMPLATFORM_API void ImPlatform_GetCurrentTargetSize(unsigned int* width, unsigned int* height);
 
+// Render passes: Dear ImGui draw data rendered into a render texture before the frame, by the backend's own ImGui
+// renderer (draw callbacks included), e.g. to cache vector drawings as images.
+// The pixel format of pass targets (the format the backend's ImGui pipeline renders to).
+IMPLATFORM_API ImPlatform_PixelFormat ImPlatform_GetRenderPassFormat(void);
+// Queues `draw_data` to be rendered into `target` (ImPlatform_CreateRenderTexture() in ImPlatform_GetRenderPassFormat())
+// at the start of the next ImPlatform_GfxAPIRender(), before the frame: draw_data->DisplayPos / DisplaySize map to the
+// whole target (FramebufferScale 1). `clear`: the target is cleared to transparent first. One pass per frame (a later
+// call replaces the queued one); `draw_data` must stay valid until then, and pending texture updates of the frame
+// (ImGui's ImTextureData) are processed by the pass. On OpenGL its vertices and clip rectangles are flipped in place
+// (render textures are stored bottom-up). Colors rendered over transparent come out premultiplied by alpha: draw them
+// between ImPlatform_PushPremultipliedAlpha() and ImPlatform_PopPremultipliedAlpha(). False when unsupported.
+IMPLATFORM_API bool ImPlatform_QueueRenderPass(ImTextureID target, ImDrawData* draw_data, bool clear);
+// Draw commands of the window draw list (or `draw`) between them blend as premultiplied alpha (ONE, ONE_MINUS_SRC_ALPHA
+// for color and alpha). Through draw callbacks, like ImPlatform_PushSampler().
+IMPLATFORM_API void ImPlatform_PushPremultipliedAlpha(ImDrawList* draw);
+IMPLATFORM_API void ImPlatform_PopPremultipliedAlpha(ImDrawList* draw);
+
 // Destroy a texture and free its resources
 // texture_id: Texture to destroy
 IMPLATFORM_API void ImPlatform_DestroyTexture(

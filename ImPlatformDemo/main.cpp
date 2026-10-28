@@ -46,6 +46,7 @@ extern "C" {
 #include <stdio.h>
 #include <string.h>
 #include <math.h>
+#include <stdlib.h>
 
 // DPI change callback - rescale ImGui style when DPI changes at runtime
 static void OnDpiChanged(float new_scale, void* /*user_data*/)
@@ -61,6 +62,147 @@ static void OnDpiChanged(float new_scale, void* /*user_data*/)
 #if IM_HAS_STBI
 #define STB_IMAGE_IMPLEMENTATION
 #include <stb_image.h>
+#endif
+
+#ifdef IMGUI_HAS_TEXTURES
+// Render passes: a draw list rendered into a render texture before the frame (ImPlatform_QueueRenderPass).
+struct RenderPassScene
+{
+	ImDrawList*	List = nullptr;
+	ImDrawData	Data;
+	ImTextureID	Target = 0;
+};
+
+static void DestroyRenderPassScene( RenderPassScene& s )
+{
+	if ( s.List )
+		IM_DELETE( s.List );
+	if ( s.Target )
+		ImPlatform_DestroyTexture( s.Target );
+	s = RenderPassScene();
+}
+
+static bool QueueRenderPassScene( RenderPassScene& s, int size, void ( *draw )( ImDrawList* ) )
+{
+	if ( !s.Target )
+	{
+		ImPlatform_TextureDesc desc = ImPlatform_TextureDesc_Default( size, size );
+		desc.format = ImPlatform_GetRenderPassFormat();
+		s.Target = ImPlatform_CreateRenderTexture( &desc );
+	}
+	if ( !s.List )
+		s.List = IM_NEW( ImDrawList )( ImGui::GetDrawListSharedData() );
+	s.List->_ResetForNewFrame();
+	s.List->PushClipRect( ImVec2( 0, 0 ), ImVec2( (float)size, (float)size ) );
+	s.List->PushTexture( ImGui::GetIO().Fonts->TexRef );
+	draw( s.List );
+	s.List->PopTexture();
+	s.List->PopClipRect();
+	s.Data.Clear();
+	s.Data.Valid = true;
+	s.Data.AddDrawList( s.List );
+	s.Data.CmdListsCount = s.Data.CmdLists.Size;
+	s.Data.DisplayPos = ImVec2( 0, 0 );
+	s.Data.DisplaySize = ImVec2( (float)size, (float)size );
+	s.Data.FramebufferScale = ImVec2( 1, 1 );
+	return s.Target && ImPlatform_QueueRenderPass( s.Target, &s.Data, true );
+}
+
+// Translucent overlapping shapes and text over transparent: what a texture of a vector drawing holds.
+static void DrawRenderPassScene( ImDrawList* dl, ImVec2 o )
+{
+	dl->AddCircleFilled( ImVec2( o.x + 44, o.y + 44 ), 30, IM_COL32( 255, 80, 80, 170 ) );
+	dl->AddCircleFilled( ImVec2( o.x + 84, o.y + 44 ), 30, IM_COL32( 80, 160, 255, 170 ) );
+	dl->AddCircleFilled( ImVec2( o.x + 64, o.y + 78 ), 30, IM_COL32( 90, 230, 120, 170 ) );
+	dl->AddLine( ImVec2( o.x + 8, o.y + 120 ), ImVec2( o.x + 120, o.y + 100 ), IM_COL32( 255, 255, 255, 120 ), 3.0f );
+	dl->AddText( ImVec2( o.x + 8, o.y + 2 ), IM_COL32( 255, 255, 255, 255 ), "pass" );
+}
+
+// The scene rendered into a texture (left, drawn with premultiplied alpha) and drawn directly (right): they match.
+static RenderPassScene g_RenderPassDemo;
+static void RenderPassDemo()
+{
+	RenderPassScene& scene = g_RenderPassDemo;
+	ImGui::Text( "Render pass (ImPlatform_QueueRenderPass): texture | direct" );
+	if ( !QueueRenderPassScene( scene, 128, []( ImDrawList* dl ) { DrawRenderPassScene( dl, ImVec2( 0, 0 ) ); } ) )
+	{
+		ImGui::TextDisabled( "Not supported by this backend." );
+		return;
+	}
+	ImPlatform_PushPremultipliedAlpha( nullptr );
+	ImGui::Image( scene.Target, ImVec2( 128, 128 ) );
+	ImPlatform_PopPremultipliedAlpha( nullptr );
+	ImGui::SameLine();
+	const ImVec2 p = ImGui::GetCursorScreenPos();
+	ImGui::Dummy( ImVec2( 128, 128 ) );
+	DrawRenderPassScene( ImGui::GetWindowDrawList(), p );
+}
+
+#ifndef __EMSCRIPTEN__
+// --render-pass-test: an opaque red square, a half transparent blue square, transparent elsewhere, read back.
+// Checks the clear, the orientation (top-left origin) and premultiplied colors. Exit code: 0 pass, 1 fail, 2 unsupported.
+static RenderPassScene g_RenderPassTest;
+static void DrawRenderPassTest( ImDrawList* dl )
+{
+	dl->AddRectFilled( ImVec2( 0, 0 ), ImVec2( 32, 32 ), IM_COL32( 255, 0, 0, 255 ) );
+	dl->AddRectFilled( ImVec2( 32, 0 ), ImVec2( 64, 32 ), IM_COL32( 0, 0, 255, 128 ) );
+}
+
+// Next frame, a second pass draws gray then the first target with premultiplied alpha (the composite).
+static RenderPassScene g_RenderPassComposite;
+static void DrawRenderPassComposite( ImDrawList* dl )
+{
+	dl->AddRectFilled( ImVec2( 0, 0 ), ImVec2( 64, 64 ), IM_COL32( 100, 100, 100, 255 ) );
+	ImPlatform_PushPremultipliedAlpha( dl );
+	dl->AddImage( g_RenderPassTest.Target, ImVec2( 0, 0 ), ImVec2( 64, 64 ) );
+	ImPlatform_PopPremultipliedAlpha( dl );
+}
+
+struct RenderPassProbe { int x, y; int rgba[ 4 ]; };
+static int CheckRenderPassProbes( const char* what, const unsigned char* px, int stride, const RenderPassProbe* probes, int count, int channels )
+{
+	const bool bgra = ImPlatform_GetRenderPassFormat() == ImPlatform_PixelFormat_BGRA8;
+	int bad = 0;
+	for ( int i = 0; i < count; ++i )
+	{
+		const RenderPassProbe& p = probes[ i ];
+		const unsigned char* q = px + ( p.y * stride + p.x ) * 4;
+		const int got[ 4 ] = { bgra ? q[ 2 ] : q[ 0 ], q[ 1 ], bgra ? q[ 0 ] : q[ 2 ], q[ 3 ] };
+		for ( int c = 0; c < channels; ++c )
+			if ( abs( got[ c ] - p.rgba[ c ] ) > 3 )
+			{
+				printf( "FAIL %s at (%d, %d): got %d %d %d %d, expected %d %d %d %d\n", what, p.x, p.y, got[ 0 ], got[ 1 ], got[ 2 ], got[ 3 ], p.rgba[ 0 ], p.rgba[ 1 ], p.rgba[ 2 ], p.rgba[ 3 ] );
+				++bad;
+				break;
+			}
+	}
+	return bad;
+}
+
+static int CheckRenderPassTest()
+{
+	unsigned char px[ 64 * 64 * 4 ];
+	if ( !g_RenderPassTest.Target || !ImPlatform_ReadTexture( g_RenderPassTest.Target, 0, 0, 64, 64, px, sizeof( px ) ) )
+	{
+		printf( "SKIP: no readback of the pass target\n" );
+		return 2;
+	}
+	// Pass target: the clear, the orientation and premultiplied colors.
+	const RenderPassProbe target[] = { { 8, 8, { 255, 0, 0, 255 } }, { 48, 8, { 0, 0, 128, 128 } }, { 8, 48, { 0, 0, 0, 0 } }, { 48, 48, { 0, 0, 0, 0 } } };
+	int bad = CheckRenderPassProbes( "target", px, 64, target, 4, 4 );
+	// Composite over gray (100) with premultiplied alpha: blue at half coverage is 128 + 100 * 127 / 255.
+	if ( ImPlatform_ReadTexture( g_RenderPassComposite.Target, 0, 0, 64, 64, px, sizeof( px ) ) )
+	{
+		const RenderPassProbe composite[] = { { 8, 8, { 255, 0, 0, 255 } }, { 48, 8, { 50, 50, 178, 255 } }, { 8, 48, { 100, 100, 100, 255 } } };
+		bad += CheckRenderPassProbes( "composite", px, 64, composite, 3, 4 );
+	}
+	else
+		bad++;
+	if ( !bad )
+		printf( "PASS\n" );
+	return bad ? 1 : 0;
+}
+#endif // __EMSCRIPTEN__
 #endif
 
 // --compute-test: storage texture + compute dispatch + readback, the same check on every backend.
@@ -201,6 +343,11 @@ static int ImPlatformDemo_ComputeTest()
 int main( int argc, char** argv )
 {
 	const bool computeTest = argc > 1 && strcmp( argv[ 1 ], "--compute-test" ) == 0;
+	const bool renderPassTest = argc > 1 && strcmp( argv[ 1 ], "--render-pass-test" ) == 0;
+	int exitCode = 0;
+#ifndef __EMSCRIPTEN__
+	int renderPassFrame = 0;
+#endif
 	// Configure borderless window with custom titlebar
 	ImPlatform_EnableCustomTitleBar();
 	{
@@ -772,6 +919,16 @@ int main( int argc, char** argv )
 		ImPlatform_PlatformNewFrame();
 
 		ImGui::NewFrame();
+#if defined( IMGUI_HAS_TEXTURES ) && !defined( __EMSCRIPTEN__ )
+		if ( renderPassTest && renderPassFrame == 0 && !QueueRenderPassScene( g_RenderPassTest, 64, DrawRenderPassTest ) )
+		{
+			printf( "SKIP: render passes not supported on this backend\n" );
+			exitCode = 2;
+			break;
+		}
+		if ( renderPassTest && renderPassFrame == 1 )
+			QueueRenderPassScene( g_RenderPassComposite, 64, DrawRenderPassComposite );
+#endif
 
 		// Custom Title Bar (using Em-based sizing for DPI independence)
 #if IMPLATFORM_APP_SUPPORT_CUSTOM_TITLEBAR
@@ -821,6 +978,10 @@ int main( int argc, char** argv )
 			ImGui::Separator();
 			ImGui::Text("White texture:");
 			ImGui::Image(img_white, ImPlatform_EmToVec2(8.0f, 8.0f));
+
+			ImGui::Separator();
+			if ( !renderPassTest )		// One pass per frame: the test's.
+				RenderPassDemo();
 
 			ImGui::Separator();
 			ImGui::Text("This demonstrates the new Texture Creation API:");
@@ -945,6 +1106,13 @@ int main( int argc, char** argv )
 		t += ImGui::GetIO().DeltaTime;
 
 		ImPlatform_GfxAPISwapBuffer();
+#if defined( IMGUI_HAS_TEXTURES ) && !defined( __EMSCRIPTEN__ )
+		if ( renderPassTest && ++renderPassFrame == 3 )
+		{
+			exitCode = CheckRenderPassTest();
+			break;
+		}
+#endif
 	}
 #ifdef __EMSCRIPTEN__
 	EMSCRIPTEN_MAINLOOP_END;
@@ -975,6 +1143,13 @@ int main( int argc, char** argv )
 		ImPlatform_DestroyShader(gradient_ps);
 #endif
 
+#ifdef IMGUI_HAS_TEXTURES
+	DestroyRenderPassScene( g_RenderPassDemo );
+#ifndef __EMSCRIPTEN__
+	DestroyRenderPassScene( g_RenderPassTest );
+	DestroyRenderPassScene( g_RenderPassComposite );
+#endif
+#endif
 	ImPlatform_ShutdownGfxAPI();
 	ImPlatform_ShutdownWindow();
 	ImPlatform_ShutdownPostGfxAPI();
@@ -983,5 +1158,5 @@ int main( int argc, char** argv )
 
 	ImPlatform_DestroyWindow();
 
-	return 0;
+	return exitCode;
 }
