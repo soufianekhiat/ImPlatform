@@ -615,9 +615,16 @@ IMPLATFORM_API bool ImPlatform_GfxAPIClear(ImVec4 const vClearColor)
 }
 
 // ImPlatform API - GfxAPIRender
+// Render pass queued by ImPlatform_QueueRenderPass(), run at the start of ImPlatform_GfxAPIRender()
+static ImTextureID g_PassTarget = 0;
+static ImDrawData* g_PassDrawData = NULL;
+static bool        g_PassClear = false;
+static void        ImPlatform_RunRenderPass();
+
 IMPLATFORM_API bool ImPlatform_GfxAPIRender(ImVec4 const vClearColor)
 {
     (void)vClearColor; // Not used for OpenGL
+    ImPlatform_RunRenderPass();     // Queued by ImPlatform_QueueRenderPass(): before the frame.
     ImDrawData* draw_data = ImGui::GetDrawData();
 
     // Cache draw data for custom shader callbacks
@@ -625,6 +632,77 @@ IMPLATFORM_API bool ImPlatform_GfxAPIRender(ImVec4 const vClearColor)
 
     ImGui_ImplOpenGL3_RenderDrawData(draw_data);
     return true;
+}
+
+IMPLATFORM_API ImPlatform_PixelFormat ImPlatform_GetRenderPassFormat(void) { return ImPlatform_PixelFormat_RGBA8; }
+
+IMPLATFORM_API bool ImPlatform_QueueRenderPass(ImTextureID target, ImDrawData* draw_data, bool clear)
+{
+    ImPlatform_RTTracking_GL* entry = g_RTTrackingHead;
+    while (entry && entry->tex != (GLuint)(intptr_t)target)
+        entry = entry->next;
+    if (!entry || !draw_data || !ImPlatform_GL_Fbo())
+        return false;
+    g_PassTarget = target;
+    g_PassDrawData = draw_data;
+    g_PassClear = clear;
+    return true;
+}
+
+static void ImPlatform_RunRenderPass()
+{
+    ImDrawData* draw_data = g_PassDrawData;
+    g_PassDrawData = NULL;
+    if (!draw_data || !ImPlatform_PushRenderTarget(g_PassTarget, g_PassClear))     // Destroyed since it was queued.
+        return;
+    // Render textures are stored bottom-up: mirrored within the display rectangle, rows land top-down.
+    const float mirror = draw_data->DisplayPos.y * 2.0f + draw_data->DisplaySize.y;
+    for (ImDrawList* list : draw_data->CmdLists)
+    {
+        for (ImDrawVert& v : list->VtxBuffer)
+            v.pos.y = mirror - v.pos.y;
+        for (ImDrawCmd& cmd : list->CmdBuffer)
+        {
+            const float y0 = mirror - cmd.ClipRect.w, y1 = mirror - cmd.ClipRect.y;
+            cmd.ClipRect.y = y0;
+            cmd.ClipRect.w = y1;
+        }
+    }
+    if (draw_data->Textures == NULL)
+        draw_data->Textures = &ImGui::GetPlatformIO().Textures;     // The frame's texture updates, before they are drawn.
+    g_CurrentDrawData = draw_data;
+    ImGui_ImplOpenGL3_RenderDrawData(draw_data);    // Its viewport and projection come from the draw data.
+    ImPlatform_PopRenderTarget();
+}
+
+static GLint g_BlendStack[8][4] = {};
+static int   g_BlendDepth = 0;
+
+IMPLATFORM_API void ImPlatform_PushPremultipliedAlpha(ImDrawList* draw)
+{
+    (draw ? draw : ImGui::GetWindowDrawList())->AddCallback([](const ImDrawList*, const ImDrawCmd*)
+    {
+        if (g_BlendDepth < IM_ARRAYSIZE(g_BlendStack))
+        {
+            GLint* saved = g_BlendStack[g_BlendDepth++];
+            glGetIntegerv(GL_BLEND_SRC_RGB, &saved[0]);
+            glGetIntegerv(GL_BLEND_DST_RGB, &saved[1]);
+            glGetIntegerv(GL_BLEND_SRC_ALPHA, &saved[2]);
+            glGetIntegerv(GL_BLEND_DST_ALPHA, &saved[3]);
+        }
+        glBlendFuncSeparate(GL_ONE, GL_ONE_MINUS_SRC_ALPHA, GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
+    }, NULL);
+}
+
+IMPLATFORM_API void ImPlatform_PopPremultipliedAlpha(ImDrawList* draw)
+{
+    (draw ? draw : ImGui::GetWindowDrawList())->AddCallback([](const ImDrawList*, const ImDrawCmd*)
+    {
+        if (g_BlendDepth <= 0)
+            return;
+        const GLint* saved = g_BlendStack[--g_BlendDepth];
+        glBlendFuncSeparate((GLenum)saved[0], (GLenum)saved[1], (GLenum)saved[2], (GLenum)saved[3]);
+    }, NULL);
 }
 
 // ImPlatform API - GfxViewportPre
