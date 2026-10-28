@@ -1517,7 +1517,7 @@ IMPLATFORM_API void ImPlatform_EndCustomShader(ImDrawList* draw)
 }
 
 // Premultiplied alpha: blending is part of the pipeline states, so an ImGui-layout program un-premultiplies the texels
-// instead, and the straight alpha blending composites them as premultiplied (the vertex color tints and fades them).
+// instead, and the straight alpha blending composites them as premultiplied (texel times the premultiplied vertex color).
 static ImPlatform_ShaderProgram g_UnpremultiplyProgram = NULL;
 static ImPlatform_Shader        g_UnpremultiplyShaders[2] = {};
 
@@ -1547,8 +1547,8 @@ static ImPlatform_ShaderProgram ImPlatform_UnpremultiplyProgram()
         "struct PS_INPUT { float4 pos : SV_POSITION; float4 col : COLOR0; float2 uv : TEXCOORD0; };\n"
         "float4 main(PS_INPUT input) : SV_Target {\n"
         "    float4 t = texture0.Sample(sampler0, input.uv);\n"
-        "    float3 rgb = t.a > 0.0 ? t.rgb / t.a : (float3)0;\n"
-        "    return float4(rgb * input.col.rgb, t.a * input.col.a);\n"
+        "    float4 c = t * input.col;\n"
+        "    return float4(c.a > 0.0 ? c.rgb / c.a : (float3)0, c.a);\n"
         "}\n";
     ImPlatform_Shader v = g_UnpremultiplyShaders[0] = ImPlatform_CreateShader(&vs);
     ImPlatform_Shader f = g_UnpremultiplyShaders[1] = ImPlatform_CreateShader(&ps);

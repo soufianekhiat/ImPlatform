@@ -597,7 +597,8 @@ IMPLATFORM_API ImPlatform_PixelFormat ImPlatform_GetRenderPassFormat(void);
 // between ImPlatform_PushPremultipliedAlpha() and ImPlatform_PopPremultipliedAlpha(). False when unsupported.
 IMPLATFORM_API bool ImPlatform_QueueRenderPass(ImTextureID target, ImDrawData* draw_data, bool clear);
 // Draw commands of the window draw list (or `draw`) between them blend as premultiplied alpha (ONE, ONE_MINUS_SRC_ALPHA
-// for color and alpha). Through draw callbacks, like ImPlatform_PushSampler().
+// for color and alpha): texel times vertex color, both premultiplied (fading by a: color (a, a, a, a)). Through draw
+// callbacks, like ImPlatform_PushSampler().
 IMPLATFORM_API void ImPlatform_PushPremultipliedAlpha(ImDrawList* draw);
 IMPLATFORM_API void ImPlatform_PopPremultipliedAlpha(ImDrawList* draw);
 

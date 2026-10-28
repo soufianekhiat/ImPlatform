@@ -1262,7 +1262,7 @@ static void ImPlatform_RunRenderPass()
 }
 
 // Premultiplied alpha: ImGui's pipeline (its shaders, vertex layout and buffer indices) with premultiplied blending
-// (ONE, ONE_MINUS_SRC_ALPHA); the vertex color tints the premultiplied texel and its alpha scales all four.
+// (ONE, ONE_MINUS_SRC_ALPHA): texel times the (premultiplied) vertex color.
 static void* g_PremultipliedPipeline = NULL;     // id<MTLRenderPipelineState>
 
 static void* ImPlatform_PremultipliedPipeline()
@@ -1286,8 +1286,7 @@ static void* ImPlatform_PremultipliedPipeline()
             "}\n"
             "fragment half4 fragment_main(VertexOut in [[stage_in]], texture2d<half, access::sample> texture [[texture(0)]], sampler textureSampler [[sampler(0)]]) {\n"
             "    half4 t = texture.sample(textureSampler, in.texCoords);\n"
-            "    half a = half(in.color.a);\n"
-            "    return half4(t.rgb * half3(in.color.rgb) * a, t.a * a);\n"
+            "    return t * half4(in.color);\n"
             "}\n";
         NSError* error = nil;
         id<MTLLibrary> library = [device newLibraryWithSource:source options:nil error:&error];

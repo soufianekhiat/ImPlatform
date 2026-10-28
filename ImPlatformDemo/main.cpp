@@ -148,13 +148,15 @@ static void DrawRenderPassTest( ImDrawList* dl )
 	dl->AddRectFilled( ImVec2( 32, 0 ), ImVec2( 64, 32 ), IM_COL32( 0, 0, 255, 128 ) );
 }
 
-// Next frame, a second pass draws gray then the first target with premultiplied alpha (the composite).
+// Next frame, a second pass draws gray then the first target with premultiplied alpha (the composite), and again at
+// half opacity on the right (the vertex color premultiplied too).
 static RenderPassScene g_RenderPassComposite;
 static void DrawRenderPassComposite( ImDrawList* dl )
 {
-	dl->AddRectFilled( ImVec2( 0, 0 ), ImVec2( 64, 64 ), IM_COL32( 100, 100, 100, 255 ) );
+	dl->AddRectFilled( ImVec2( 0, 0 ), ImVec2( 128, 64 ), IM_COL32( 100, 100, 100, 255 ) );
 	ImPlatform_PushPremultipliedAlpha( dl );
 	dl->AddImage( g_RenderPassTest.Target, ImVec2( 0, 0 ), ImVec2( 64, 64 ) );
+	dl->AddImage( g_RenderPassTest.Target, ImVec2( 64, 0 ), ImVec2( 128, 64 ), ImVec2( 0, 0 ), ImVec2( 1, 1 ), IM_COL32( 128, 128, 128, 128 ) );
 	ImPlatform_PopPremultipliedAlpha( dl );
 }
 
@@ -181,7 +183,7 @@ static int CheckRenderPassProbes( const char* what, const unsigned char* px, int
 
 static int CheckRenderPassTest()
 {
-	unsigned char px[ 64 * 64 * 4 ];
+	static unsigned char px[ 128 * 128 * 4 ];
 	if ( !g_RenderPassTest.Target || !ImPlatform_ReadTexture( g_RenderPassTest.Target, 0, 0, 64, 64, px, sizeof( px ) ) )
 	{
 		printf( "SKIP: no readback of the pass target\n" );
@@ -191,10 +193,12 @@ static int CheckRenderPassTest()
 	const RenderPassProbe target[] = { { 8, 8, { 255, 0, 0, 255 } }, { 48, 8, { 0, 0, 128, 128 } }, { 8, 48, { 0, 0, 0, 0 } }, { 48, 48, { 0, 0, 0, 0 } } };
 	int bad = CheckRenderPassProbes( "target", px, 64, target, 4, 4 );
 	// Composite over gray (100) with premultiplied alpha: blue at half coverage is 128 + 100 * 127 / 255.
-	if ( ImPlatform_ReadTexture( g_RenderPassComposite.Target, 0, 0, 64, 64, px, sizeof( px ) ) )
+	// At half opacity: red 128 + 100 * 127 / 255 = 178 (green, blue 50); blue at a quarter, 64 + 100 * 191 / 255 = 139.
+	if ( ImPlatform_ReadTexture( g_RenderPassComposite.Target, 0, 0, 128, 128, px, sizeof( px ) ) )
 	{
-		const RenderPassProbe composite[] = { { 8, 8, { 255, 0, 0, 255 } }, { 48, 8, { 50, 50, 178, 255 } }, { 8, 48, { 100, 100, 100, 255 } } };
-		bad += CheckRenderPassProbes( "composite", px, 64, composite, 3, 4 );
+		const RenderPassProbe composite[] = { { 8, 8, { 255, 0, 0, 255 } }, { 48, 8, { 50, 50, 178, 255 } }, { 8, 48, { 100, 100, 100, 255 } },
+			{ 72, 8, { 178, 50, 50, 255 } }, { 112, 8, { 75, 75, 139, 255 } }, { 72, 48, { 100, 100, 100, 255 } } };
+		bad += CheckRenderPassProbes( "composite", px, 128, composite, 6, 4 );
 	}
 	else
 		bad++;
@@ -927,7 +931,7 @@ int main( int argc, char** argv )
 			break;
 		}
 		if ( renderPassTest && renderPassFrame == 1 )
-			QueueRenderPassScene( g_RenderPassComposite, 64, DrawRenderPassComposite );
+			QueueRenderPassScene( g_RenderPassComposite, 128, DrawRenderPassComposite );
 #endif
 
 		// Custom Title Bar (using Em-based sizing for DPI independence)
