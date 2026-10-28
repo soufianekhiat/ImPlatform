@@ -1176,7 +1176,7 @@ static void ImPlatform_RunRenderPass()
 
 // Premultiplied alpha: ImGui's pipeline with premultiplied blending (ONE, ONE_MINUS_SRC_ALPHA). Its bind group layouts
 // are created from the same descriptors as the backend's (group-equivalent), so the bind groups the backend sets per
-// draw still apply. ImGui's shaders, the texel premultiplied: the vertex color tints it, its alpha scales all four.
+// draw still apply. ImGui's shaders: texel times the (premultiplied) vertex color.
 static WGPURenderPipeline g_PremultipliedPipeline = NULL;
 
 static WGPURenderPipeline ImPlatform_PremultipliedPipeline()
@@ -1206,8 +1206,8 @@ struct Uniforms { mvp: mat4x4<f32>, gamma: f32, };
 @fragment
 fn main(in: VertexOutput) -> @location(0) vec4<f32> {
     let texel = textureSample(t, s, in.uv);
-    let rgb = pow(texel.rgb * in.color.rgb, vec3<f32>(uniforms.gamma));
-    return vec4<f32>(rgb * in.color.a, texel.a * in.color.a);
+    let c = texel * in.color;
+    return vec4<f32>(pow(c.rgb, vec3<f32>(uniforms.gamma)), c.a);
 }
 )";
     WGPUShaderSourceWGSL vs_wgsl = {};
