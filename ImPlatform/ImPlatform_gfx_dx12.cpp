@@ -508,6 +508,7 @@ IMPLATFORM_API bool ImPlatform_GfxAPIClear(ImVec4 const vClearColor)
 }
 
 static void ImPlatform_RunRenderPass();     // Resource layer (end of this file).
+static void ImPlatform_ReleaseRenderPasses();
 
 // Wrapper for ImGui_ImplDX12_RenderDrawData that stores draw_data for custom shader callbacks
 static void ImPlatform_RenderDrawDataWrapper(ImDrawData* draw_data, ID3D12GraphicsCommandList* command_list)
@@ -614,6 +615,7 @@ IMPLATFORM_API void ImPlatform_ShutdownGfxAPI(void)
 {
     ImPlatform_DX12_FlushWork();
     WaitForPendingOperations();
+    ImPlatform_ReleaseRenderPasses();
     ImPlatform_DX12_ReleaseAll();
 }
 
@@ -1517,6 +1519,7 @@ IMPLATFORM_API void ImPlatform_EndCustomShader(ImDrawList* draw)
 // Premultiplied alpha: blending is part of the pipeline states, so an ImGui-layout program un-premultiplies the texels
 // instead, and the straight alpha blending composites them as premultiplied (the vertex color tints and fades them).
 static ImPlatform_ShaderProgram g_UnpremultiplyProgram = NULL;
+static ImPlatform_Shader        g_UnpremultiplyShaders[2] = {};
 
 static ImPlatform_ShaderProgram ImPlatform_UnpremultiplyProgram()
 {
@@ -1547,8 +1550,8 @@ static ImPlatform_ShaderProgram ImPlatform_UnpremultiplyProgram()
         "    float3 rgb = t.a > 0.0 ? t.rgb / t.a : (float3)0;\n"
         "    return float4(rgb * input.col.rgb, t.a * input.col.a);\n"
         "}\n";
-    ImPlatform_Shader v = ImPlatform_CreateShader(&vs);
-    ImPlatform_Shader f = ImPlatform_CreateShader(&ps);
+    ImPlatform_Shader v = g_UnpremultiplyShaders[0] = ImPlatform_CreateShader(&vs);
+    ImPlatform_Shader f = g_UnpremultiplyShaders[1] = ImPlatform_CreateShader(&ps);
     if (v && f)
         g_UnpremultiplyProgram = ImPlatform_CreateShaderProgram(v, f);
     return g_UnpremultiplyProgram;
@@ -1564,6 +1567,19 @@ IMPLATFORM_API void ImPlatform_PopPremultipliedAlpha(ImDrawList* draw)
 {
     if (g_UnpremultiplyProgram)
         ImPlatform_EndCustomShader(draw ? draw : ImGui::GetWindowDrawList());
+}
+
+static void ImPlatform_ReleaseRenderPasses()
+{
+    if (g_UnpremultiplyProgram)
+        ImPlatform_DestroyShaderProgram(g_UnpremultiplyProgram);
+    g_UnpremultiplyProgram = NULL;
+    for (ImPlatform_Shader& shader : g_UnpremultiplyShaders)
+    {
+        if (shader)
+            ImPlatform_DestroyShader(shader);
+        shader = NULL;
+    }
 }
 
 IMPLATFORM_API void* ImPlatform_PushShaderConstants(const void* data, unsigned int size)
