@@ -440,7 +440,7 @@ IMPLATFORM_API bool ImPlatform_InitGfx(void)
     ImGui_ImplDX12_InitInfo init_info = {};
     init_info.Device = g_GfxData.pDevice;
     init_info.CommandQueue = g_GfxData.pCommandQueue;
-    init_info.NumFramesInFlight = IM_DX12_NUM_FRAMES_IN_FLIGHT;
+    init_info.NumFramesInFlight = IM_DX12_NUM_FRAMES_IN_FLIGHT * 2;     // Its buffers turn per render: a render pass and the frame.
     init_info.RTVFormat = DXGI_FORMAT_R8G8B8A8_UNORM;
     init_info.DSVFormat = DXGI_FORMAT_UNKNOWN;
     init_info.SrvDescriptorHeap = g_GfxData.pSrvDescHeap;
@@ -507,6 +507,8 @@ IMPLATFORM_API bool ImPlatform_GfxAPIClear(ImVec4 const vClearColor)
     return true;
 }
 
+static void ImPlatform_RunRenderPass();     // Resource layer (end of this file).
+
 // Wrapper for ImGui_ImplDX12_RenderDrawData that stores draw_data for custom shader callbacks
 static void ImPlatform_RenderDrawDataWrapper(ImDrawData* draw_data, ID3D12GraphicsCommandList* command_list)
 {
@@ -523,6 +525,7 @@ IMPLATFORM_API bool ImPlatform_GfxAPIRender(ImVec4 const vClearColor)
 {
     (void)vClearColor;
 
+    ImPlatform_RunRenderPass();     // Queued by ImPlatform_QueueRenderPass(): before the frame.
     ImPlatform_RenderDrawDataWrapper(ImGui::GetDrawData(), g_GfxData.pCommandList);
     ImPlatform_DX12_FlushWork();        // Uploads, dispatches and offscreen draws recorded this frame run first.
 
@@ -1511,6 +1514,58 @@ IMPLATFORM_API void ImPlatform_EndCustomShader(ImDrawList* draw)
     draw->AddCallback(ImGui::GetPlatformIO().DrawCallback_ResetRenderState, NULL);
 }
 
+// Premultiplied alpha: blending is part of the pipeline states, so an ImGui-layout program un-premultiplies the texels
+// instead, and the straight alpha blending composites them as premultiplied (the vertex color tints and fades them).
+static ImPlatform_ShaderProgram g_UnpremultiplyProgram = NULL;
+
+static ImPlatform_ShaderProgram ImPlatform_UnpremultiplyProgram()
+{
+    if (g_UnpremultiplyProgram)
+        return g_UnpremultiplyProgram;
+    ImPlatform_ShaderDesc vs = {}, ps = {};
+    vs.stage = ImPlatform_ShaderStage_Vertex;
+    ps.stage = ImPlatform_ShaderStage_Fragment;
+    vs.format = ps.format = ImPlatform_ShaderFormat_HLSL;
+    vs.entry_point = ps.entry_point = "main";
+    vs.source_code =
+        "cbuffer vertexBuffer : register(b0) { float4x4 ProjMtx; };\n"
+        "struct VS_INPUT { float2 pos : POSITION; float4 col : COLOR0; float2 uv : TEXCOORD0; };\n"
+        "struct PS_INPUT { float4 pos : SV_POSITION; float4 col : COLOR0; float2 uv : TEXCOORD0; };\n"
+        "PS_INPUT main(VS_INPUT input) {\n"
+        "    PS_INPUT output;\n"
+        "    output.pos = mul(ProjMtx, float4(input.pos.xy, 0.0, 1.0));\n"
+        "    output.col = input.col;\n"
+        "    output.uv = input.uv;\n"
+        "    return output;\n"
+        "}\n";
+    ps.source_code =
+        "Texture2D texture0 : register(t0);\n"
+        "SamplerState sampler0 : register(s0);\n"
+        "struct PS_INPUT { float4 pos : SV_POSITION; float4 col : COLOR0; float2 uv : TEXCOORD0; };\n"
+        "float4 main(PS_INPUT input) : SV_Target {\n"
+        "    float4 t = texture0.Sample(sampler0, input.uv);\n"
+        "    float3 rgb = t.a > 0.0 ? t.rgb / t.a : (float3)0;\n"
+        "    return float4(rgb * input.col.rgb, t.a * input.col.a);\n"
+        "}\n";
+    ImPlatform_Shader v = ImPlatform_CreateShader(&vs);
+    ImPlatform_Shader f = ImPlatform_CreateShader(&ps);
+    if (v && f)
+        g_UnpremultiplyProgram = ImPlatform_CreateShaderProgram(v, f);
+    return g_UnpremultiplyProgram;
+}
+
+IMPLATFORM_API void ImPlatform_PushPremultipliedAlpha(ImDrawList* draw)
+{
+    if (ImPlatform_ShaderProgram program = ImPlatform_UnpremultiplyProgram())
+        ImPlatform_BeginCustomShader(draw ? draw : ImGui::GetWindowDrawList(), program);
+}
+
+IMPLATFORM_API void ImPlatform_PopPremultipliedAlpha(ImDrawList* draw)
+{
+    if (g_UnpremultiplyProgram)
+        ImPlatform_EndCustomShader(draw ? draw : ImGui::GetWindowDrawList());
+}
+
 IMPLATFORM_API void* ImPlatform_PushShaderConstants(const void* data, unsigned int size)
 {
     (void)data; (void)size;
@@ -2294,6 +2349,50 @@ namespace
 
 // Submits pending work ahead of the frame's command list (called by ImPlatform_GfxAPIRender).
 static void ImPlatform_DX12_FlushWork() { ImP12_Flush(); }
+
+// Render passes: recorded on the frame's command list before its draw data. The ImGui backend's buffers turn per
+// render (NumFramesInFlight doubled at init), so a pass never reuses buffers the GPU may still read.
+static ImTextureID g_PassTarget = 0;
+static ImDrawData* g_PassDrawData = NULL;
+static bool        g_PassClear = false;
+
+IMPLATFORM_API ImPlatform_PixelFormat ImPlatform_GetRenderPassFormat(void) { return ImPlatform_PixelFormat_RGBA8; }   // The ImGui pipeline's RTVFormat.
+
+IMPLATFORM_API bool ImPlatform_QueueRenderPass(ImTextureID target, ImDrawData* draw_data, bool clear)
+{
+    ImP12_Texture* t = ImP12_Find(target);
+    if (!t || !t->rtv.ptr || t->format != DXGI_FORMAT_R8G8B8A8_UNORM || !draw_data)
+        return false;
+    g_PassTarget = target;
+    g_PassDrawData = draw_data;
+    g_PassClear = clear;
+    return true;
+}
+
+static void ImPlatform_RunRenderPass()
+{
+    ImDrawData* draw_data = g_PassDrawData;
+    g_PassDrawData = NULL;
+    ImP12_Texture* t = draw_data ? ImP12_Find(g_PassTarget) : NULL;
+    if (!t)     // Destroyed since it was queued.
+        return;
+    ID3D12GraphicsCommandList* list = g_GfxData.pCommandList;
+    ImP12_Transition(list, *t, D3D12_RESOURCE_STATE_RENDER_TARGET);
+    if (g_PassClear)
+    {
+        const float transparent[4] = { 0, 0, 0, 0 };
+        list->ClearRenderTargetView(t->rtv, transparent, 0, NULL);
+    }
+    list->OMSetRenderTargets(1, &t->rtv, FALSE, NULL);
+    if (draw_data->OwnerViewport == NULL)
+        draw_data->OwnerViewport = ImGui::GetMainViewport();     // The backend keeps its buffers per viewport.
+    if (draw_data->Textures == NULL)
+        draw_data->Textures = &ImGui::GetPlatformIO().Textures;     // The frame's texture updates, before they are drawn.
+    ImPlatform_RenderDrawDataWrapper(draw_data, list);      // Its viewport and projection come from the draw data.
+    ImP12_Transition(list, *t, t->rest);
+    const UINT back = g_GfxData.pSwapChain->GetCurrentBackBufferIndex();
+    list->OMSetRenderTargets(1, &g_GfxData.renderTargetDescriptor[back], FALSE, NULL);
+}
 static void ImPlatform_DX12_DeferRelease(IUnknown* object) { ImP12_DeferRelease(object); }
 
 IMPLATFORM_API ImTextureID ImPlatform_CreateTexture(const void* pixel_data, const ImPlatform_TextureDesc* desc)
