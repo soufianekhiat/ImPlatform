@@ -388,10 +388,17 @@ IMPLATFORM_API bool ImPlatform_GfxAPIClear(ImVec4 const vClearColor)
     return true;
 }
 
+// Render pass queued by ImPlatform_QueueRenderPass(), run at the start of ImPlatform_GfxAPIRender()
+static ImTextureID g_PassTarget = NULL;
+static ImDrawData* g_PassDrawData = NULL;
+static bool        g_PassClear = false;
+static void        ImPlatform_RunRenderPass();
+
 // ImPlatform API - GfxAPIRender
 IMPLATFORM_API bool ImPlatform_GfxAPIRender(ImVec4 const vClearColor)
 {
     (void)vClearColor; // Not used for DX11
+    ImPlatform_RunRenderPass();
     ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
     return true;
 }
@@ -854,6 +861,93 @@ IMPLATFORM_API void ImPlatform_PopRenderTarget(void)
         saved.pDSV->Release();
     saved.pRTV = NULL;
     saved.pDSV = NULL;
+}
+
+IMPLATFORM_API ImPlatform_PixelFormat ImPlatform_GetRenderPassFormat(void) { return ImPlatform_PixelFormat_RGBA8; }
+
+IMPLATFORM_API bool ImPlatform_QueueRenderPass(ImTextureID target, ImDrawData* draw_data, bool clear)
+{
+    ImPlatform_RTTracking_DX11* entry = g_RTTrackingHead;
+    while (entry && entry->pSRV != (ID3D11ShaderResourceView*)target)
+        entry = entry->next;
+    if (!entry || !draw_data)
+        return false;
+    g_PassTarget = target;
+    g_PassDrawData = draw_data;
+    g_PassClear = clear;
+    return true;
+}
+
+static void ImPlatform_RunRenderPass()
+{
+    ImDrawData* draw_data = g_PassDrawData;
+    g_PassDrawData = NULL;
+    ImPlatform_RTTracking_DX11* entry = g_RTTrackingHead;
+    while (entry && entry->pSRV != (ID3D11ShaderResourceView*)g_PassTarget)
+        entry = entry->next;
+    if (!draw_data || !entry)       // Destroyed since it was queued.
+        return;
+    ID3D11DeviceContext* ctx = g_GfxData.pDeviceContext;
+    ID3D11ShaderResourceView* nullSRV = NULL;
+    ctx->PSSetShaderResources(0, 1, &nullSRV);      // Not bound as an input while it is the target.
+    ctx->OMSetRenderTargets(1, &entry->pRTV, NULL);
+    if (g_PassClear)
+    {
+        const float transparent[4] = { 0, 0, 0, 0 };
+        ctx->ClearRenderTargetView(entry->pRTV, transparent);
+    }
+    if (draw_data->Textures == NULL)
+        draw_data->Textures = &ImGui::GetPlatformIO().Textures;     // The frame's texture updates, before they are drawn.
+    ImGui_ImplDX11_RenderDrawData(draw_data);       // Its viewport and projection come from the draw data.
+    ctx->OMSetRenderTargets(1, &g_GfxData.pRenderTargetView, NULL);
+}
+
+static ID3D11BlendState* g_PremultipliedBlend = NULL;
+static ID3D11BlendState* g_BlendStack[8] = {};
+static int               g_BlendDepth = 0;
+
+IMPLATFORM_API void ImPlatform_PushPremultipliedAlpha(ImDrawList* draw)
+{
+    if (!g_PremultipliedBlend && g_GfxData.pDevice)
+    {
+        D3D11_BLEND_DESC desc = {};
+        desc.RenderTarget[0].BlendEnable = TRUE;
+        desc.RenderTarget[0].SrcBlend = D3D11_BLEND_ONE;
+        desc.RenderTarget[0].DestBlend = D3D11_BLEND_INV_SRC_ALPHA;
+        desc.RenderTarget[0].BlendOp = D3D11_BLEND_OP_ADD;
+        desc.RenderTarget[0].SrcBlendAlpha = D3D11_BLEND_ONE;
+        desc.RenderTarget[0].DestBlendAlpha = D3D11_BLEND_INV_SRC_ALPHA;
+        desc.RenderTarget[0].BlendOpAlpha = D3D11_BLEND_OP_ADD;
+        desc.RenderTarget[0].RenderTargetWriteMask = D3D11_COLOR_WRITE_ENABLE_ALL;
+        g_GfxData.pDevice->CreateBlendState(&desc, &g_PremultipliedBlend);
+    }
+    (draw ? draw : ImGui::GetWindowDrawList())->AddCallback([](const ImDrawList*, const ImDrawCmd*)
+    {
+        ID3D11BlendState* old = NULL;
+        FLOAT factor[4];
+        UINT mask;
+        g_GfxData.pDeviceContext->OMGetBlendState(&old, factor, &mask);     // Adds a reference.
+        if (g_BlendDepth < IM_ARRAYSIZE(g_BlendStack))
+            g_BlendStack[g_BlendDepth++] = old;
+        else if (old)
+            old->Release();
+        const float zero[4] = { 0, 0, 0, 0 };
+        g_GfxData.pDeviceContext->OMSetBlendState(g_PremultipliedBlend, zero, 0xffffffff);
+    }, NULL);
+}
+
+IMPLATFORM_API void ImPlatform_PopPremultipliedAlpha(ImDrawList* draw)
+{
+    (draw ? draw : ImGui::GetWindowDrawList())->AddCallback([](const ImDrawList*, const ImDrawCmd*)
+    {
+        if (g_BlendDepth <= 0)
+            return;
+        ID3D11BlendState* saved = g_BlendStack[--g_BlendDepth];
+        const float zero[4] = { 0, 0, 0, 0 };
+        g_GfxData.pDeviceContext->OMSetBlendState(saved, zero, 0xffffffff);
+        if (saved)
+            saved->Release();
+    }, NULL);
 }
 
 IMPLATFORM_API bool ImPlatform_BeginRenderToTexture(ImTextureID texture) { return ImPlatform_PushRenderTarget(texture, true); }
