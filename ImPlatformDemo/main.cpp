@@ -93,6 +93,7 @@ static bool QueueRenderPassScene( RenderPassScene& s, int size, void ( *draw )( 
 	if ( !s.List )
 		s.List = IM_NEW( ImDrawList )( ImGui::GetDrawListSharedData() );
 	s.List->_ResetForNewFrame();
+	s.List->_SetPixelDensity( 1.0f );	// Set by Dear ImGui for window draw lists only (unset: AddPolyline() draws nothing).
 	s.List->PushClipRect( ImVec2( 0, 0 ), ImVec2( (float)size, (float)size ) );
 	s.List->PushTexture( ImGui::GetIO().Fonts->TexRef );
 	draw( s.List );
