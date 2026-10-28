@@ -138,6 +138,7 @@ static void RenderPassDemo()
 	DrawRenderPassScene( ImGui::GetWindowDrawList(), p );
 }
 
+#ifndef __EMSCRIPTEN__
 // --render-pass-test: an opaque red square, a half transparent blue square, transparent elsewhere, read back.
 // Checks the clear, the orientation (top-left origin) and premultiplied colors. Exit code: 0 pass, 1 fail, 2 unsupported.
 static RenderPassScene g_RenderPassTest;
@@ -201,6 +202,7 @@ static int CheckRenderPassTest()
 		printf( "PASS\n" );
 	return bad ? 1 : 0;
 }
+#endif // __EMSCRIPTEN__
 #endif
 
 // --compute-test: storage texture + compute dispatch + readback, the same check on every backend.
@@ -342,7 +344,10 @@ int main( int argc, char** argv )
 {
 	const bool computeTest = argc > 1 && strcmp( argv[ 1 ], "--compute-test" ) == 0;
 	const bool renderPassTest = argc > 1 && strcmp( argv[ 1 ], "--render-pass-test" ) == 0;
-	int renderPassFrame = 0, exitCode = 0;
+	int exitCode = 0;
+#ifndef __EMSCRIPTEN__
+	int renderPassFrame = 0;
+#endif
 	// Configure borderless window with custom titlebar
 	ImPlatform_EnableCustomTitleBar();
 	{
@@ -1140,8 +1145,10 @@ int main( int argc, char** argv )
 
 #ifdef IMGUI_HAS_TEXTURES
 	DestroyRenderPassScene( g_RenderPassDemo );
+#ifndef __EMSCRIPTEN__
 	DestroyRenderPassScene( g_RenderPassTest );
 	DestroyRenderPassScene( g_RenderPassComposite );
+#endif
 #endif
 	ImPlatform_ShutdownGfxAPI();
 	ImPlatform_ShutdownWindow();

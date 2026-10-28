@@ -646,10 +646,13 @@ IMPLATFORM_API bool ImPlatform_GfxAPIClear(ImVec4 const vClearColor)
 }
 
 // ImPlatform API - GfxAPIRender
+static void ImPlatform_RunRenderPass();
+
 IMPLATFORM_API bool ImPlatform_GfxAPIRender(ImVec4 const vClearColor)
 {
     if (!g_GfxData.surfaceTexture.texture)
         return false;
+    ImPlatform_RunRenderPass();     // Queued by ImPlatform_QueueRenderPass(): submitted before the frame.
 
     WGPUTextureViewDescriptor view_desc = {};
     view_desc.format = g_GfxData.swapChainFormat;
@@ -1105,6 +1108,206 @@ IMPLATFORM_API bool ImPlatform_UpdateTexture(ImTextureID texture_id, const void*
 
     free(converted_data);
     return true;
+}
+
+// Render passes: their own command buffer, submitted before the frame's (the ImGui backend writes its projection into
+// one uniform buffer through the queue, so each render needs its own submission). Targets have the swapchain's format
+// (the ImGui pipeline's).
+static ImTextureID g_PassTarget = 0;
+static ImDrawData* g_PassDrawData = NULL;
+static bool        g_PassClear = false;
+
+static ImPlatform_TextureTracking_WebGPU* ImPlatform_FindRenderTexture_WebGPU(ImTextureID texture)
+{
+    for (ImPlatform_TextureTracking_WebGPU* e = g_TextureTrackingHead; e; e = e->next)
+        if ((ImTextureID)(intptr_t)e->textureView == texture)
+            return (wgpuTextureGetUsage(e->texture) & WGPUTextureUsage_RenderAttachment) ? e : NULL;
+    return NULL;
+}
+
+IMPLATFORM_API ImPlatform_PixelFormat ImPlatform_GetRenderPassFormat(void)
+{
+    return g_GfxData.swapChainFormat == WGPUTextureFormat_BGRA8Unorm ? ImPlatform_PixelFormat_BGRA8 : ImPlatform_PixelFormat_RGBA8;
+}
+
+IMPLATFORM_API bool ImPlatform_QueueRenderPass(ImTextureID target, ImDrawData* draw_data, bool clear)
+{
+    ImPlatform_TextureTracking_WebGPU* entry = ImPlatform_FindRenderTexture_WebGPU(target);
+    if (!entry || !draw_data || wgpuTextureGetFormat(entry->texture) != g_GfxData.swapChainFormat)
+        return false;
+    g_PassTarget = target;
+    g_PassDrawData = draw_data;
+    g_PassClear = clear;
+    return true;
+}
+
+static void ImPlatform_RunRenderPass()
+{
+    ImDrawData* draw_data = g_PassDrawData;
+    g_PassDrawData = NULL;
+    ImPlatform_TextureTracking_WebGPU* entry = draw_data ? ImPlatform_FindRenderTexture_WebGPU(g_PassTarget) : NULL;
+    if (!entry)     // Destroyed since it was queued.
+        return;
+    if (draw_data->Textures == NULL)
+        draw_data->Textures = &ImGui::GetPlatformIO().Textures;     // The frame's texture updates, before they are drawn.
+    WGPUCommandEncoderDescriptor enc_desc = {};
+    WGPUCommandEncoder encoder = wgpuDeviceCreateCommandEncoder(g_GfxData.device, &enc_desc);
+    WGPURenderPassColorAttachment color_attachment = {};
+    color_attachment.view = entry->textureView;
+    color_attachment.depthSlice = WGPU_DEPTH_SLICE_UNDEFINED;
+    color_attachment.loadOp = g_PassClear ? WGPULoadOp_Clear : WGPULoadOp_Load;
+    color_attachment.storeOp = WGPUStoreOp_Store;
+    WGPURenderPassDescriptor render_pass_desc = {};
+    render_pass_desc.colorAttachmentCount = 1;
+    render_pass_desc.colorAttachments = &color_attachment;
+    WGPURenderPassEncoder pass = wgpuCommandEncoderBeginRenderPass(encoder, &render_pass_desc);
+    ImDrawData* saved_draw_data = g_CurrentDrawData;
+    g_CurrentDrawData = draw_data;
+    ImGui_ImplWGPU_RenderDrawData(draw_data, pass);     // Its viewport and projection come from the draw data.
+    g_CurrentDrawData = saved_draw_data;
+    wgpuRenderPassEncoderEnd(pass);
+    WGPUCommandBufferDescriptor cmd_desc = {};
+    WGPUCommandBuffer cmd = wgpuCommandEncoderFinish(encoder, &cmd_desc);
+    wgpuQueueSubmit(g_GfxData.queue, 1, &cmd);
+    wgpuCommandBufferRelease(cmd);
+    wgpuRenderPassEncoderRelease(pass);
+    wgpuCommandEncoderRelease(encoder);
+}
+
+// Premultiplied alpha: ImGui's pipeline with premultiplied blending (ONE, ONE_MINUS_SRC_ALPHA). Its bind group layouts
+// are created from the same descriptors as the backend's (group-equivalent), so the bind groups the backend sets per
+// draw still apply. ImGui's shaders, the texel premultiplied: the vertex color tints it, its alpha scales all four.
+static WGPURenderPipeline g_PremultipliedPipeline = NULL;
+
+static WGPURenderPipeline ImPlatform_PremultipliedPipeline()
+{
+    if (g_PremultipliedPipeline || !g_GfxData.device)
+        return g_PremultipliedPipeline;
+    static const char* vs_source = R"(
+struct VertexInput { @location(0) position: vec2<f32>, @location(1) uv: vec2<f32>, @location(2) color: vec4<f32>, };
+struct VertexOutput { @builtin(position) position: vec4<f32>, @location(0) color: vec4<f32>, @location(1) uv: vec2<f32>, };
+struct Uniforms { mvp: mat4x4<f32>, gamma: f32, };
+@group(0) @binding(0) var<uniform> uniforms: Uniforms;
+@vertex
+fn main(in: VertexInput) -> VertexOutput {
+    var out: VertexOutput;
+    out.position = uniforms.mvp * vec4<f32>(in.position, 0.0, 1.0);
+    out.color = in.color;
+    out.uv = in.uv;
+    return out;
+}
+)";
+    static const char* fs_source = R"(
+struct VertexOutput { @builtin(position) position: vec4<f32>, @location(0) color: vec4<f32>, @location(1) uv: vec2<f32>, };
+struct Uniforms { mvp: mat4x4<f32>, gamma: f32, };
+@group(0) @binding(0) var<uniform> uniforms: Uniforms;
+@group(0) @binding(1) var s: sampler;
+@group(1) @binding(0) var t: texture_2d<f32>;
+@fragment
+fn main(in: VertexOutput) -> @location(0) vec4<f32> {
+    let texel = textureSample(t, s, in.uv);
+    let rgb = pow(texel.rgb * in.color.rgb, vec3<f32>(uniforms.gamma));
+    return vec4<f32>(rgb * in.color.a, texel.a * in.color.a);
+}
+)";
+    WGPUShaderSourceWGSL vs_wgsl = {};
+    vs_wgsl.chain.sType = WGPUSType_ShaderSourceWGSL;
+    vs_wgsl.code = WGPU_STR(vs_source);
+    WGPUShaderModuleDescriptor vs_desc = {};
+    vs_desc.nextInChain = &vs_wgsl.chain;
+    WGPUShaderSourceWGSL fs_wgsl = {};
+    fs_wgsl.chain.sType = WGPUSType_ShaderSourceWGSL;
+    fs_wgsl.code = WGPU_STR(fs_source);
+    WGPUShaderModuleDescriptor fs_desc = {};
+    fs_desc.nextInChain = &fs_wgsl.chain;
+    WGPUShaderModule vs = wgpuDeviceCreateShaderModule(g_GfxData.device, &vs_desc);
+    WGPUShaderModule fs = wgpuDeviceCreateShaderModule(g_GfxData.device, &fs_desc);
+
+    WGPUBindGroupLayoutEntry common_entries[2] = {};
+    common_entries[0].binding = 0;
+    common_entries[0].visibility = WGPUShaderStage_Vertex | WGPUShaderStage_Fragment;
+    common_entries[0].buffer.type = WGPUBufferBindingType_Uniform;
+    common_entries[1].binding = 1;
+    common_entries[1].visibility = WGPUShaderStage_Fragment;
+    common_entries[1].sampler.type = WGPUSamplerBindingType_Filtering;
+    WGPUBindGroupLayoutEntry image_entries[1] = {};
+    image_entries[0].binding = 0;
+    image_entries[0].visibility = WGPUShaderStage_Fragment;
+    image_entries[0].texture.sampleType = WGPUTextureSampleType_Float;
+    image_entries[0].texture.viewDimension = WGPUTextureViewDimension_2D;
+    WGPUBindGroupLayoutDescriptor common_desc = {};
+    common_desc.entryCount = 2;
+    common_desc.entries = common_entries;
+    WGPUBindGroupLayoutDescriptor image_desc = {};
+    image_desc.entryCount = 1;
+    image_desc.entries = image_entries;
+    WGPUBindGroupLayout layouts[2] = { wgpuDeviceCreateBindGroupLayout(g_GfxData.device, &common_desc), wgpuDeviceCreateBindGroupLayout(g_GfxData.device, &image_desc) };
+    WGPUPipelineLayoutDescriptor layout_desc = {};
+    layout_desc.bindGroupLayoutCount = 2;
+    layout_desc.bindGroupLayouts = layouts;
+    WGPUPipelineLayout layout = wgpuDeviceCreatePipelineLayout(g_GfxData.device, &layout_desc);
+
+    WGPUVertexAttribute attributes[] =
+    {
+        { nullptr, WGPUVertexFormat_Float32x2, (uint64_t)offsetof(ImDrawVert, pos), 0 },
+        { nullptr, WGPUVertexFormat_Float32x2, (uint64_t)offsetof(ImDrawVert, uv),  1 },
+        { nullptr, WGPUVertexFormat_Unorm8x4,  (uint64_t)offsetof(ImDrawVert, col), 2 },
+    };
+    WGPUVertexBufferLayout buffer_layout = {};
+    buffer_layout.arrayStride = sizeof(ImDrawVert);
+    buffer_layout.stepMode = WGPUVertexStepMode_Vertex;
+    buffer_layout.attributeCount = 3;
+    buffer_layout.attributes = attributes;
+    WGPUBlendState blend = {};
+    blend.color.operation = blend.alpha.operation = WGPUBlendOperation_Add;
+    blend.color.srcFactor = blend.alpha.srcFactor = WGPUBlendFactor_One;
+    blend.color.dstFactor = blend.alpha.dstFactor = WGPUBlendFactor_OneMinusSrcAlpha;
+    WGPUColorTargetState color_state = {};
+    color_state.format = g_GfxData.swapChainFormat;
+    color_state.blend = &blend;
+    color_state.writeMask = WGPUColorWriteMask_All;
+    WGPUFragmentState fragment = {};
+    fragment.module = fs;
+    fragment.entryPoint = WGPU_STR("main");
+    fragment.targetCount = 1;
+    fragment.targets = &color_state;
+    WGPURenderPipelineDescriptor desc = {};
+    desc.layout = layout;
+    desc.vertex.module = vs;
+    desc.vertex.entryPoint = WGPU_STR("main");
+    desc.vertex.bufferCount = 1;
+    desc.vertex.buffers = &buffer_layout;
+    desc.primitive.topology = WGPUPrimitiveTopology_TriangleList;
+    desc.primitive.frontFace = WGPUFrontFace_CW;
+    desc.primitive.cullMode = WGPUCullMode_None;
+    desc.multisample.count = 1;
+    desc.multisample.mask = UINT32_MAX;
+    desc.fragment = &fragment;
+    g_PremultipliedPipeline = wgpuDeviceCreateRenderPipeline(g_GfxData.device, &desc);
+    wgpuPipelineLayoutRelease(layout);
+    wgpuBindGroupLayoutRelease(layouts[0]);
+    wgpuBindGroupLayoutRelease(layouts[1]);
+    wgpuShaderModuleRelease(vs);
+    wgpuShaderModuleRelease(fs);
+    return g_PremultipliedPipeline;
+}
+
+IMPLATFORM_API void ImPlatform_PushPremultipliedAlpha(ImDrawList* draw)
+{
+    if (!ImPlatform_PremultipliedPipeline())
+        return;
+    (draw ? draw : ImGui::GetWindowDrawList())->AddCallback([](const ImDrawList*, const ImDrawCmd*)
+    {
+        ImGui_ImplWGPU_RenderState* rs = (ImGui_ImplWGPU_RenderState*)ImGui::GetPlatformIO().Renderer_RenderState;
+        if (rs && rs->RenderPassEncoder)
+            wgpuRenderPassEncoderSetPipeline(rs->RenderPassEncoder, g_PremultipliedPipeline);
+    }, NULL);
+}
+
+IMPLATFORM_API void ImPlatform_PopPremultipliedAlpha(ImDrawList* draw)
+{
+    if (g_PremultipliedPipeline)
+        (draw ? draw : ImGui::GetWindowDrawList())->AddCallback(ImGui::GetPlatformIO().DrawCallback_ResetRenderState, NULL);
 }
 
 IMPLATFORM_API ImTextureID ImPlatform_CreateRenderTexture(const ImPlatform_TextureDesc* desc)
