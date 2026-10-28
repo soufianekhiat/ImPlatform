@@ -355,10 +355,13 @@ IMPLATFORM_API bool ImPlatform_GfxAPIClear(ImVec4 const vClearColor)
 }
 
 // ImPlatform API - GfxAPIRender
+static void ImPlatform_RunRenderPass();
+
 IMPLATFORM_API bool ImPlatform_GfxAPIRender(ImVec4 const vClearColor)
 {
     @autoreleasepool {
         (void)vClearColor;
+        ImPlatform_RunRenderPass();     // Queued by ImPlatform_QueueRenderPass(): committed before the frame.
 
         id<MTLCommandQueue> commandQueue = (__bridge id<MTLCommandQueue>)g_GfxData.pCommandQueue;
         id<MTLCommandBuffer> commandBuffer = [commandQueue commandBuffer];
@@ -1208,6 +1211,139 @@ IMPLATFORM_API void ImPlatform_EndUniformBlock(ImPlatform_ShaderProgram program)
 // ============================================================================
 
 // Wrapper for ImGui_ImplMetal_RenderDrawData that stores draw_data for custom shader callbacks
+// Render passes: their own command buffer, committed before the frame's. Targets have the layer's format
+// (MTLPixelFormatBGRA8Unorm); the ImGui backend picks its pipeline from the pass descriptor given to its NewFrame.
+static ImTextureID g_PassTarget = 0;
+static ImDrawData* g_PassDrawData = NULL;
+static bool        g_PassClear = false;
+
+IMPLATFORM_API ImPlatform_PixelFormat ImPlatform_GetRenderPassFormat(void) { return ImPlatform_PixelFormat_BGRA8; }
+
+IMPLATFORM_API bool ImPlatform_QueueRenderPass(ImTextureID target, ImDrawData* draw_data, bool clear)
+{
+    if (!target || !draw_data || !g_GfxData.pCommandQueue)
+        return false;
+    id<MTLTexture> texture = (__bridge id<MTLTexture>)(void*)target;
+    if (!(texture.usage & MTLTextureUsageRenderTarget) || texture.pixelFormat != MTLPixelFormatBGRA8Unorm)
+        return false;
+    g_PassTarget = target;
+    g_PassDrawData = draw_data;
+    g_PassClear = clear;
+    return true;
+}
+
+static void ImPlatform_RunRenderPass()
+{
+    ImDrawData* draw_data = g_PassDrawData;
+    g_PassDrawData = NULL;
+    if (!draw_data)
+        return;
+    @autoreleasepool {
+        MTLRenderPassDescriptor* desc = [MTLRenderPassDescriptor renderPassDescriptor];
+        desc.colorAttachments[0].texture = (__bridge id<MTLTexture>)(void*)g_PassTarget;
+        desc.colorAttachments[0].loadAction = g_PassClear ? MTLLoadActionClear : MTLLoadActionLoad;
+        desc.colorAttachments[0].storeAction = MTLStoreActionStore;
+        desc.colorAttachments[0].clearColor = MTLClearColorMake(0, 0, 0, 0);
+        if (draw_data->Textures == NULL)
+            draw_data->Textures = &ImGui::GetPlatformIO().Textures;     // The frame's texture updates, before they are drawn.
+        ImGui_ImplMetal_NewFrame(desc);     // The pipeline for the target.
+        id<MTLCommandQueue> commandQueue = (__bridge id<MTLCommandQueue>)g_GfxData.pCommandQueue;
+        id<MTLCommandBuffer> commandBuffer = [commandQueue commandBuffer];
+        id<MTLRenderCommandEncoder> encoder = [commandBuffer renderCommandEncoderWithDescriptor:desc];
+        ImDrawData* saved_draw_data = g_CurrentDrawData;
+        void* saved_encoder = g_CurrentRenderEncoder;
+        ImPlatform_RenderDrawDataWrapper(draw_data, commandBuffer, encoder);    // Its viewport and projection come from the draw data.
+        g_CurrentDrawData = saved_draw_data;
+        g_CurrentRenderEncoder = saved_encoder;
+        [encoder endEncoding];
+        [commandBuffer commit];
+        ImGui_ImplMetal_NewFrame((__bridge MTLRenderPassDescriptor*)g_GfxData.pRenderPassDescriptor);     // Back to the frame's.
+    }
+}
+
+// Premultiplied alpha: ImGui's pipeline (its shaders, vertex layout and buffer indices) with premultiplied blending
+// (ONE, ONE_MINUS_SRC_ALPHA); the vertex color tints the premultiplied texel and its alpha scales all four.
+static void* g_PremultipliedPipeline = NULL;     // id<MTLRenderPipelineState>
+
+static void* ImPlatform_PremultipliedPipeline()
+{
+    if (g_PremultipliedPipeline || !g_GfxData.pMetalDevice)
+        return g_PremultipliedPipeline;
+    @autoreleasepool {
+        id<MTLDevice> device = (__bridge id<MTLDevice>)g_GfxData.pMetalDevice;
+        NSString* source = @""
+            "#include <metal_stdlib>\n"
+            "using namespace metal;\n"
+            "struct Uniforms { float4x4 projectionMatrix; };\n"
+            "struct VertexIn { float2 position [[attribute(0)]]; float2 texCoords [[attribute(1)]]; uchar4 color [[attribute(2)]]; };\n"
+            "struct VertexOut { float4 position [[position]]; float2 texCoords; float4 color; };\n"
+            "vertex VertexOut vertex_main(VertexIn in [[stage_in]], constant Uniforms &uniforms [[buffer(1)]]) {\n"
+            "    VertexOut out;\n"
+            "    out.position = uniforms.projectionMatrix * float4(in.position, 0, 1);\n"
+            "    out.texCoords = in.texCoords;\n"
+            "    out.color = float4(in.color) / float4(255.0);\n"
+            "    return out;\n"
+            "}\n"
+            "fragment half4 fragment_main(VertexOut in [[stage_in]], texture2d<half, access::sample> texture [[texture(0)]], sampler textureSampler [[sampler(0)]]) {\n"
+            "    half4 t = texture.sample(textureSampler, in.texCoords);\n"
+            "    half a = half(in.color.a);\n"
+            "    return half4(t.rgb * half3(in.color.rgb) * a, t.a * a);\n"
+            "}\n";
+        NSError* error = nil;
+        id<MTLLibrary> library = [device newLibraryWithSource:source options:nil error:&error];
+        if (!library)
+            return NULL;
+        MTLVertexDescriptor* vertexDescriptor = [MTLVertexDescriptor vertexDescriptor];
+        vertexDescriptor.attributes[0].offset = offsetof(ImDrawVert, pos);
+        vertexDescriptor.attributes[0].format = MTLVertexFormatFloat2;
+        vertexDescriptor.attributes[0].bufferIndex = 0;
+        vertexDescriptor.attributes[1].offset = offsetof(ImDrawVert, uv);
+        vertexDescriptor.attributes[1].format = MTLVertexFormatFloat2;
+        vertexDescriptor.attributes[1].bufferIndex = 0;
+        vertexDescriptor.attributes[2].offset = offsetof(ImDrawVert, col);
+        vertexDescriptor.attributes[2].format = MTLVertexFormatUChar4;
+        vertexDescriptor.attributes[2].bufferIndex = 0;
+        vertexDescriptor.layouts[0].stepRate = 1;
+        vertexDescriptor.layouts[0].stepFunction = MTLVertexStepFunctionPerVertex;
+        vertexDescriptor.layouts[0].stride = sizeof(ImDrawVert);
+        MTLRenderPipelineDescriptor* desc = [[MTLRenderPipelineDescriptor alloc] init];
+        desc.vertexFunction = [library newFunctionWithName:@"vertex_main"];
+        desc.fragmentFunction = [library newFunctionWithName:@"fragment_main"];
+        desc.vertexDescriptor = vertexDescriptor;
+        desc.rasterSampleCount = 1;
+        desc.colorAttachments[0].pixelFormat = MTLPixelFormatBGRA8Unorm;
+        desc.colorAttachments[0].blendingEnabled = YES;
+        desc.colorAttachments[0].rgbBlendOperation = MTLBlendOperationAdd;
+        desc.colorAttachments[0].alphaBlendOperation = MTLBlendOperationAdd;
+        desc.colorAttachments[0].sourceRGBBlendFactor = MTLBlendFactorOne;
+        desc.colorAttachments[0].sourceAlphaBlendFactor = MTLBlendFactorOne;
+        desc.colorAttachments[0].destinationRGBBlendFactor = MTLBlendFactorOneMinusSourceAlpha;
+        desc.colorAttachments[0].destinationAlphaBlendFactor = MTLBlendFactorOneMinusSourceAlpha;
+        id<MTLRenderPipelineState> state = [device newRenderPipelineStateWithDescriptor:desc error:&error];
+        if (state)
+            g_PremultipliedPipeline = (__bridge_retained void*)state;
+    }
+    return g_PremultipliedPipeline;
+}
+
+IMPLATFORM_API void ImPlatform_PushPremultipliedAlpha(ImDrawList* draw)
+{
+    if (!ImPlatform_PremultipliedPipeline())
+        return;
+    (draw ? draw : ImGui::GetWindowDrawList())->AddCallback([](const ImDrawList*, const ImDrawCmd*)
+    {
+        id<MTLRenderCommandEncoder> encoder = (__bridge id<MTLRenderCommandEncoder>)g_CurrentRenderEncoder;
+        if (encoder)
+            [encoder setRenderPipelineState:(__bridge id<MTLRenderPipelineState>)g_PremultipliedPipeline];
+    }, NULL);
+}
+
+IMPLATFORM_API void ImPlatform_PopPremultipliedAlpha(ImDrawList* draw)
+{
+    if (g_PremultipliedPipeline)
+        (draw ? draw : ImGui::GetWindowDrawList())->AddCallback(ImDrawCallback_ResetRenderState, NULL);
+}
+
 static void ImPlatform_RenderDrawDataWrapper(ImDrawData* draw_data, id<MTLCommandBuffer> commandBuffer, id<MTLRenderCommandEncoder> renderEncoder)
 {
     // Store draw data and render encoder for custom shader callbacks (needed for multi-viewport)

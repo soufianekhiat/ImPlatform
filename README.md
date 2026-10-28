@@ -211,10 +211,36 @@ if (ImPlatform_SupportsReadback())
 | DirectX 11, DirectX 12, Vulkan | yes | yes |
 | OpenGL 3 | yes | OpenGL 4.3+ (checked at runtime) |
 | DirectX 10 | yes | no (cs_4_0 cannot write textures) |
-| DirectX 9, Metal, WebGPU | no | no |
+| DirectX 9 | yes | no |
+| Metal, WebGPU | no | no |
 
 Shader bindings per backend are listed above `ImPlatform_DispatchCompute` in `ImPlatform.h`.
 `ImPlatformDemo --compute-test` runs the same dispatch + readback check on any backend (exit code 0 pass, 1 fail, 2 unsupported).
+
+#### Render passes
+
+Dear ImGui draw data rendered into a render texture before the frame, by the backend's own ImGui renderer (draw
+callbacks included): to cache vector drawings as images, for instance.
+
+```cpp
+ImPlatform_TextureDesc desc = ImPlatform_TextureDesc_Default(w, h);
+desc.format = ImPlatform_GetRenderPassFormat();              // The ImGui pipeline's format (BGRA8 on some backends)
+ImTextureID target = ImPlatform_CreateRenderTexture(&desc);
+
+// Each frame that needs it (one pass per frame): draw_data maps DisplayPos / DisplaySize to the whole target.
+ImPlatform_QueueRenderPass(target, &draw_data, true);       // true: cleared to transparent first
+
+// Rendered over transparent, its colors are premultiplied: draw it with premultiplied alpha.
+ImPlatform_PushPremultipliedAlpha(draw_list);
+draw_list->AddImage(target, p_min, p_max);
+ImPlatform_PopPremultipliedAlpha(draw_list);
+```
+
+The pass runs at the start of `ImPlatform_GfxAPIRender()` (in `ImPlatform_GfxAPIClear()` on Vulkan, outside the
+frame's render pass); the draw data must stay valid until then. Every backend: DirectX 9, 10, 11, 12, OpenGL 3, Vulkan,
+WebGPU and Metal (premultiplied alpha through blend states, or a copy of ImGui's pipeline where blending is part of it).
+`ImPlatformDemo --render-pass-test` checks a pass target and a premultiplied composite by readback (exit code 0 pass,
+1 fail, 2 unsupported).
 
 #### Custom Title Bar (when `IMPLATFORM_APP_SUPPORT_CUSTOM_TITLEBAR` is enabled)
 
@@ -273,7 +299,8 @@ none of its graphics backends. The application links its own implementation of t
 entry points (`ImPlatform_InitGfxAPI`, `ImPlatform_GfxAPINewFrame`, `ImPlatform_GfxAPIRender`,
 `ImPlatform_GfxAPISwapBuffer`, textures, shaders, buffers, the render-target stack
 `ImPlatform_PushRenderTarget` / `PopRenderTarget` / `CopyCurrentTarget` / `GetCurrentTargetSize` /
-`DrawQuadNow`, and the optional readback / compute / depth-draw functions, stubbed or real) plus:
+`DrawQuadNow`, the render passes `ImPlatform_GetRenderPassFormat` / `QueueRenderPass` / `PushPremultipliedAlpha` /
+`PopPremultipliedAlpha`, and the optional readback / compute / depth-draw functions, stubbed or real) plus:
 
 ```cpp
 // Called by the platform layer (Win32, GLFW, SDL2, SDL3) when the window's framebuffer is resized.
