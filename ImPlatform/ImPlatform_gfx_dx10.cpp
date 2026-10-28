@@ -288,7 +288,7 @@ static void ImPlatform_RunRenderPass()
     }
     if (draw_data->Textures == NULL)
         draw_data->Textures = &ImGui::GetPlatformIO().Textures;     // The frame's texture updates, before they are drawn.
-    ImGui_ImplDX10_RenderDrawData(draw_data);       // Its viewport and projection come from the draw data.
+    ImPlatform_RenderPassLists(draw_data, [](ImDrawData* d) { ImGui_ImplDX10_RenderDrawData(d); });     // Viewport and projection from the draw data.
     dev->OMSetRenderTargets(1, &g_GfxData.pRenderTargetView, NULL);
 }
 
