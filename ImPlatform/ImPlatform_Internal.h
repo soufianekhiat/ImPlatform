@@ -5,6 +5,36 @@
 
 #include "ImPlatform.h"
 
+// Renders a render pass one draw list at a time (immediate backends: DX9, DX10, DX11, OpenGL): their vertex and index
+// buffers grow to the largest list instead of the whole pass, and are remapped whole each frame (a pass of millions of
+// vertices made every later frame stall on that remap). The frame's texture updates go with the first list.
+template <typename RenderFn>
+static inline void ImPlatform_RenderPassLists(ImDrawData* draw_data, RenderFn render)
+{
+    if (draw_data->CmdLists.Size <= 1)
+    {
+        render(draw_data);
+        return;
+    }
+    ImDrawData one;
+    one.Valid = true;
+    one.DisplayPos = draw_data->DisplayPos;
+    one.DisplaySize = draw_data->DisplaySize;
+    one.FramebufferScale = draw_data->FramebufferScale;
+    one.OwnerViewport = draw_data->OwnerViewport;
+    one.Textures = draw_data->Textures;
+    one.CmdLists.resize(1);
+    one.CmdListsCount = 1;
+    for (ImDrawList* list : draw_data->CmdLists)
+    {
+        one.CmdLists[0] = list;
+        one.TotalVtxCount = list->VtxBuffer.Size;
+        one.TotalIdxCount = list->IdxBuffer.Size;
+        render(&one);
+        one.Textures = NULL;
+    }
+}
+
 // Platform-specific includes
 #if defined(IM_CURRENT_PLATFORM) && (IM_CURRENT_PLATFORM == IM_PLATFORM_WIN32)
     #include <windows.h>

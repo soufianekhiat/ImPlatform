@@ -624,7 +624,7 @@ static void ImPlatform_RunRenderPass()
         dev->Clear(0, NULL, D3DCLEAR_TARGET, D3DCOLOR_ARGB(0, 0, 0, 0), 1.0f, 0);
     if (draw_data->Textures == NULL)
         draw_data->Textures = &ImGui::GetPlatformIO().Textures;     // The frame's texture updates, before they are drawn.
-    ImGui_ImplDX9_RenderDrawData(draw_data);        // Its viewport and projection come from the draw data.
+    ImPlatform_RenderPassLists(draw_data, [](ImDrawData* d) { ImGui_ImplDX9_RenderDrawData(d); });      // Viewport and projection from the draw data.
     dev->SetRenderTarget(0, saved);
     if (saved)
         saved->Release();
