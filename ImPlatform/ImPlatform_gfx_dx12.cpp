@@ -434,6 +434,8 @@ IMPLATFORM_API bool ImPlatform_InitGfxAPI(void)
 #endif
 }
 
+static bool g_P12_DeviceReady = false;     // ImPlatform_InitGfx succeeded and no shutdown or recreation since.
+
 // ImPlatform API - InitGfx
 IMPLATFORM_API bool ImPlatform_InitGfx(void)
 {
@@ -450,6 +452,7 @@ IMPLATFORM_API bool ImPlatform_InitGfx(void)
     if (!ImGui_ImplDX12_Init(&init_info))
         return false;
 
+    g_P12_DeviceReady = true;
     return true;
 }
 
@@ -609,6 +612,7 @@ IMPLATFORM_API bool ImPlatform_GfxAPISwapBuffer(void)
 // ImPlatform API - ShutdownGfxAPI
 IMPLATFORM_API void ImPlatform_ShutdownGfxAPI(void)
 {
+    g_P12_DeviceReady = false;
     ImPlatform_DX12_FlushWork();
     WaitForPendingOperations();
     ImPlatform_DX12_ReleaseAll();
@@ -617,6 +621,7 @@ IMPLATFORM_API void ImPlatform_ShutdownGfxAPI(void)
 // ImPlatform API - ShutdownWindow
 IMPLATFORM_API void ImPlatform_ShutdownWindow(void)
 {
+    g_P12_DeviceReady = false;
     ImGui_ImplDX12_Shutdown();
     ImPlatform_Gfx_CleanupDevice_DX12(&g_GfxData);
 }
@@ -2744,6 +2749,11 @@ IMPLATFORM_API bool ImPlatform_GfxDeviceLost(void)
     return g_GfxData.pDevice && g_GfxData.pDevice->GetDeviceRemovedReason() != S_OK;
 }
 
+IMPLATFORM_API bool ImPlatform_GfxDeviceReady(void)
+{
+    return g_P12_DeviceReady && g_GfxData.pDevice && g_GfxData.pDevice->GetDeviceRemovedReason() == S_OK;
+}
+
 IMPLATFORM_API bool ImPlatform_GfxDebugRemoveDevice(void)
 {
     ID3D12Device5* d5 = NULL;
@@ -2765,6 +2775,7 @@ static void ImPlatform_DestroySecondaryWindow(ImGuiViewport* viewport)
 IMPLATFORM_API bool ImPlatform_GfxRecreateDevice(void)
 {
     // Everything recorded or owned on the old device goes first (a removed device completes its fences at once).
+    g_P12_DeviceReady = false;      // Until the new device's InitGfx succeeds.
     ImPlatform_DX12_ReleaseAll();
     if (g_P12_Timer.heap) g_P12_Timer.heap->Release();
     if (g_P12_Timer.buffer) g_P12_Timer.buffer->Release();
