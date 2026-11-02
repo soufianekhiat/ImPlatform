@@ -2401,12 +2401,61 @@ struct ImPlatform_BufferData_DX12
     bool is_index;
 };
 
-static ImPlatform_BufferData_DX12* ImP12_CreateBuffer(const void* data, UINT64 size)
+// Static buffers live in device memory (DEFAULT heap), filled by a copy recorded on the work list (submitted before
+// the frame, so before any draw that reads them); they cannot be updated. Dynamic buffers stay CPU-written (UPLOAD
+// heap, read by the GPU over the bus at every draw: large static meshes there cost the bus bandwidth each frame).
+static ImPlatform_BufferData_DX12* ImP12_CreateBuffer(const void* data, UINT64 size, bool device_local = false,
+                                                      D3D12_RESOURCE_STATES rest = D3D12_RESOURCE_STATE_GENERIC_READ)
 {
     if (!data || !size || !ImP12_Init())
         return NULL;
     ImPlatform_BufferData_DX12* b = new ImPlatform_BufferData_DX12();
     b->size = size;
+    ID3D12GraphicsCommandList* list = device_local ? ImP12_List() : NULL;
+    if (list)
+    {
+        D3D12_HEAP_PROPERTIES dh = {}, uh = {};
+        dh.Type = D3D12_HEAP_TYPE_DEFAULT;
+        uh.Type = D3D12_HEAP_TYPE_UPLOAD;
+        D3D12_RESOURCE_DESC rd = {};
+        rd.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+        rd.Width = size;
+        rd.Height = 1;
+        rd.DepthOrArraySize = 1;
+        rd.MipLevels = 1;
+        rd.SampleDesc.Count = 1;
+        rd.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+        ID3D12Resource* staging = NULL;
+        uint8_t* cpu = NULL;
+        D3D12_RANGE none = { 0, 0 };
+        if (FAILED(g_GfxData.pDevice->CreateCommittedResource(&dh, D3D12_HEAP_FLAG_NONE, &rd, D3D12_RESOURCE_STATE_COPY_DEST, NULL, IID_PPV_ARGS(&b->res))))
+        {
+            delete b;
+            return NULL;
+        }
+        if (FAILED(g_GfxData.pDevice->CreateCommittedResource(&uh, D3D12_HEAP_FLAG_NONE, &rd, D3D12_RESOURCE_STATE_GENERIC_READ, NULL, IID_PPV_ARGS(&staging)))
+            || FAILED(staging->Map(0, &none, (void**)&cpu)))
+        {
+            if (staging)
+                staging->Release();
+            b->res->Release();
+            delete b;
+            return NULL;
+        }
+        memcpy(cpu, data, (size_t)size);
+        staging->Unmap(0, NULL);
+        list->CopyBufferRegion(b->res, 0, staging, 0, size);
+        D3D12_RESOURCE_BARRIER bar = {};
+        bar.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+        bar.Transition.pResource = b->res;
+        bar.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+        bar.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
+        bar.Transition.StateAfter = rest;
+        list->ResourceBarrier(1, &bar);
+        ImP12_DeferRelease(staging);        // Released once the work list that reads it has completed.
+        b->cpu = NULL;
+        return b;
+    }
     D3D12_HEAP_PROPERTIES hp = {};
     hp.Type = D3D12_HEAP_TYPE_UPLOAD;
     D3D12_RESOURCE_DESC rd = {};
@@ -2432,7 +2481,8 @@ IMPLATFORM_API ImPlatform_VertexBuffer ImPlatform_CreateVertexBuffer(const void*
 {
     if (!desc || !desc->attributes || !desc->attribute_count)
         return NULL;
-    ImPlatform_BufferData_DX12* b = ImP12_CreateBuffer(vertex_data, (UINT64)desc->vertex_count * desc->vertex_stride);
+    ImPlatform_BufferData_DX12* b = ImP12_CreateBuffer(vertex_data, (UINT64)desc->vertex_count * desc->vertex_stride, desc->usage == ImPlatform_BufferUsage_Static,
+                                                       D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER);
     if (!b)
         return NULL;
     b->vb_desc = *desc;
@@ -2449,8 +2499,8 @@ IMPLATFORM_API bool ImPlatform_UpdateVertexBuffer(ImPlatform_VertexBuffer vertex
 {
     ImPlatform_BufferData_DX12* b = (ImPlatform_BufferData_DX12*)vertex_buffer;
     const UINT64 stride = b ? b->vb_desc.vertex_stride : 0, at = (UINT64)offset * stride, bytes = (UINT64)vertex_count * stride;
-    if (!b || !vertex_data || at + bytes > b->size)
-        return false;
+    if (!b || !b->cpu || !vertex_data || at + bytes > b->size)
+        return false;       // Static buffers (device memory) are not updatable.
     memcpy(b->cpu + at, vertex_data, (size_t)bytes);    // Callers must not update a buffer the GPU still reads.
     return true;
 }
@@ -2469,7 +2519,8 @@ IMPLATFORM_API ImPlatform_IndexBuffer ImPlatform_CreateIndexBuffer(const void* i
     if (!desc)
         return NULL;
     const UINT64 isize = desc->format == ImPlatform_IndexFormat_UInt16 ? 2 : 4;
-    ImPlatform_BufferData_DX12* b = ImP12_CreateBuffer(index_data, (UINT64)desc->index_count * isize);
+    ImPlatform_BufferData_DX12* b = ImP12_CreateBuffer(index_data, (UINT64)desc->index_count * isize, desc->usage == ImPlatform_BufferUsage_Static,
+                                                       D3D12_RESOURCE_STATE_INDEX_BUFFER);
     if (!b)
         return NULL;
     b->ib_desc = *desc;
@@ -2481,8 +2532,8 @@ IMPLATFORM_API bool ImPlatform_UpdateIndexBuffer(ImPlatform_IndexBuffer index_bu
 {
     ImPlatform_BufferData_DX12* b = (ImPlatform_BufferData_DX12*)index_buffer;
     const UINT64 isize = b && b->ib_desc.format == ImPlatform_IndexFormat_UInt16 ? 2 : 4, at = (UINT64)offset * isize, bytes = (UINT64)index_count * isize;
-    if (!b || !index_data || at + bytes > b->size)
-        return false;
+    if (!b || !b->cpu || !index_data || at + bytes > b->size)
+        return false;       // Static buffers (device memory) are not updatable.
     memcpy(b->cpu + at, index_data, (size_t)bytes);
     return true;
 }
