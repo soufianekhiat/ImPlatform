@@ -804,6 +804,8 @@ struct ImPlatform_ShaderData_DX12
 };
 
 // Internal shader program structure for DX12
+static const UINT kExtraTextures = 8;      // Custom shader programs: pixel shader textures t1..t8 besides t0.
+
 struct ImPlatform_ShaderProgramData_DX12
 {
     ID3DBlob* pVSBlob;                  // Vertex shader bytecode
@@ -1025,7 +1027,20 @@ IMPLATFORM_API ImPlatform_ShaderProgram ImPlatform_CreateShaderProgram(ImPlatfor
     descRange.RegisterSpace = 0;
     descRange.OffsetInDescriptorsFromTableStart = 0;
 
-    D3D12_ROOT_PARAMETER rootParameters[3];
+    // Root parameters 3..: one SRV table per extra pixel shader texture, register(t1) up to t(kExtraTextures), set by
+    // ImPlatform_SetShaderTexture() (each texture is its own descriptor, so one table per slot).
+    D3D12_DESCRIPTOR_RANGE extraRanges[kExtraTextures] = {};
+    D3D12_ROOT_PARAMETER rootParameters[3 + kExtraTextures];
+    for (UINT i = 0; i < kExtraTextures; i++)
+    {
+        extraRanges[i] = descRange;
+        extraRanges[i].BaseShaderRegister = 1 + i;
+        D3D12_ROOT_PARAMETER& p = rootParameters[3 + i];
+        p.ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+        p.DescriptorTable.NumDescriptorRanges = 1;
+        p.DescriptorTable.pDescriptorRanges = &extraRanges[i];
+        p.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+    }
 
     // Root parameter 0: 32-bit constants for vertex shader (projection matrix)
     // MATCHES ImGui's backend parameter 0
@@ -1064,7 +1079,7 @@ IMPLATFORM_API ImPlatform_ShaderProgram ImPlatform_CreateShaderProgram(ImPlatfor
     sampler.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
 
     D3D12_ROOT_SIGNATURE_DESC rootSigDesc = {};
-    rootSigDesc.NumParameters = 3;
+    rootSigDesc.NumParameters = 3 + kExtraTextures;
     rootSigDesc.pParameters = rootParameters;
     rootSigDesc.NumStaticSamplers = 1;
     rootSigDesc.pStaticSamplers = &sampler;
@@ -1260,11 +1275,19 @@ IMPLATFORM_API bool ImPlatform_SetShaderUniform(ImPlatform_ShaderProgram program
     return true;
 }
 
-IMPLATFORM_API bool ImPlatform_SetShaderTexture(ImPlatform_ShaderProgram /*program*/, const char* /*name*/, unsigned int /*slot*/, ImTextureID /*texture*/)
+// Binds 'texture' to register(t<slot>) of the program made current by ImPlatform_BeginCustomShader_Render() (call it
+// after that, inside the same draw callback). Slot 0 is the draw command's own texture.
+IMPLATFORM_API bool ImPlatform_SetShaderTexture(ImPlatform_ShaderProgram program, const char* /*name*/, unsigned int slot, ImTextureID texture)
 {
-    // Texture binding in DX12 is done via descriptor tables in the draw callback
-    // For now, this is a stub - texture support can be added later
-    return false;
+    if (!program || !texture || slot < 1 || slot > kExtraTextures || !((ImPlatform_ShaderProgramData_DX12*)program)->pPSO)
+        return false;
+    ImGui_ImplDX12_RenderState* render_state = (ImGui_ImplDX12_RenderState*)ImGui::GetPlatformIO().Renderer_RenderState;
+    if (!render_state || !render_state->CommandList)
+        return false;
+    D3D12_GPU_DESCRIPTOR_HANDLE handle = {};
+    handle.ptr = (UINT64)texture;
+    render_state->CommandList->SetGraphicsRootDescriptorTable(3 + (slot - 1), handle);
+    return true;
 }
 
 IMPLATFORM_API void ImPlatform_BeginUniformBlock(ImPlatform_ShaderProgram program)
@@ -2371,6 +2394,7 @@ static void ImPlatform_DX12_FlushWork() { ImP12_Flush(); }
 static ImTextureID g_PassTarget = 0;
 static ImDrawData* g_PassDrawData = NULL;
 static bool        g_PassClear = false;
+static ImP12_Texture* g_PassRunning = NULL;     // The pass target while its draw data renders (ImPlatform_CopyCurrentTarget).
 
 IMPLATFORM_API ImPlatform_PixelFormat ImPlatform_GetRenderPassFormat(void) { return ImPlatform_PixelFormat_RGBA8; }   // The ImGui pipeline's RTVFormat.
 
@@ -2404,7 +2428,9 @@ static void ImPlatform_RunRenderPass()
         draw_data->OwnerViewport = ImGui::GetMainViewport();     // The backend keeps its buffers per viewport.
     if (draw_data->Textures == NULL)
         draw_data->Textures = &ImGui::GetPlatformIO().Textures;     // The frame's texture updates, before they are drawn.
+    g_PassRunning = t;
     ImPlatform_RenderDrawDataWrapper(draw_data, list);      // Its viewport and projection come from the draw data.
+    g_PassRunning = NULL;
     ImP12_Transition(list, *t, t->rest);
     const UINT back = g_GfxData.pSwapChain->GetCurrentBackBufferIndex();
     list->OMSetRenderTargets(1, &g_GfxData.renderTargetDescriptor[back], FALSE, NULL);
@@ -3105,12 +3131,79 @@ static void ImPlatform_DX12_ReleaseAll()
     g_P12 = ImP12_State();
 }
 
-// shortcut: render-target stack, current-target copy and immediate quad are implemented on DX11 and
-// OpenGL3 only; here they report "unsupported" until this backend gets them.
+// shortcut: render-target stack and immediate quad are implemented on DX11 and OpenGL3 only; here they report
+// "unsupported" until this backend gets them.
 IMPLATFORM_API bool ImPlatform_PushRenderTarget(ImTextureID texture, bool clear) { (void)texture; (void)clear; return false; }
 IMPLATFORM_API void ImPlatform_PopRenderTarget(void) {}
-IMPLATFORM_API bool ImPlatform_CopyCurrentTarget(ImTextureID dst, int src_x, int src_y, int w, int h, int dst_x, int dst_y)
-{ (void)dst; (void)src_x; (void)src_y; (void)w; (void)h; (void)dst_x; (void)dst_y; return false; }
+
+// From a draw callback: copies the target being drawn (a render pass's texture, or the main viewport's back buffer)
+// into 'dst' on ImGui's command list, then returns both to their states.
+// shortcut: secondary viewports' targets are not copied (returns false), add them when a backdrop needs one there.
+IMPLATFORM_API bool ImPlatform_CopyCurrentTarget(ImTextureID dst_id, int src_x, int src_y, int w, int h, int dst_x, int dst_y)
+{
+    ImGui_ImplDX12_RenderState* render_state = (ImGui_ImplDX12_RenderState*)ImGui::GetPlatformIO().Renderer_RenderState;
+    ImP12_Texture* dst = ImP12_Find(dst_id);
+    if (!render_state || !render_state->CommandList || !dst || dst == g_PassRunning || dst->format != DXGI_FORMAT_R8G8B8A8_UNORM)
+        return false;
+    ID3D12GraphicsCommandList* list = render_state->CommandList;
+    ID3D12Resource* src = NULL;
+    D3D12_RESOURCE_STATES src_state = D3D12_RESOURCE_STATE_RENDER_TARGET;
+    UINT src_w = 0, src_h = 0;
+    if (g_PassRunning)
+    {
+        src = g_PassRunning->res;
+        src_state = g_PassRunning->cur;
+        src_w = g_PassRunning->w;
+        src_h = g_PassRunning->h;
+    }
+    else if (g_CurrentDrawData && (g_CurrentDrawData->OwnerViewport == NULL || g_CurrentDrawData->OwnerViewport == ImGui::GetMainViewport()))
+    {
+        src = g_GfxData.pRenderTargetResource[g_GfxData.pSwapChain->GetCurrentBackBufferIndex()];
+        const D3D12_RESOURCE_DESC desc = src->GetDesc();
+        if (desc.Format != DXGI_FORMAT_R8G8B8A8_UNORM)
+            return false;
+        src_w = (UINT)desc.Width;
+        src_h = desc.Height;
+    }
+    if (!src)
+        return false;
+    // Clipped to both textures.
+    if (src_x < 0) { dst_x -= src_x; w += src_x; src_x = 0; }
+    if (src_y < 0) { dst_y -= src_y; h += src_y; src_y = 0; }
+    if (dst_x < 0) { src_x -= dst_x; w += dst_x; dst_x = 0; }
+    if (dst_y < 0) { src_y -= dst_y; h += dst_y; dst_y = 0; }
+    const int max_w = (int)src_w - src_x < (int)dst->w - dst_x ? (int)src_w - src_x : (int)dst->w - dst_x;
+    const int max_h = (int)src_h - src_y < (int)dst->h - dst_y ? (int)src_h - src_y : (int)dst->h - dst_y;
+    if (w > max_w) w = max_w;
+    if (h > max_h) h = max_h;
+    if (w <= 0 || h <= 0)
+        return false;
+
+    D3D12_RESOURCE_BARRIER b = {};
+    b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    b.Transition.pResource = src;
+    b.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+    b.Transition.StateBefore = src_state;
+    b.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_SOURCE;
+    list->ResourceBarrier(1, &b);
+    const D3D12_RESOURCE_STATES dst_state = dst->cur;
+    ImP12_Transition(list, *dst, D3D12_RESOURCE_STATE_COPY_DEST);
+
+    D3D12_TEXTURE_COPY_LOCATION to = {}, from = {};
+    to.pResource = dst->res;
+    to.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+    from.pResource = src;
+    from.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+    const D3D12_BOX box = { (UINT)src_x, (UINT)src_y, 0, (UINT)(src_x + w), (UINT)(src_y + h), 1 };
+    list->CopyTextureRegion(&to, (UINT)dst_x, (UINT)dst_y, 0, &from, &box);
+
+    ImP12_Transition(list, *dst, dst_state);
+    b.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_SOURCE;
+    b.Transition.StateAfter = src_state;
+    list->ResourceBarrier(1, &b);
+    return true;
+}
+
 IMPLATFORM_API void ImPlatform_GetCurrentTargetSize(unsigned int* width, unsigned int* height) { if (width) *width = 0; if (height) *height = 0; }
 IMPLATFORM_API void ImPlatform_DrawQuadNow(ImPlatform_ShaderProgram program, ImVec4 dst_rect, ImVec4 uv_rect) { (void)program; (void)dst_rect; (void)uv_rect; }
 
