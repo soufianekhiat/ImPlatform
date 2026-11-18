@@ -43,3 +43,11 @@ ImPlatformDemo/ImPlatformDemo/x64
 ImPlatformDemo/x64
 *.ini
 build
+
+# Sharpmake output (buildsystem/generate_projects.*)
+/ImPlatform_*.sln
+/ImPlatform_*.make
+/ImPlatform_*.xcworkspace
+/projects/
+/tmp/
+/bin/

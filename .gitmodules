@@ -2,3 +2,6 @@
 	path = imgui
 	url = https://github.com/soufianekhiat/imgui.git
 	branch = LayoutDocking
+[submodule "extern/Sharpmake"]
+	path = extern/Sharpmake
+	url = https://github.com/ubisoft/Sharpmake.git

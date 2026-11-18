@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(ImPlatform VERSION 0.5.0 LANGUAGES CXX C)
+project(ImPlatform VERSION 2.0.0 LANGUAGES CXX C)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -366,6 +366,8 @@ endfunction()
 
 # =============================================================================
 # Build configurations based on available dependencies
+# Mirrors the Sharpmake configurations (buildsystem/sharpmake/src/common.cs),
+# which are the default build: keep both lists in sync.
 # =============================================================================
 
 # Windows-only configurations (DirectX)
