@@ -1257,7 +1257,7 @@ IMPLATFORM_API bool ImPlatform_UpdateTexture(ImTextureID texture_id, const void*
 IMPLATFORM_API ImTextureID ImPlatform_CreateRenderTexture(const ImPlatform_TextureDesc* desc)
 {
     if (!desc)
-        return NULL;
+        return (ImTextureID)0;
 
     GLint internal_format;
     GLenum format;
@@ -2505,7 +2505,7 @@ IMPLATFORM_API bool ImPlatform_SupportsCompute(void) { return ImPlatform_GL_Load
 IMPLATFORM_API ImTextureID ImPlatform_CreateStorageTexture(const void* pixel_data, const ImPlatform_TextureDesc* desc)
 {
     if (!desc || !desc->width || !desc->height || !ImPlatform_GL_LoadCompute())
-        return NULL;
+        return (ImTextureID)0;
     GLint internal_format; GLenum format, type; int channels;
     ImPlatform_GetOpenGLFormat(desc->format, &internal_format, &format, &type, &channels);
     GLint prev = 0;

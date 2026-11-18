@@ -725,27 +725,8 @@ IMPLATFORM_API bool ImPlatform_InitGfx(void)
         err = vkCreateSampler(g_GfxData.device, &sampler_info, g_Allocator, &g_GfxData.defaultSampler);
         check_vk_result(err);
 
-        // Upload white pixel data (we need to create a staging buffer and copy)
-        // For simplicity, we'll transition the image to the correct layout but skip the upload
-        // The image will contain undefined data, but that's okay for now - we'll fix this later
-        // TODO: Upload actual white pixel data using a staging buffer
-
-        // Transition image layout to shader read
-        VkImageMemoryBarrier barrier = {};
-        barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-        barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-        barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-        barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        barrier.image = g_GfxData.defaultImage;
-        barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-        barrier.subresourceRange.levelCount = 1;
-        barrier.subresourceRange.layerCount = 1;
-        barrier.srcAccessMask = 0;
-        barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-
-        // Note: This transition should ideally happen in a one-time command buffer
-        // For now, we'll leave it and the image will be transitioned on first use
+        // The default image is neither uploaded nor transitioned here: its content is undefined
+        // and it stays in VK_IMAGE_LAYOUT_UNDEFINED until first use.
     }
 
     return true;
@@ -1170,12 +1151,12 @@ IMPLATFORM_API ImPlatform_TextureDesc3D ImPlatform_TextureDesc3D_Default(unsigne
     return x;
 }
 IMPLATFORM_API bool ImPlatform_SupportsTexture3D(void) { return false; }
-IMPLATFORM_API ImTextureID ImPlatform_CreateTexture3D(const void*, const ImPlatform_TextureDesc3D*) { return NULL; }
+IMPLATFORM_API ImTextureID ImPlatform_CreateTexture3D(const void*, const ImPlatform_TextureDesc3D*) { return (ImTextureID)0; }
 
 IMPLATFORM_API ImTextureID ImPlatform_CreateTexture(const void* pixel_data, const ImPlatform_TextureDesc* desc)
 {
     if (!desc || !pixel_data || !g_GfxData.device)
-        return NULL;
+        return (ImTextureID)0;
 
     int bytes_per_pixel;
     VkFormat format = ImPlatform_GetVulkanFormat(desc->format, &bytes_per_pixel);
@@ -1194,7 +1175,7 @@ IMPLATFORM_API ImTextureID ImPlatform_CreateTexture(const void* pixel_data, cons
         buffer_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
         err = vkCreateBuffer(g_GfxData.device, &buffer_info, g_Allocator, &staging_buffer);
         if (err != VK_SUCCESS)
-            return NULL;
+            return (ImTextureID)0;
 
         VkMemoryRequirements mem_req;
         vkGetBufferMemoryRequirements(g_GfxData.device, staging_buffer, &mem_req);
@@ -1207,7 +1188,7 @@ IMPLATFORM_API ImTextureID ImPlatform_CreateTexture(const void* pixel_data, cons
         if (err != VK_SUCCESS)
         {
             vkDestroyBuffer(g_GfxData.device, staging_buffer, g_Allocator);
-            return NULL;
+            return (ImTextureID)0;
         }
 
         err = vkBindBufferMemory(g_GfxData.device, staging_buffer, staging_memory, 0);
@@ -1215,7 +1196,7 @@ IMPLATFORM_API ImTextureID ImPlatform_CreateTexture(const void* pixel_data, cons
         {
             vkDestroyBuffer(g_GfxData.device, staging_buffer, g_Allocator);
             vkFreeMemory(g_GfxData.device, staging_memory, g_Allocator);
-            return NULL;
+            return (ImTextureID)0;
         }
     }
 
@@ -1227,7 +1208,7 @@ IMPLATFORM_API ImTextureID ImPlatform_CreateTexture(const void* pixel_data, cons
         {
             vkDestroyBuffer(g_GfxData.device, staging_buffer, g_Allocator);
             vkFreeMemory(g_GfxData.device, staging_memory, g_Allocator);
-            return NULL;
+            return (ImTextureID)0;
         }
         memcpy(map, pixel_data, upload_size);
         VkMappedMemoryRange range[1] = {};
@@ -1240,7 +1221,7 @@ IMPLATFORM_API ImTextureID ImPlatform_CreateTexture(const void* pixel_data, cons
         {
             vkDestroyBuffer(g_GfxData.device, staging_buffer, g_Allocator);
             vkFreeMemory(g_GfxData.device, staging_memory, g_Allocator);
-            return NULL;
+            return (ImTextureID)0;
         }
     }
 
@@ -1267,7 +1248,7 @@ IMPLATFORM_API ImTextureID ImPlatform_CreateTexture(const void* pixel_data, cons
         {
             vkDestroyBuffer(g_GfxData.device, staging_buffer, g_Allocator);
             vkFreeMemory(g_GfxData.device, staging_memory, g_Allocator);
-            return NULL;
+            return (ImTextureID)0;
         }
 
         VkMemoryRequirements mem_req;
@@ -1283,7 +1264,7 @@ IMPLATFORM_API ImTextureID ImPlatform_CreateTexture(const void* pixel_data, cons
             vkDestroyImage(g_GfxData.device, image, g_Allocator);
             vkDestroyBuffer(g_GfxData.device, staging_buffer, g_Allocator);
             vkFreeMemory(g_GfxData.device, staging_memory, g_Allocator);
-            return NULL;
+            return (ImTextureID)0;
         }
 
         err = vkBindImageMemory(g_GfxData.device, image, image_memory, 0);
@@ -1293,7 +1274,7 @@ IMPLATFORM_API ImTextureID ImPlatform_CreateTexture(const void* pixel_data, cons
             vkDestroyImage(g_GfxData.device, image, g_Allocator);
             vkDestroyBuffer(g_GfxData.device, staging_buffer, g_Allocator);
             vkFreeMemory(g_GfxData.device, staging_memory, g_Allocator);
-            return NULL;
+            return (ImTextureID)0;
         }
     }
 
@@ -1315,7 +1296,7 @@ IMPLATFORM_API ImTextureID ImPlatform_CreateTexture(const void* pixel_data, cons
             vkDestroyImage(g_GfxData.device, image, g_Allocator);
             vkDestroyBuffer(g_GfxData.device, staging_buffer, g_Allocator);
             vkFreeMemory(g_GfxData.device, staging_memory, g_Allocator);
-            return NULL;
+            return (ImTextureID)0;
         }
     }
 
@@ -1330,7 +1311,7 @@ IMPLATFORM_API ImTextureID ImPlatform_CreateTexture(const void* pixel_data, cons
         vkDestroyImage(g_GfxData.device, image, g_Allocator);
         vkDestroyBuffer(g_GfxData.device, staging_buffer, g_Allocator);
         vkFreeMemory(g_GfxData.device, staging_memory, g_Allocator);
-        return NULL;
+        return (ImTextureID)0;
     }
 
     // Upload to GPU using a dedicated command buffer: the frame command buffers may be recording
@@ -1368,7 +1349,7 @@ IMPLATFORM_API ImTextureID ImPlatform_CreateTexture(const void* pixel_data, cons
             vkDestroyImage(g_GfxData.device, image, g_Allocator);
             vkDestroyBuffer(g_GfxData.device, staging_buffer, g_Allocator);
             vkFreeMemory(g_GfxData.device, staging_memory, g_Allocator);
-            return NULL;
+            return (ImTextureID)0;
         }
 
         // Transition to transfer dst
@@ -1449,7 +1430,7 @@ IMPLATFORM_API bool ImPlatform_UpdateTexture(ImTextureID /*texture_id*/, const v
 IMPLATFORM_API ImTextureID ImPlatform_CreateRenderTexture(const ImPlatform_TextureDesc* desc)
 {
     if (!desc || !g_GfxData.device)
-        return NULL;
+        return (ImTextureID)0;
 
     int bytes_per_pixel;
     VkFormat format = ImPlatform_GetVulkanFormat(desc->format, &bytes_per_pixel);
@@ -1472,7 +1453,7 @@ IMPLATFORM_API ImTextureID ImPlatform_CreateRenderTexture(const ImPlatform_Textu
         image_info.sharingMode   = VK_SHARING_MODE_EXCLUSIVE;
         image_info.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
         err = vkCreateImage(g_GfxData.device, &image_info, g_Allocator, &image);
-        if (err != VK_SUCCESS) return NULL;
+        if (err != VK_SUCCESS) return (ImTextureID)0;
 
         VkMemoryRequirements mem_req;
         vkGetImageMemoryRequirements(g_GfxData.device, image, &mem_req);
@@ -1481,7 +1462,7 @@ IMPLATFORM_API ImTextureID ImPlatform_CreateRenderTexture(const ImPlatform_Textu
         alloc_info.allocationSize  = mem_req.size;
         alloc_info.memoryTypeIndex = ImPlatform_FindMemoryType(VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, mem_req.memoryTypeBits);
         err = vkAllocateMemory(g_GfxData.device, &alloc_info, g_Allocator, &imageMemory);
-        if (err != VK_SUCCESS) { vkDestroyImage(g_GfxData.device, image, g_Allocator); return NULL; }
+        if (err != VK_SUCCESS) { vkDestroyImage(g_GfxData.device, image, g_Allocator); return (ImTextureID)0; }
         vkBindImageMemory(g_GfxData.device, image, imageMemory, 0);
     }
 
@@ -1500,7 +1481,7 @@ IMPLATFORM_API ImTextureID ImPlatform_CreateRenderTexture(const ImPlatform_Textu
         if (err != VK_SUCCESS) {
             vkFreeMemory(g_GfxData.device, imageMemory, g_Allocator);
             vkDestroyImage(g_GfxData.device, image, g_Allocator);
-            return NULL;
+            return (ImTextureID)0;
         }
     }
 
@@ -1545,7 +1526,7 @@ IMPLATFORM_API ImTextureID ImPlatform_CreateRenderTexture(const ImPlatform_Textu
             vkDestroyImageView(g_GfxData.device, imageView, g_Allocator);
             vkFreeMemory(g_GfxData.device, imageMemory, g_Allocator);
             vkDestroyImage(g_GfxData.device, image, g_Allocator);
-            return NULL;
+            return (ImTextureID)0;
         }
     }
 
@@ -1566,7 +1547,7 @@ IMPLATFORM_API ImTextureID ImPlatform_CreateRenderTexture(const ImPlatform_Textu
             vkDestroyImageView(g_GfxData.device, imageView, g_Allocator);
             vkFreeMemory(g_GfxData.device, imageMemory, g_Allocator);
             vkDestroyImage(g_GfxData.device, image, g_Allocator);
-            return NULL;
+            return (ImTextureID)0;
         }
     }
 
@@ -1585,7 +1566,7 @@ IMPLATFORM_API ImTextureID ImPlatform_CreateRenderTexture(const ImPlatform_Textu
             vkDestroyImageView(g_GfxData.device, imageView, g_Allocator);
             vkFreeMemory(g_GfxData.device, imageMemory, g_Allocator);
             vkDestroyImage(g_GfxData.device, image, g_Allocator);
-            return NULL;
+            return (ImTextureID)0;
         }
 
         VkCommandBufferAllocateInfo alloc_info = {};
@@ -2818,7 +2799,7 @@ IMPLATFORM_API bool ImPlatform_SupportsCompute(void) { return g_GfxData.device !
 IMPLATFORM_API ImTextureID ImPlatform_CreateStorageTexture(const void* pixel_data, const ImPlatform_TextureDesc* desc)
 {
     if (!desc || !desc->width || !desc->height || !g_GfxData.device)
-        return NULL;
+        return (ImTextureID)0;
     int bpp = 0;
     const VkFormat format = ImPlatform_GetVulkanFormat(desc->format, &bpp);
 
@@ -2836,7 +2817,7 @@ IMPLATFORM_API ImTextureID ImPlatform_CreateStorageTexture(const void* pixel_dat
     ii.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
     VkImage image;
     if (vkCreateImage(g_GfxData.device, &ii, g_Allocator, &image) != VK_SUCCESS)
-        return NULL;
+        return (ImTextureID)0;
     VkMemoryRequirements req;
     vkGetImageMemoryRequirements(g_GfxData.device, image, &req);
     VkMemoryAllocateInfo ai = {};
@@ -2847,7 +2828,7 @@ IMPLATFORM_API ImTextureID ImPlatform_CreateStorageTexture(const void* pixel_dat
     if (vkAllocateMemory(g_GfxData.device, &ai, g_Allocator, &memory) != VK_SUCCESS)
     {
         vkDestroyImage(g_GfxData.device, image, g_Allocator);
-        return NULL;
+        return (ImTextureID)0;
     }
     vkBindImageMemory(g_GfxData.device, image, memory, 0);
 
@@ -2864,7 +2845,7 @@ IMPLATFORM_API ImTextureID ImPlatform_CreateStorageTexture(const void* pixel_dat
     {
         vkFreeMemory(g_GfxData.device, memory, g_Allocator);
         vkDestroyImage(g_GfxData.device, image, g_Allocator);
-        return NULL;
+        return (ImTextureID)0;
     }
 
     // Fill with the pixels, or clear to zero (the texture starts zeroed, as on DX11); it lives in GENERAL,
@@ -2910,7 +2891,7 @@ IMPLATFORM_API ImTextureID ImPlatform_CreateStorageTexture(const void* pixel_dat
         vkDestroyImageView(g_GfxData.device, view, g_Allocator);
         vkFreeMemory(g_GfxData.device, memory, g_Allocator);
         vkDestroyImage(g_GfxData.device, image, g_Allocator);
-        return NULL;
+        return (ImTextureID)0;
     }
     ImPlatform_Vulkan_RegisterTexture(ds, image, view, format, desc->width, desc->height, bpp, VK_IMAGE_LAYOUT_GENERAL, true);
     return (ImTextureID)ds;
