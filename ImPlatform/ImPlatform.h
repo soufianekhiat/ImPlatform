@@ -1009,6 +1009,11 @@ IMPLATFORM_API bool ImPlatform_DispatchCompute(ImPlatform_Shader compute_shader,
 // resource is gone and further rendering fails. The application keeps its CPU data and must recreate the device
 // (or restart) to draw again.
 IMPLATFORM_API bool ImPlatform_GfxDeviceLost(void);
+// True while a device can be used: after ImPlatform_InitGfx succeeded, and neither removed, being recreated, nor shut
+// down (ImPlatform_ShutdownGfxAPI / ImPlatform_ShutdownWindow). False before initialization, unlike
+// !ImPlatform_GfxDeviceLost(). ImPlatform_SupportsCompute / ImPlatform_SupportsReadback report features of the
+// backend, not this state. DirectX 11/12; other backends report false.
+IMPLATFORM_API bool ImPlatform_GfxDeviceReady(void);
 // Testing aid: removes the device on purpose where the API allows it (DirectX 12: ID3D12Device5::RemoveDevice);
 // returns false when unsupported.
 IMPLATFORM_API bool ImPlatform_GfxDebugRemoveDevice(void);
@@ -1391,6 +1396,7 @@ IMPLATFORM_API bool ImPlatform_DrawMesh(const ImPlatform_DrawMeshDesc*) { return
 #endif
 #ifndef IMPLATFORM_GFX_HAS_DEVICE_CONTROL
 IMPLATFORM_API bool ImPlatform_GfxDeviceLost(void) { return false; }
+IMPLATFORM_API bool ImPlatform_GfxDeviceReady(void) { return false; }
 IMPLATFORM_API bool ImPlatform_GfxDebugRemoveDevice(void) { return false; }
 IMPLATFORM_API bool ImPlatform_GfxRecreateDevice(void) { return false; }
 IMPLATFORM_API void ImPlatform_GfxDebugSetMemoryLimit(size_t) {}

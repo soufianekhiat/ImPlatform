@@ -339,9 +339,12 @@ bool ImPlatform_InitGfx_Internal_DX11(void)
 }
 
 // ImPlatform API - InitGfx
+static bool g_P11_DeviceReady = false;     // ImPlatform_InitGfx succeeded and no shutdown since.
+
 IMPLATFORM_API bool ImPlatform_InitGfx(void)
 {
-    return ImPlatform_InitGfx_Internal_DX11();
+    g_P11_DeviceReady = ImPlatform_InitGfx_Internal_DX11();
+    return g_P11_DeviceReady;
 }
 
 // ImPlatform API - GfxCheck
@@ -434,12 +437,13 @@ IMPLATFORM_API bool ImPlatform_GfxAPISwapBuffer(void)
 // ImPlatform API - ShutdownGfxAPI
 IMPLATFORM_API void ImPlatform_ShutdownGfxAPI(void)
 {
-    // Nothing special needed for DX11
+    g_P11_DeviceReady = false;
 }
 
 // ImPlatform API - ShutdownWindow (gfx-specific part)
 IMPLATFORM_API void ImPlatform_ShutdownWindow(void)
 {
+    g_P11_DeviceReady = false;
     for (int f = 0; f < 2; ++f)
         for (int w = 0; w < 3; ++w)
             if (g_Samplers[f][w]) { g_Samplers[f][w]->Release(); g_Samplers[f][w] = nullptr; }
@@ -2234,6 +2238,11 @@ IMPLATFORM_API bool ImPlatform_SetShaderTexture(ImPlatform_ShaderProgram program
 IMPLATFORM_API bool ImPlatform_GfxDeviceLost(void)
 {
     return g_GfxData.pDevice && g_GfxData.pDevice->GetDeviceRemovedReason() != S_OK;
+}
+
+IMPLATFORM_API bool ImPlatform_GfxDeviceReady(void)
+{
+    return g_P11_DeviceReady && g_GfxData.pDevice && g_GfxData.pDevice->GetDeviceRemovedReason() == S_OK;
 }
 
 IMPLATFORM_API bool ImPlatform_GfxDebugRemoveDevice(void) { return false; }     // No supported way on DirectX 11.
