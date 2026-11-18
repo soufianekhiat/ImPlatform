@@ -55,11 +55,11 @@
 #pragma once
 
 // ImPlatform version
-// (Integer encoded as XYYZZ for use in #if preprocessor conditionals, e.g. '#if IMPLATFORM_VERSION_NUM >= 500')
-#define IMPLATFORM_VERSION          "0.5.0"
-#define IMPLATFORM_VERSION_NUM      500
-#define IMPLATFORM_VERSION_MAJOR    0
-#define IMPLATFORM_VERSION_MINOR    5
+// (Integer encoded as XYYZZ for use in #if preprocessor conditionals, e.g. '#if IMPLATFORM_VERSION_NUM >= 20000')
+#define IMPLATFORM_VERSION          "2.0.0"
+#define IMPLATFORM_VERSION_NUM      20000
+#define IMPLATFORM_VERSION_MAJOR    2
+#define IMPLATFORM_VERSION_MINOR    0
 #define IMPLATFORM_VERSION_PATCH    0
 
 #ifndef IMPLATFORM_API
