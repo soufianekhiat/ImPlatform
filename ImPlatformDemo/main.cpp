@@ -216,7 +216,7 @@ static int CheckRenderPassTest()
 
 #if IMPLATFORM_GFX_SUPPORT_CUSTOM_SHADER
 // Custom shaders are written once in HLSL (shaders/<name>.hlsl, entry points vs_main and ps_main) and compiled for every
-// backend by shaders/compile_shaders: Direct3D compiles the HLSL at run time, Vulkan takes SPIR-V, OpenGL GLSL 330 and
+// backend by shaders/compile_shaders: Direct3D (9 included) compiles the HLSL at run time, Vulkan takes SPIR-V, OpenGL GLSL 330 and
 // WebGPU WGSL.
 #if (IM_CURRENT_GFX == IM_GFX_VULKAN)
 #include "shaders/arrow_sdf.spv.h"
@@ -226,7 +226,7 @@ static int CheckRenderPassTest()
 #include "shaders/arrow_sdf.glsl.h"
 #include "shaders/gradient.glsl.h"
 #define DEMO_SHADER_PROGRAM( name, shaders ) CreateDemoProgram( ImPlatform_ShaderFormat_GLSL, name##_vs_glsl, 0, name##_ps_glsl, 0, "main", "main", shaders )
-#elif (IM_CURRENT_GFX == IM_GFX_DIRECTX10) || (IM_CURRENT_GFX == IM_GFX_DIRECTX11) || (IM_CURRENT_GFX == IM_GFX_DIRECTX12)
+#elif (IM_CURRENT_GFX == IM_GFX_DIRECTX9) || (IM_CURRENT_GFX == IM_GFX_DIRECTX10) || (IM_CURRENT_GFX == IM_GFX_DIRECTX11) || (IM_CURRENT_GFX == IM_GFX_DIRECTX12)
 #include "shaders/arrow_sdf.hlsl.h"
 #include "shaders/gradient.hlsl.h"
 #define DEMO_SHADER_PROGRAM( name, shaders ) CreateDemoProgram( ImPlatform_ShaderFormat_HLSL, name##_hlsl, 0, name##_hlsl, 0, "vs_main", "ps_main", shaders )

@@ -1,7 +1,7 @@
 #!/bin/sh
 # Compiles every *.hlsl here (entry points vs_main and ps_main, or cs_main for a compute shader) for each graphics backend
 # into the headers main.cpp includes (generated, committed):
-#   <name>.hlsl.h  the HLSL source, compiled at run time by Direct3D 10, 11 and 12
+#   <name>.hlsl.h  the HLSL source, compiled at run time by Direct3D 9 (vs_3_0 / ps_3_0), 10, 11 and 12
 #   <name>.spv.h   SPIR-V for Vulkan (Slang)
 #   <name>.glsl.h  GLSL 330 for OpenGL (Slang's SPIR-V converted by SPIRV-Cross)
 #   <name>.wgsl.h  WGSL for WebGPU (Slang)

@@ -5,7 +5,7 @@ for every graphics backend into headers that `main.cpp` includes:
 
 | Header | Backend | Produced by |
 |---|---|---|
-| `<name>.hlsl.h` | Direct3D 10, 11, 12 (compiled at run time) | the source itself |
+| `<name>.hlsl.h` | Direct3D 9, 10, 11, 12 (compiled at run time) | the source itself |
 | `<name>.spv.h` | Vulkan | Slang (`slangc`), SPIR-V 1.3 |
 | `<name>.glsl.h` | OpenGL 3.3+ (macOS included) | Slang's SPIR-V converted to GLSL 330 by SPIRV-Cross |
 | `<name>.wgsl.h` | WebGPU | Slang (`slangc -target wgsl`) |
@@ -47,6 +47,11 @@ and WebGPU tell them apart by type: the 4-component input is the color, the firs
 OpenGL and WebGPU take the registers as bindings `b0` -> 0, `b1` -> 1, `t0` -> 16, `s0` -> 32
 (`-fvk-b-shift 0 0 -fvk-t-shift 16 0 -fvk-s-shift 32 0`); on WebGPU all of them are in bind group 0, with `t1`..`t8`
 (`ImPlatform_SetShaderTexture`, slot 1..8) at bindings 17..24; other registers (`s1`+, `b2`+) are not supported.
+
+Direct3D 9 compiles the same HLSL for `vs_3_0` / `ps_3_0` (Slang has no shader model 3 target). Shader model 3 has
+no constant buffers: each used cbuffer member gets its own float4 registers, and the backend fills them from `b0` and
+`b1` at the member offsets a shader model 4 compile of the source reflects. The draw's texture `t0` is renumbered to
+sampler 0; `t1`..`t8` are not supported there.
 
 Parameters belong to the program on every backend: the values set last before the frame is rendered apply to all of
 that program's draws in the frame.

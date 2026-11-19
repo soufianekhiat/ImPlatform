@@ -47,6 +47,8 @@
   (OpenGL, macOS included); Direct3D compiles the HLSL itself. `buildsystem/fetch_slang.*` downloads the pinned Slang release.
   A compute shader (entry point `cs_main`) gets SPIR-V and GLSL 430 with `ImPlatform_DispatchCompute()`'s bindings; the
   demo's `--compute-test` shader is one HLSL file.
+- DirectX 9 custom shaders: the same HLSL, compiled for `vs_3_0` / `ps_3_0`; cbuffer members are uploaded to the
+  constant registers shader model 3 assigns them, and the draw's texture `t0` is sampler 0.
 
 ### Changed
 - `ImPlatform_PlatformEvents()` returns `false` when the frame should be skipped (quit requested or window

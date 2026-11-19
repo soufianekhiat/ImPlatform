@@ -6,14 +6,15 @@
 #ifdef IM_GFX_DIRECTX9
 
 #include "../imgui/backends/imgui_impl_dx9.h"
-// Note: D3DX is deprecated and not available in modern Windows SDK
-// For shader compilation, would need to use D3DCompile from d3dcompiler.lib
+#include <d3dcompiler.h>
+#include <d3d11shader.h>     // ID3D11ShaderReflection: cbuffer layouts of custom shaders
 #include <stdio.h>
 #include <string.h>
 #include <stdint.h>
 
 // Link with d3d9.lib
 #pragma comment(lib, "d3d9")
+#pragma comment(lib, "d3dcompiler")
 
 // Global state
 static ImPlatform_GfxData_DX9 g_GfxData = { 0 };
@@ -982,44 +983,245 @@ IMPLATFORM_API void ImPlatform_DrawIndexed(unsigned int primitive_type, unsigned
 // ============================================================================
 // Custom Shader System API - DirectX 9
 // ============================================================================
-// Note: DirectX 9 shader support is limited because D3DX is deprecated
-// For full shader support, consider using D3DCompile from d3dcompiler.lib
-// or pre-compiled shader bytecode.
-//
-// Note: the shader cache (cache_key / compile_flags) is a no-op on this
-// backend because DX9 custom shader support itself is a stub.
+// The same HLSL as the other Direct3D backends, compiled for vs_3_0 / ps_3_0. Shader model 3 has no constant buffers:
+// the compiler gives each used cbuffer member its own float4 registers (listed in the bytecode's constant table), so
+// the backend uploads b0 (the projection Dear ImGui's DX9 backend set as D3DTS_PROJECTION) and b1 (the program's
+// parameters) register by register, at the member offsets a shader model 4 compile of the same source reflects.
+// Textures: the compiler numbers combined samplers from s1, so the bytecode is renumbered to sampler N for texture tN
+// (the draw's texture, t0, is on Dear ImGui's stage 0).
+// shortcut: no cache_key / compile_flags shader cache and no ImPlatform_SetShaderTexture (t1..t8) on DX9; add them
+// with a DX9 application that needs them.
 
-IMPLATFORM_API ImPlatform_Shader ImPlatform_CreateShader(const ImPlatform_ShaderDesc* /*desc*/)
+struct ImP9_Constant
 {
-    // Stub: D3DX is not available in modern Windows SDK
-    // Would need to use D3DCompile or pre-compiled bytecode
+    unsigned int reg, count;    // First float4 register and register count
+    unsigned int cb;            // Constant buffer slot: 0 projection, 1 parameters
+    unsigned int offset, size;  // Byte range in that constant buffer
+};
+
+struct ImPlatform_ShaderData_DX9
+{
+    IUnknown* shader;           // IDirect3DVertexShader9 or IDirect3DPixelShader9
+    ImPlatform_ShaderStage stage;
+    ImVector<ImP9_Constant> constants;
+};
+
+struct ImPlatform_ShaderProgramData_DX9
+{
+    ImPlatform_ShaderData_DX9* vs;
+    ImPlatform_ShaderData_DX9* ps;
+    ImVector<unsigned char> params; // b1
+};
+
+// The constant table of shader model 3 bytecode (D3DXSHADER_CONSTANTTABLE / D3DXSHADER_CONSTANTINFO, d3dx9shader.h).
+struct ImP9_CTab { DWORD Size, Creator, Version, Constants, ConstantInfo, Flags, Target; };
+struct ImP9_CInfo { DWORD Name; WORD RegisterSet, RegisterIndex, RegisterCount, Reserved; DWORD TypeInfo, DefaultValue; };
+
+static const ImP9_CTab* ImP9_FindCTab(const DWORD* code, size_t words, size_t* ctab_bytes)
+{
+    // Comments follow the version token: 0xFFFE with the length in the high word.
+    for (size_t i = 1; i < words && (code[i] & 0xFFFF) == 0xFFFE; i += 1 + ((code[i] >> 16) & 0x7FFF))
+        if (i + 1 < words && code[i + 1] == MAKEFOURCC('C', 'T', 'A', 'B'))
+        {
+            *ctab_bytes = (((code[i] >> 16) & 0x7FFF) - 1) * 4;
+            return (const ImP9_CTab*)&code[i + 2];
+        }
     return NULL;
 }
 
-IMPLATFORM_API void ImPlatform_DestroyShader(ImPlatform_Shader /*shader*/)
+// Sampler register s -> remap[s] in every instruction (dcl's usage token and def's literals are not registers).
+static void ImP9_RemapSamplers(DWORD* code, size_t words, const unsigned char remap[16])
 {
-    // Stub
+    for (size_t i = 1; i < words && code[i] != 0x0000FFFF; )
+    {
+        const DWORD op = code[i] & 0xFFFF;
+        const size_t len = op == 0xFFFE ? ((code[i] >> 16) & 0x7FFF) : ((code[i] >> 24) & 0xF);
+        if (op != 0xFFFE && op != 0x51 && op != 0x52 && op != 0x53)      // comment, def, defi, defb
+            for (size_t p = op == 0x1F ? 2 : 1; p <= len && i + p < words; p++)
+            {
+                DWORD& t = code[i + p];
+                const DWORD type = ((t >> 28) & 7) | ((t >> 8) & 0x18);
+                if (type == 10 && (t & 0x7FF) < 16)        // D3DSPR_SAMPLER
+                    t = (t & ~0x7FFu) | remap[t & 0x7FF];
+            }
+        i += 1 + len;
+    }
 }
 
-IMPLATFORM_API ImPlatform_ShaderProgram ImPlatform_CreateShaderProgram(ImPlatform_Shader /*vertex_shader*/, ImPlatform_Shader /*fragment_shader*/)
+IMPLATFORM_API ImPlatform_Shader ImPlatform_CreateShader(const ImPlatform_ShaderDesc* desc)
 {
-    // Stub
-    return NULL;
+    if (!desc || !g_GfxData.pDevice || (desc->stage != ImPlatform_ShaderStage_Vertex && desc->stage != ImPlatform_ShaderStage_Fragment))
+        return NULL;
+    const bool vertex = desc->stage == ImPlatform_ShaderStage_Vertex;
+    ID3DBlob* blob = NULL;
+    ID3D11ShaderReflection* reflect = NULL;     // Of the shader model 4 compile: cbuffer member offsets, texture slots
+    ImVector<DWORD> code;
+    if (desc->format == ImPlatform_ShaderFormat_HLSL && desc->source_code)
+    {
+        const char* entry = desc->entry_point ? desc->entry_point : "main";
+        const size_t len = strlen(desc->source_code);
+        ID3DBlob* errors = NULL;
+        if (FAILED(D3DCompile(desc->source_code, len, NULL, NULL, NULL, entry, vertex ? "vs_3_0" : "ps_3_0",
+                              D3DCOMPILE_OPTIMIZATION_LEVEL3, 0, &blob, &errors)))
+        {
+            fprintf(stderr, "[ImPlatform] DX9: shader compilation failed: %s\n", errors ? (const char*)errors->GetBufferPointer() : "");
+            if (errors) errors->Release();
+            return NULL;
+        }
+        ID3DBlob* sm4 = NULL;
+        if (SUCCEEDED(D3DCompile(desc->source_code, len, NULL, NULL, NULL, entry, vertex ? "vs_4_0" : "ps_4_0", 0, 0, &sm4, NULL)))
+        {
+            D3DReflect(sm4->GetBufferPointer(), sm4->GetBufferSize(), __uuidof(ID3D11ShaderReflection), (void**)&reflect);
+            sm4->Release();
+        }
+        code.resize((int)(blob->GetBufferSize() / 4));
+        memcpy(code.Data, blob->GetBufferPointer(), blob->GetBufferSize());
+        blob->Release();
+    }
+    else if (desc->bytecode && desc->bytecode_size >= 4)
+    {
+        // shortcut: precompiled bytecode has no source to reflect; its constants are read as b1 at 16 bytes per
+        // register and its samplers stay as compiled.
+        code.resize((int)(desc->bytecode_size / 4));
+        memcpy(code.Data, desc->bytecode, desc->bytecode_size);
+    }
+    else
+    {
+        fprintf(stderr, "[ImPlatform] DX9: custom shaders take HLSL source or shader model 3 bytecode\n");
+        return NULL;
+    }
+
+    ImPlatform_ShaderData_DX9* sd = IM_NEW(ImPlatform_ShaderData_DX9)();
+    sd->stage = desc->stage;
+    size_t ctab_bytes = 0;
+    const ImP9_CTab* ctab = ImP9_FindCTab(code.Data, (size_t)code.Size, &ctab_bytes);
+    unsigned char remap[16];
+    for (int s = 0; s < 16; s++)
+        remap[s] = (unsigned char)s;
+    for (DWORD c = 0; ctab && c < ctab->Constants && ctab->ConstantInfo + (c + 1) * sizeof(ImP9_CInfo) <= ctab_bytes; c++)
+    {
+        const ImP9_CInfo& info = ((const ImP9_CInfo*)((const char*)ctab + ctab->ConstantInfo))[c];
+        const char* name = info.Name < ctab_bytes ? (const char*)ctab + info.Name : "";
+        if (info.RegisterSet == 3 && info.RegisterIndex < 16)      // Sampler "<sampler>+<texture>": to its t slot
+        {
+            const char* texture = strchr(name, '+');
+            D3D11_SHADER_INPUT_BIND_DESC bind;
+            if (reflect && texture && SUCCEEDED(reflect->GetResourceBindingDescByName(texture + 1, &bind)) && bind.BindPoint < 16)
+                remap[info.RegisterIndex] = (unsigned char)bind.BindPoint;
+            continue;
+        }
+        if (info.RegisterSet != 2)                                  // D3DXRS_FLOAT4 only
+            continue;
+        ImP9_Constant k = { info.RegisterIndex, info.RegisterCount, 1, info.RegisterIndex * 16u, info.RegisterCount * 16u };
+        if (reflect)
+        {
+            ID3D11ShaderReflectionVariable* var = reflect->GetVariableByName(name);
+            D3D11_SHADER_VARIABLE_DESC vd;
+            D3D11_SHADER_BUFFER_DESC bd;
+            D3D11_SHADER_INPUT_BIND_DESC bind;
+            if (!var || FAILED(var->GetDesc(&vd)) || FAILED(var->GetBuffer()->GetDesc(&bd))
+                || FAILED(reflect->GetResourceBindingDescByName(bd.Name, &bind)) || bind.BindPoint > 1)
+                continue;
+            k.cb = bind.BindPoint;
+            k.offset = vd.StartOffset;
+            k.size = vd.Size;
+        }
+        sd->constants.push_back(k);
+    }
+    if (reflect)
+        reflect->Release();
+    ImP9_RemapSamplers(code.Data, (size_t)code.Size, remap);
+
+    const HRESULT hr = vertex ? g_GfxData.pDevice->CreateVertexShader(code.Data, (IDirect3DVertexShader9**)&sd->shader)
+                              : g_GfxData.pDevice->CreatePixelShader(code.Data, (IDirect3DPixelShader9**)&sd->shader);
+    if (FAILED(hr))
+    {
+        fprintf(stderr, "[ImPlatform] DX9: CreateVertexShader / CreatePixelShader failed (0x%08lx)\n", (unsigned long)hr);
+        IM_DELETE(sd);
+        return NULL;
+    }
+    return sd;
 }
 
-IMPLATFORM_API void ImPlatform_DestroyShaderProgram(ImPlatform_ShaderProgram /*program*/)
+IMPLATFORM_API void ImPlatform_DestroyShader(ImPlatform_Shader shader)
 {
-    // Stub
+    ImPlatform_ShaderData_DX9* sd = (ImPlatform_ShaderData_DX9*)shader;
+    if (!sd)
+        return;
+    if (sd->shader)
+        sd->shader->Release();
+    IM_DELETE(sd);
 }
 
-IMPLATFORM_API void ImPlatform_UseShaderProgram(ImPlatform_ShaderProgram /*program*/)
+IMPLATFORM_API ImPlatform_ShaderProgram ImPlatform_CreateShaderProgram(ImPlatform_Shader vertex_shader, ImPlatform_Shader fragment_shader)
 {
-    // Stub
+    ImPlatform_ShaderData_DX9* vs = (ImPlatform_ShaderData_DX9*)vertex_shader;
+    ImPlatform_ShaderData_DX9* ps = (ImPlatform_ShaderData_DX9*)fragment_shader;
+    if (!vs || !ps || vs->stage != ImPlatform_ShaderStage_Vertex || ps->stage != ImPlatform_ShaderStage_Fragment)
+        return NULL;
+    // The program keeps its own copy of each stage: the application may destroy the shaders.
+    ImPlatform_ShaderProgramData_DX9* program = IM_NEW(ImPlatform_ShaderProgramData_DX9)();
+    program->vs = IM_NEW(ImPlatform_ShaderData_DX9)(*vs);
+    program->ps = IM_NEW(ImPlatform_ShaderData_DX9)(*ps);
+    program->vs->shader->AddRef();
+    program->ps->shader->AddRef();
+    return program;
 }
 
-IMPLATFORM_API bool ImPlatform_SetShaderUniform(ImPlatform_ShaderProgram /*program*/, const char* /*name*/, const void* /*data*/, unsigned int /*size*/)
+IMPLATFORM_API void ImPlatform_DestroyShaderProgram(ImPlatform_ShaderProgram program)
 {
-    return false;
+    ImPlatform_ShaderProgramData_DX9* pd = (ImPlatform_ShaderProgramData_DX9*)program;
+    if (!pd)
+        return;
+    ImPlatform_DestroyShader(pd->vs);
+    ImPlatform_DestroyShader(pd->ps);
+    IM_DELETE(pd);
+}
+
+// Uploads each constant of a stage, register by register, from b0 (the projection) or b1 (the parameters).
+static void ImP9_UploadConstants(const ImPlatform_ShaderData_DX9* sd, const D3DMATRIX& projection, const ImVector<unsigned char>& params)
+{
+    for (const ImP9_Constant& k : sd->constants)
+        for (unsigned int r = 0; r < k.count; r++)
+        {
+            float value[4] = {};
+            const unsigned char* src = k.cb == 0 ? (const unsigned char*)&projection : params.Data;
+            const unsigned int src_size = k.cb == 0 ? (unsigned int)sizeof(projection) : (unsigned int)params.Size;
+            const unsigned int at = k.offset + r * 16, end = k.offset + k.size;
+            if (at < end && at < src_size)
+            {
+                unsigned int n = end - at < 16u ? end - at : 16u;
+                n = src_size - at < n ? src_size - at : n;
+                memcpy(value, src + at, n);
+            }
+            if (sd->stage == ImPlatform_ShaderStage_Vertex)
+                g_GfxData.pDevice->SetVertexShaderConstantF(k.reg + r, value, 1);
+            else
+                g_GfxData.pDevice->SetPixelShaderConstantF(k.reg + r, value, 1);
+        }
+}
+
+IMPLATFORM_API void ImPlatform_UseShaderProgram(ImPlatform_ShaderProgram program)
+{
+    ImPlatform_ShaderProgramData_DX9* pd = (ImPlatform_ShaderProgramData_DX9*)program;
+    if (!pd || !g_GfxData.pDevice)
+        return;
+    D3DMATRIX projection;
+    g_GfxData.pDevice->GetTransform(D3DTS_PROJECTION, &projection);    // Set by Dear ImGui's DX9 backend for the target
+    g_GfxData.pDevice->SetVertexShader((IDirect3DVertexShader9*)pd->vs->shader);
+    g_GfxData.pDevice->SetPixelShader((IDirect3DPixelShader9*)pd->ps->shader);
+    ImP9_UploadConstants(pd->vs, projection, pd->params);
+    ImP9_UploadConstants(pd->ps, projection, pd->params);
+}
+
+IMPLATFORM_API bool ImPlatform_SetShaderUniform(ImPlatform_ShaderProgram program, const char* /*name*/, const void* data, unsigned int size)
+{
+    ImPlatform_ShaderProgramData_DX9* pd = (ImPlatform_ShaderProgramData_DX9*)program;
+    if (!pd || !data || size == 0)
+        return false;
+    pd->params.resize((int)size);
+    memcpy(pd->params.Data, data, size);
+    return true;
 }
 
 IMPLATFORM_API bool ImPlatform_SetShaderTexture(ImPlatform_ShaderProgram /*program*/, const char* /*name*/, unsigned int /*slot*/, ImTextureID /*texture*/)
@@ -1085,18 +1287,16 @@ IMPLATFORM_API void ImPlatform_EndUniformBlock(ImPlatform_ShaderProgram program)
 // Custom Shader DrawList Integration
 // ============================================================================
 
-// ImDrawCallback handler to activate a custom shader
-static void ImPlatform_SetCustomShader(const ImDrawList* /*parent_list*/, const ImDrawCmd* /*cmd*/)
+// ImDrawCallback handler to activate a custom shader; Dear ImGui's DrawCallback_ResetRenderState unbinds it.
+static void ImPlatform_SetCustomShader(const ImDrawList* /*parent_list*/, const ImDrawCmd* cmd)
 {
-    // DX9 custom shaders not supported (D3DX deprecated)
-    // This is a stub for API consistency
+    ImPlatform_UseShaderProgram((ImPlatform_ShaderProgram)cmd->UserCallbackData);
 }
 
 // Activate a custom shader immediately (for use inside draw callbacks).
-IMPLATFORM_API void ImPlatform_BeginCustomShader_Render(ImPlatform_ShaderProgram /*program*/)
+IMPLATFORM_API void ImPlatform_BeginCustomShader_Render(ImPlatform_ShaderProgram program)
 {
-    // DX9 custom shaders not supported (D3DX deprecated)
-    // This is a stub for API consistency
+    ImPlatform_UseShaderProgram(program);
 }
 
 IMPLATFORM_API void ImPlatform_BeginCustomShader(ImDrawList* draw, ImPlatform_ShaderProgram shader)
