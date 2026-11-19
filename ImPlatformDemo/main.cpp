@@ -481,6 +481,111 @@ static int CheckTexture3DTest()
 	return bad ? 1 : 0;
 }
 
+// --vertex-inputs-test: shader parts with their own vertex inputs (a float4 position and a float4 of data), drawn by
+// ImPlatform_DrawIndexed from a draw callback into a render pass: two quads over the top half, the left one with id 1
+// (green), the right one with id 2 (blue), the id passed in an integer flat varying. The position is the projection
+// applied row by row (IMP_MUL(float4(1, 0, 0, 0), ProjMtx)...), so a wrong row shows; the bottom half stays clear.
+static RenderPassScene g_VertexInputsTest;
+static ImPlatform_ShaderProgram g_VertexInputsProgram = nullptr;
+static ImPlatform_Shader g_VertexInputsShaders[ 2 ] = {};
+#if IMPLATFORM_GFX_SUPPORT_VERTEX_BUFFERS
+static ImPlatform_VertexBuffer g_VertexInputsVB = nullptr;
+static ImPlatform_IndexBuffer g_VertexInputsIB = nullptr;
+#endif
+#if IMPLATFORM_GFX_SUPPORT_SHADER_PARTS && IMPLATFORM_GFX_SUPPORT_VERTEX_BUFFERS
+static void DrawVertexInputsQuads( const ImDrawList*, const ImDrawCmd* )
+{
+	ImPlatform_BindBuffers( g_VertexInputsVB, g_VertexInputsIB );
+	ImPlatform_DrawIndexed( 0, 12, 0 );
+}
+static void DrawVertexInputsTest( ImDrawList* dl )
+{
+	// The backends set the scissor for regular draws only: a draw first, so the callback does not run with a stale one.
+	dl->AddRectFilled( ImVec2( 0, 63 ), ImVec2( 1, 64 ), IM_COL32( 0, 0, 0, 255 ) );
+	ImPlatform_BeginCustomShader( dl, g_VertexInputsProgram );
+	dl->AddCallback( DrawVertexInputsQuads, nullptr );
+	ImPlatform_EndCustomShader( dl );
+}
+#endif
+
+static bool CreateVertexInputsTest()
+{
+#if IMPLATFORM_GFX_SUPPORT_SHADER_PARTS && IMPLATFORM_GFX_SUPPORT_VERTEX_BUFFERS
+	ImPlatform_ShaderParts parts = {};
+	parts.vertex_inputs = "float4 pos : POSITION; float4 data : TEXCOORD0;";
+#if IM_CURRENT_GFX == IM_GFX_DIRECTX9
+	parts.varyings = "float4 id;";	// Shader model 3: no integer or flat varyings
+#else
+	parts.varyings = "nointerpolation int4 id;";
+#endif
+	parts.vs_body = "float4 p = float4(in_pos.xy, 0.0, 1.0);\n"
+					"position = float4(dot(IMP_MUL(float4(1.0, 0.0, 0.0, 0.0), ProjMtx), p), dot(IMP_MUL(float4(0.0, 1.0, 0.0, 0.0), ProjMtx), p),\n"
+					"                  dot(IMP_MUL(float4(0.0, 0.0, 1.0, 0.0), ProjMtx), p), dot(IMP_MUL(float4(0.0, 0.0, 0.0, 1.0), ProjMtx), p));\n"
+					"v.id = int4(IMP_CAST(int, in_data.x + 0.5), 0, 0, 0);\n";
+	parts.ps_body = "col_out = v.id.x == 1 ? float4(0.0, 1.0, 0.0, 1.0) : v.id.x == 2 ? float4(0.0, 0.0, 1.0, 1.0) : float4(1.0, 0.0, 0.0, 1.0);\n";
+	g_VertexInputsShaders[ 0 ] = ImPlatform_CreateShaderFromParts( &parts, ImPlatform_ShaderStage_Vertex );
+	g_VertexInputsShaders[ 1 ] = ImPlatform_CreateShaderFromParts( &parts, ImPlatform_ShaderStage_Fragment );
+	if ( g_VertexInputsShaders[ 0 ] && g_VertexInputsShaders[ 1 ] )
+		g_VertexInputsProgram = ImPlatform_CreateShaderProgram( g_VertexInputsShaders[ 0 ], g_VertexInputsShaders[ 1 ] );
+	if ( !g_VertexInputsProgram )
+		return false;
+	struct Vertex { float pos[ 4 ]; float data[ 4 ]; };
+	const Vertex vertices[ 8 ] = {
+		{ { 0, 0, 0, 0 }, { 1, 0, 0, 0 } }, { { 32, 0, 0, 0 }, { 1, 0, 0, 0 } }, { { 32, 32, 0, 0 }, { 1, 0, 0, 0 } }, { { 0, 32, 0, 0 }, { 1, 0, 0, 0 } },
+		{ { 32, 0, 0, 0 }, { 2, 0, 0, 0 } }, { { 64, 0, 0, 0 }, { 2, 0, 0, 0 } }, { { 64, 32, 0, 0 }, { 2, 0, 0, 0 } }, { { 32, 32, 0, 0 }, { 2, 0, 0, 0 } } };
+	const unsigned short indices[ 12 ] = { 0, 1, 2, 0, 2, 3, 4, 5, 6, 4, 6, 7 };
+	static const ImPlatform_VertexAttribute attributes[ 2 ] = {
+		{ ImPlatform_VertexFormat_Float4, 0, "POSITION" }, { ImPlatform_VertexFormat_Float4, 16, "TEXCOORD" } };
+	ImPlatform_VertexBufferDesc vb = {};
+	vb.vertex_count = 8;
+	vb.vertex_stride = sizeof( Vertex );
+	vb.usage = ImPlatform_BufferUsage_Static;
+	vb.attributes = attributes;
+	vb.attribute_count = 2;
+	ImPlatform_IndexBufferDesc ib = {};
+	ib.index_count = 12;
+	ib.format = ImPlatform_IndexFormat_UInt16;
+	ib.usage = ImPlatform_BufferUsage_Static;
+	g_VertexInputsVB = ImPlatform_CreateVertexBuffer( vertices, &vb );
+	g_VertexInputsIB = ImPlatform_CreateIndexBuffer( indices, &ib );
+	if ( !g_VertexInputsVB || !g_VertexInputsIB || !ImPlatform_CreateVertexInputLayout( g_VertexInputsVB, g_VertexInputsProgram ) )
+		return false;
+	return QueueRenderPassScene( g_VertexInputsTest, 64, DrawVertexInputsTest );
+#else
+	return false;
+#endif
+}
+
+static int CheckVertexInputsTest()
+{
+	static unsigned char px[ 64 * 64 * 4 ];
+	if ( !DemoReadTexture( g_VertexInputsTest.Target, 0, 0, 64, 64, px, sizeof( px ) ) )
+	{
+		printf( "SKIP: no readback of the pass target\n" );
+		return 2;
+	}
+	const RenderPassProbe probes[] = { { 16, 16, { 0, 255, 0, 255 } }, { 48, 16, { 0, 0, 255, 255 } }, { 16, 48, { 0, 0, 0, 0 } } };
+	const int bad = CheckRenderPassProbes( "vertex inputs", px, 64, probes, 3, 4 );
+	if ( !bad )
+		printf( "PASS\n" );
+	return bad ? 1 : 0;
+}
+
+static void DestroyVertexInputsTest()
+{
+	if ( g_VertexInputsProgram )
+		ImPlatform_DestroyShaderProgram( g_VertexInputsProgram );
+	for ( ImPlatform_Shader shader : g_VertexInputsShaders )
+		if ( shader )
+			ImPlatform_DestroyShader( shader );
+#if IMPLATFORM_GFX_SUPPORT_VERTEX_BUFFERS
+	if ( g_VertexInputsVB )
+		ImPlatform_DestroyVertexBuffer( g_VertexInputsVB );
+	if ( g_VertexInputsIB )
+		ImPlatform_DestroyIndexBuffer( g_VertexInputsIB );
+#endif
+}
+
 static void DestroyTexture3DTest()
 {
 	for ( ImPlatform_ShaderProgram program : g_Texture3DPrograms )
@@ -643,7 +748,8 @@ int main( int argc, char** argv )
 	const bool directDrawTest = argc > 1 && strcmp( argv[ 1 ], "--direct-draw-test" ) == 0;
 	const bool partsTest = argc > 1 && strcmp( argv[ 1 ], "--shader-parts-test" ) == 0;
 	const bool texture3DTest = argc > 1 && strcmp( argv[ 1 ], "--texture3d-test" ) == 0;
-	const bool passTest = renderPassTest || shaderTest || directDrawTest || partsTest || texture3DTest;	// Tests read back a render pass
+	const bool vertexInputsTest = argc > 1 && strcmp( argv[ 1 ], "--vertex-inputs-test" ) == 0;
+	const bool passTest = renderPassTest || shaderTest || directDrawTest || partsTest || texture3DTest || vertexInputsTest;	// Tests read back a render pass
 	int exitCode = 0;
 #ifndef __EMSCRIPTEN__
 	int renderPassFrame = 0;
@@ -868,6 +974,12 @@ int main( int argc, char** argv )
 				break;
 			}
 		}
+		if ( vertexInputsTest && renderPassFrame == 0 && !CreateVertexInputsTest() )
+		{
+			printf( "SKIP: no shader parts with vertex buffers on this backend\n" );
+			exitCode = 2;
+			break;
+		}
 		if ( texture3DTest && renderPassFrame == 0 && !CreateTexture3DTest() )
 		{
 			printf( "SKIP: no 3D texture, custom shader or render pass on this backend\n" );
@@ -1061,7 +1173,7 @@ int main( int argc, char** argv )
 		{
 #if IMPLATFORM_GFX_SUPPORT_CUSTOM_SHADER
 			exitCode = shaderTest ? CheckShaderTest() : directDrawTest ? CheckDirectDrawTest() : partsTest ? CheckPartsTest()
-					 : texture3DTest ? CheckTexture3DTest() : CheckRenderPassTest();
+					 : texture3DTest ? CheckTexture3DTest() : vertexInputsTest ? CheckVertexInputsTest() : CheckRenderPassTest();
 #else
 			exitCode = CheckRenderPassTest();
 #endif
@@ -1107,6 +1219,8 @@ int main( int argc, char** argv )
 	DestroyPartsTest();
 	DestroyRenderPassScene( g_Texture3DTest );
 	DestroyTexture3DTest();
+	DestroyRenderPassScene( g_VertexInputsTest );
+	DestroyVertexInputsTest();
 	DestroyRenderPassScene( g_DirectDrawPass );
 	if ( g_DirectDrawTarget )
 		ImPlatform_DestroyTexture( g_DirectDrawTarget );

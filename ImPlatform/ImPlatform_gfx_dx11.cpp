@@ -1221,6 +1221,7 @@ static DXGI_FORMAT ImPlatform_GetDXGIFormat(ImPlatform_VertexFormat format)
     case ImPlatform_VertexFormat_Float3:    return DXGI_FORMAT_R32G32B32_FLOAT;
     case ImPlatform_VertexFormat_Float4:    return DXGI_FORMAT_R32G32B32A32_FLOAT;
     case ImPlatform_VertexFormat_UByte4:    return DXGI_FORMAT_R8G8B8A8_UINT;
+    case ImPlatform_VertexFormat_UByte4N:   return DXGI_FORMAT_R8G8B8A8_UNORM;
     default: return DXGI_FORMAT_R32G32B32A32_FLOAT;
     }
 }

@@ -1752,6 +1752,12 @@ IMPLATFORM_API void ImPlatform_BindBuffers(ImPlatform_VertexBuffer vertex_buffer
     }
 }
 
+// The layout comes from the vertex buffer's attributes at draw time (attribute i at shader location i).
+IMPLATFORM_API bool ImPlatform_CreateVertexInputLayout(ImPlatform_VertexBuffer vertex_buffer, ImPlatform_ShaderProgram program)
+{
+    return vertex_buffer && program;
+}
+
 IMPLATFORM_API void ImPlatform_DrawIndexed(unsigned int primitive_type, unsigned int index_count, unsigned int start_index)
 {
     if (!g_BoundVertexBuffer || !g_BoundIndexBuffer)

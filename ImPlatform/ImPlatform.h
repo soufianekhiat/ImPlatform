@@ -893,16 +893,18 @@ IMPLATFORM_API void ImPlatform_DestroyShaderProgram(
     ImPlatform_ShaderProgram program
 );
 
-// Create a vertex input layout for a vertex buffer using the VS bytecode from a shader program.
-// Must be called after both ImPlatform_CreateVertexBuffer and ImPlatform_CreateShaderProgram.
-// The layout is derived from the vertex buffer's ImPlatform_VertexAttribute array.
-// Duplicate semantic names are disambiguated by auto-incrementing SemanticIndex.
-// After this call, ImPlatform_BindBuffers will activate the custom layout automatically.
-// Returns: true on success, false on failure
+#if IMPLATFORM_GFX_SUPPORT_VERTEX_BUFFERS
+// Create a vertex input layout for a vertex buffer and the program that draws it: call it once after
+// ImPlatform_CreateVertexBuffer and ImPlatform_CreateShaderProgram, on every backend (where the layout is built at draw
+// time, it only checks its arguments). The layout is derived from the vertex buffer's ImPlatform_VertexAttribute array;
+// duplicate semantic names take indices 0, 1, ... in order (TEXCOORD, TEXCOORD -> TEXCOORD0, TEXCOORD1). Direct3D
+// matches them to the vertex shader's semantics (Direct3D 9 by usage), the other APIs take attribute i at location i.
+// After this call, ImPlatform_BindBuffers activates the layout. Returns true on success.
 IMPLATFORM_API bool ImPlatform_CreateVertexInputLayout(
     ImPlatform_VertexBuffer vertex_buffer,
     ImPlatform_ShaderProgram program
 );
+#endif
 
 // Bind a shader program for rendering
 // program: Shader program to bind (or NULL to unbind)
@@ -1039,14 +1041,19 @@ IMPLATFORM_API void ImPlatform_DrawQuadNow(ImPlatform_ShaderProgram program, ImV
 //   both stages  ProjMtx (b0), the parameters by member name (b1), texture0 (t0: the draw's texture) and the named
 //                textures (pixel stage), the helper functions
 //   vertex body  in_pos, in_uv, in_col (Dear ImGui's vertex); v.col, v.uv and v.<varying> to write; position (clip
-//                space, preset to mul(ProjMtx, float4(in_pos, 0, 1)))
+//                space, preset to mul(ProjMtx, float4(in_pos, 0, 1))). With vertex_inputs: in_<name> for each input
+//                instead, v.col / v.uv preset to 0 and position to float4(0, 0, 0, 1) (the body sets it). A row of
+//                ProjMtx is IMP_MUL(float4(1.0, 0.0, 0.0, 0.0), ProjMtx) (matrices are not indexed).
 //   pixel body   v.col, v.uv, v.<varying>; col_out (preset to v.col * texture0 at v.uv)
 // Parameter block layout, identical in HLSL cbuffers, GLSL std140 and MSL: float, float2, float4, int / uint vectors
 // and float4x4 members; arrays of 16-byte types only; a float3 starts a 16-byte row (a scalar may follow it); no bool.
 // Set it with ImPlatform_SetShaderUniform / ImPlatform_PushShaderConstants and the same C struct.
 typedef struct ImPlatform_ShaderParts {
     const char* params;         // Members of the parameter block (b1): "float4 col0; float4 col1; float2 uv_start;"
-    const char* varyings;       // Extra vertex -> pixel values, floats: "float2 world; float4 extra;" (up to 7)
+    const char* varyings;       // Extra vertex -> pixel values: "float2 world; nointerpolation int4 id;" (up to 7;
+                                // integer ones need nointerpolation, which Direct3D 9 does not have)
+    const char* vertex_inputs;  // Vertex inputs other than Dear ImGui's (optional, for ImPlatform_DrawIndexed):
+                                // "float4 pos : POSITION; float4 tex : TEXCOORD0;", in the vertex buffer's attribute order
     const char* textures[9];    // Names of t0..t8 (index = register); t0 (the draw's texture) is texture0 unless named
     unsigned int textures_3d;   // Bit N: tN is a 3D texture (ImPlatform_CreateTexture3D), sampled with a float3
     const char* defines;        // Preprocessor variants, ';' or new lines: "CLIP=1;MODE=2" or "#define MODE 2"
@@ -1062,8 +1069,8 @@ typedef struct ImPlatform_ShaderParts {
 // unsupported format or stage.
 IMPLATFORM_API int ImPlatform_GenerateShaderSource(const ImPlatform_ShaderParts* parts, ImPlatform_ShaderStage stage,
                                                    ImPlatform_ShaderFormat format, char* out, int out_size);
-// Parts from one text (a shader file): lines "//@params", "//@varyings", "//@textures", "//@defines", "//@functions",
-// "//@vs" and "//@ps" start the sections (text before the first one is ignored); texture lines are "<slot> <name>", or
+// Parts from one text (a shader file): lines "//@params", "//@inputs" (vertex_inputs), "//@varyings", "//@textures",
+// "//@defines", "//@functions", "//@vs" and "//@ps" start the sections (text before the first one is ignored); texture lines are "<slot> <name>", or
 // "<slot> <name> 3d" for a 3D texture.
 // `text` is split in place and must outlive `parts`; fields of absent sections are left as they were. Returns false
 // when the text has no section.

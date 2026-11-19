@@ -9,12 +9,15 @@
 #include <string.h>
 
 // One declaration of a ';' separated list ("float4 col0; float2 uv[2];"): its type and name (the array suffix kept in
-// 'decl' only).
+// 'decl' only). A leading "nointerpolation" sets 'flat' and a trailing ": SEMANTIC" fills 'semantic'; neither is in
+// 'type' or 'decl'.
 struct ImPlatform_PartsDecl
 {
     char type[32];
     char name[64];
     char decl[160];
+    char semantic[32];
+    bool flat;
 };
 
 static int ImPlatform_ParseDecls(const char* list, ImPlatform_PartsDecl* out, int max)
@@ -39,14 +42,27 @@ static int ImPlatform_ParseDecls(const char* list, ImPlatform_PartsDecl* out, in
         while (p < end && (*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n'))
             p++;
         const char* e = end;
+        const bool flat = strncmp(p, "nointerpolation", 15) == 0 && (p[15] == ' ' || p[15] == '\t');
+        if (flat)
+            for (p += 15; p < end && (*p == ' ' || *p == '\t'); p++) {}
+        const char* colon = (const char*)memchr(p, ':', (size_t)(end - p));
+        const char* semantic = colon ? colon + 1 : end;
+        while (semantic < end && (*semantic == ' ' || *semantic == '\t'))
+            semantic++;
+        const size_t semantic_len = strcspn(semantic, " \t\r\n;");
+        if (colon)
+            e = colon;
         while (e > p && (e[-1] == ' ' || e[-1] == '\t' || e[-1] == '\r' || e[-1] == '\n'))
             e--;
         const char* space = e;
         while (space > p && space[-1] != ' ' && space[-1] != '\t')
             space--;
-        if (space > p && (size_t)(e - p) < sizeof(out->decl))
+        if (space > p && (size_t)(e - p) < sizeof(out->decl) && semantic_len < sizeof(out->semantic))
         {
             ImPlatform_PartsDecl& d = out[count++];
+            d.flat = flat;
+            memcpy(d.semantic, semantic, colon ? semantic_len : 0);
+            d.semantic[colon ? semantic_len : 0] = 0;
             const char* type_end = space;
             while (type_end > p && (type_end[-1] == ' ' || type_end[-1] == '\t'))
                 type_end--;
@@ -94,7 +110,7 @@ static bool ImPlatform_PartsIs3D(const ImPlatform_ShaderParts* parts, int slot) 
 
 // HLSL: Direct3D 9 (vs_3_0 / ps_3_0) to 12. Entry points vs_main and ps_main.
 static void ImPlatform_PartsHLSL(ImGuiTextBuffer& out, const ImPlatform_ShaderParts* parts, bool vertex,
-                                 const ImPlatform_PartsDecl* varyings, int varying_count)
+                                 const ImPlatform_PartsDecl* varyings, int varying_count, const ImPlatform_PartsDecl* inputs, int input_count)
 {
     out.append(
         "#define IMP_HLSL 1\n"
@@ -117,9 +133,23 @@ static void ImPlatform_PartsHLSL(ImGuiTextBuffer& out, const ImPlatform_ShaderPa
             out.appendf("%s %s : register(t%d);\n", ImPlatform_PartsIs3D(parts, slot) ? "Texture3D" : "Texture2D", parts->textures[slot], slot);
     out.append("struct ImpVaryings {\n    float4 position : SV_POSITION;\n    float4 col : COLOR0;\n    float2 uv : TEXCOORD0;\n");
     for (int i = 0; i < varying_count; i++)
-        out.appendf("    %s : TEXCOORD%d;\n", varyings[i].decl, i + 1);
+        out.appendf("    %s%s : TEXCOORD%d;\n", varyings[i].flat ? "nointerpolation " : "", varyings[i].decl, i + 1);
     out.appendf("};\n%s\n", ImPlatform_PartsText(parts->functions));
-    if (vertex)
+    if (vertex && input_count)
+    {
+        out.append("struct ImpVertexInput {\n");
+        for (int i = 0; i < input_count; i++)
+            out.appendf("    %s : %s;\n", inputs[i].decl, inputs[i].semantic);
+        out.append("};\nImpVaryings vs_main(ImpVertexInput imp_in)\n{\n");
+        for (int i = 0; i < input_count; i++)
+            out.appendf("    %s in_%s = imp_in.%s;\n", inputs[i].type, inputs[i].name, inputs[i].name);
+        out.append("    ImpVaryings v;\n    v.col = float4(0.0, 0.0, 0.0, 0.0);\n    v.uv = float2(0.0, 0.0);\n");
+        for (int i = 0; i < varying_count; i++)
+            out.appendf("    v.%s = (%s)0;\n", varyings[i].name, varyings[i].type);
+        out.appendf("    float4 position = float4(0.0, 0.0, 0.0, 1.0);\n    {\n%s\n    }\n"
+                    "    v.position = position;\n    return v;\n}\n", ImPlatform_PartsText(parts->vs_body));
+    }
+    else if (vertex)
     {
         out.append(
             "struct ImpVertexInput { float2 pos : POSITION; float2 uv : TEXCOORD0; float4 col : COLOR0; };\n"
@@ -141,7 +171,7 @@ static void ImPlatform_PartsHLSL(ImGuiTextBuffer& out, const ImPlatform_ShaderPa
 
 // GLSL 330 (OpenGL 3.3+, macOS included): HLSL names mapped by the preprocessor. Entry point main.
 static void ImPlatform_PartsGLSL(ImGuiTextBuffer& out, const ImPlatform_ShaderParts* parts, bool vertex,
-                                 const ImPlatform_PartsDecl* varyings, int varying_count)
+                                 const ImPlatform_PartsDecl* varyings, int varying_count, const ImPlatform_PartsDecl* inputs, int input_count)
 {
     out.append(
         "#version 330 core\n"
@@ -181,9 +211,23 @@ static void ImPlatform_PartsGLSL(ImGuiTextBuffer& out, const ImPlatform_ShaderPa
             out.appendf("uniform %s %s;\n", ImPlatform_PartsIs3D(parts, slot) ? "sampler3D" : "sampler2D", parts->textures[slot]);
     out.appendf("%s ImpVaryings {\n    vec4 col;\n    vec2 uv;\n", vertex ? "out" : "in");
     for (int i = 0; i < varying_count; i++)
-        out.appendf("    %s;\n", varyings[i].decl);
+        out.appendf("    %s%s;\n", varyings[i].flat ? "flat " : "", varyings[i].decl);
     out.appendf("} v;\n%s\n", ImPlatform_PartsText(parts->functions));
-    if (vertex)
+    if (vertex && input_count)
+    {
+        // Attribute i of the vertex buffer at location i (ImPlatform_CreateVertexInputLayout).
+        for (int i = 0; i < input_count; i++)
+            out.appendf("layout(location = %d) in %s imp_in_%s;\n", i, inputs[i].type, inputs[i].name);
+        out.append("void main()\n{\n");
+        for (int i = 0; i < input_count; i++)
+            out.appendf("    %s in_%s = imp_in_%s;\n", inputs[i].type, inputs[i].name, inputs[i].name);
+        out.append("    v.col = float4(0.0);\n    v.uv = float2(0.0);\n");
+        for (int i = 0; i < varying_count; i++)
+            out.appendf("    v.%s = %s(0);\n", varyings[i].name, varyings[i].type);
+        out.appendf("    float4 position = float4(0.0, 0.0, 0.0, 1.0);\n    {\n%s\n    }\n"
+                    "    gl_Position = position;\n}\n", ImPlatform_PartsText(parts->vs_body));
+    }
+    else if (vertex)
     {
         out.append(
             "in vec2 Position;\nin vec2 UV;\nin vec4 Color;\n"
@@ -206,7 +250,7 @@ static void ImPlatform_PartsGLSL(ImGuiTextBuffer& out, const ImPlatform_ShaderPa
 // they reach the parameters, ProjMtx and the textures by name as in HLSL. Buffer indices are the registers plus one
 // (Dear ImGui's vertices are at buffer 0). Entry points vs_main and ps_main.
 static void ImPlatform_PartsMSL(ImGuiTextBuffer& out, const ImPlatform_ShaderParts* parts, bool vertex,
-                                const ImPlatform_PartsDecl* varyings, int varying_count)
+                                const ImPlatform_PartsDecl* varyings, int varying_count, const ImPlatform_PartsDecl* inputs, int input_count)
 {
     out.append(
         "#include <metal_stdlib>\nusing namespace metal;\n"
@@ -252,22 +296,40 @@ static void ImPlatform_PartsMSL(ImGuiTextBuffer& out, const ImPlatform_ShaderPar
     }
     out.append("};\nstruct ImpVaryings {\n    float4 position [[position]];\n    float4 col;\n    float2 uv;\n");
     for (int i = 0; i < varying_count; i++)
-        out.appendf("    %s;\n", varyings[i].decl);
-    out.appendf("};\nstruct ImpContext : ImpVertex, ImpParamsView {\n    texture2d<float> %s;\n    sampler imp_sampler;\n", ImPlatform_PartsTexture0(parts));
+        out.appendf("    %s%s;\n", varyings[i].decl, varyings[i].flat ? " [[flat]]" : "");
+    out.append("};\n");
+    if (vertex && input_count)
+    {
+        out.append("struct ImpVertexInput {\n");
+        for (int i = 0; i < input_count; i++)
+            out.appendf("    %s [[attribute(%d)]];\n", inputs[i].decl, i);
+        out.append("};\n");
+    }
+    else if (vertex)
+        out.append("struct ImpVertexInput { float2 pos [[attribute(0)]]; float2 uv [[attribute(1)]]; float4 col [[attribute(2)]]; };\n");
+    out.appendf("struct ImpContext : ImpVertex, ImpParamsView {\n    texture2d<float> %s;\n    sampler imp_sampler;\n", ImPlatform_PartsTexture0(parts));
     for (int slot = 1; slot < 9; slot++)
         if (parts->textures[slot])
             out.appendf("    %s<float> %s;\n", ImPlatform_PartsIs3D(parts, slot) ? "texture3d" : "texture2d", parts->textures[slot]);
     out.appendf("%s\n", ImPlatform_PartsText(parts->functions));
     if (vertex)
     {
-        out.append("    ImpVaryings imp_vs(float2 in_pos, float2 in_uv, float4 in_col)\n    {\n"
-                   "        ImpVaryings v;\n        v.col = in_col;\n        v.uv = in_uv;\n");
+        out.append("    ImpVaryings imp_vs(ImpVertexInput imp_in)\n    {\n");
+        if (input_count)
+        {
+            for (int i = 0; i < input_count; i++)
+                out.appendf("        %s in_%s = imp_in.%s;\n", inputs[i].type, inputs[i].name, inputs[i].name);
+            out.append("        ImpVaryings v;\n        v.col = float4(0.0);\n        v.uv = float2(0.0);\n");
+        }
+        else
+            out.append("        float2 in_pos = imp_in.pos;\n        float2 in_uv = imp_in.uv;\n        float4 in_col = imp_in.col;\n"
+                       "        ImpVaryings v;\n        v.col = in_col;\n        v.uv = in_uv;\n");
         for (int i = 0; i < varying_count; i++)
             out.appendf("        v.%s = %s(0);\n", varyings[i].name, varyings[i].type);
-        out.appendf("        float4 position = ProjMtx * float4(in_pos, 0.0, 1.0);\n        {\n%s\n        }\n"
-                    "        v.position = position;\n        return v;\n    }\n};\n", ImPlatform_PartsText(parts->vs_body));
-        out.append("struct ImpVertexInput { float2 pos [[attribute(0)]]; float2 uv [[attribute(1)]]; float4 col [[attribute(2)]]; };\n"
-                   "vertex ImpVaryings vs_main(ImpVertexInput imp_in [[stage_in]], constant ImpVertex& imp_vertex [[buffer(1)]]");
+        out.appendf("        float4 position = %s;\n        {\n%s\n        }\n"
+                    "        v.position = position;\n        return v;\n    }\n};\n",
+                    input_count ? "float4(0.0, 0.0, 0.0, 1.0)" : "ProjMtx * float4(in_pos, 0.0, 1.0)", ImPlatform_PartsText(parts->vs_body));
+        out.append("vertex ImpVaryings vs_main(ImpVertexInput imp_in [[stage_in]], constant ImpVertex& imp_vertex [[buffer(1)]]");
     }
     else
     {
@@ -289,15 +351,15 @@ static void ImPlatform_PartsMSL(ImGuiTextBuffer& out, const ImPlatform_ShaderPar
     for (int slot = 1; slot < 9; slot++)
         if (parts->textures[slot])
             out.appendf("    ctx.%s = %s;\n", parts->textures[slot], parts->textures[slot]);
-    out.append(vertex ? "    return ctx.imp_vs(imp_in.pos, imp_in.uv, imp_in.col);\n}\n" : "    return ctx.imp_ps(v);\n}\n");
+    out.append(vertex ? "    return ctx.imp_vs(imp_in);\n}\n" : "    return ctx.imp_ps(v);\n}\n");
 }
 
 IMPLATFORM_API bool ImPlatform_ParseShaderParts(char* text, ImPlatform_ShaderParts* parts)
 {
     if (!text || !parts)
         return false;
-    static const char* const names[] = { "params", "varyings", "textures", "defines", "functions", "vs", "ps" };
-    const char** fields[] = { &parts->params, &parts->varyings, NULL, &parts->defines, &parts->functions, &parts->vs_body, &parts->ps_body };
+    static const char* const names[] = { "params", "inputs", "varyings", "textures", "defines", "functions", "vs", "ps" };
+    const char** fields[] = { &parts->params, &parts->vertex_inputs, &parts->varyings, NULL, &parts->defines, &parts->functions, &parts->vs_body, &parts->ps_body };
     char* textures = NULL;
     bool found = false;
     for (char* line = text; line && *line; )
@@ -354,13 +416,18 @@ IMPLATFORM_API int ImPlatform_GenerateShaderSource(const ImPlatform_ShaderParts*
         return -1;
     ImPlatform_PartsDecl varyings[8];
     const int varying_count = ImPlatform_ParseDecls(parts->varyings, varyings, IM_ARRAYSIZE(varyings));
+    ImPlatform_PartsDecl inputs[16];
+    const int input_count = ImPlatform_ParseDecls(parts->vertex_inputs, inputs, IM_ARRAYSIZE(inputs));
+    for (int i = 0; i < input_count; i++)
+        if (!inputs[i].semantic[0])
+            snprintf(inputs[i].semantic, sizeof(inputs[i].semantic), "TEXCOORD%d", i);
     const bool vertex = stage == ImPlatform_ShaderStage_Vertex;
     ImGuiTextBuffer text;
     switch (format)
     {
-    case ImPlatform_ShaderFormat_HLSL: ImPlatform_PartsHLSL(text, parts, vertex, varyings, varying_count); break;
-    case ImPlatform_ShaderFormat_GLSL: ImPlatform_PartsGLSL(text, parts, vertex, varyings, varying_count); break;
-    case ImPlatform_ShaderFormat_MSL:  ImPlatform_PartsMSL(text, parts, vertex, varyings, varying_count); break;
+    case ImPlatform_ShaderFormat_HLSL: ImPlatform_PartsHLSL(text, parts, vertex, varyings, varying_count, inputs, input_count); break;
+    case ImPlatform_ShaderFormat_GLSL: ImPlatform_PartsGLSL(text, parts, vertex, varyings, varying_count, inputs, input_count); break;
+    case ImPlatform_ShaderFormat_MSL:  ImPlatform_PartsMSL(text, parts, vertex, varyings, varying_count, inputs, input_count); break;
     default: return -1;
     }
     if (out && out_size > 0)

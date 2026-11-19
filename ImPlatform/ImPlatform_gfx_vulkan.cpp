@@ -3569,6 +3569,12 @@ IMPLATFORM_API void ImPlatform_DrawQuadNow(ImPlatform_ShaderProgram program, ImV
     vkCmdDrawIndexed(cmd, 6, 1, 0, 0, 0);
 }
 
+// The layout comes from the vertex buffer's attributes at draw time (attribute i at shader location i).
+IMPLATFORM_API bool ImPlatform_CreateVertexInputLayout(ImPlatform_VertexBuffer vertex_buffer, ImPlatform_ShaderProgram program)
+{
+    return vertex_buffer && program;
+}
+
 // Draws the bound buffers inside a draw callback with the program bound last there (ImPlatform_BeginCustomShader,
 // ImPlatform_BeginCustomShader_Render), Dear ImGui's blending, into the current target. primitive_type: 0 triangles,
 // 1 lines, 2 points.

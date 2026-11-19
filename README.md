@@ -470,6 +470,7 @@ ImPlatformDemo_Win32_DX12 --shader-test        # shaders/gradient.hlsl drawn int
 ImPlatformDemo_Win32_DX12 --direct-draw-test   # from a draw callback: push a render target, push constants, DrawQuadNow
 ImPlatformDemo_Win32_DX12 --shader-parts-test  # a shader written as parts: parameters in both stages, varying, texture t1
 ImPlatformDemo_Win32_DX12 --texture3d-test     # a 2x2x2 texture at t1, sampled by shaders/volume_test.hlsl and by shader parts
+ImPlatformDemo_Win32_DX12 --vertex-inputs-test  # shader parts with their own vertex inputs and a flat int varying, DrawIndexed
 ```
 
 Each prints PASS or FAIL and exits with 0 (pass), 1 (fail) or 2 (unsupported by the backend).

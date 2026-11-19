@@ -1102,6 +1102,40 @@ struct ImPlatform_ShaderProgramData_DX10
     bool pixelConstantDataDirty;
 };
 
+// The vertex buffer's input layout, matched against the program's vertex shader: attributes sharing a semantic name
+// take indices 0, 1, ... in order. ImPlatform_BindBuffers sets it.
+IMPLATFORM_API bool ImPlatform_CreateVertexInputLayout(ImPlatform_VertexBuffer vertex_buffer, ImPlatform_ShaderProgram program)
+{
+    ImPlatform_BufferData_DX10* vb = (ImPlatform_BufferData_DX10*)vertex_buffer;
+    ImPlatform_ShaderProgramData_DX10* prog = (ImPlatform_ShaderProgramData_DX10*)program;
+    if (!vb || !prog || !prog->pVSBlob || !vb->vb_desc.attributes || vb->vb_desc.attribute_count == 0)
+        return false;
+    ImVector<D3D10_INPUT_ELEMENT_DESC> layout;
+    layout.resize((int)vb->vb_desc.attribute_count);
+    for (int i = 0; i < layout.Size; i++)
+    {
+        const ImPlatform_VertexAttribute& attr = vb->vb_desc.attributes[i];
+        UINT semantic_index = 0;
+        for (int j = 0; j < i; j++)
+            semantic_index += strcmp(vb->vb_desc.attributes[j].semantic_name, attr.semantic_name) == 0 ? 1 : 0;
+        static const DXGI_FORMAT formats[] = { DXGI_FORMAT_R32_FLOAT, DXGI_FORMAT_R32G32_FLOAT, DXGI_FORMAT_R32G32B32_FLOAT,
+                                               DXGI_FORMAT_R32G32B32A32_FLOAT, DXGI_FORMAT_R8G8B8A8_UINT, DXGI_FORMAT_R8G8B8A8_UNORM };
+        D3D10_INPUT_ELEMENT_DESC& e = layout[i];
+        e.SemanticName = attr.semantic_name;
+        e.SemanticIndex = semantic_index;
+        e.Format = formats[(int)attr.format < IM_ARRAYSIZE(formats) ? (int)attr.format : 3];
+        e.InputSlot = 0;
+        e.AlignedByteOffset = attr.offset;
+        e.InputSlotClass = D3D10_INPUT_PER_VERTEX_DATA;
+        e.InstanceDataStepRate = 0;
+    }
+    if (vb->pInputLayout)
+        vb->pInputLayout->Release();
+    vb->pInputLayout = NULL;
+    return SUCCEEDED(g_GfxData.pDevice->CreateInputLayout(layout.Data, (UINT)layout.Size, prog->pVSBlob->GetBufferPointer(),
+                                                          prog->pVSBlob->GetBufferSize(), &vb->pInputLayout));
+}
+
 // Global state for uniform block batching
 static ImPlatform_ShaderProgram g_CurrentUniformBlockProgram = nullptr;
 static void* g_UniformBlockData = nullptr;

@@ -807,6 +807,41 @@ static D3DFORMAT ImPlatform_GetD3D9IndexFormat(ImPlatform_IndexFormat format)
     return (format == ImPlatform_IndexFormat_UInt16) ? D3DFMT_INDEX16 : D3DFMT_INDEX32;
 }
 
+// The vertex buffer's declaration from its attributes (shader model 3 matches usages, not the shader): semantic names
+// map to D3DDECLUSAGE_*, attributes sharing one take usage indices 0, 1, ... ImPlatform_BindBuffers sets it.
+IMPLATFORM_API bool ImPlatform_CreateVertexInputLayout(ImPlatform_VertexBuffer vertex_buffer, ImPlatform_ShaderProgram program)
+{
+    ImPlatform_BufferData_DX9* vb = (ImPlatform_BufferData_DX9*)vertex_buffer;
+    if (!vb || !program || !vb->vb_desc.attributes || vb->vb_desc.attribute_count == 0 || !g_GfxData.pDevice)
+        return false;
+    static const BYTE types[] = { D3DDECLTYPE_FLOAT1, D3DDECLTYPE_FLOAT2, D3DDECLTYPE_FLOAT3, D3DDECLTYPE_FLOAT4, D3DDECLTYPE_UBYTE4, D3DDECLTYPE_UBYTE4N };
+    static const struct { const char* name; BYTE usage; } usages[] = {
+        { "POSITION", D3DDECLUSAGE_POSITION }, { "TEXCOORD", D3DDECLUSAGE_TEXCOORD }, { "COLOR", D3DDECLUSAGE_COLOR },
+        { "NORMAL", D3DDECLUSAGE_NORMAL }, { "TANGENT", D3DDECLUSAGE_TANGENT }, { "BINORMAL", D3DDECLUSAGE_BINORMAL },
+        { "BLENDWEIGHT", D3DDECLUSAGE_BLENDWEIGHT }, { "BLENDINDICES", D3DDECLUSAGE_BLENDINDICES } };
+    ImVector<D3DVERTEXELEMENT9> elements;
+    for (unsigned int i = 0; i < vb->vb_desc.attribute_count; i++)
+    {
+        const ImPlatform_VertexAttribute& attr = vb->vb_desc.attributes[i];
+        BYTE usage = D3DDECLUSAGE_TEXCOORD;
+        for (const auto& u : usages)
+            if (strcmp(attr.semantic_name, u.name) == 0)
+                usage = u.usage;
+        BYTE index = 0;
+        for (unsigned int j = 0; j < i; j++)
+            index += strcmp(vb->vb_desc.attributes[j].semantic_name, attr.semantic_name) == 0 ? 1 : 0;
+        D3DVERTEXELEMENT9 e = { 0, (WORD)attr.offset, types[(int)attr.format < IM_ARRAYSIZE(types) ? (int)attr.format : 3],
+                                D3DDECLMETHOD_DEFAULT, usage, index };
+        elements.push_back(e);
+    }
+    const D3DVERTEXELEMENT9 end = D3DDECL_END();
+    elements.push_back(end);
+    if (vb->pVertexDeclaration)
+        vb->pVertexDeclaration->Release();
+    vb->pVertexDeclaration = NULL;
+    return SUCCEEDED(g_GfxData.pDevice->CreateVertexDeclaration(elements.Data, &vb->pVertexDeclaration));
+}
+
 IMPLATFORM_API ImPlatform_VertexBuffer ImPlatform_CreateVertexBuffer(const void* vertex_data, const ImPlatform_VertexBufferDesc* desc)
 {
     if (!desc || !vertex_data)

@@ -57,6 +57,12 @@
   the device reports them), 10, 12, OpenGL 3, Vulkan, Metal and WebGPU now create them too, bound with
   `ImPlatform_SetShaderTexture()` to a slot the shader declares `Texture3D`. Shader parts declare one with a
   `<slot> <name> 3d` texture line (`ImPlatform_ShaderParts::textures_3d`). Demo: `--texture3d-test`.
+- **Shader parts with their own vertex inputs** (`vertex_inputs`, `//@inputs`: `float4 pos : POSITION; ...` in the
+  vertex buffer's attribute order, `in_<name>` in the vertex body) for `ImPlatform_DrawIndexed`, and flat varyings
+  (`nointerpolation int4 id;`: `flat` in GLSL, `[[flat]]` in MSL; not on DirectX 9). Demo: `--vertex-inputs-test`.
+- `ImPlatform_CreateVertexInputLayout()` is in the `VERTEX_BUFFERS` group and implemented by every backend in it: a
+  vertex declaration on DirectX 9 and an input layout on DirectX 10 (custom vertex buffers drew without one there),
+  a check of its arguments where the layout is built at draw time. DirectX 11 maps `UByte4N` vertex attributes.
 - Vulkan: texture uploads map and flush the whole staging allocation (a size that was not a multiple of
   `nonCoherentAtomSize` broke a validation rule).
 - Metal: `ImPlatform_SetShaderTexture()` slots 1..8 (both stages).
