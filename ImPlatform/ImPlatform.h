@@ -1024,8 +1024,10 @@ IMPLATFORM_API void ImPlatform_DrawQuadNow(ImPlatform_ShaderProgram program, ImV
 //   IMP_SAMPLE(tex, uv), IMP_SAMPLE_LEVEL(tex, uv, lod), IMP_LOAD(tex, int2 xy), IMP_MUL(matrix, vector),
 //   IMP_CAST(type, x) (instead of C-style casts), IMP_UNROLL / IMP_LOOP / IMP_BRANCH (loop and branch attributes),
 //   IMP_HLSL / IMP_GLSL / IMP_MSL (defined for the language being generated).
-// lerp, frac, saturate, rcp, rsqrt, atan2, fmod, ddx, ddy and mul are available everywhere. Write float literals
-// (1.0, not 1), construct vectors fully (float2(x, x)), do not index matrices, keep 'static const' data in functions.
+// lerp, frac, saturate, rcp, rsqrt, atan2, fmod, mad, ddx, ddy, mul, clip (scalar) and discard are available
+// everywhere. Write float literals (1.0, not 1), construct vectors fully (float2(x, x), not x.xx), compare vectors
+// component by component, do not index matrices, keep 'static const' data in functions, and do not name functions or
+// variables after GLSL / MSL built-ins (cross, distance, step...).
 // Names in scope:
 //   both stages  ProjMtx (b0), the parameters by member name (b1), texture0 (t0: the draw's texture) and the named
 //                textures (pixel stage), the helper functions
@@ -1038,8 +1040,8 @@ IMPLATFORM_API void ImPlatform_DrawQuadNow(ImPlatform_ShaderProgram program, ImV
 typedef struct ImPlatform_ShaderParts {
     const char* params;         // Members of the parameter block (b1): "float4 col0; float4 col1; float2 uv_start;"
     const char* varyings;       // Extra vertex -> pixel values, floats: "float2 world; float4 extra;" (up to 7)
-    const char* textures[9];    // Names of t1..t8 (index = register); [0] unused, the draw's texture is texture0
-    const char* defines;        // Preprocessor variants: "CLIP=1;MODE=2"
+    const char* textures[9];    // Names of t0..t8 (index = register); t0 (the draw's texture) is texture0 unless named
+    const char* defines;        // Preprocessor variants, ';' or new lines: "CLIP=1;MODE=2" or "#define MODE 2"
     const char* functions;      // Helper functions shared by both stages
     const char* vs_body;        // Vertex body (optional): changes position / v.* after the defaults
     const char* ps_body;        // Pixel body (optional): writes col_out
@@ -1051,6 +1053,11 @@ typedef struct ImPlatform_ShaderParts {
 // unsupported format or stage.
 IMPLATFORM_API int ImPlatform_GenerateShaderSource(const ImPlatform_ShaderParts* parts, ImPlatform_ShaderStage stage,
                                                    ImPlatform_ShaderFormat format, char* out, int out_size);
+// Parts from one text (a shader file): lines "//@params", "//@varyings", "//@textures", "//@defines", "//@functions",
+// "//@vs" and "//@ps" start the sections (text before the first one is ignored); texture lines are "<slot> <name>".
+// `text` is split in place and must outlive `parts`; fields of absent sections are left as they were. Returns false
+// when the text has no section.
+IMPLATFORM_API bool ImPlatform_ParseShaderParts(char* text, ImPlatform_ShaderParts* parts);
 #if IMPLATFORM_GFX_SUPPORT_SHADER_PARTS
 // Generates and compiles one stage for the backend (entry points vs_main / ps_main, or main in GLSL). Destroy with
 // ImPlatform_DestroyShader; link two stages with ImPlatform_CreateShaderProgram. NULL when the generated source does

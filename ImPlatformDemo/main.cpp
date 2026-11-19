@@ -328,21 +328,30 @@ static void DrawPartsTest( ImDrawList* dl )
 static bool CreatePartsTest()
 {
 #if IMPLATFORM_GFX_SUPPORT_SHADER_PARTS && IMPLATFORM_GFX_SUPPORT_SHADER_TEXTURES
-	ImPlatform_ShaderParts parts = {};
-	parts.params = "float4 ColorStart; float4 ColorEnd; float4 Offset;";
-	parts.varyings = "float2 world;";
-	parts.textures[ 1 ] = "tint";
-	parts.defines = "TINT_SCALE=1.0";
-	parts.functions =
+	// The parts as one text, as a shader file would hold them (ImPlatform_ParseShaderParts splits it in place).
+	static char text[] =
+		"// Gradient moved by Offset in the vertex stage, tinted by t1.\n"
+		"//@params\n"
+		"float4 ColorStart; float4 ColorEnd; float4 Offset;\n"
+		"//@varyings\n"
+		"float2 world;\n"
+		"//@textures\n"
+		"1 tint\n"
+		"//@defines\n"
+		"TINT_SCALE=1.0\n"
+		"//@functions\n"
 		"float4 Gradient(float t) { return lerp(ColorStart, ColorEnd, saturate(t)); }\n"
-		"float4 Tint(float2 uv) { return IMP_SAMPLE(tint, uv) * TINT_SCALE; }\n";
-	parts.vs_body =
+		"float4 Tint(float2 uv) { return IMP_SAMPLE(tint, uv) * TINT_SCALE; }\n"
+		"//@vs\n"
 		"position = mul(ProjMtx, float4(in_pos + Offset.xy, 0.0, 1.0));\n"
-		"v.world = in_pos + Offset.xy;\n";
-	parts.ps_body =
+		"v.world = in_pos + Offset.xy;\n"
+		"//@ps\n"
 		"float sum = 0.0;\n"
 		"IMP_UNROLL for (int i = 0; i < 4; i++) sum += 0.25;\n"
 		"col_out = Gradient(v.world.y / 64.0) * Tint(v.uv) * IMP_CAST(float, IMP_CAST(int, sum + 0.5));\n";
+	ImPlatform_ShaderParts parts = {};
+	if ( !ImPlatform_ParseShaderParts( text, &parts ) )
+		return false;
 	g_PartsShaders[ 0 ] = ImPlatform_CreateShaderFromParts( &parts, ImPlatform_ShaderStage_Vertex );
 	g_PartsShaders[ 1 ] = ImPlatform_CreateShaderFromParts( &parts, ImPlatform_ShaderStage_Fragment );
 	if ( g_PartsShaders[ 0 ] && g_PartsShaders[ 1 ] )

@@ -55,18 +55,18 @@ static int ImPlatform_ParseDecls(const char* list, ImPlatform_PartsDecl* out, in
     return count;
 }
 
-// "NAME=VALUE;OTHER" -> #define lines.
+// "NAME=VALUE;OTHER" (';' or new lines) -> #define lines; a line starting with '#' is kept as written.
 static void ImPlatform_PartsDefines(ImGuiTextBuffer& out, const char* defines)
 {
     for (const char* p = defines; p && *p; )
     {
-        const char* end = strchr(p, ';');
-        if (!end)
-            end = p + strlen(p);
-        const char* eq = (const char*)memchr(p, '=', (size_t)(end - p));
-        while (p < end && *p == ' ')
+        const char* end = p + strcspn(p, ";\n");
+        while (p < end && (*p == ' ' || *p == '\t' || *p == '\r'))
             p++;
-        if (p < end)
+        const char* eq = (const char*)memchr(p, '=', (size_t)(end - p));
+        if (p < end && *p == '#')
+            out.appendf("%.*s\n", (int)(end - p), p);
+        else if (p < end)
         {
             if (eq)
                 out.appendf("#define %.*s %.*s\n", (int)(eq - p), p, (int)(end - eq - 1), eq + 1);
@@ -78,6 +78,7 @@ static void ImPlatform_PartsDefines(ImGuiTextBuffer& out, const char* defines)
 }
 
 static const char* ImPlatform_PartsText(const char* s) { return s ? s : ""; }
+static const char* ImPlatform_PartsTexture0(const ImPlatform_ShaderParts* parts) { return parts->textures[0] ? parts->textures[0] : "texture0"; }
 
 // HLSL: Direct3D 9 (vs_3_0 / ps_3_0) to 12. Entry points vs_main and ps_main.
 static void ImPlatform_PartsHLSL(ImGuiTextBuffer& out, const ImPlatform_ShaderParts* parts, bool vertex,
@@ -97,7 +98,7 @@ static void ImPlatform_PartsHLSL(ImGuiTextBuffer& out, const ImPlatform_ShaderPa
     out.append("cbuffer ImpVertex : register(b0) { float4x4 ProjMtx; };\n");
     if (parts->params && parts->params[0])
         out.appendf("cbuffer ImpParams : register(b1) {\n%s\n};\n", parts->params);
-    out.append("SamplerState imp_sampler : register(s0);\nTexture2D texture0 : register(t0);\n");
+    out.appendf("SamplerState imp_sampler : register(s0);\nTexture2D %s : register(t0);\n", ImPlatform_PartsTexture0(parts));
     for (int slot = 1; slot < 9; slot++)
         if (parts->textures[slot])
             out.appendf("Texture2D %s : register(t%d);\n", parts->textures[slot], slot);
@@ -120,8 +121,8 @@ static void ImPlatform_PartsHLSL(ImGuiTextBuffer& out, const ImPlatform_ShaderPa
     else
     {
         out.appendf("float4 ps_main(ImpVaryings v) : SV_Target\n{\n"
-                    "    float4 col_out = v.col * texture0.Sample(imp_sampler, v.uv);\n    {\n%s\n    }\n"
-                    "    return col_out;\n}\n", ImPlatform_PartsText(parts->ps_body));
+                    "    float4 col_out = v.col * %s.Sample(imp_sampler, v.uv);\n    {\n%s\n    }\n"
+                    "    return col_out;\n}\n", ImPlatform_PartsTexture0(parts), ImPlatform_PartsText(parts->ps_body));
     }
 }
 
@@ -140,6 +141,7 @@ static void ImPlatform_PartsGLSL(ImGuiTextBuffer& out, const ImPlatform_ShaderPa
         "#define lerp mix\n#define frac fract\n#define rsqrt inversesqrt\n#define ddx dFdx\n#define ddy dFdy\n"
         "#define saturate(x) clamp((x), 0.0, 1.0)\n#define rcp(x) (1.0 / (x))\n#define atan2(y, x) atan((y), (x))\n"
         "#define fmod(x, y) ((x) - (y) * trunc((x) / (y)))\n#define mul(a, b) ((a) * (b))\n#define static\n"
+        "#define mad(a, b, c) ((a) * (b) + (c))\n#define clip(x) if ((x) < 0.0) discard\n"
         "#define IMP_UNROLL\n#define IMP_LOOP\n#define IMP_BRANCH\n"
         "#define IMP_SAMPLE(t, uv) texture(t, uv)\n"
         "#define IMP_SAMPLE_LEVEL(t, uv, lod) textureLod(t, uv, lod)\n"
@@ -154,7 +156,7 @@ static void ImPlatform_PartsGLSL(ImGuiTextBuffer& out, const ImPlatform_ShaderPa
                "#define ProjMtx (imp_proj * mat4(1.0, 0.0, 0.0, 0.0, 0.0, 1.0 - 2.0 * imp_mirror.x, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, imp_mirror.x * imp_mirror.y, 0.0, 1.0))\n");
     if (parts->params && parts->params[0])
         out.appendf("layout(binding = 1, std140) uniform ImpParams {\n%s\n};\n", parts->params);
-    out.append("uniform sampler2D texture0;\n");
+    out.appendf("uniform sampler2D %s;\n", ImPlatform_PartsTexture0(parts));
     for (int slot = 1; slot < 9; slot++)
         if (parts->textures[slot])
             out.appendf("uniform sampler2D %s;\n", parts->textures[slot]);
@@ -176,8 +178,8 @@ static void ImPlatform_PartsGLSL(ImGuiTextBuffer& out, const ImPlatform_ShaderPa
     else
     {
         out.appendf("layout(location = 0) out vec4 imp_out;\n"
-                    "void main()\n{\n    float4 col_out = v.col * texture(texture0, v.uv);\n    {\n%s\n    }\n"
-                    "    imp_out = col_out;\n}\n", ImPlatform_PartsText(parts->ps_body));
+                    "void main()\n{\n    float4 col_out = v.col * texture(%s, v.uv);\n    {\n%s\n    }\n"
+                    "    imp_out = col_out;\n}\n", ImPlatform_PartsTexture0(parts), ImPlatform_PartsText(parts->ps_body));
     }
 }
 
@@ -192,6 +194,7 @@ static void ImPlatform_PartsMSL(ImGuiTextBuffer& out, const ImPlatform_ShaderPar
         "#define IMP_MSL 1\n"
         "#define lerp mix\n#define frac fract\n#define ddx dfdx\n#define ddy dfdy\n"
         "#define rcp(x) (1.0f / (x))\n#define mul(a, b) ((a) * (b))\n#define static\n"
+        "#define mad(a, b, c) ((a) * (b) + (c))\n#define discard discard_fragment()\n#define clip(x) if ((x) < 0.0) discard_fragment()\n"
         "#define IMP_UNROLL\n#define IMP_LOOP\n#define IMP_BRANCH\n"
         "#define IMP_SAMPLE(t, uv) t.sample(imp_sampler, uv)\n"
         "#define IMP_SAMPLE_LEVEL(t, uv, lod) t.sample(imp_sampler, uv, level(lod))\n"
@@ -212,7 +215,7 @@ static void ImPlatform_PartsMSL(ImGuiTextBuffer& out, const ImPlatform_ShaderPar
     out.append("};\nstruct ImpVaryings {\n    float4 position [[position]];\n    float4 col;\n    float2 uv;\n");
     for (int i = 0; i < varying_count; i++)
         out.appendf("    %s;\n", varyings[i].decl);
-    out.append("};\nstruct ImpContext : ImpVertex, ImpParams {\n    texture2d<float> texture0;\n    sampler imp_sampler;\n");
+    out.appendf("};\nstruct ImpContext : ImpVertex, ImpParams {\n    texture2d<float> %s;\n    sampler imp_sampler;\n", ImPlatform_PartsTexture0(parts));
     for (int slot = 1; slot < 9; slot++)
         if (parts->textures[slot])
             out.appendf("    texture2d<float> %s;\n", parts->textures[slot]);
@@ -230,13 +233,13 @@ static void ImPlatform_PartsMSL(ImGuiTextBuffer& out, const ImPlatform_ShaderPar
     }
     else
     {
-        out.appendf("    float4 imp_ps(ImpVaryings v)\n    {\n        float4 col_out = v.col * texture0.sample(imp_sampler, v.uv);\n"
-                    "        {\n%s\n        }\n        return col_out;\n    }\n};\n", ImPlatform_PartsText(parts->ps_body));
+        out.appendf("    float4 imp_ps(ImpVaryings v)\n    {\n        float4 col_out = v.col * %s.sample(imp_sampler, v.uv);\n"
+                    "        {\n%s\n        }\n        return col_out;\n    }\n};\n", ImPlatform_PartsTexture0(parts), ImPlatform_PartsText(parts->ps_body));
         out.append("fragment float4 ps_main(ImpVaryings v [[stage_in]], constant ImpVertex& imp_vertex [[buffer(1)]]");
     }
     if (has_params)
         out.append(", constant ImpParams& imp_params [[buffer(2)]]");
-    out.append(", texture2d<float> texture0 [[texture(0)]]");
+    out.appendf(", texture2d<float> %s [[texture(0)]]", ImPlatform_PartsTexture0(parts));
     for (int slot = 1; slot < 9; slot++)
         if (parts->textures[slot])
             out.appendf(", texture2d<float> %s [[texture(%d)]]", parts->textures[slot], slot);
@@ -256,13 +259,61 @@ static void ImPlatform_PartsMSL(ImGuiTextBuffer& out, const ImPlatform_ShaderPar
                 out.appendf("    ctx.%s = imp_params.%s;\n", params[i].name, params[i].name);
         }
     }
-    out.append("    ctx.texture0 = texture0;\n    ctx.imp_sampler = imp_sampler;\n");
+    out.appendf("    ctx.%s = %s;\n    ctx.imp_sampler = imp_sampler;\n", ImPlatform_PartsTexture0(parts), ImPlatform_PartsTexture0(parts));
     for (int slot = 1; slot < 9; slot++)
         if (parts->textures[slot])
             out.appendf("    ctx.%s = %s;\n", parts->textures[slot], parts->textures[slot]);
     out.append(vertex ? "    return ctx.imp_vs(imp_in.pos, imp_in.uv, imp_in.col);\n}\n" : "    return ctx.imp_ps(v);\n}\n");
 }
 
+IMPLATFORM_API bool ImPlatform_ParseShaderParts(char* text, ImPlatform_ShaderParts* parts)
+{
+    if (!text || !parts)
+        return false;
+    static const char* const names[] = { "params", "varyings", "textures", "defines", "functions", "vs", "ps" };
+    const char** fields[] = { &parts->params, &parts->varyings, NULL, &parts->defines, &parts->functions, &parts->vs_body, &parts->ps_body };
+    char* textures = NULL;
+    bool found = false;
+    for (char* line = text; line && *line; )
+    {
+        char* next = strchr(line, '\n');
+        if (strncmp(line, "//@", 3) == 0)
+        {
+            const size_t len = strcspn(line + 3, " \t\r\n");
+            for (int i = 0; i < IM_ARRAYSIZE(names); i++)
+                if (len == strlen(names[i]) && strncmp(line + 3, names[i], len) == 0)
+                {
+                    *line = 0;      // Ends the previous section
+                    if (fields[i])
+                        *fields[i] = next ? next + 1 : "";
+                    else
+                        textures = next ? next + 1 : NULL;
+                    found = true;
+                }
+        }
+        line = next ? next + 1 : NULL;
+    }
+    // Texture lines "<slot> <name>": the names are terminated in place.
+    for (char* line = textures; line && *line; )
+    {
+        char* next = strchr(line, '\n');
+        char* end = NULL;
+        const long slot = strtol(line, &end, 10);
+        if (end != line && slot >= 0 && slot < 9)
+        {
+            while (*end == ' ' || *end == '\t')
+                end++;
+            const size_t len = strcspn(end, " \t\r\n");
+            if (len)
+            {
+                parts->textures[slot] = end;
+                end[len] = 0;
+            }
+        }
+        line = next ? next + 1 : NULL;
+    }
+    return found;
+}
 IMPLATFORM_API int ImPlatform_GenerateShaderSource(const ImPlatform_ShaderParts* parts, ImPlatform_ShaderStage stage,
                                                    ImPlatform_ShaderFormat format, char* out, int out_size)
 {
