@@ -528,7 +528,7 @@ jobs:
       - name: Build (Sharpmake Xcode)
         run: |
           for config in GLFW_OpenGL3 GLFW_Metal SDL2_OpenGL3 SDL2_Metal SDL3_OpenGL3 SDL3_Metal; do
-            xcodebuild -workspace ImPlatform_xcode_macOS.xcworkspace -scheme ImPlatformDemo_xcode_macOS -configuration $config build -quiet
+            xcodebuild -workspace ImPlatform_xcode_macOS.xcworkspace -scheme ImPlatformDemo_xcode_macOS_$config -configuration $config build -quiet
           done
 
       - name: Run Demo and Capture Screenshot

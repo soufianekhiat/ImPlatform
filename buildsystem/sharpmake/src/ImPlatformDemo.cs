@@ -54,6 +54,7 @@ namespace ImPlatform
             IsFileNameToLower = false;
             IsTargetFileNameToLower = false;
             SourceFilesExtensions.Add(".mm");
+            SourceFilesCompileExtensions.Add(".mm");    // Not compiled by default: imgui_impl_metal.mm, main_metal.mm
 
             SourceRootPath = Paths.Demo;
             foreach (string file in new[] { "imgui.cpp", "imgui_demo.cpp", "imgui_draw.cpp", "imgui_tables.cpp", "imgui_widgets.cpp", "imgui_stacklayout.cpp" })
@@ -73,6 +74,10 @@ namespace ImPlatform
         {
             conf.Name = target.ConfigName;
             conf.ProjectFileName = "[project.Name]_[target.DevEnv]_[target.Platform]";
+            // Xcode: one project per configuration. Sharpmake fills a project's Sources phase from its default
+            // configuration, so a file excluded there (the other backends, main.cpp or main_metal.mm) would compile in none.
+            if (target.Platform == Platform.mac)
+                conf.ProjectFileName += "_" + target.ConfigName;
             conf.ProjectPath = Path.Combine(Paths.Root, "projects", "ImPlatformDemo");
             conf.IntermediatePath = Path.Combine(Paths.Root, "tmp", "[target.Platform]", target.ConfigName);
             conf.TargetPath = Path.Combine(Paths.Root, "bin", "[target.Platform]");

@@ -384,7 +384,7 @@ msbuild ImPlatform_vs2022_Win64.sln /p:Configuration=Win32_DX11 /p:Platform=x64
 make -f ImPlatform_make_Linux.make config=glfw_opengl3
 
 # macOS
-xcodebuild -workspace ImPlatform_xcode_macOS.xcworkspace -scheme ImPlatformDemo_xcode_macOS -configuration GLFW_Metal build
+xcodebuild -workspace ImPlatform_xcode_macOS.xcworkspace -scheme ImPlatformDemo_xcode_macOS_GLFW_Metal -configuration GLFW_Metal build
 ```
 
 Edit the scripts in `buildsystem/sharpmake/src/` and regenerate; the generated files are not versioned.
