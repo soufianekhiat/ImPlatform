@@ -12,7 +12,7 @@ ImPlatform is a platform abstraction layer that simplifies multiplatform develop
 - **Custom Shader Support**: Render custom shaders with ImGui's vertex/index buffers
 - **Texture Creation API**: Platform-agnostic texture loading and management
 - **Render Targets and Render Passes**: Nestable render-target stack, and Dear ImGui draw data rendered into a texture before the frame on every backend, with premultiplied alpha
-- **Direct Draws from Draw Callbacks**: switch to a render texture, copy the current target, draw a quad or your own vertex buffers with a custom shader and pushed constants (DirectX 11/12, OpenGL 3, Vulkan; DirectX 10 and WebGPU without target switches or copies)
+- **Direct Draws from Draw Callbacks**: switch to a render texture, copy the current target, draw a quad or your own vertex buffers with a custom shader and pushed constants (DirectX 9/11/12, OpenGL 3, Vulkan; DirectX 10 and WebGPU without target switches or copies)
 - **Readback and Compute**: Texture readback (synchronous, and asynchronous on DirectX 11/12) and compute dispatch on DirectX 11/12, Vulkan and OpenGL 4.3+
 - **Pen Input**: Pressure, tilt, barrel rotation, eraser and coalesced samples (Win32)
 - **Custom Graphics Backend**: `IM_GFX_CUSTOM` keeps the platform layer and lets the application provide the renderer

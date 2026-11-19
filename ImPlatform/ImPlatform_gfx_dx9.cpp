@@ -43,10 +43,6 @@ static ImDrawData* g_PassDrawData = NULL;
 static bool        g_PassClear = false;
 static void        ImPlatform_RunRenderPass();
 
-// Saved render target for Begin/EndRenderToTexture
-static IDirect3DSurface9* g_SavedSurface  = NULL;
-static D3DVIEWPORT9       g_SavedViewport = {};
-
 // Sampler stack for PushSampler/PopSampler — saves D3D9 per-stage state
 struct ImPlatform_SamplerStackEntry_DX9 { DWORD minF, magF, addrU, addrV; };
 static ImPlatform_SamplerStackEntry_DX9 g_SamplerStack[8];
@@ -519,49 +515,6 @@ IMPLATFORM_API ImTextureID ImPlatform_CreateRenderTexture(const ImPlatform_Textu
     return (ImTextureID)pTexture;
 }
 
-IMPLATFORM_API bool ImPlatform_BeginRenderToTexture(ImTextureID texture)
-{
-    if (!texture || !g_GfxData.pDevice)
-        return false;
-
-    LPDIRECT3DTEXTURE9 pTex = (LPDIRECT3DTEXTURE9)texture;
-
-    ImPlatform_RTTracking_DX9* entry = g_RTTrackingHead;
-    while (entry) { if (entry->pTexture == pTex) break; entry = entry->next; }
-    if (!entry) return false;
-
-    // Save current render target and viewport
-    g_GfxData.pDevice->GetRenderTarget(0, &g_SavedSurface);
-    g_GfxData.pDevice->GetViewport(&g_SavedViewport);
-
-    // Redirect render target to texture surface
-    g_GfxData.pDevice->SetRenderTarget(0, entry->pSurface);
-
-    D3DSURFACE_DESC surf_desc;
-    entry->pSurface->GetDesc(&surf_desc);
-
-    D3DVIEWPORT9 vp = {};
-    vp.Width  = surf_desc.Width;
-    vp.Height = surf_desc.Height;
-    vp.MaxZ   = 1.0f;
-    g_GfxData.pDevice->SetViewport(&vp);
-
-    g_GfxData.pDevice->Clear(0, NULL, D3DCLEAR_TARGET, 0x00000000, 1.0f, 0);
-
-    return true;
-}
-
-IMPLATFORM_API void ImPlatform_EndRenderToTexture(void)
-{
-    if (!g_GfxData.pDevice || !g_SavedSurface)
-        return;
-
-    g_GfxData.pDevice->SetRenderTarget(0, g_SavedSurface);
-    g_GfxData.pDevice->SetViewport(&g_SavedViewport);
-    g_SavedSurface->Release();
-    g_SavedSurface = NULL;
-}
-
 IMPLATFORM_API bool ImPlatform_CopyBackbuffer(ImTextureID dst) { (void)dst; return false; }
 IMPLATFORM_API void ImPlatform_GetBackbufferSize(unsigned int* width, unsigned int* height)
 {
@@ -989,8 +942,7 @@ IMPLATFORM_API void ImPlatform_DrawIndexed(unsigned int primitive_type, unsigned
 // parameters) register by register, at the member offsets a shader model 4 compile of the same source reflects.
 // Textures: the compiler numbers combined samplers from s1, so the bytecode is renumbered to sampler N for texture tN
 // (the draw's texture, t0, is on Dear ImGui's stage 0).
-// shortcut: no cache_key / compile_flags shader cache and no ImPlatform_SetShaderTexture (t1..t8) on DX9; add them
-// with a DX9 application that needs them.
+// shortcut: no cache_key / compile_flags shader cache on DX9; add it with a DX9 application that needs it.
 
 struct ImP9_Constant
 {
@@ -1011,7 +963,18 @@ struct ImPlatform_ShaderProgramData_DX9
     ImPlatform_ShaderData_DX9* vs;
     ImPlatform_ShaderData_DX9* ps;
     ImVector<unsigned char> params; // b1
+    IDirect3DTexture9* textures[9]; // ImPlatform_SetShaderTexture: t0 for direct draws, t1..t8 for every draw (referenced)
 };
+
+// b1 of the direct draws while pushed (ImPlatform_PushShaderConstants), a stack.
+struct ImP9_PushedConstants
+{
+    ImVector<unsigned char> data;
+    ImP9_PushedConstants* prev;
+};
+static ImP9_PushedConstants* g_P9_Pushed = NULL;
+static ImPlatform_ShaderProgramData_DX9* g_P9_Bound = NULL;     // Program bound by the last draw callback or direct draw
+static D3DMATRIX g_P9_BoundProjection = {};
 
 // The constant table of shader model 3 bytecode (D3DXSHADER_CONSTANTTABLE / D3DXSHADER_CONSTANTINFO, d3dx9shader.h).
 struct ImP9_CTab { DWORD Size, Creator, Version, Constants, ConstantInfo, Flags, Target; };
@@ -1175,6 +1138,11 @@ IMPLATFORM_API void ImPlatform_DestroyShaderProgram(ImPlatform_ShaderProgram pro
         return;
     ImPlatform_DestroyShader(pd->vs);
     ImPlatform_DestroyShader(pd->ps);
+    for (IDirect3DTexture9* tex : pd->textures)
+        if (tex)
+            tex->Release();
+    if (g_P9_Bound == pd)
+        g_P9_Bound = NULL;
     IM_DELETE(pd);
 }
 
@@ -1201,6 +1169,29 @@ static void ImP9_UploadConstants(const ImPlatform_ShaderData_DX9* sd, const D3DM
         }
 }
 
+// Binds a program with the projection of its target: shaders, b0 and b1 (the pushed constants while pushed) in both
+// stages, and the textures t1..t8 (t0 too for direct draws) with Dear ImGui's sampler state (linear, clamp).
+static void ImP9_BindProgram(ImPlatform_ShaderProgramData_DX9* pd, const D3DMATRIX& projection, bool direct)
+{
+    LPDIRECT3DDEVICE9 dev = g_GfxData.pDevice;
+    dev->SetVertexShader((IDirect3DVertexShader9*)pd->vs->shader);
+    dev->SetPixelShader((IDirect3DPixelShader9*)pd->ps->shader);
+    const ImVector<unsigned char>& params = g_P9_Pushed ? g_P9_Pushed->data : pd->params;
+    ImP9_UploadConstants(pd->vs, projection, params);
+    ImP9_UploadConstants(pd->ps, projection, params);
+    for (DWORD slot = direct ? 0 : 1; slot < 9; slot++)
+        if (pd->textures[slot])
+        {
+            dev->SetTexture(slot, pd->textures[slot]);
+            dev->SetSamplerState(slot, D3DSAMP_MINFILTER, D3DTEXF_LINEAR);
+            dev->SetSamplerState(slot, D3DSAMP_MAGFILTER, D3DTEXF_LINEAR);
+            dev->SetSamplerState(slot, D3DSAMP_ADDRESSU, D3DTADDRESS_CLAMP);
+            dev->SetSamplerState(slot, D3DSAMP_ADDRESSV, D3DTADDRESS_CLAMP);
+        }
+    g_P9_Bound = pd;
+    g_P9_BoundProjection = projection;
+}
+
 IMPLATFORM_API void ImPlatform_UseShaderProgram(ImPlatform_ShaderProgram program)
 {
     ImPlatform_ShaderProgramData_DX9* pd = (ImPlatform_ShaderProgramData_DX9*)program;
@@ -1208,10 +1199,7 @@ IMPLATFORM_API void ImPlatform_UseShaderProgram(ImPlatform_ShaderProgram program
         return;
     D3DMATRIX projection;
     g_GfxData.pDevice->GetTransform(D3DTS_PROJECTION, &projection);    // Set by Dear ImGui's DX9 backend for the target
-    g_GfxData.pDevice->SetVertexShader((IDirect3DVertexShader9*)pd->vs->shader);
-    g_GfxData.pDevice->SetPixelShader((IDirect3DPixelShader9*)pd->ps->shader);
-    ImP9_UploadConstants(pd->vs, projection, pd->params);
-    ImP9_UploadConstants(pd->ps, projection, pd->params);
+    ImP9_BindProgram(pd, projection, false);
 }
 
 IMPLATFORM_API bool ImPlatform_SetShaderUniform(ImPlatform_ShaderProgram program, const char* /*name*/, const void* data, unsigned int size)
@@ -1224,9 +1212,22 @@ IMPLATFORM_API bool ImPlatform_SetShaderUniform(ImPlatform_ShaderProgram program
     return true;
 }
 
-IMPLATFORM_API bool ImPlatform_SetShaderTexture(ImPlatform_ShaderProgram /*program*/, const char* /*name*/, unsigned int /*slot*/, ImTextureID /*texture*/)
+// Slot N is sampler N (CreateShader renumbers the samplers so tN reads sampler N). Kept by the program; applied at once
+// when the program is bound (inside a draw callback).
+IMPLATFORM_API bool ImPlatform_SetShaderTexture(ImPlatform_ShaderProgram program, const char* /*name*/, unsigned int slot, ImTextureID texture)
 {
-    return false;
+    ImPlatform_ShaderProgramData_DX9* pd = (ImPlatform_ShaderProgramData_DX9*)program;
+    if (!pd || slot > 8)
+        return false;
+    IDirect3DTexture9* tex = (IDirect3DTexture9*)texture;
+    if (tex)
+        tex->AddRef();
+    if (pd->textures[slot])
+        pd->textures[slot]->Release();
+    pd->textures[slot] = tex;
+    if (pd == g_P9_Bound && g_GfxData.pDevice)
+        g_GfxData.pDevice->SetTexture(slot, tex);
+    return true;
 }
 
 IMPLATFORM_API void ImPlatform_BeginUniformBlock(ImPlatform_ShaderProgram program)
@@ -1312,27 +1313,152 @@ IMPLATFORM_API void ImPlatform_EndCustomShader(ImDrawList* draw)
     if (!draw)
         return;
 
+    draw->AddCallback([](const ImDrawList*, const ImDrawCmd*) { g_P9_Bound = NULL; }, NULL);      // Unbound by the reset
     draw->AddCallback(ImGui::GetPlatformIO().DrawCallback_ResetRenderState, NULL);
 }
 
+// b1 of the direct draws (and of the bound program) until popped.
 IMPLATFORM_API void* ImPlatform_PushShaderConstants(const void* data, unsigned int size)
 {
-    (void)data; (void)size;
-    return nullptr;
+    if (!data || size == 0)
+        return nullptr;
+    ImP9_PushedConstants* pushed = IM_NEW(ImP9_PushedConstants)();
+    pushed->data.resize((int)size);
+    memcpy(pushed->data.Data, data, size);
+    pushed->prev = g_P9_Pushed;
+    g_P9_Pushed = pushed;
+    if (g_P9_Bound)
+    {
+        ImP9_UploadConstants(g_P9_Bound->vs, g_P9_BoundProjection, pushed->data);
+        ImP9_UploadConstants(g_P9_Bound->ps, g_P9_BoundProjection, pushed->data);
+    }
+    return pushed;
 }
 
 IMPLATFORM_API void ImPlatform_PopShaderConstants(void* handle)
 {
-    (void)handle;
+    ImP9_PushedConstants* pushed = (ImP9_PushedConstants*)handle;
+    if (!pushed || pushed != g_P9_Pushed)       // Pops are in push order
+        return;
+    g_P9_Pushed = pushed->prev;
+    IM_DELETE(pushed);
 }
 
-// shortcut: render-target stack, current-target copy and immediate quad are implemented on DX11 and
-// OpenGL3 only; here they report "unsupported" until this backend gets them (see ImPlatform_GetCaps).
-IMPLATFORM_API bool ImPlatform_PushRenderTarget(ImTextureID texture, bool clear) { (void)texture; (void)clear; return false; }
-IMPLATFORM_API void ImPlatform_PopRenderTarget(void) {}
+// Render-target stack: the target, viewport and scissor of each level. A pushed target is unbound from the texture
+// stages first (a texture cannot be read while it is the target).
+struct ImP9_SavedTarget
+{
+    IDirect3DSurface9* surface;
+    D3DVIEWPORT9 viewport;
+    RECT scissor;
+};
+static ImP9_SavedTarget g_P9_Targets[8];
+static int g_P9_TargetDepth = 0;
+
+IMPLATFORM_API bool ImPlatform_PushRenderTarget(ImTextureID texture, bool clear)
+{
+    ImPlatform_RTTracking_DX9* entry = ImPlatform_FindRT_DX9(texture);
+    if (!entry || !g_GfxData.pDevice || g_P9_TargetDepth >= IM_ARRAYSIZE(g_P9_Targets))
+        return false;
+    LPDIRECT3DDEVICE9 dev = g_GfxData.pDevice;
+    ImP9_SavedTarget& saved = g_P9_Targets[g_P9_TargetDepth++];
+    dev->GetRenderTarget(0, &saved.surface);
+    dev->GetViewport(&saved.viewport);
+    dev->GetScissorRect(&saved.scissor);
+    for (DWORD stage = 0; stage < 9; stage++)
+        dev->SetTexture(stage, NULL);
+    dev->SetRenderTarget(0, entry->pSurface);       // Also sets the viewport to the whole surface
+    D3DSURFACE_DESC desc;
+    entry->pSurface->GetDesc(&desc);
+    const RECT scissor = { 0, 0, (LONG)desc.Width, (LONG)desc.Height };
+    dev->SetScissorRect(&scissor);
+    if (clear)
+        dev->Clear(0, NULL, D3DCLEAR_TARGET, D3DCOLOR_ARGB(0, 0, 0, 0), 1.0f, 0);
+    return true;
+}
+
+IMPLATFORM_API void ImPlatform_PopRenderTarget(void)
+{
+    if (!g_GfxData.pDevice || g_P9_TargetDepth <= 0)
+        return;
+    ImP9_SavedTarget& saved = g_P9_Targets[--g_P9_TargetDepth];
+    g_GfxData.pDevice->SetRenderTarget(0, saved.surface);
+    g_GfxData.pDevice->SetViewport(&saved.viewport);
+    g_GfxData.pDevice->SetScissorRect(&saved.scissor);
+    if (saved.surface)
+        saved.surface->Release();
+    saved.surface = NULL;
+}
+
+IMPLATFORM_API bool ImPlatform_BeginRenderToTexture(ImTextureID texture) { return ImPlatform_PushRenderTarget(texture, true); }
+IMPLATFORM_API void ImPlatform_EndRenderToTexture(void)                  { ImPlatform_PopRenderTarget(); }
+
+IMPLATFORM_API void ImPlatform_GetCurrentTargetSize(unsigned int* width, unsigned int* height)
+{
+    D3DSURFACE_DESC desc = {};
+    IDirect3DSurface9* surface = NULL;
+    if (g_GfxData.pDevice && SUCCEEDED(g_GfxData.pDevice->GetRenderTarget(0, &surface)) && surface)
+    {
+        surface->GetDesc(&desc);
+        surface->Release();
+    }
+    if (width)  *width  = desc.Width;
+    if (height) *height = desc.Height;
+}
+
+// StretchRect from the current target into a render texture (ImPlatform_CreateRenderTexture), clipped to both.
 IMPLATFORM_API bool ImPlatform_CopyCurrentTarget(ImTextureID dst, int src_x, int src_y, int w, int h, int dst_x, int dst_y)
-{ (void)dst; (void)src_x; (void)src_y; (void)w; (void)h; (void)dst_x; (void)dst_y; return false; }
-IMPLATFORM_API void ImPlatform_GetCurrentTargetSize(unsigned int* width, unsigned int* height) { if (width) *width = 0; if (height) *height = 0; }
-IMPLATFORM_API void ImPlatform_DrawQuadNow(ImPlatform_ShaderProgram program, ImVec4 dst_rect, ImVec4 uv_rect) { (void)program; (void)dst_rect; (void)uv_rect; }
+{
+    ImPlatform_RTTracking_DX9* entry = ImPlatform_FindRT_DX9(dst);
+    IDirect3DSurface9* src = NULL;
+    if (!entry || !g_GfxData.pDevice || FAILED(g_GfxData.pDevice->GetRenderTarget(0, &src)) || !src)
+        return false;
+    D3DSURFACE_DESC sd, dd;
+    src->GetDesc(&sd);
+    entry->pSurface->GetDesc(&dd);
+    if (src_x < 0) { w += src_x; dst_x -= src_x; src_x = 0; }
+    if (src_y < 0) { h += src_y; dst_y -= src_y; src_y = 0; }
+    if (dst_x < 0) { w += dst_x; src_x -= dst_x; dst_x = 0; }
+    if (dst_y < 0) { h += dst_y; src_y -= dst_y; dst_y = 0; }
+    const int sw = (int)sd.Width - src_x, dw = (int)dd.Width - dst_x, sh = (int)sd.Height - src_y, dh = (int)dd.Height - dst_y;
+    w = w < sw ? (w < dw ? w : dw) : (sw < dw ? sw : dw);
+    h = h < sh ? (h < dh ? h : dh) : (sh < dh ? sh : dh);
+    bool copied = false;
+    if (w > 0 && h > 0)
+    {
+        const RECT from = { src_x, src_y, src_x + w, src_y + h };
+        const RECT to = { dst_x, dst_y, dst_x + w, dst_y + h };
+        copied = SUCCEEDED(g_GfxData.pDevice->StretchRect(src, &from, entry->pSurface, &to, D3DTEXF_NONE));
+    }
+    src->Release();
+    return copied;
+}
+
+// A quad in the current target's pixels: Dear ImGui's DX9 vertex format and projection (half-pixel offset), the
+// program's t0 as the texture.
+IMPLATFORM_API void ImPlatform_DrawQuadNow(ImPlatform_ShaderProgram program, ImVec4 dst_rect, ImVec4 uv_rect)
+{
+    ImPlatform_ShaderProgramData_DX9* pd = (ImPlatform_ShaderProgramData_DX9*)program;
+    unsigned int tw = 0, th = 0;
+    ImPlatform_GetCurrentTargetSize(&tw, &th);
+    if (!pd || !g_GfxData.pDevice || tw == 0 || th == 0)
+        return;
+    const float L = 0.5f, R = (float)tw + 0.5f, T = 0.5f, B = (float)th + 0.5f;
+    const D3DMATRIX projection = { { {
+        2.0f / (R - L),    0.0f,              0.0f, 0.0f,
+        0.0f,              2.0f / (T - B),    0.0f, 0.0f,
+        0.0f,              0.0f,              0.5f, 0.0f,
+        (L + R) / (L - R), (T + B) / (B - T), 0.5f, 1.0f } } };
+    ImP9_BindProgram(pd, projection, true);
+    struct Vertex { float pos[3]; D3DCOLOR col; float uv[2]; };
+    const Vertex quad[4] = {
+        { { dst_rect.x, dst_rect.y, 0.0f }, 0xFFFFFFFF, { uv_rect.x, uv_rect.y } },
+        { { dst_rect.z, dst_rect.y, 0.0f }, 0xFFFFFFFF, { uv_rect.z, uv_rect.y } },
+        { { dst_rect.z, dst_rect.w, 0.0f }, 0xFFFFFFFF, { uv_rect.z, uv_rect.w } },
+        { { dst_rect.x, dst_rect.w, 0.0f }, 0xFFFFFFFF, { uv_rect.x, uv_rect.w } },
+    };
+    g_GfxData.pDevice->SetFVF(D3DFVF_XYZ | D3DFVF_DIFFUSE | D3DFVF_TEX1);
+    g_GfxData.pDevice->DrawPrimitiveUP(D3DPT_TRIANGLEFAN, 2, quad, sizeof(Vertex));
+}
 
 #endif // IM_GFX_DIRECTX9

@@ -1381,6 +1381,11 @@ static VkSubpassDependency ImPlatform_PassDependency()
     return dep;
 }
 
+static VkCommandBuffer ImPlatform_Vulkan_BeginOneShot();
+static bool ImPlatform_Vulkan_EndOneShot(VkCommandBuffer cb);
+static void ImPlatform_Vulkan_ImageBarrier(VkCommandBuffer cb, VkImage image, VkImageLayout from, VkImageLayout to,
+                                           VkPipelineStageFlags dst_stage, VkAccessFlags dst_access);
+
 IMPLATFORM_API ImTextureID ImPlatform_CreateRenderTexture(const ImPlatform_TextureDesc* desc)
 {
     if (!desc || !g_GfxData.device)
@@ -1403,7 +1408,7 @@ IMPLATFORM_API ImTextureID ImPlatform_CreateRenderTexture(const ImPlatform_Textu
         image_info.arrayLayers   = 1;
         image_info.samples       = VK_SAMPLE_COUNT_1_BIT;
         image_info.tiling        = VK_IMAGE_TILING_OPTIMAL;
-        image_info.usage         = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+        image_info.usage         = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
         image_info.sharingMode   = VK_SHARING_MODE_EXCLUSIVE;
         image_info.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
         err = vkCreateImage(g_GfxData.device, &image_info, g_Allocator, &image);
@@ -1542,8 +1547,13 @@ IMPLATFORM_API ImTextureID ImPlatform_CreateRenderTexture(const ImPlatform_Textu
     entry->format        = format;
     entry->next          = g_RTTrackingHead;
     g_RTTrackingHead     = entry;
-    // shortcut: the image is UNDEFINED until its first render pass, so reading it back before that
-    // reads garbage (and trips the validation layer); transition it at creation if that ever matters.
+    // In its resting layout from the start: copies into it (ImPlatform_CopyCurrentTarget) and readbacks expect it.
+    if (VkCommandBuffer cb = ImPlatform_Vulkan_BeginOneShot())
+    {
+        ImPlatform_Vulkan_ImageBarrier(cb, image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                                       VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT);
+        ImPlatform_Vulkan_EndOneShot(cb);
+    }
     ImPlatform_Vulkan_RegisterTexture(descriptorSet, image, imageView, VK_NULL_HANDLE, format, desc->width, desc->height, bytes_per_pixel,
                                       VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, false);
 

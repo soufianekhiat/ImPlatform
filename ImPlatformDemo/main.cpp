@@ -298,11 +298,13 @@ static int CheckShaderTest()
 }
 
 // --direct-draw-test: from a draw callback inside a render pass, the same gradient drawn by ImPlatform_DrawQuadNow into a
-// pushed render target, its colors from ImPlatform_PushShaderConstants, then read back: the direct draws a backdrop
-// effect makes (copy, push a target, draw a quad, pop).
+// pushed render target, its colors from ImPlatform_PushShaderConstants, copied by ImPlatform_CopyCurrentTarget, then both
+// read back: the direct draws a backdrop effect makes (copy, push a target, draw a quad, pop).
 static RenderPassScene g_DirectDrawPass;
 static ImTextureID g_DirectDrawTarget = 0;
+static ImTextureID g_DirectDrawCopy = 0;
 static bool g_DirectDrawPushed = false;
+static bool g_DirectDrawCopied = false;
 static void DirectDrawCallback( const ImDrawList*, const ImDrawCmd* )
 {
 	if ( !ImPlatform_PushRenderTarget( g_DirectDrawTarget, true ) )
@@ -312,6 +314,7 @@ static void DirectDrawCallback( const ImDrawList*, const ImDrawCmd* )
 	void* constants = ImPlatform_PushShaderConstants( colors, sizeof( colors ) );
 	ImPlatform_DrawQuadNow( g_ShaderTestProgram, ImVec4( 0, 0, 64, 64 ), ImVec4( 0, 0, 1, 1 ) );
 	ImPlatform_PopShaderConstants( constants );
+	g_DirectDrawCopied = ImPlatform_CopyCurrentTarget( g_DirectDrawCopy, 0, 0, 64, 64, 0, 0 );	// The backdrop copy of a blur
 	ImPlatform_PopRenderTarget();
 }
 
@@ -336,7 +339,15 @@ static int CheckDirectDrawTest()
 		return 2;
 	}
 	const RenderPassProbe probes[] = { { 32, 0, { 253, 0, 2, 255 } }, { 32, 32, { 125, 0, 130, 255 } }, { 32, 63, { 2, 0, 253, 255 } } };
-	const int bad = CheckRenderPassProbes( "direct draw", px, 64, probes, 3, 4 );
+	int bad = CheckRenderPassProbes( "direct draw", px, 64, probes, 3, 4 );
+	// Every backend with a render target stack copies the current target too
+	if ( !g_DirectDrawCopied || !ImPlatform_ReadTexture( g_DirectDrawCopy, 0, 0, 64, 64, px, sizeof( px ) ) )
+	{
+		printf( "FAIL: CopyCurrentTarget from the pushed target\n" );
+		++bad;
+	}
+	else
+		bad += CheckRenderPassProbes( "current target copy", px, 64, probes, 3, 4 );
 	if ( !bad )
 		printf( "PASS\n" );
 	return bad ? 1 : 0;
@@ -657,6 +668,7 @@ int main( int argc, char** argv )
 			ImPlatform_TextureDesc desc = ImPlatform_TextureDesc_Default( 64, 64 );
 			desc.format = ImPlatform_GetRenderPassFormat();
 			g_DirectDrawTarget = ImPlatform_CreateRenderTexture( &desc );
+			g_DirectDrawCopy = ImPlatform_CreateRenderTexture( &desc );
 			if ( !gradient_program || !g_DirectDrawTarget || !QueueRenderPassScene( g_DirectDrawPass, 64, DrawDirectDrawTest ) )
 #endif
 			{
@@ -874,6 +886,8 @@ int main( int argc, char** argv )
 	DestroyRenderPassScene( g_DirectDrawPass );
 	if ( g_DirectDrawTarget )
 		ImPlatform_DestroyTexture( g_DirectDrawTarget );
+	if ( g_DirectDrawCopy )
+		ImPlatform_DestroyTexture( g_DirectDrawCopy );
 #endif
 #endif
 #endif

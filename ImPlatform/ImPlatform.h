@@ -904,7 +904,7 @@ IMPLATFORM_API void ImPlatform_EndUniformBlock(
 // name: HLSL texture name (used by OpenGL)
 // slot: Texture register
 // texture: An ImPlatform texture; it must stay alive while set
-// Returns: false when the backend does not support it (DirectX 9, Metal) or the arguments are invalid
+// Returns: false when the backend does not support it (Metal) or the arguments are invalid
 IMPLATFORM_API bool ImPlatform_SetShaderTexture(
     ImPlatform_ShaderProgram program,
     const char* name,

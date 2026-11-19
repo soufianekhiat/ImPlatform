@@ -48,7 +48,11 @@
   A compute shader (entry point `cs_main`) gets SPIR-V and GLSL 430 with `ImPlatform_DispatchCompute()`'s bindings; the
   demo's `--compute-test` shader is one HLSL file.
 - DirectX 9 custom shaders: the same HLSL, compiled for `vs_3_0` / `ps_3_0`; cbuffer members are uploaded to the
-  constant registers shader model 3 assigns them, and the draw's texture `t0` is sampler 0.
+  constant registers shader model 3 assigns them, and texture `tN` is sampler N (`ImPlatform_SetShaderTexture()` slots
+  0..8). DirectX 9 also gets the render-target stack, `ImPlatform_CopyCurrentTarget()` (StretchRect),
+  `ImPlatform_DrawQuadNow()` and `ImPlatform_PushShaderConstants()`.
+- Vulkan: render textures take copies (`ImPlatform_CopyCurrentTarget()` into them) and start in their shader-read layout.
+- The demo's `--direct-draw-test` also checks `ImPlatform_CopyCurrentTarget()` from the pushed target.
 - Metal custom shaders from the same HLSL: `compile_shaders` emits MSL (Slang) with buffer indices shifted by one, the
   program's vertex layout comes from its attributes, and the parameters are bound at buffer 2. Metal buffer indices of
   hand-written MSL are now the HLSL registers plus one: projection at 1, parameters at 2 (they were at 1).

@@ -38,7 +38,7 @@ The same registers as ImPlatform's Direct3D 11 backend:
 
 `ImPlatform_SetShaderTexture` takes any ImPlatform texture. The program keeps it for its later draws; called inside a
 draw callback while the program is bound, it also applies at once. Unset slots are a white texture on Vulkan, the
-font atlas on WebGPU, and undefined on the other backends. DirectX 9 and Metal do not support it. Slot 0 is the texture
+font atlas on WebGPU, and undefined on the other backends. Metal does not support it. Slot 0 is the texture
 of the direct draws (`ImPlatform_DrawIndexed`, `ImPlatform_DrawQuadNow`); Dear ImGui's draws bind their own. On OpenGL, `name` is
 the HLSL texture name (SPIRV-Cross renames it `SPIRV_Cross_Combined<name><sampler>`, which is also found).
 
@@ -52,7 +52,7 @@ OpenGL and WebGPU take the registers as bindings `b0` -> 0, `b1` -> 1, `t0` -> 1
 Direct3D 9 compiles the same HLSL for `vs_3_0` / `ps_3_0` (Slang has no shader model 3 target). Shader model 3 has
 no constant buffers: each used cbuffer member gets its own float4 registers, and the backend fills them from `b0` and
 `b1` at the member offsets a shader model 4 compile of the source reflects. The draw's texture `t0` is renumbered to
-sampler 0; `t1`..`t8` are not supported there.
+sampler 0 and `t1`..`t8` to samplers 1..8.
 
 Metal takes Slang's indices (`bN` -> `buffer(N)`, `tN` -> `texture(N)`, `sN` -> `sampler(N)`) with the buffers shifted by one,
 because Dear ImGui's vertices are at buffer 0: `b0` (the projection) at 1, where Dear ImGui's backend also puts it,
