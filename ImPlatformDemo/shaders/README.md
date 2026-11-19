@@ -10,6 +10,10 @@ for every graphics backend into headers that `main.cpp` includes:
 | `<name>.glsl.h` | OpenGL 3.3+ (macOS included) | Slang's SPIR-V converted to GLSL 330 by SPIRV-Cross |
 | `<name>.wgsl.h` | WebGPU | Slang (`slangc -target wgsl`) |
 
+A compute shader (entry point `cs_main`, such as `compute_test.hlsl`) gets `<name>.hlsl.h`, `<name>.spv.h` and
+`<name>.glsl.h` (GLSL 430) with the bindings of `ImPlatform_DispatchCompute`: on Vulkan constants 0, inputs 1..,
+outputs 9.. (`-fvk-b-shift 0 0 -fvk-t-shift 1 0 -fvk-u-shift 9 0`); on OpenGL each class from 0.
+
 The headers are generated and committed. Rerun the script after editing a `.hlsl`:
 
 ```

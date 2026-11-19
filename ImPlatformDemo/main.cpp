@@ -340,6 +340,13 @@ static int CheckDirectDrawTest()
 #endif
 #endif // IMPLATFORM_GFX_SUPPORT_CUSTOM_SHADER
 
+#if IM_CURRENT_GFX == IM_GFX_OPENGL3
+#include "shaders/compute_test.glsl.h"
+#elif IM_CURRENT_GFX == IM_GFX_VULKAN
+#include "shaders/compute_test.spv.h"
+#else
+#include "shaders/compute_test.hlsl.h"
+#endif
 // --compute-test: storage texture + compute dispatch + readback, the same check on every backend.
 // Reads an input texture (t0), writes a storage texture (u0) with a constant from b0, reads it back.
 // Exit code: 0 pass, 1 fail, 2 unsupported here.
@@ -375,86 +382,20 @@ static int ImPlatformDemo_ComputeTest()
 
 	ImPlatform_ShaderDesc sd = {};
 	sd.stage = ImPlatform_ShaderStage_Compute;
-	sd.entry_point = "main";
+	// shaders/compute_test.hlsl, compiled by shaders/compile_shaders: HLSL on Direct3D, SPIR-V on Vulkan, GLSL 430 on OpenGL.
 #if IM_CURRENT_GFX == IM_GFX_OPENGL3
 	sd.format = ImPlatform_ShaderFormat_GLSL;
-	sd.source_code =
-		"#version 430\n"
-		"layout(local_size_x = 8, local_size_y = 8) in;\n"
-		"layout(binding = 0) uniform sampler2D inTex;\n"
-		"layout(rgba8, binding = 0) uniform writeonly image2D outTex;\n"
-		"layout(std140, binding = 0) uniform Params { vec4 p; };\n"
-		"void main() {\n"
-		"    ivec2 q = ivec2(gl_GlobalInvocationID.xy);\n"
-		"    vec4 c = texelFetch(inTex, q, 0);\n"
-		"    imageStore(outTex, q, vec4(c.r, c.g, p.z, 1.0));\n"
-		"}\n";
+	sd.entry_point = "main";
+	sd.source_code = compute_test_cs_glsl;
 #elif IM_CURRENT_GFX == IM_GFX_VULKAN
-	// glslangValidator -V + spirv-opt --strip-debug of (bindings: 0 constants, 1.. inputs, 9.. outputs):
-	//   #version 450
-	//   layout(local_size_x = 8, local_size_y = 8) in;
-	//   layout(set = 0, binding = 0, std140) uniform Params { vec4 p; };
-	//   layout(set = 0, binding = 1) uniform sampler2D inTex;
-	//   layout(set = 0, binding = 9, rgba8) uniform writeonly image2D outTex;
-	//   void main() {
-	//       ivec2 q = ivec2(gl_GlobalInvocationID.xy);
-	//       vec4 c = texelFetch(inTex, q, 0);
-	//       imageStore(outTex, q, vec4(c.r, c.g, p.z, 1.0));
-	//   }
-	static const unsigned int spirv[] = {
-		0x07230203, 0x00010000, 0x0008000b, 0x00000036, 0x00000000, 0x00020011, 0x00000001, 0x0006000b,
-		0x00000001, 0x4c534c47, 0x6474732e, 0x3035342e, 0x00000000, 0x0003000e, 0x00000000, 0x00000001,
-		0x0006000f, 0x00000005, 0x00000004, 0x6e69616d, 0x00000000, 0x0000000d, 0x00060010, 0x00000004,
-		0x00000011, 0x00000008, 0x00000008, 0x00000001, 0x00040047, 0x0000000d, 0x0000000b, 0x0000001c,
-		0x00040047, 0x00000019, 0x00000021, 0x00000001, 0x00040047, 0x00000019, 0x00000022, 0x00000000,
-		0x00030047, 0x00000021, 0x00000019, 0x00040047, 0x00000021, 0x00000021, 0x00000009, 0x00040047,
-		0x00000021, 0x00000022, 0x00000000, 0x00030047, 0x0000002b, 0x00000002, 0x00050048, 0x0000002b,
-		0x00000000, 0x00000023, 0x00000000, 0x00040047, 0x0000002d, 0x00000021, 0x00000000, 0x00040047,
-		0x0000002d, 0x00000022, 0x00000000, 0x00040047, 0x00000035, 0x0000000b, 0x00000019, 0x00020013,
-		0x00000002, 0x00030021, 0x00000003, 0x00000002, 0x00040015, 0x00000006, 0x00000020, 0x00000001,
-		0x00040017, 0x00000007, 0x00000006, 0x00000002, 0x00040020, 0x00000008, 0x00000007, 0x00000007,
-		0x00040015, 0x0000000a, 0x00000020, 0x00000000, 0x00040017, 0x0000000b, 0x0000000a, 0x00000003,
-		0x00040020, 0x0000000c, 0x00000001, 0x0000000b, 0x0004003b, 0x0000000c, 0x0000000d, 0x00000001,
-		0x00040017, 0x0000000e, 0x0000000a, 0x00000002, 0x00030016, 0x00000012, 0x00000020, 0x00040017,
-		0x00000013, 0x00000012, 0x00000004, 0x00040020, 0x00000014, 0x00000007, 0x00000013, 0x00090019,
-		0x00000016, 0x00000012, 0x00000001, 0x00000000, 0x00000000, 0x00000000, 0x00000001, 0x00000000,
-		0x0003001b, 0x00000017, 0x00000016, 0x00040020, 0x00000018, 0x00000000, 0x00000017, 0x0004003b,
-		0x00000018, 0x00000019, 0x00000000, 0x0004002b, 0x00000006, 0x0000001c, 0x00000000, 0x00090019,
-		0x0000001f, 0x00000012, 0x00000001, 0x00000000, 0x00000000, 0x00000000, 0x00000002, 0x00000004,
-		0x00040020, 0x00000020, 0x00000000, 0x0000001f, 0x0004003b, 0x00000020, 0x00000021, 0x00000000,
-		0x0004002b, 0x0000000a, 0x00000024, 0x00000000, 0x00040020, 0x00000025, 0x00000007, 0x00000012,
-		0x0004002b, 0x0000000a, 0x00000028, 0x00000001, 0x0003001e, 0x0000002b, 0x00000013, 0x00040020,
-		0x0000002c, 0x00000002, 0x0000002b, 0x0004003b, 0x0000002c, 0x0000002d, 0x00000002, 0x0004002b,
-		0x0000000a, 0x0000002e, 0x00000002, 0x00040020, 0x0000002f, 0x00000002, 0x00000012, 0x0004002b,
-		0x00000012, 0x00000032, 0x3f800000, 0x0004002b, 0x0000000a, 0x00000034, 0x00000008, 0x0006002c,
-		0x0000000b, 0x00000035, 0x00000034, 0x00000034, 0x00000028, 0x00050036, 0x00000002, 0x00000004,
-		0x00000000, 0x00000003, 0x000200f8, 0x00000005, 0x0004003b, 0x00000008, 0x00000009, 0x00000007,
-		0x0004003b, 0x00000014, 0x00000015, 0x00000007, 0x0004003d, 0x0000000b, 0x0000000f, 0x0000000d,
-		0x0007004f, 0x0000000e, 0x00000010, 0x0000000f, 0x0000000f, 0x00000000, 0x00000001, 0x0004007c,
-		0x00000007, 0x00000011, 0x00000010, 0x0003003e, 0x00000009, 0x00000011, 0x0004003d, 0x00000017,
-		0x0000001a, 0x00000019, 0x0004003d, 0x00000007, 0x0000001b, 0x00000009, 0x00040064, 0x00000016,
-		0x0000001d, 0x0000001a, 0x0007005f, 0x00000013, 0x0000001e, 0x0000001d, 0x0000001b, 0x00000002,
-		0x0000001c, 0x0003003e, 0x00000015, 0x0000001e, 0x0004003d, 0x0000001f, 0x00000022, 0x00000021,
-		0x0004003d, 0x00000007, 0x00000023, 0x00000009, 0x00050041, 0x00000025, 0x00000026, 0x00000015,
-		0x00000024, 0x0004003d, 0x00000012, 0x00000027, 0x00000026, 0x00050041, 0x00000025, 0x00000029,
-		0x00000015, 0x00000028, 0x0004003d, 0x00000012, 0x0000002a, 0x00000029, 0x00060041, 0x0000002f,
-		0x00000030, 0x0000002d, 0x0000001c, 0x0000002e, 0x0004003d, 0x00000012, 0x00000031, 0x00000030,
-		0x00070050, 0x00000013, 0x00000033, 0x00000027, 0x0000002a, 0x00000031, 0x00000032, 0x00040063,
-		0x00000022, 0x00000023, 0x00000033, 0x000100fd, 0x00010038
-	};
 	sd.format = ImPlatform_ShaderFormat_SPIRV;
-	sd.bytecode = spirv;
-	sd.bytecode_size = sizeof( spirv );
+	sd.entry_point = "main";
+	sd.bytecode = compute_test_cs_spv;
+	sd.bytecode_size = sizeof( compute_test_cs_spv );
 #else
 	sd.format = ImPlatform_ShaderFormat_HLSL;
-	sd.source_code =
-		"Texture2D<float4> inTex : register(t0);\n"
-		"RWTexture2D<float4> outTex : register(u0);\n"
-		"cbuffer Params : register(b0) { float4 p; };\n"
-		"[numthreads(8, 8, 1)] void main(uint3 id : SV_DispatchThreadID) {\n"
-		"    float4 c = inTex.Load(int3(id.xy, 0));\n"
-		"    outTex[id.xy] = float4(c.r, c.g, p.z, 1.0);\n"
-		"}\n";
+	sd.entry_point = "cs_main";
+	sd.source_code = compute_test_hlsl;
 #endif
 	ImPlatform_Shader cs = ImPlatform_CreateShader( &sd );
 	const float params[ 4 ] = { 0.0f, 0.0f, 0.5f, 0.0f };

@@ -45,6 +45,8 @@
 - Custom shaders written once in plain HLSL: `ImPlatformDemo/shaders/compile_shaders.*` compiles each `.hlsl` with
   [Slang](https://github.com/shader-slang/slang) to SPIR-V (Vulkan), WGSL (WebGPU) and, through SPIRV-Cross, to GLSL 330
   (OpenGL, macOS included); Direct3D compiles the HLSL itself. `buildsystem/fetch_slang.*` downloads the pinned Slang release.
+  A compute shader (entry point `cs_main`) gets SPIR-V and GLSL 430 with `ImPlatform_DispatchCompute()`'s bindings; the
+  demo's `--compute-test` shader is one HLSL file.
 
 ### Changed
 - `ImPlatform_PlatformEvents()` returns `false` when the frame should be skipped (quit requested or window
