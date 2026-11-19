@@ -46,11 +46,6 @@ static ImPlatform_ShaderProgram g_CurrentUniformBlockProgram = nullptr;
 static void* g_UniformBlockData = nullptr;
 static size_t g_UniformBlockSize = 0;
 
-// Sampler override state - [filter][wrap]: filter 0=Nearest 1=Linear, wrap 0=Clamp 1=Wrap 2=Mirror
-static void* g_MetalSamplers[2][3]  = {};  // id<MTLSamplerState>
-static void* g_SamplerStack[8]      = {};  // id<MTLSamplerState>
-static int   g_SamplerDepth         = 0;
-
 // Internal API - Get Metal gfx data
 ImPlatform_GfxData_Metal* ImPlatform_Gfx_GetData_Metal(void)
 {

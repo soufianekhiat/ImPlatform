@@ -268,9 +268,9 @@ struct ImPlatform_GfxData_OpenGL3 {
 #if defined(IM_CURRENT_PLATFORM) && (IM_CURRENT_PLATFORM == IM_PLATFORM_WIN32)
     HDC hDC;
     HGLRC hRC;
-#elif defined(IM_CURRENT_PLATFORM) && (IM_CURRENT_PLATFORM == IM_PLATFORM_GLFW)
-    // GLFW manages the GL context
-    int unused; // Avoid empty struct
+#else
+    // GLFW and SDL manage the GL context
+    int unused; // An empty struct is size 0 in C, 1 in C++ (-Wextern-c-compat)
 #endif
 };
 #endif
