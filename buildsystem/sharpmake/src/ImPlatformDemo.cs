@@ -97,6 +97,8 @@ namespace ImPlatform
             foreach (var backend in s_gfxBackend)
                 if (backend.Key != target.Gfx)
                     conf.SourceFilesBuildExclude.Add(Path.Combine(Paths.ImGui, "backends", backend.Value));
+            // Metal compiles the demo as Objective-C++ through main_metal.mm (see there), the other configurations main.cpp
+            conf.SourceFilesBuildExclude.Add(Path.Combine(Paths.Demo, target.Gfx == Gfx.Metal ? "main.cpp" : "main_metal.mm"));
         }
 
         [Configure(Platform.win64)]
@@ -233,8 +235,6 @@ namespace ImPlatform
                     conf.XcodeSystemFrameworks.Add("OpenGL");
                     break;
                 case Gfx.Metal:
-                    // ImPlatform.h includes ImPlatform_gfx_metal.mm into main.cpp: compile C++ as Objective-C++ (ARC is on by default).
-                    conf.AdditionalCompilerOptions.Add("-x", "objective-c++");
                     conf.XcodeSystemFrameworks.Add("Metal", "MetalKit", "QuartzCore", "Foundation");
                     break;
             }
