@@ -10,7 +10,7 @@
   commands that composite premultiplied images (render pass results); the vertex color is premultiplied too.
 - **Render-target stack**: `ImPlatform_PushRenderTarget()` / `ImPlatform_PopRenderTarget()` (nestable, optional clear),
   `ImPlatform_CopyCurrentTarget()`, `ImPlatform_GetCurrentTargetSize()`, `ImPlatform_DrawQuadNow()`.
-- **Readback**: `ImPlatform_SupportsReadback()`, `ImPlatform_ReadTexture()` (DirectX 9, 10, 11, 12, OpenGL 3, Vulkan);
+- **Readback**: `ImPlatform_SupportsReadback()`, `ImPlatform_ReadTexture()` (DirectX 9, 10, 11, 12, OpenGL 3, Vulkan, Metal);
   asynchronous `ImPlatform_BeginReadTexture()` / `PollReadback()` / `MapReadback()` / `ReleaseReadback()` on DirectX 11
   and 12, with pooled, persistently mapped readback buffers.
 - **Compute**: `ImPlatform_SupportsCompute()`, `ImPlatform_CreateStorageTexture()`, `ImPlatform_DispatchCompute()`
@@ -49,6 +49,9 @@
   demo's `--compute-test` shader is one HLSL file.
 - DirectX 9 custom shaders: the same HLSL, compiled for `vs_3_0` / `ps_3_0`; cbuffer members are uploaded to the
   constant registers shader model 3 assigns them, and the draw's texture `t0` is sampler 0.
+- Metal custom shaders from the same HLSL: `compile_shaders` emits MSL (Slang) with buffer indices shifted by one, the
+  program's vertex layout comes from its attributes, and the parameters are bound at buffer 2. Metal buffer indices of
+  hand-written MSL are now the HLSL registers plus one: projection at 1, parameters at 2 (they were at 1).
 
 ### Changed
 - `ImPlatform_PlatformEvents()` returns `false` when the frame should be skipped (quit requested or window

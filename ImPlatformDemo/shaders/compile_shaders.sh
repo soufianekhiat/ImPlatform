@@ -5,6 +5,7 @@
 #   <name>.spv.h   SPIR-V for Vulkan (Slang)
 #   <name>.glsl.h  GLSL 330 for OpenGL (Slang's SPIR-V converted by SPIRV-Cross)
 #   <name>.wgsl.h  WGSL for WebGPU (Slang)
+#   <name>.metal.h MSL for Metal (Slang), buffer indices shifted by one: Dear ImGui's vertices are at buffer 0
 # A compute shader gets <name>.hlsl.h, <name>.spv.h and <name>.glsl.h (GLSL 430) with ImPlatform_DispatchCompute's bindings.
 # Needs curl (to fetch Slang, see buildsystem/fetch_slang.sh) and spirv-cross (Vulkan SDK or the spirv-cross package).
 # Windows: compile_shaders.bat. Both scripts must produce the same output.
@@ -66,6 +67,8 @@ for src in *.hlsl; do
         "$SLANGC" "$src" -entry ${stage}_main -stage $kind -target spirv -profile spirv_1_3 -O3 $GL_SHIFTS -o "$TMP/$stage.gl.spv"
         "$SPIRV_CROSS" "$TMP/$stage.gl.spv" --version 330 --no-es $rename --output "$TMP/$stage.glsl"
         "$SLANGC" "$src" -entry ${stage}_main -stage $kind -target wgsl $GL_SHIFTS -o "$TMP/$stage.wgsl"
+        "$SLANGC" "$src" -entry ${stage}_main -stage $kind -target metal -line-directive-mode none -warnings-disable 39029 -o "$TMP/$stage.msl"
+        perl -pe 's/\[\[buffer\((\d+)\)\]\]/"[[buffer(" . ($1 + 1) . ")]]"/ge' "$TMP/$stage.msl" > "$TMP/$stage.metal"
     done
 
     { echo "$banner"; echo "static const char ${name}_hlsl[] ="; cstring "$src"; echo "    ;"; } > "$name.hlsl.h"
@@ -84,5 +87,10 @@ for src in *.hlsl; do
         echo "static const char ${name}_vs_wgsl[] ="; cstring "$TMP/vs.wgsl"; echo "    ;"
         echo "static const char ${name}_ps_wgsl[] ="; cstring "$TMP/ps.wgsl"; echo "    ;"
     } > "$name.wgsl.h"
-    echo "$src -> $name.hlsl.h $name.spv.h $name.glsl.h $name.wgsl.h"
+    {
+        echo "$banner"
+        echo "static const char ${name}_vs_metal[] ="; cstring "$TMP/vs.metal"; echo "    ;"
+        echo "static const char ${name}_ps_metal[] ="; cstring "$TMP/ps.metal"; echo "    ;"
+    } > "$name.metal.h"
+    echo "$src -> $name.hlsl.h $name.spv.h $name.glsl.h $name.wgsl.h $name.metal.h"
 done

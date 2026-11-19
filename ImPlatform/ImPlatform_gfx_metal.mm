@@ -881,8 +881,7 @@ IMPLATFORM_API ImPlatform_Shader ImPlatform_CreateShader(const ImPlatform_Shader
         NSError* error = nil;
         NSString* sourceString = [NSString stringWithUTF8String:desc->source_code];
 
-        MTLCompileOptions* options = [[MTLCompileOptions alloc] init];
-        options.languageVersion = MTLLanguageVersion2_0;
+        MTLCompileOptions* options = [[MTLCompileOptions alloc] init];     // The newest language version of the OS
 
         id<MTLLibrary> library = [device newLibraryWithSource:sourceString options:options error:&error];
         if (!library)
@@ -943,23 +942,43 @@ IMPLATFORM_API ImPlatform_ShaderProgram ImPlatform_CreateShaderProgram(ImPlatfor
         id<MTLFunction> vertexFunction = (__bridge id<MTLFunction>)vs_data->mtlFunction;
         id<MTLFunction> fragmentFunction = (__bridge id<MTLFunction>)fs_data->mtlFunction;
 
-        // Create vertex descriptor matching ImDrawVert
+        // Vertex descriptor of ImDrawVert (Dear ImGui binds the vertices at buffer 0). The attributes are told apart by
+        // type, in any order: the 4-component one is the color, the first 2-component one the position, the next the
+        // UV. HLSL compiled by Slang numbers them in declaration order; shaders without attributes get 0 pos, 1 uv, 2 col.
         MTLVertexDescriptor* vertexDescriptor = [[MTLVertexDescriptor alloc] init];
-
-        // Position (float2)
-        vertexDescriptor.attributes[0].format = MTLVertexFormatFloat2;
-        vertexDescriptor.attributes[0].offset = 0;
-        vertexDescriptor.attributes[0].bufferIndex = 0;
-
-        // UV (float2)
-        vertexDescriptor.attributes[1].format = MTLVertexFormatFloat2;
-        vertexDescriptor.attributes[1].offset = 8;
-        vertexDescriptor.attributes[1].bufferIndex = 0;
-
-        // Color (uchar4 normalized)
-        vertexDescriptor.attributes[2].format = MTLVertexFormatUChar4Normalized;
-        vertexDescriptor.attributes[2].offset = 16;
-        vertexDescriptor.attributes[2].bufferIndex = 0;
+        int locPos = 0, locUV = 1, locCol = 2;
+        if (vertexFunction.vertexAttributes.count > 0)
+        {
+            locPos = locUV = locCol = -1;
+            for (MTLVertexAttribute* attribute in vertexFunction.vertexAttributes)
+            {
+                if (!attribute.active)
+                    continue;
+                const int index = (int)attribute.attributeIndex;
+                const bool two = attribute.attributeType == MTLDataTypeFloat2 || attribute.attributeType == MTLDataTypeHalf2;
+                if (!two && locCol < 0)         locCol = index;
+                else if (two && locPos < 0)     locPos = index;
+                else if (two && locUV < 0)      locUV = index;
+            }
+        }
+        if (locPos >= 0)
+        {
+            vertexDescriptor.attributes[locPos].format = MTLVertexFormatFloat2;
+            vertexDescriptor.attributes[locPos].offset = offsetof(ImDrawVert, pos);
+            vertexDescriptor.attributes[locPos].bufferIndex = 0;
+        }
+        if (locUV >= 0)
+        {
+            vertexDescriptor.attributes[locUV].format = MTLVertexFormatFloat2;
+            vertexDescriptor.attributes[locUV].offset = offsetof(ImDrawVert, uv);
+            vertexDescriptor.attributes[locUV].bufferIndex = 0;
+        }
+        if (locCol >= 0)
+        {
+            vertexDescriptor.attributes[locCol].format = MTLVertexFormatUChar4Normalized;
+            vertexDescriptor.attributes[locCol].offset = offsetof(ImDrawVert, col);
+            vertexDescriptor.attributes[locCol].bufferIndex = 0;
+        }
 
         // Layout
         vertexDescriptor.layouts[0].stride = sizeof(ImDrawVert);
@@ -1227,6 +1246,47 @@ static bool        g_PassClear = false;
 
 IMPLATFORM_API ImPlatform_PixelFormat ImPlatform_GetRenderPassFormat(void) { return ImPlatform_PixelFormat_BGRA8; }
 
+// Readback: a blit into a shared buffer on the queue, after the work already committed, waited for.
+#define IMPLATFORM_GFX_HAS_READBACK 1
+IMPLATFORM_API bool ImPlatform_SupportsReadback(void) { return true; }
+
+IMPLATFORM_API bool ImPlatform_ReadTexture(ImTextureID texture, unsigned int x, unsigned int y, unsigned int width, unsigned int height,
+                                           void* out_pixels, size_t out_size)
+{
+    if (!texture || !out_pixels || !width || !height || !g_GfxData.pMetalDevice || !g_GfxData.pCommandQueue)
+        return false;
+    @autoreleasepool {
+        id<MTLTexture> tex = (__bridge id<MTLTexture>)(void*)texture;
+        unsigned int bpp = 0;
+        switch (tex.pixelFormat)
+        {
+        case MTLPixelFormatR8Unorm:                                         bpp = 1; break;
+        case MTLPixelFormatRGBA8Unorm: case MTLPixelFormatRGBA8Unorm_sRGB:
+        case MTLPixelFormatBGRA8Unorm: case MTLPixelFormatBGRA8Unorm_sRGB:
+        case MTLPixelFormatR32Float:                                        bpp = 4; break;
+        case MTLPixelFormatRGBA16Float:                                     bpp = 8; break;
+        case MTLPixelFormatRGBA32Float:                                     bpp = 16; break;
+        default:                                                            return false;
+        }
+        const size_t row = (size_t)width * bpp;
+        if (x + width > tex.width || y + height > tex.height || out_size < row * height)
+            return false;
+        id<MTLDevice> device = (__bridge id<MTLDevice>)g_GfxData.pMetalDevice;
+        id<MTLBuffer> buffer = [device newBufferWithLength:row * height options:MTLResourceStorageModeShared];
+        id<MTLCommandBuffer> commandBuffer = [(__bridge id<MTLCommandQueue>)g_GfxData.pCommandQueue commandBuffer];
+        id<MTLBlitCommandEncoder> blit = [commandBuffer blitCommandEncoder];
+        [blit copyFromTexture:tex sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(x, y, 0) sourceSize:MTLSizeMake(width, height, 1)
+                     toBuffer:buffer destinationOffset:0 destinationBytesPerRow:row destinationBytesPerImage:row * height];
+        [blit endEncoding];
+        [commandBuffer commit];
+        [commandBuffer waitUntilCompleted];
+        if (!buffer || commandBuffer.status != MTLCommandBufferStatusCompleted)
+            return false;
+        memcpy(out_pixels, buffer.contents, row * height);
+        return true;
+    }
+}
+
 IMPLATFORM_API bool ImPlatform_QueueRenderPass(ImTextureID target, ImDrawData* draw_data, bool clear)
 {
     if (!target || !draw_data || !g_GfxData.pCommandQueue)
@@ -1363,105 +1423,23 @@ static void ImPlatform_RenderDrawDataWrapper(ImDrawData* draw_data, id<MTLComman
     // NOTE: Don't clear g_CurrentDrawData here - it will be updated by the next render call
 }
 
-// ImDrawCallback handler to activate a custom shader
-static void ImPlatform_SetCustomShader(const ImDrawList* parent_list, const ImDrawCmd* cmd)
-{
-    @autoreleasepool {
-        ImPlatform_ShaderProgram program = (ImPlatform_ShaderProgram)cmd->UserCallbackData;
-        if (!program)
-            return;
-
-        ImPlatform_ShaderProgramData_Metal* program_data = (ImPlatform_ShaderProgramData_Metal*)program;
-
-        // Get the render encoder from ImGui's Metal backend
-        // Note: This requires access to ImGui's internal Metal state
-        // For now, we'll use a simplified approach that assumes we're in the middle of a render pass
-
-        // Find which viewport owns this draw list
-        ImDrawData* draw_data = nullptr;
-
-        // First, try the cached draw data
-        if (g_CurrentDrawData)
-        {
-            draw_data = g_CurrentDrawData;
-        }
-        else
-        {
-            // Fallback: search through all viewports to find which one owns this draw list
-            ImGuiPlatformIO& platform_io = ImGui::GetPlatformIO();
-            for (int i = 0; i < platform_io.Viewports.Size; i++)
-            {
-                ImGuiViewport* viewport = platform_io.Viewports[i];
-                if (viewport->DrawData)
-                {
-                    for (int j = 0; j < viewport->DrawData->CmdLists.Size; j++)
-                    {
-                        if (viewport->DrawData->CmdLists[j] == parent_list)
-                        {
-                            draw_data = viewport->DrawData;
-                            break;
-                        }
-                    }
-                    if (draw_data)
-                        break;
-                }
-            }
-        }
-
-        if (!draw_data)
-            return;
-
-        // Calculate projection matrix for this viewport
-        float L = draw_data->DisplayPos.x;
-        float R = draw_data->DisplayPos.x + draw_data->DisplaySize.x;
-        float T = draw_data->DisplayPos.y;
-        float B = draw_data->DisplayPos.y + draw_data->DisplaySize.y;
-
-        float ortho_projection[4][4] =
-        {
-            { 2.0f / (R - L),     0.0f,              0.0f, 0.0f },
-            { 0.0f,               2.0f / (T - B),    0.0f, 0.0f },
-            { 0.0f,               0.0f,              0.5f, 0.0f },
-            { (R + L) / (L - R),  (T + B) / (B - T), 0.5f, 1.0f },
-        };
-
-        // Note: Metal backend binding logic would go here
-        // This is a simplified implementation that demonstrates the pattern
-        // In a full implementation, you would:
-        // 1. Get the current render encoder from ImGui's Metal render state
-        // 2. Bind the custom pipeline state
-        // 3. Set the projection matrix as vertex shader uniforms
-        // 4. Set the custom fragment shader uniforms from program_data->uniformData
-
-        // Since we don't have direct access to the render encoder here without modifying ImGui's Metal backend,
-        // this serves as a reference implementation showing the required logic
-    }
-}
-
-// Activate a custom shader immediately (for use inside draw callbacks).
+// Binds a custom program on the current render encoder. Buffer indices are the HLSL registers plus one (Dear ImGui's
+// vertices are at buffer 0; compile_shaders shifts Slang's output): b0, the projection, at 1 where Dear ImGui's backend
+// also puts it, b1, the parameters, at 2 in both stages. t0 is the draw's texture (texture 0) and s0 sampler 0.
 IMPLATFORM_API void ImPlatform_BeginCustomShader_Render(ImPlatform_ShaderProgram program)
 {
     @autoreleasepool {
-        if (!program || !g_CurrentRenderEncoder)
+        ImDrawData* draw_data = g_CurrentDrawData ? g_CurrentDrawData : ImGui::GetDrawData();
+        if (!program || !g_CurrentRenderEncoder || !draw_data)
             return;
-
         ImPlatform_ShaderProgramData_Metal* program_data = (ImPlatform_ShaderProgramData_Metal*)program;
         id<MTLRenderCommandEncoder> renderEncoder = (__bridge id<MTLRenderCommandEncoder>)g_CurrentRenderEncoder;
 
-        // Find draw data for projection matrix calculation
-        ImDrawData* draw_data = g_CurrentDrawData;
-        if (!draw_data)
-            draw_data = ImGui::GetDrawData();
-        if (!draw_data)
-            return;
-
-        // Calculate projection matrix for this viewport
-        float L = draw_data->DisplayPos.x;
-        float R = draw_data->DisplayPos.x + draw_data->DisplaySize.x;
-        float T = draw_data->DisplayPos.y;
-        float B = draw_data->DisplayPos.y + draw_data->DisplaySize.y;
-
-        float ortho_projection[4][4] =
+        const float L = draw_data->DisplayPos.x;
+        const float R = draw_data->DisplayPos.x + draw_data->DisplaySize.x;
+        const float T = draw_data->DisplayPos.y;
+        const float B = draw_data->DisplayPos.y + draw_data->DisplaySize.y;
+        const float ortho_projection[4][4] =
         {
             { 2.0f / (R - L),     0.0f,              0.0f, 0.0f },
             { 0.0f,               2.0f / (T - B),    0.0f, 0.0f },
@@ -1469,28 +1447,25 @@ IMPLATFORM_API void ImPlatform_BeginCustomShader_Render(ImPlatform_ShaderProgram
             { (R + L) / (L - R),  (T + B) / (B - T), 0.5f, 1.0f },
         };
 
-        // Bind custom pipeline state
-        id<MTLRenderPipelineState> pipelineState = (__bridge id<MTLRenderPipelineState>)program_data->mtlRenderPipelineState;
-        if (pipelineState)
-            [renderEncoder setRenderPipelineState:pipelineState];
-
-        // Set projection matrix as vertex shader uniforms (buffer index 1, matching ImGui's Metal backend)
+        if (program_data->mtlRenderPipelineState)
+            [renderEncoder setRenderPipelineState:(__bridge id<MTLRenderPipelineState>)program_data->mtlRenderPipelineState];
         [renderEncoder setVertexBytes:&ortho_projection length:sizeof(ortho_projection) atIndex:1];
-
-        // Set custom fragment shader uniforms
-        if (program_data->uniformData && program_data->uniformDataSize > 0)
+        [renderEncoder setFragmentBytes:&ortho_projection length:sizeof(ortho_projection) atIndex:1];
+        // shortcut: parameters go through setBytes, limited to 4 KB; use a buffer when a program needs more.
+        if (program_data->uniformData && program_data->uniformDataSize > 0 && program_data->uniformDataSize <= 4096)
         {
-            id<MTLBuffer> uniformBuffer = (__bridge id<MTLBuffer>)program_data->mtlUniformBuffer;
-            if (uniformBuffer && program_data->uniformDataDirty)
-            {
-                memcpy([uniformBuffer contents], program_data->uniformData, program_data->uniformDataSize);
-                program_data->uniformDataDirty = false;
-            }
-
-            if (uniformBuffer)
-                [renderEncoder setFragmentBuffer:uniformBuffer offset:0 atIndex:1];
+            [renderEncoder setVertexBytes:program_data->uniformData length:program_data->uniformDataSize atIndex:2];
+            [renderEncoder setFragmentBytes:program_data->uniformData length:program_data->uniformDataSize atIndex:2];
         }
+        if (g_MetalSamplers[1][0])      // Linear, clamp: Dear ImGui's shader has its own sampler, a custom one reads s0
+            [renderEncoder setFragmentSamplerState:(__bridge id<MTLSamplerState>)g_MetalSamplers[1][0] atIndex:0];
     }
+}
+
+// ImDrawCallback handler to activate a custom shader
+static void ImPlatform_SetCustomShader(const ImDrawList* /*parent_list*/, const ImDrawCmd* cmd)
+{
+    ImPlatform_BeginCustomShader_Render((ImPlatform_ShaderProgram)cmd->UserCallbackData);
 }
 
 IMPLATFORM_API void ImPlatform_BeginCustomShader(ImDrawList* draw, ImPlatform_ShaderProgram shader)

@@ -5,6 +5,7 @@
 #   <name>.spv.h   SPIR-V for Vulkan (Slang)
 #   <name>.glsl.h  GLSL 330 for OpenGL (Slang's SPIR-V converted by SPIRV-Cross)
 #   <name>.wgsl.h  WGSL for WebGPU (Slang)
+#   <name>.metal.h MSL for Metal (Slang), buffer indices shifted by one: Dear ImGui's vertices are at buffer 0
 # A compute shader gets <name>.hlsl.h, <name>.spv.h and <name>.glsl.h (GLSL 430) with ImPlatform_DispatchCompute's bindings.
 # Needs spirv-cross (Vulkan SDK); Slang is fetched by buildsystem\fetch_slang.bat.
 $ErrorActionPreference = 'Stop'
@@ -76,6 +77,9 @@ try {
             Invoke-Tool $slangc ($common + $glShifts + @('-o', "$tmp\$stage.gl.spv"))
             Invoke-Tool $spirvCross (@("$tmp\$stage.gl.spv", '--version', '330', '--no-es') + $rename + @('--output', "$tmp\$stage.glsl"))
             Invoke-Tool $slangc (@($src.Name, '-entry', "${stage}_main", '-stage', $kind, '-target', 'wgsl') + $glShifts + @('-o', "$tmp\$stage.wgsl"))
+            Invoke-Tool $slangc @($src.Name, '-entry', "${stage}_main", '-stage', $kind, '-target', 'metal', '-line-directive-mode', 'none', '-warnings-disable', '39029', '-o', "$tmp\$stage.metal")
+            $msl = [regex]::Replace([IO.File]::ReadAllText("$tmp\$stage.metal"), '\[\[buffer\((\d+)\)\]\]', { param($m) "[[buffer($([int]$m.Groups[1].Value + 1))]]" })
+            [IO.File]::WriteAllText("$tmp\$stage.metal", $msl)
         }
 
         Write-Header "$name.hlsl.h" @($banner, "static const char ${name}_hlsl[] =", (Format-CString $src.FullName), '    ;')
@@ -88,7 +92,10 @@ try {
         Write-Header "$name.wgsl.h" @($banner,
             "static const char ${name}_vs_wgsl[] =", (Format-CString "$tmp\vs.wgsl"), '    ;',
             "static const char ${name}_ps_wgsl[] =", (Format-CString "$tmp\ps.wgsl"), '    ;')
-        "$($src.Name) -> $name.hlsl.h $name.spv.h $name.glsl.h $name.wgsl.h"
+        Write-Header "$name.metal.h" @($banner,
+            "static const char ${name}_vs_metal[] =", (Format-CString "$tmp\vs.metal"), '    ;',
+            "static const char ${name}_ps_metal[] =", (Format-CString "$tmp\ps.metal"), '    ;')
+        "$($src.Name) -> $name.hlsl.h $name.spv.h $name.glsl.h $name.wgsl.h $name.metal.h"
     }
 }
 finally {

@@ -9,6 +9,7 @@ for every graphics backend into headers that `main.cpp` includes:
 | `<name>.spv.h` | Vulkan | Slang (`slangc`), SPIR-V 1.3 |
 | `<name>.glsl.h` | OpenGL 3.3+ (macOS included) | Slang's SPIR-V converted to GLSL 330 by SPIRV-Cross |
 | `<name>.wgsl.h` | WebGPU | Slang (`slangc -target wgsl`) |
+| `<name>.metal.h` | Metal | Slang (`slangc -target metal`), buffer indices shifted by one |
 
 A compute shader (entry point `cs_main`, such as `compute_test.hlsl`) gets `<name>.hlsl.h`, `<name>.spv.h` and
 `<name>.glsl.h` (GLSL 430) with the bindings of `ImPlatform_DispatchCompute`: on Vulkan constants 0, inputs 1..,
@@ -52,6 +53,10 @@ Direct3D 9 compiles the same HLSL for `vs_3_0` / `ps_3_0` (Slang has no shader m
 no constant buffers: each used cbuffer member gets its own float4 registers, and the backend fills them from `b0` and
 `b1` at the member offsets a shader model 4 compile of the source reflects. The draw's texture `t0` is renumbered to
 sampler 0; `t1`..`t8` are not supported there.
+
+Metal takes Slang's indices (`bN` -> `buffer(N)`, `tN` -> `texture(N)`, `sN` -> `sampler(N)`) with the buffers shifted by one,
+because Dear ImGui's vertices are at buffer 0: `b0` (the projection) at 1, where Dear ImGui's backend also puts it,
+`b1` at 2. The vertex attributes are told apart by type, as on Vulkan.
 
 Parameters belong to the program on every backend: the values set last before the frame is rendered apply to all of
 that program's draws in the frame.

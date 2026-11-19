@@ -959,7 +959,7 @@ IMPLATFORM_API void ImPlatform_DrawQuadNow(ImPlatform_ShaderProgram program, ImV
 // Readback and Compute API (optional capabilities)
 // ============================================================================
 // Query support first: backends without it return false / NULL.
-// Readback: DirectX 10, 11, 12, OpenGL 3, Vulkan. Compute: DirectX 11, 12, OpenGL 4.3+, Vulkan.
+// Readback: DirectX 9, 10, 11, 12, OpenGL 3, Vulkan, Metal. Compute: DirectX 11, 12, OpenGL 4.3+, Vulkan.
 // Asynchronous readback (ImPlatform_BeginReadTexture...): DirectX 11, 12.
 
 IMPLATFORM_API bool ImPlatform_SupportsReadback(void);

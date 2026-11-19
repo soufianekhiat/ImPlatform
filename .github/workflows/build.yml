@@ -531,6 +531,22 @@ jobs:
             xcodebuild -workspace ImPlatform_xcode_macOS.xcworkspace -scheme ImPlatformDemo_xcode_macOS_$config -configuration $config build -quiet
           done
 
+      # Exit 2 means unsupported by the backend; perl's alarm stands in for timeout, which macOS lacks.
+      - name: Self-tests (Sharpmake builds)
+        run: |
+          status=0
+          for demo in $(find bin -name "ImPlatformDemo_GLFW_*" -type f -perm +111); do
+            for test in compute-test render-pass-test shader-test direct-draw-test; do
+              set +e
+              (cd "$(dirname "$demo")" && perl -e 'alarm 120; exec @ARGV' "./$(basename "$demo")" --$test)
+              code=$?
+              set -e
+              echo "$demo --$test: exit $code"
+              if [ $code -ne 0 ] && [ $code -ne 2 ]; then status=1; fi
+            done
+          done
+          exit $status
+
       - name: Run Demo and Capture Screenshot
         run: |
           mkdir -p screenshots
