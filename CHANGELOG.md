@@ -51,8 +51,11 @@
   textures, helper functions, vertex and pixel bodies in HLSL plus `IMP_*` macros) for the backend at run time: HLSL
   on DirectX 9 to 12, GLSL 330 on OpenGL, MSL on Metal (`IMPLATFORM_GFX_SUPPORT_SHADER_PARTS`).
   `ImPlatform_GenerateShaderSource()` gives the text of any language. Demo: `--shader-parts-test`.
+  `asuint`, `asint`, `asfloat` and `f16tof32` map to GLSL and MSL (not DirectX 9: no bit operations in shader model 3);
+  `//` comments in the parameter block may hold `;`.
 - Metal: `ImPlatform_SetShaderTexture()` slots 1..8 (both stages).
-- The custom shader parameters (`b1`) are bound to the vertex stage too on DirectX 10, 11 and 12 (vertex animation).- DirectX 9 custom shaders: the same HLSL, compiled for `vs_3_0` / `ps_3_0`; cbuffer members are uploaded to the
+- The custom shader parameters (`b1`) are bound to the vertex stage too on DirectX 10, 11 and 12 (vertex animation).
+- DirectX 9 custom shaders: the same HLSL, compiled for `vs_3_0` / `ps_3_0`; cbuffer members are uploaded to the
   constant registers shader model 3 assigns them, and texture `tN` is sampler N (`ImPlatform_SetShaderTexture()` slots
   0..8). DirectX 9 also gets the render-target stack, `ImPlatform_CopyCurrentTarget()` (StretchRect),
   `ImPlatform_DrawQuadNow()` and `ImPlatform_PushShaderConstants()`.

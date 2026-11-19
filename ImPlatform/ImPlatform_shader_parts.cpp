@@ -19,8 +19,19 @@ struct ImPlatform_PartsDecl
 
 static int ImPlatform_ParseDecls(const char* list, ImPlatform_PartsDecl* out, int max)
 {
+    // The list without its // comments (a comment can hold a ';').
+    ImVector<char> text;
+    for (const char* s = list; s && *s; s++)
+    {
+        if (s[0] == '/' && s[1] == '/')
+            while (s[1] && s[1] != '\n')
+                s++;
+        else
+            text.push_back(*s);
+    }
+    text.push_back(0);
     int count = 0;
-    for (const char* p = list; p && *p && count < max; )
+    for (const char* p = text.Data; *p && count < max; )
     {
         const char* end = strchr(p, ';');
         if (!end)
@@ -143,6 +154,11 @@ static void ImPlatform_PartsGLSL(ImGuiTextBuffer& out, const ImPlatform_ShaderPa
         "#define saturate(x) clamp((x), 0.0, 1.0)\n#define rcp(x) (1.0 / (x))\n#define atan2(y, x) atan((y), (x))\n"
         "#define fmod(x, y) ((x) - (y) * trunc((x) / (y)))\n#define mul(a, b) ((a) * (b))\n#define static\n"
         "#define mad(a, b, c) ((a) * (b) + (c))\n#define clip(x) if ((x) < 0.0) discard\n"
+        "#define asuint floatBitsToUint\n#define asint floatBitsToInt\n#define asfloat uintBitsToFloat\n"
+        // unpackHalf2x16 needs GLSL 4.20: the half to float conversion by hand (zero, subnormals, infinity and NaN kept).
+        "float f16tof32(uint h) { uint s = (h & 0x8000u) << 16u; uint e = (h >> 10u) & 0x1Fu; uint m = h & 0x3FFu;"
+        " if (e == 0u) return (s != 0u ? -1.0 : 1.0) * float(m) * 5.9604645e-8;"
+        " return uintBitsToFloat(s | (e == 31u ? 0x7F800000u : (e + 112u) << 23u) | (m << 13u)); }\n"
         "#define IMP_UNROLL\n#define IMP_LOOP\n#define IMP_BRANCH\n"
         "#define IMP_SAMPLE(t, uv) texture(t, uv)\n"
         "#define IMP_SAMPLE_LEVEL(t, uv, lod) textureLod(t, uv, lod)\n"
@@ -197,6 +213,10 @@ static void ImPlatform_PartsMSL(ImGuiTextBuffer& out, const ImPlatform_ShaderPar
         "#define lerp mix\n#define frac fract\n#define ddx dfdx\n#define ddy dfdy\n"
         "#define rcp(x) (1.0f / (x))\n#define mul(a, b) ((a) * (b))\n#define static\n"
         "#define mad(a, b, c) ((a) * (b) + (c))\n#define discard discard_fragment()\n#define clip(x) if ((x) < 0.0) discard_fragment()\n"
+        "uint asuint(float x) { return as_type<uint>(x); }\nuint2 asuint(float2 x) { return as_type<uint2>(x); }\nuint4 asuint(float4 x) { return as_type<uint4>(x); }\n"
+        "int asint(float x) { return as_type<int>(x); }\nfloat asfloat(uint x) { return as_type<float>(x); }\n"
+        "float2 asfloat(uint2 x) { return as_type<float2>(x); }\nfloat4 asfloat(uint4 x) { return as_type<float4>(x); }\n"
+        "float f16tof32(uint h) { return float(as_type<half>(ushort(h))); }\n"
         "#define IMP_UNROLL\n#define IMP_LOOP\n#define IMP_BRANCH\n"
         "#define IMP_SAMPLE(t, uv) t.sample(imp_sampler, uv)\n"
         "#define IMP_SAMPLE_LEVEL(t, uv, lod) t.sample(imp_sampler, uv, level(lod))\n"

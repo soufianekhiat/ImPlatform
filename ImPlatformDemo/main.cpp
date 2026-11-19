@@ -332,13 +332,15 @@ static bool CreatePartsTest()
 	static char text[] =
 		"// Gradient moved by Offset in the vertex stage, tinted by t1.\n"
 		"//@params\n"
-		"float4 ColorStart; float4 ColorEnd; float4 Offset;\n"
+		"float4 ColorStart; // red; a comment may hold a semicolon\n"
+		"float4 ColorEnd; float4 Offset;\n"
 		"//@varyings\n"
 		"float2 world;\n"
 		"//@textures\n"
 		"1 tint\n"
 		"//@defines\n"
 		"TINT_SCALE=1.0\n"
+		"BITS=1\n"
 		"//@functions\n"
 		"float4 Gradient(float t) { return lerp(ColorStart, ColorEnd, saturate(t)); }\n"
 		"float4 Tint(float2 uv) { return IMP_SAMPLE(tint, uv) * TINT_SCALE; }\n"
@@ -348,10 +350,16 @@ static bool CreatePartsTest()
 		"//@ps\n"
 		"float sum = 0.0;\n"
 		"IMP_UNROLL for (int i = 0; i < 4; i++) sum += 0.25;\n"
+		"#if BITS\n"
+		"sum *= asfloat(asuint(1.0)) * f16tof32(0x3C00u);\n"	// both 1.0
+		"#endif\n"
 		"col_out = Gradient(v.world.y / 64.0) * Tint(v.uv) * IMP_CAST(float, IMP_CAST(int, sum + 0.5));\n";
 	ImPlatform_ShaderParts parts = {};
 	if ( !ImPlatform_ParseShaderParts( text, &parts ) )
 		return false;
+#if IM_CURRENT_GFX == IM_GFX_DIRECTX9
+	parts.defines = "TINT_SCALE=1.0";	// Shader model 3 has no bit operations: no BITS
+#endif
 	g_PartsShaders[ 0 ] = ImPlatform_CreateShaderFromParts( &parts, ImPlatform_ShaderStage_Vertex );
 	g_PartsShaders[ 1 ] = ImPlatform_CreateShaderFromParts( &parts, ImPlatform_ShaderStage_Fragment );
 	if ( g_PartsShaders[ 0 ] && g_PartsShaders[ 1 ] )
