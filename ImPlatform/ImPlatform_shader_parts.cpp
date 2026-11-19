@@ -360,6 +360,7 @@ IMPLATFORM_API ImPlatform_Shader ImPlatform_CreateShaderFromParts(const ImPlatfo
     desc.source_code = source;
     desc.entry_point = format == ImPlatform_ShaderFormat_GLSL ? "main" : stage == ImPlatform_ShaderStage_Vertex ? "vs_main" : "ps_main";
     desc.cache_key = parts->cache_key;
+    desc.compile_flags = parts->compile_flags;
     ImPlatform_Shader shader = ImPlatform_CreateShader(&desc);
     if (!shader)
         fprintf(stderr, "[ImPlatform] shader parts: the generated %s shader did not compile:\n%s\n",

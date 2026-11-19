@@ -1046,6 +1046,7 @@ typedef struct ImPlatform_ShaderParts {
     const char* vs_body;        // Vertex body (optional): changes position / v.* after the defaults
     const char* ps_body;        // Pixel body (optional): writes col_out
     const char* cache_key;      // As ImPlatform_ShaderDesc::cache_key (optional)
+    unsigned int compile_flags; // As ImPlatform_ShaderDesc::compile_flags (IMPLATFORM_SHADER_COMPILE_*)
 } ImPlatform_ShaderParts;
 
 // The complete source of one stage in `format` (HLSL, GLSL or MSL), whatever the backend: for inspection, or for an
