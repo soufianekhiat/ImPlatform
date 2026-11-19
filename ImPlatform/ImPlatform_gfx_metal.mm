@@ -801,8 +801,8 @@ IMPLATFORM_API void ImPlatform_DestroyTexture(ImTextureID texture_id)
 // ============================================================================
 
 
-// shortcut: no vertex buffers, shader textures t1..t8 or direct draws on Metal yet (IMPLATFORM_GFX_SUPPORT_VERTEX_BUFFERS,
-// _SHADER_TEXTURES, _DIRECT_DRAW, _RENDER_TARGETS); add them with the render command encoder of the draw callback.
+// shortcut: no vertex buffers or direct draws on Metal yet (IMPLATFORM_GFX_SUPPORT_VERTEX_BUFFERS, _DIRECT_DRAW,
+// _RENDER_TARGETS); add them with the render command encoder of the draw callback.
 
 // ============================================================================
 // Custom Shader System API - Metal Implementation
@@ -824,6 +824,7 @@ struct ImPlatform_ShaderProgramData_Metal
     void* uniformData;
     size_t uniformDataSize;
     bool uniformDataDirty;
+    void* textures[9];          // ImPlatform_SetShaderTexture: id<MTLTexture> of t1..t8 (retained; slot 0 unused)
 };
 
 // Current draw data for custom shader rendering (needed for multi-viewport)
@@ -831,6 +832,7 @@ static ImDrawData* g_CurrentDrawData = nullptr;
 
 // Current render encoder for custom shader rendering (set during render pass)
 static void* g_CurrentRenderEncoder = nullptr; // id<MTLRenderCommandEncoder>
+static ImPlatform_ShaderProgramData_Metal* g_MetalBoundProgram = nullptr;  // Bound by the last custom shader callback
 
 // Caching strategy:
 //   Metal compiles MSL source to an MTLLibrary at ImPlatform_CreateShader
@@ -1072,9 +1074,43 @@ IMPLATFORM_API void ImPlatform_DestroyShaderProgram(ImPlatform_ShaderProgram pro
             free(program_data->uniformData);
             program_data->uniformData = nullptr;
         }
+        for (void* texture : program_data->textures)
+            if (texture)
+                CFRelease(texture);
+        if (g_MetalBoundProgram == program_data)
+            g_MetalBoundProgram = nullptr;
 
         delete program_data;
     }
+}
+
+// Binds t1..t8 of a program (fragment and vertex stages) on the current render encoder.
+static void ImPlatform_Metal_BindProgramTextures(ImPlatform_ShaderProgramData_Metal* program_data)
+{
+    id<MTLRenderCommandEncoder> encoder = (__bridge id<MTLRenderCommandEncoder>)g_CurrentRenderEncoder;
+    for (NSUInteger slot = 1; encoder && slot < 9; slot++)
+        if (program_data->textures[slot])
+        {
+            [encoder setFragmentTexture:(__bridge id<MTLTexture>)program_data->textures[slot] atIndex:slot];
+            [encoder setVertexTexture:(__bridge id<MTLTexture>)program_data->textures[slot] atIndex:slot];
+        }
+}
+
+// Slots 1..8 are kept by the program and bound with it; applied at once when it is the bound program.
+IMPLATFORM_API bool ImPlatform_SetShaderTexture(ImPlatform_ShaderProgram program, const char* /*name*/, unsigned int slot, ImTextureID texture)
+{
+    ImPlatform_ShaderProgramData_Metal* program_data = (ImPlatform_ShaderProgramData_Metal*)program;
+    if (!program_data || slot < 1 || slot > 8)
+        return false;
+    void* tex = (void*)texture;
+    if (tex)
+        CFRetain(tex);
+    if (program_data->textures[slot])
+        CFRelease(program_data->textures[slot]);
+    program_data->textures[slot] = tex;
+    if (program_data == g_MetalBoundProgram)
+        ImPlatform_Metal_BindProgramTextures(program_data);
+    return true;
 }
 
 IMPLATFORM_API void ImPlatform_UseShaderProgram(ImPlatform_ShaderProgram program)
@@ -1431,8 +1467,13 @@ IMPLATFORM_API void ImPlatform_BeginCustomShader_Render(ImPlatform_ShaderProgram
             [renderEncoder setVertexBytes:program_data->uniformData length:program_data->uniformDataSize atIndex:2];
             [renderEncoder setFragmentBytes:program_data->uniformData length:program_data->uniformDataSize atIndex:2];
         }
+        ImPlatform_Metal_BindProgramTextures(program_data);
+        g_MetalBoundProgram = program_data;
         if (g_MetalSamplers[1][0])      // Linear, clamp: Dear ImGui's shader has its own sampler, a custom one reads s0
+        {
             [renderEncoder setFragmentSamplerState:(__bridge id<MTLSamplerState>)g_MetalSamplers[1][0] atIndex:0];
+            [renderEncoder setVertexSamplerState:(__bridge id<MTLSamplerState>)g_MetalSamplers[1][0] atIndex:0];
+        }
     }
 }
 
@@ -1455,6 +1496,7 @@ IMPLATFORM_API void ImPlatform_EndCustomShader(ImDrawList* draw)
     if (!draw)
         return;
 
+    draw->AddCallback([](const ImDrawList*, const ImDrawCmd*) { g_MetalBoundProgram = nullptr; }, NULL);   // Unbound by the reset
     draw->AddCallback(ImGui::GetPlatformIO().DrawCallback_ResetRenderState, NULL);
 }
 

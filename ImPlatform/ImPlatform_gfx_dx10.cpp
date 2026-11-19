@@ -1448,39 +1448,10 @@ IMPLATFORM_API bool ImPlatform_SetShaderTexture(ImPlatform_ShaderProgram program
 // ============================================================================
 
 // ImDrawCallback handler to activate a custom shader
+IMPLATFORM_API void ImPlatform_BeginCustomShader_Render(ImPlatform_ShaderProgram program);
 static void ImPlatform_SetCustomShader(const ImDrawList* /*parent_list*/, const ImDrawCmd* cmd)
 {
-    ImPlatform_ShaderProgram program = (ImPlatform_ShaderProgram)cmd->UserCallbackData;
-    if (program)
-    {
-        ImPlatform_ShaderProgramData_DX10* program_data = (ImPlatform_ShaderProgramData_DX10*)program;
-
-        // Set custom shaders
-        ImPlatform_UseShaderProgram(program);
-
-        // Set the input layout for the custom shader
-        if (program_data->pInputLayout)
-        {
-            g_GfxData.pDevice->IASetInputLayout(program_data->pInputLayout);
-        }
-
-        // Note: Vertex constant buffer (b0) is already set by ImGui's backend with projection matrix
-
-        // Update pixel shader constant buffer if dirty
-        if (program_data->pPixelConstantBuffer && program_data->pixelConstantDataDirty && program_data->pPixelConstantData)
-        {
-            void* mapped_resource = nullptr;
-            if (program_data->pPixelConstantBuffer->Map(D3D10_MAP_WRITE_DISCARD, 0, &mapped_resource) == S_OK)
-            {
-                memcpy(mapped_resource, program_data->pPixelConstantData, program_data->pixelConstantDataSize);
-                program_data->pPixelConstantBuffer->Unmap();
-                program_data->pixelConstantDataDirty = false;
-            }
-
-            // Bind pixel shader constant buffer to register b1 (b0 is used by vertex shader for projection matrix)
-            g_GfxData.pDevice->PSSetConstantBuffers(1, 1, &program_data->pPixelConstantBuffer);
-        }
-    }
+    ImPlatform_BeginCustomShader_Render((ImPlatform_ShaderProgram)cmd->UserCallbackData);
 }
 
 // Activate a custom shader immediately (for use inside draw callbacks).
@@ -1513,11 +1484,13 @@ IMPLATFORM_API void ImPlatform_BeginCustomShader_Render(ImPlatform_ShaderProgram
 
         // Bind pixel shader constant buffer to register b1 (b0 is used by vertex shader for projection matrix)
         g_GfxData.pDevice->PSSetConstantBuffers(1, 1, &program_data->pPixelConstantBuffer);
+        g_GfxData.pDevice->VSSetConstantBuffers(1, 1, &program_data->pPixelConstantBuffer);     // b1 in both stages
     }
     else if (program_data->pPixelConstantBuffer)
     {
         // Even if not dirty, ensure the constant buffer is bound
         g_GfxData.pDevice->PSSetConstantBuffers(1, 1, &program_data->pPixelConstantBuffer);
+        g_GfxData.pDevice->VSSetConstantBuffers(1, 1, &program_data->pPixelConstantBuffer);     // b1 in both stages
     }
 }
 

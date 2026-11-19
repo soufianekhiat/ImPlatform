@@ -37,6 +37,25 @@ static ImPlatform_RTTracking_DX9* ImPlatform_FindRT_DX9(ImTextureID texture)
     return entry;
 }
 
+// Textures created from RGBA8 data: stored as D3DFMT_A8R8G8B8 (B, G, R, A), so uploads and readbacks swap red and blue.
+static ImVector<IDirect3DTexture9*> g_P9_RgbaTextures;
+
+static bool ImP9_IsRgba(IDirect3DTexture9* texture) { return g_P9_RgbaTextures.contains(texture); }
+
+// Copies pixels 4-byte pixels, swapping bytes 0 and 2 when swap.
+static void ImP9_CopyPixels(unsigned char* dst, const unsigned char* src, unsigned int pixels, bool swap)
+{
+    if (!swap)
+    {
+        memcpy(dst, src, (size_t)pixels * 4);
+        return;
+    }
+    for (unsigned int i = 0; i < pixels; i++, dst += 4, src += 4)
+    {
+        dst[0] = src[2]; dst[1] = src[1]; dst[2] = src[0]; dst[3] = src[3];
+    }
+}
+
 // Render pass queued by ImPlatform_QueueRenderPass(), run at the start of ImPlatform_GfxAPIRender() (inside the scene)
 static ImTextureID g_PassTarget = NULL;
 static ImDrawData* g_PassDrawData = NULL;
@@ -310,6 +329,7 @@ static D3DFORMAT ImPlatform_GetD3D9Format(ImPlatform_PixelFormat format, int* ou
         *out_bytes_per_pixel = 4;
         return D3DFMT_X8R8G8B8;
     case ImPlatform_PixelFormat_RGBA8:
+        // Stored B, G, R, A (A8B8G8R8 is missing on common drivers): the rows are swizzled (ImP9_RgbaTextures).
         *out_bytes_per_pixel = 4;
         return D3DFMT_A8R8G8B8;
     case ImPlatform_PixelFormat_R16:
@@ -393,12 +413,18 @@ IMPLATFORM_API ImTextureID ImPlatform_CreateTexture(const void* pixel_data, cons
     // Copy pixel data row by row
     unsigned char* dest = (unsigned char*)rect.pBits;
     const unsigned char* src = (const unsigned char*)pixel_data;
+    const bool rgba = desc->format == ImPlatform_PixelFormat_RGBA8;
     for (unsigned int y = 0; y < desc->height; y++)
     {
-        memcpy(dest + y * rect.Pitch, src + y * desc->width * bytes_per_pixel, desc->width * bytes_per_pixel);
+        if (rgba)
+            ImP9_CopyPixels(dest + y * rect.Pitch, src + y * desc->width * 4, desc->width, true);
+        else
+            memcpy(dest + y * rect.Pitch, src + y * desc->width * bytes_per_pixel, desc->width * bytes_per_pixel);
     }
 
     pTexture->UnlockRect(0);
+    if (rgba)
+        g_P9_RgbaTextures.push_back(pTexture);
 
     // Set texture to stage 0 (not strictly necessary but matches old implementation)
     g_GfxData.pDevice->SetTexture(0, pTexture);
@@ -476,9 +502,13 @@ IMPLATFORM_API bool ImPlatform_UpdateTexture(ImTextureID texture_id, const void*
     // Copy data
     unsigned char* dest = (unsigned char*)locked_rect.pBits;
     const unsigned char* src = (const unsigned char*)pixel_data;
+    const bool rgba = ImP9_IsRgba(pTexture);
     for (unsigned int row = 0; row < height; row++)
     {
-        memcpy(dest + row * locked_rect.Pitch, src + row * width * bytes_per_pixel, width * bytes_per_pixel);
+        if (rgba)
+            ImP9_CopyPixels(dest + row * locked_rect.Pitch, src + row * width * 4, width, true);
+        else
+            memcpy(dest + row * locked_rect.Pitch, src + row * width * bytes_per_pixel, width * bytes_per_pixel);
     }
 
     pTexture->UnlockRect(0);
@@ -609,7 +639,7 @@ IMPLATFORM_API void ImPlatform_PopPremultipliedAlpha(ImDrawList* draw)
 }
 
 // Readback (synchronous): render targets through a system memory copy, other textures locked directly. Rows come out
-// as stored (BGRA for D3DFMT_A8R8G8B8).
+// as stored (BGRA for render targets), RGBA for textures created from RGBA8 data.
 IMPLATFORM_API bool ImPlatform_SupportsReadback(void) { return g_GfxData.pDevice != NULL; }
 IMPLATFORM_API bool ImPlatform_ReadTexture(ImTextureID texture, unsigned int x, unsigned int y,
                                            unsigned int width, unsigned int height, void* out_pixels, size_t out_size)
@@ -643,8 +673,16 @@ IMPLATFORM_API bool ImPlatform_ReadTexture(ImTextureID texture, unsigned int x, 
     const bool ok = SUCCEEDED(lock->LockRect(&locked, &r, D3DLOCK_READONLY));
     if (ok)
     {
+        const bool rgba = ImP9_IsRgba(tex);
         for (unsigned int row = 0; row < height; ++row)
-            memcpy((unsigned char*)out_pixels + (size_t)row * width * bpp, (const unsigned char*)locked.pBits + (size_t)row * locked.Pitch, (size_t)width * bpp);
+        {
+            unsigned char* dst = (unsigned char*)out_pixels + (size_t)row * width * bpp;
+            const unsigned char* row_bits = (const unsigned char*)locked.pBits + (size_t)row * locked.Pitch;
+            if (rgba)
+                ImP9_CopyPixels(dst, row_bits, width, true);
+            else
+                memcpy(dst, row_bits, (size_t)width * bpp);
+        }
         lock->UnlockRect();
     }
     if (sys)
@@ -659,6 +697,7 @@ IMPLATFORM_API void ImPlatform_DestroyTexture(ImTextureID texture_id)
         return;
 
     LPDIRECT3DTEXTURE9 pTexture = (LPDIRECT3DTEXTURE9)texture_id;
+    g_P9_RgbaTextures.find_erase_unsorted(pTexture);
     pTexture->Release();
 }
 

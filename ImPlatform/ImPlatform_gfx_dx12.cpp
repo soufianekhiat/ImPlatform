@@ -1073,12 +1073,11 @@ IMPLATFORM_API ImPlatform_ShaderProgram ImPlatform_CreateShaderProgram(ImPlatfor
     rootParameters[1].DescriptorTable.pDescriptorRanges = &descRange;
     rootParameters[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
 
-    // Root parameter 2: Pixel shader CBV for custom uniforms (OUR ADDITION)
-    // Uses register(b1) to avoid conflict with vertex shader's register(b0)
+    // Root parameter 2: the program's parameters (register b1), in both stages (vertex animation reads them too)
     rootParameters[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
-    rootParameters[2].Descriptor.ShaderRegister = 1; // register(b1) NOT b0!
+    rootParameters[2].Descriptor.ShaderRegister = 1;
     rootParameters[2].Descriptor.RegisterSpace = 0;
-    rootParameters[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+    rootParameters[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
 
     // Static sampler
     D3D12_STATIC_SAMPLER_DESC sampler = {};

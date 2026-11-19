@@ -2398,39 +2398,10 @@ IMPLATFORM_API bool ImPlatform_DrawMesh(const ImPlatform_DrawMeshDesc* desc)
 // ============================================================================
 
 // ImDrawCallback handler to activate a custom shader
+IMPLATFORM_API void ImPlatform_BeginCustomShader_Render(ImPlatform_ShaderProgram program);
 static void ImPlatform_SetCustomShader(const ImDrawList* /*parent_list*/, const ImDrawCmd* cmd)
 {
-    ImPlatform_ShaderProgram program = (ImPlatform_ShaderProgram)cmd->UserCallbackData;
-    if (program)
-    {
-        ImPlatform_ShaderProgramData_DX11* program_data = (ImPlatform_ShaderProgramData_DX11*)program;
-
-        // Set custom shaders
-        ImPlatform_UseShaderProgram(program);
-
-        // Set the input layout for the custom shader
-        if (program_data->pInputLayout)
-        {
-            g_GfxData.pDeviceContext->IASetInputLayout(program_data->pInputLayout);
-        }
-
-        // Note: Vertex constant buffer (b0) is already set by ImGui's backend with projection matrix
-
-        // Update pixel shader constant buffer if dirty
-        if (program_data->pPixelConstantBuffer && program_data->pixelConstantDataDirty && program_data->pPixelConstantData)
-        {
-            D3D11_MAPPED_SUBRESOURCE mapped_resource;
-            if (g_GfxData.pDeviceContext->Map(program_data->pPixelConstantBuffer, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped_resource) == S_OK)
-            {
-                memcpy(mapped_resource.pData, program_data->pPixelConstantData, program_data->pixelConstantDataSize);
-                g_GfxData.pDeviceContext->Unmap(program_data->pPixelConstantBuffer, 0);
-                program_data->pixelConstantDataDirty = false;
-            }
-
-            // Bind pixel shader constant buffer to register b1
-            g_GfxData.pDeviceContext->PSSetConstantBuffers(1, 1, &program_data->pPixelConstantBuffer);
-        }
-    }
+    ImPlatform_BeginCustomShader_Render((ImPlatform_ShaderProgram)cmd->UserCallbackData);
 }
 
 // Activate a custom shader immediately (for use inside draw callbacks).
@@ -2451,11 +2422,13 @@ IMPLATFORM_API void ImPlatform_BeginCustomShader_Render(ImPlatform_ShaderProgram
             program_data->pixelConstantDataDirty = false;
         }
         g_GfxData.pDeviceContext->PSSetConstantBuffers(1, 1, &program_data->pPixelConstantBuffer);
+        g_GfxData.pDeviceContext->VSSetConstantBuffers(1, 1, &program_data->pPixelConstantBuffer);     // b1 in both stages
     }
     else if (program_data->pPixelConstantBuffer)
     {
         // Even if not dirty, ensure the constant buffer is bound
         g_GfxData.pDeviceContext->PSSetConstantBuffers(1, 1, &program_data->pPixelConstantBuffer);
+        g_GfxData.pDeviceContext->VSSetConstantBuffers(1, 1, &program_data->pPixelConstantBuffer);     // b1 in both stages
     }
 }
 
@@ -2545,6 +2518,8 @@ IMPLATFORM_API void* ImPlatform_PushShaderConstants(const void* data, unsigned i
     if (FAILED(hr) || !pBuffer) return nullptr;
 
     g_GfxData.pDeviceContext->PSSetConstantBuffers(1, 1, &pBuffer);
+
+    g_GfxData.pDeviceContext->VSSetConstantBuffers(1, 1, &pBuffer);     // b1 in both stages
     return (void*)pBuffer;
 }
 
