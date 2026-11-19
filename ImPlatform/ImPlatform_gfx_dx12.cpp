@@ -97,6 +97,7 @@ static ExampleDescriptorHeapAllocator g_SrvDescHeapAlloc;
 static void ImPlatform_DX12_FlushWork();     // Resource layer (end of this file).
 static void ImPlatform_DX12_ReleaseAll();
 static void ImPlatform_DX12_DeferRelease(IUnknown* object);
+static void ImPlatform_DX12_EndFrame(UINT64 fence);
 
 // Render texture tracking
 struct ImPlatform_RTTracking_DX12 {
@@ -125,6 +126,13 @@ static size_t g_UniformBlockSize = 0;
 
 // Current draw data for custom shader rendering (needed for multi-viewport)
 static ImDrawData* g_CurrentDrawData = nullptr;
+
+// Custom shader state of the command list being recorded (draw callbacks): the program bound last (ImPlatform_DrawIndexed
+// draws with it) and the b1 constants of ImPlatform_PushShaderConstants, until ImPlatform_PopShaderConstants.
+struct ImPlatform_ShaderProgramData_DX12;
+static ImPlatform_ShaderProgramData_DX12* g_P12_Program = NULL;
+static UINT64 g_P12_PushedConstants = 0;
+static bool ImP12_PushedTargetSize(UINT* width, UINT* height);     // A target pushed by ImPlatform_PushRenderTarget.
 
 // Helper functions
 static void CreateRenderTarget()
@@ -600,6 +608,7 @@ IMPLATFORM_API bool ImPlatform_GfxAPISwapBuffer(void)
 {
     // The main viewport command list was submitted by ImPlatform_GfxAPIRender, secondary viewports by RenderPlatformWindowsDefault()
     g_GfxData.pCommandQueue->Signal(g_GfxData.pFence, ++g_GfxData.uFenceLastSignaledValue);
+    ImPlatform_DX12_EndFrame(g_GfxData.uFenceLastSignaledValue);
     if (g_CurrentFrameCtx)
         g_CurrentFrameCtx->uFenceValue = g_GfxData.uFenceLastSignaledValue;
     g_CurrentFrameCtx = NULL;
@@ -822,6 +831,8 @@ struct ImPlatform_ShaderProgramData_DX12
     size_t pixelConstantDataSize;       // Size of pixel constant data
     bool pixelConstantDataDirty;        // Whether constant data needs upload
     std::unordered_map<std::string, ID3D12PipelineState*> meshPSOs;     // ImPlatform_DrawMesh pipelines of this program.
+    ImTextureID extraTextures[kExtraTextures];                          // t1..t8 (ImPlatform_SetShaderTexture), 0 when unset
+    ImTextureID texture0;                                               // t0 of the direct draws (ImPlatform_SetShaderTexture slot 0)
 };
 
 // Constant buffer structure for projection matrix (vertex shader)
@@ -1176,6 +1187,8 @@ IMPLATFORM_API void ImPlatform_DestroyShaderProgram(ImPlatform_ShaderProgram pro
         return;
 
     ImPlatform_ShaderProgramData_DX12* program_data = (ImPlatform_ShaderProgramData_DX12*)program;
+    if (g_P12_Program == program_data)
+        g_P12_Program = NULL;
 
     // Wait for GPU to finish using these resources
     // This is important to avoid crashes during shutdown
@@ -1280,18 +1293,21 @@ IMPLATFORM_API bool ImPlatform_SetShaderUniform(ImPlatform_ShaderProgram program
     return true;
 }
 
-// Binds 'texture' to register(t<slot>) of the program made current by ImPlatform_BeginCustomShader_Render() (call it
-// after that, inside the same draw callback). Slot 0 is the draw command's own texture.
+static void ImP12_BindProgram(ID3D12GraphicsCommandList* list, ImPlatform_ShaderProgramData_DX12* program_data, ImDrawData* draw_data,
+                              UINT64 texture0);
+
+// Sets register(t<slot>) of the program, kept for its later binds: slots 1..8, and slot 0 for the direct draws
+// (ImPlatform_DrawQuadNow, ImPlatform_DrawIndexed; Dear ImGui's draws bind their own t0). Inside a draw callback the
+// program is bound again at once with it, as the Direct3D 11 backend binds it at once.
 IMPLATFORM_API bool ImPlatform_SetShaderTexture(ImPlatform_ShaderProgram program, const char* /*name*/, unsigned int slot, ImTextureID texture)
 {
-    if (!program || !texture || slot < 1 || slot > kExtraTextures || !((ImPlatform_ShaderProgramData_DX12*)program)->pPSO)
+    ImPlatform_ShaderProgramData_DX12* program_data = (ImPlatform_ShaderProgramData_DX12*)program;
+    if (!program_data || !texture || slot > kExtraTextures)
         return false;
+    (slot == 0 ? program_data->texture0 : program_data->extraTextures[slot - 1]) = texture;
     ImGui_ImplDX12_RenderState* render_state = (ImGui_ImplDX12_RenderState*)ImGui::GetPlatformIO().Renderer_RenderState;
-    if (!render_state || !render_state->CommandList)
-        return false;
-    D3D12_GPU_DESCRIPTOR_HANDLE handle = {};
-    handle.ptr = (UINT64)texture;
-    render_state->CommandList->SetGraphicsRootDescriptorTable(3 + (slot - 1), handle);
+    if (render_state && render_state->CommandList)
+        ImP12_BindProgram(render_state->CommandList, program_data, g_CurrentDrawData ? g_CurrentDrawData : ImGui::GetDrawData(), 0);
     return true;
 }
 
@@ -1353,179 +1369,108 @@ IMPLATFORM_API void ImPlatform_EndUniformBlock(ImPlatform_ShaderProgram program)
 // Custom Shader DrawList Integration
 // ============================================================================
 
-// ImDrawCallback handler to activate a custom shader
-static void ImPlatform_SetCustomShader(const ImDrawList* parent_list, const ImDrawCmd* cmd)
+// Binds a program on a command list being recorded: its pipeline (Dear ImGui's vertex layout; a program with its own
+// layout gets its pipeline from ImPlatform_DrawIndexed), its root signature, which clears every root parameter, and all of
+// them again: b0 the projection of the draw data (of the target pushed by ImPlatform_PushRenderTarget while one is), t0
+// 'texture0' or else the program's slot 0 texture, b1 the pushed constants or else the program's parameters, t1..t8.
+static void ImP12_BindProgram(ID3D12GraphicsCommandList* list, ImPlatform_ShaderProgramData_DX12* program_data, ImDrawData* draw_data,
+                              UINT64 texture0)
 {
-    ImPlatform_ShaderProgram program = (ImPlatform_ShaderProgram)cmd->UserCallbackData;
-    if (!program)
-        return;
-
-    ImPlatform_ShaderProgramData_DX12* program_data = (ImPlatform_ShaderProgramData_DX12*)program;
-
-    // Get the command list from ImGui's render state (works for all viewports)
-    ImGuiPlatformIO& platform_io = ImGui::GetPlatformIO();
-    ImGui_ImplDX12_RenderState* render_state = (ImGui_ImplDX12_RenderState*)platform_io.Renderer_RenderState;
-    if (!render_state || !render_state->CommandList)
-        return;
-
-    ID3D12GraphicsCommandList* cmdList = render_state->CommandList;
-    if (!program_data->pPSO)
-        return;     // Not an ImGui-layout program.
-
-    // Set Pipeline State Object and Root Signature
-    cmdList->SetPipelineState(program_data->pPSO);
-    cmdList->SetGraphicsRootSignature(program_data->pRootSignature);
-
-    // IMPORTANT: SetGraphicsRootSignature() invalidates ALL root parameter bindings!
-    // We must rebind everything, even though our root signature is compatible with ImGui's.
-
-    // Rebind root parameter 0: projection matrix (32-bit constants)
-    // Find which viewport owns this draw list
-    ImDrawData* draw_data = nullptr;
-
-    // First, try the cached draw data
-    if (g_CurrentDrawData)
+    float L, R, T, B;
+    UINT target_w = 0, target_h = 0;
+    if (ImP12_PushedTargetSize(&target_w, &target_h))
     {
-        draw_data = g_CurrentDrawData;
+        L = 0.0f; R = (float)target_w; T = 0.0f; B = (float)target_h;
     }
-#ifdef IMGUI_HAS_VIEWPORT
+    else if (draw_data)
+    {
+        L = draw_data->DisplayPos.x; R = draw_data->DisplayPos.x + draw_data->DisplaySize.x;
+        T = draw_data->DisplayPos.y; B = draw_data->DisplayPos.y + draw_data->DisplaySize.y;
+    }
     else
-    {
-        // Fallback: search through all viewports to find which one owns this draw list
-        for (int i = 0; i < platform_io.Viewports.Size; i++)
-        {
-            ImGuiViewport* viewport = platform_io.Viewports[i];
-            if (viewport->DrawData)
-            {
-                for (int j = 0; j < viewport->DrawData->CmdLists.Size; j++)
-                {
-                    if (viewport->DrawData->CmdLists[j] == parent_list)
-                    {
-                        draw_data = viewport->DrawData;
-                        break;
-                    }
-                }
-                if (draw_data)
-                    break;
-            }
-        }
-    }
-#endif
-    if (!draw_data)
-        draw_data = ImGui::GetDrawData();
-
-    if (!draw_data)
         return;
+    if (program_data->pPSO)
+        list->SetPipelineState(program_data->pPSO);
+    list->SetGraphicsRootSignature(program_data->pRootSignature);
+    g_P12_Program = program_data;
 
-    float L = draw_data->DisplayPos.x;
-    float R = draw_data->DisplayPos.x + draw_data->DisplaySize.x;
-    float T = draw_data->DisplayPos.y;
-    float B = draw_data->DisplayPos.y + draw_data->DisplaySize.y;
-    float mvp[4][4] =
+    const float mvp[4][4] =
     {
         { 2.0f/(R-L),   0.0f,           0.0f,       0.0f },
         { 0.0f,         2.0f/(T-B),     0.0f,       0.0f },
         { 0.0f,         0.0f,           0.5f,       0.0f },
         { (R+L)/(L-R),  (T+B)/(B-T),    0.5f,       1.0f },
     };
-    cmdList->SetGraphicsRoot32BitConstants(0, 16, mvp, 0);
+    list->SetGraphicsRoot32BitConstants(0, 16, mvp, 0);
 
-    // Rebind root parameter 1: texture descriptor table
-    D3D12_GPU_DESCRIPTOR_HANDLE texture_handle = {};
-    texture_handle.ptr = (UINT64)cmd->GetTexID();
-    cmdList->SetGraphicsRootDescriptorTable(1, texture_handle);
+    if (!texture0)
+        texture0 = (UINT64)program_data->texture0;
+    if (texture0)
+    {
+        D3D12_GPU_DESCRIPTOR_HANDLE handle = {};
+        handle.ptr = texture0;
+        list->SetGraphicsRootDescriptorTable(1, handle);
+    }
 
-    // Upload and bind pixel shader constant buffer if dirty (root parameter 2)
+    // shortcut: the parameters live in one upload buffer written by the CPU, so a draw recorded with older values than
+    // the last ones set reads the last ones; ImPlatform_PushShaderConstants gives a draw its own copy.
     if (program_data->pPixelConstantBuffer && program_data->pixelConstantDataDirty && program_data->pPixelConstantData)
     {
-        // Map and upload constant buffer data
-        void* pMappedData = nullptr;
-        D3D12_RANGE readRange = { 0, 0 }; // We don't read from this resource on the CPU
-        if (SUCCEEDED(program_data->pPixelConstantBuffer->Map(0, &readRange, &pMappedData)))
+        void* mapped = nullptr;
+        D3D12_RANGE read_range = { 0, 0 };
+        if (SUCCEEDED(program_data->pPixelConstantBuffer->Map(0, &read_range, &mapped)))
         {
-            memcpy(pMappedData, program_data->pPixelConstantData, program_data->pixelConstantDataSize);
+            memcpy(mapped, program_data->pPixelConstantData, program_data->pixelConstantDataSize);
             program_data->pPixelConstantBuffer->Unmap(0, nullptr);
             program_data->pixelConstantDataDirty = false;
         }
-
-        // Bind pixel shader constant buffer to root parameter 2 (our custom uniforms)
-        D3D12_GPU_VIRTUAL_ADDRESS cbAddress = program_data->pPixelConstantBuffer->GetGPUVirtualAddress();
-        cmdList->SetGraphicsRootConstantBufferView(2, cbAddress);
     }
+    if (g_P12_PushedConstants)
+        list->SetGraphicsRootConstantBufferView(2, g_P12_PushedConstants);
+    else if (program_data->pPixelConstantBuffer)
+        list->SetGraphicsRootConstantBufferView(2, program_data->pPixelConstantBuffer->GetGPUVirtualAddress());
+
+    for (UINT i = 0; i < kExtraTextures; i++)
+        if (program_data->extraTextures[i])
+        {
+            D3D12_GPU_DESCRIPTOR_HANDLE handle = {};
+            handle.ptr = (UINT64)program_data->extraTextures[i];
+            list->SetGraphicsRootDescriptorTable(3 + i, handle);
+        }
+}
+
+// ImDrawCallback handler to activate a custom shader: t0 is the callback command's texture.
+static void ImPlatform_SetCustomShader(const ImDrawList* parent_list, const ImDrawCmd* cmd)
+{
+    ImPlatform_ShaderProgramData_DX12* program_data = (ImPlatform_ShaderProgramData_DX12*)cmd->UserCallbackData;
+    ImGuiPlatformIO& platform_io = ImGui::GetPlatformIO();
+    ImGui_ImplDX12_RenderState* render_state = (ImGui_ImplDX12_RenderState*)platform_io.Renderer_RenderState;
+    if (!program_data || !render_state || !render_state->CommandList)
+        return;
+
+    // The draw data of the viewport being rendered, else the one owning this draw list
+    ImDrawData* draw_data = g_CurrentDrawData;
+#ifdef IMGUI_HAS_VIEWPORT
+    for (int i = 0; i < platform_io.Viewports.Size && !draw_data; i++)
+        if (ImDrawData* viewport_data = platform_io.Viewports[i]->DrawData)
+            if (viewport_data->CmdLists.contains((ImDrawList*)parent_list))
+                draw_data = viewport_data;
+#else
+    (void)parent_list;
+#endif
+    if (!draw_data)
+        draw_data = ImGui::GetDrawData();
+    ImP12_BindProgram(render_state->CommandList, program_data, draw_data, (UINT64)cmd->GetTexID());
 }
 
 // Activate a custom shader immediately (for use inside draw callbacks).
 IMPLATFORM_API void ImPlatform_BeginCustomShader_Render(ImPlatform_ShaderProgram program)
 {
-    if (!program)
+    ImGui_ImplDX12_RenderState* render_state = (ImGui_ImplDX12_RenderState*)ImGui::GetPlatformIO().Renderer_RenderState;
+    if (!program || !render_state || !render_state->CommandList)
         return;
-
-    ImPlatform_ShaderProgramData_DX12* program_data = (ImPlatform_ShaderProgramData_DX12*)program;
-
-    // Get the command list from ImGui's render state (works for all viewports)
-    ImGuiPlatformIO& platform_io = ImGui::GetPlatformIO();
-    ImGui_ImplDX12_RenderState* render_state = (ImGui_ImplDX12_RenderState*)platform_io.Renderer_RenderState;
-    if (!render_state || !render_state->CommandList)
-        return;
-
-    ID3D12GraphicsCommandList* cmdList = render_state->CommandList;
-    if (!program_data->pPSO)
-        return;     // Not an ImGui-layout program.
-
-    // Set Pipeline State Object and Root Signature
-    cmdList->SetPipelineState(program_data->pPSO);
-    cmdList->SetGraphicsRootSignature(program_data->pRootSignature);
-
-    // IMPORTANT: SetGraphicsRootSignature() invalidates ALL root parameter bindings!
-    // We must rebind everything, even though our root signature is compatible with ImGui's.
-
-    // Rebind root parameter 0: projection matrix (32-bit constants)
-    ImDrawData* draw_data = g_CurrentDrawData;
-    if (!draw_data)
-        draw_data = ImGui::GetDrawData();
-    if (!draw_data)
-        return;
-
-    float L = draw_data->DisplayPos.x;
-    float R = draw_data->DisplayPos.x + draw_data->DisplaySize.x;
-    float T = draw_data->DisplayPos.y;
-    float B = draw_data->DisplayPos.y + draw_data->DisplaySize.y;
-    float mvp[4][4] =
-    {
-        { 2.0f/(R-L),   0.0f,           0.0f,       0.0f },
-        { 0.0f,         2.0f/(T-B),     0.0f,       0.0f },
-        { 0.0f,         0.0f,           0.5f,       0.0f },
-        { (R+L)/(L-R),  (T+B)/(B-T),    0.5f,       1.0f },
-    };
-    cmdList->SetGraphicsRoot32BitConstants(0, 16, mvp, 0);
-
-    // Note: Texture descriptor table (root parameter 1) is NOT rebound here
-    // because we don't have access to the current texture ID outside a draw command.
-    // The caller is responsible for binding textures if needed.
-
-    // Upload and bind pixel shader constant buffer if dirty (root parameter 2)
-    if (program_data->pPixelConstantBuffer && program_data->pixelConstantDataDirty && program_data->pPixelConstantData)
-    {
-        // Map and upload constant buffer data
-        void* pMappedData = nullptr;
-        D3D12_RANGE readRange = { 0, 0 }; // We don't read from this resource on the CPU
-        if (SUCCEEDED(program_data->pPixelConstantBuffer->Map(0, &readRange, &pMappedData)))
-        {
-            memcpy(pMappedData, program_data->pPixelConstantData, program_data->pixelConstantDataSize);
-            program_data->pPixelConstantBuffer->Unmap(0, nullptr);
-            program_data->pixelConstantDataDirty = false;
-        }
-
-        // Bind pixel shader constant buffer to root parameter 2 (our custom uniforms)
-        D3D12_GPU_VIRTUAL_ADDRESS cbAddress = program_data->pPixelConstantBuffer->GetGPUVirtualAddress();
-        cmdList->SetGraphicsRootConstantBufferView(2, cbAddress);
-    }
-    else if (program_data->pPixelConstantBuffer)
-    {
-        // Even if not dirty, ensure the constant buffer is bound
-        D3D12_GPU_VIRTUAL_ADDRESS cbAddress = program_data->pPixelConstantBuffer->GetGPUVirtualAddress();
-        cmdList->SetGraphicsRootConstantBufferView(2, cbAddress);
-    }
+    ImP12_BindProgram(render_state->CommandList, (ImPlatform_ShaderProgramData_DX12*)program,
+                      g_CurrentDrawData ? g_CurrentDrawData : ImGui::GetDrawData(), 0);
 }
 
 IMPLATFORM_API void ImPlatform_BeginCustomShader(ImDrawList* draw, ImPlatform_ShaderProgram shader)
@@ -1541,6 +1486,7 @@ IMPLATFORM_API void ImPlatform_EndCustomShader(ImDrawList* draw)
     if (!draw)
         return;
 
+    draw->AddCallback([](const ImDrawList*, const ImDrawCmd*) { g_P12_Program = NULL; }, NULL);
     draw->AddCallback(ImGui::GetPlatformIO().DrawCallback_ResetRenderState, NULL);
 }
 
@@ -1610,16 +1556,6 @@ static void ImPlatform_ReleaseRenderPasses()
     }
 }
 
-IMPLATFORM_API void* ImPlatform_PushShaderConstants(const void* data, unsigned int size)
-{
-    (void)data; (void)size;
-    return nullptr;
-}
-
-IMPLATFORM_API void ImPlatform_PopShaderConstants(void* handle)
-{
-    (void)handle;
-}
 
 // ============================================================================
 // Sampler Override API - DirectX 12
@@ -1727,6 +1663,8 @@ namespace
         struct page { ID3D12Resource* res; uint8_t* cpu; UINT64 size, used, fence; };
         std::vector<page> pages;
         int page_index = -1;
+        std::vector<page> frame_pages;      // Draws recorded on the frame's command lists (draw callbacks): fenced per frame.
+        int frame_page_index = -1;
         // Descriptors.
         ImP12_Simple_Alloc cpu_srv;     // SRV/UAV CPU copies.
         ImP12_Simple_Alloc rtv, dsv;
@@ -2000,27 +1938,31 @@ namespace
     // ---- Upload arena ------------------------------------------------------------------------------------------
     struct ImP12_Upload { ID3D12Resource* res; UINT64 offset; uint8_t* cpu; D3D12_GPU_VIRTUAL_ADDRESS gpu; };
 
-    bool ImP12_Alloc(UINT64 size, UINT64 align, ImP12_Upload* out)
+    // frame: memory read by the frame's command lists (draw callbacks) instead of the work list; its pages are fenced by
+    // ImP12_EndFrameUploads once the frame is submitted.
+    bool ImP12_Alloc(UINT64 size, UINT64 align, ImP12_Upload* out, bool frame = false)
     {
+        std::vector<ImP12_State::page>& pages = frame ? g_P12.frame_pages : g_P12.pages;
+        int& page_index = frame ? g_P12.frame_page_index : g_P12.page_index;
         auto fits = [&](const ImP12_State::page& p) { return ((p.used + align - 1) & ~(align - 1)) + size <= p.size; };
-        if (g_P12.page_index < 0 || !fits(g_P12.pages[(size_t)g_P12.page_index]))
+        if (page_index < 0 || !fits(pages[(size_t)page_index]))
         {
-            g_P12.page_index = -1;
-            for (size_t i = 0; i < g_P12.pages.size(); i++)
+            page_index = -1;
+            for (size_t i = 0; i < pages.size(); i++)
             {
-                ImP12_State::page& p = g_P12.pages[i];
+                ImP12_State::page& p = pages[i];
                 if (p.fence != UINT64_MAX && ImP12_Done(p.fence) && p.size >= size)
                 {
                     p.used = 0;
                     p.fence = UINT64_MAX;
-                    g_P12.page_index = (int)i;
+                    page_index = (int)i;
                     break;
                 }
             }
-            if (g_P12.page_index < 0)
+            if (page_index < 0)
             {
                 ImP12_State::page p = {};
-                p.size = std::max<UINT64>(32ull << 20, (size + 0xFFFF) & ~0xFFFFull);
+                p.size = std::max<UINT64>(frame ? 4ull << 20 : 32ull << 20, (size + 0xFFFF) & ~0xFFFFull);
                 D3D12_HEAP_PROPERTIES hp = {};
                 hp.Type = D3D12_HEAP_TYPE_UPLOAD;
                 D3D12_RESOURCE_DESC rd = {};
@@ -2037,11 +1979,11 @@ namespace
                 D3D12_RANGE none = { 0, 0 };
                 p.res->Map(0, &none, (void**)&p.cpu);
                 p.fence = UINT64_MAX;
-                g_P12.pages.push_back(p);
-                g_P12.page_index = (int)g_P12.pages.size() - 1;
+                pages.push_back(p);
+                page_index = (int)pages.size() - 1;
             }
         }
-        ImP12_State::page& p = g_P12.pages[(size_t)g_P12.page_index];
+        ImP12_State::page& p = pages[(size_t)page_index];
         p.fence = UINT64_MAX;
         const UINT64 at = (p.used + align - 1) & ~(align - 1);
         p.used = at + size;
@@ -2050,6 +1992,15 @@ namespace
         out->cpu = p.cpu + at;
         out->gpu = p.res->GetGPUVirtualAddress() + at;
         return true;
+    }
+
+    // The frame's command lists are submitted and 'fence' follows them: frame pages used since the last call wait for it.
+    void ImP12_EndFrameUploads(UINT64 fence)
+    {
+        for (ImP12_State::page& p : g_P12.frame_pages)
+            if (p.fence == UINT64_MAX)
+                p.fence = fence;
+        g_P12.frame_page_index = -1;
     }
 
     // ---- Transient descriptor tables ---------------------------------------------------------------------------
@@ -2393,6 +2344,7 @@ namespace
 
 // Submits pending work ahead of the frame's command list (called by ImPlatform_GfxAPIRender).
 static void ImPlatform_DX12_FlushWork() { ImP12_Flush(); }
+static void ImPlatform_DX12_EndFrame(UINT64 fence) { ImP12_EndFrameUploads(fence); }
 
 // Render passes: recorded on the frame's command list before its draw data. The ImGui backend's buffers turn per
 // render (NumFramesInFlight doubled at init), so a pass never reuses buffers the GPU may still read.
@@ -2690,10 +2642,6 @@ IMPLATFORM_API bool ImPlatform_CreateVertexInputLayout(ImPlatform_VertexBuffer v
     return vertex_buffer && program;    // The layout is part of the pipeline state, built from the attributes at draw time.
 }
 
-IMPLATFORM_API void ImPlatform_BindVertexBuffer(ImPlatform_VertexBuffer) {}
-IMPLATFORM_API void ImPlatform_BindIndexBuffer(ImPlatform_IndexBuffer) {}
-IMPLATFORM_API void ImPlatform_BindBuffers(ImPlatform_VertexBuffer, ImPlatform_IndexBuffer) {}
-IMPLATFORM_API void ImPlatform_DrawIndexed(unsigned int, unsigned int, unsigned int) {}     // Use ImPlatform_DrawMesh on DX12.
 
 // ---- Readback ---------------------------------------------------------------------------------------------------
 #define IMPLATFORM_GFX_HAS_READBACK       1
@@ -3042,6 +2990,44 @@ IMPLATFORM_API void ImPlatform_GfxDebugLiveCounts(size_t* resources, size_t* des
 
 IMPLATFORM_API bool ImPlatform_SupportsDepthDraw(void) { return true; }
 
+// The input layout of a vertex buffer's attributes. A semantic ending in digits gives its index ("TEXCOORD1" -> TEXCOORD,
+// 1); otherwise attributes sharing a semantic name are numbered in order, as the Direct3D 11 backend does. 'names' holds
+// the strings 'layout' points to.
+static void ImP12_InputLayout(const ImPlatform_BufferData_DX12* vb, std::vector<std::pair<std::string, UINT>>& names,
+                              std::vector<D3D12_INPUT_ELEMENT_DESC>& layout)
+{
+    names.clear();
+    layout.clear();
+    for (size_t i = 0; i < vb->attributes.size(); i++)
+    {
+        std::string s = vb->semantics[i];
+        UINT index = 0;
+        while (!s.empty() && s.back() >= '0' && s.back() <= '9')
+            s.pop_back();
+        if (s.size() < vb->semantics[i].size())
+            index = (UINT)atoi(vb->semantics[i].c_str() + s.size());
+        else
+            for (size_t j = 0; j < i; j++)
+                index += vb->semantics[j] == vb->semantics[i] ? 1u : 0u;
+        names.push_back({ s, index });
+    }
+    for (size_t i = 0; i < vb->attributes.size(); i++)
+    {
+        DXGI_FORMAT f = DXGI_FORMAT_R32G32B32_FLOAT;
+        switch (vb->attributes[i].format)
+        {
+        case ImPlatform_VertexFormat_Float: f = DXGI_FORMAT_R32_FLOAT; break;
+        case ImPlatform_VertexFormat_Float2: f = DXGI_FORMAT_R32G32_FLOAT; break;
+        case ImPlatform_VertexFormat_Float3: f = DXGI_FORMAT_R32G32B32_FLOAT; break;
+        case ImPlatform_VertexFormat_Float4: f = DXGI_FORMAT_R32G32B32A32_FLOAT; break;
+        case ImPlatform_VertexFormat_UByte4: f = DXGI_FORMAT_R8G8B8A8_UINT; break;
+        case ImPlatform_VertexFormat_UByte4N: f = DXGI_FORMAT_R8G8B8A8_UNORM; break;
+        default: break;
+        }
+        layout.push_back({ names[i].first.c_str(), names[i].second, f, 0, vb->attributes[i].offset, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 });
+    }
+}
+
 IMPLATFORM_API bool ImPlatform_DrawMesh(const ImPlatform_DrawMeshDesc* desc)
 {
     if (!desc || !desc->program || !desc->vertices || !desc->indices || desc->texture_count > 4 || (desc->texture_count && !desc->textures)
@@ -3069,32 +3055,8 @@ IMPLATFORM_API bool ImPlatform_DrawMesh(const ImPlatform_DrawMeshDesc* desc)
     if (!pso)
     {
         std::vector<D3D12_INPUT_ELEMENT_DESC> layout;
-        std::vector<std::pair<std::string, UINT>> names;     // Semantic name and index ("TEXCOORD1" -> TEXCOORD, 1).
-        for (size_t i = 0; i < vb->attributes.size(); i++)
-        {
-            std::string s = vb->semantics[i];
-            UINT index = 0;
-            while (!s.empty() && s.back() >= '0' && s.back() <= '9')
-                s.pop_back();
-            if (s.size() < vb->semantics[i].size())
-                index = (UINT)atoi(vb->semantics[i].c_str() + s.size());
-            names.push_back({ s, index });
-        }
-        for (size_t i = 0; i < vb->attributes.size(); i++)
-        {
-            DXGI_FORMAT f = DXGI_FORMAT_R32G32B32_FLOAT;
-            switch (vb->attributes[i].format)
-            {
-            case ImPlatform_VertexFormat_Float: f = DXGI_FORMAT_R32_FLOAT; break;
-            case ImPlatform_VertexFormat_Float2: f = DXGI_FORMAT_R32G32_FLOAT; break;
-            case ImPlatform_VertexFormat_Float3: f = DXGI_FORMAT_R32G32B32_FLOAT; break;
-            case ImPlatform_VertexFormat_Float4: f = DXGI_FORMAT_R32G32B32A32_FLOAT; break;
-            case ImPlatform_VertexFormat_UByte4: f = DXGI_FORMAT_R8G8B8A8_UINT; break;
-            case ImPlatform_VertexFormat_UByte4N: f = DXGI_FORMAT_R8G8B8A8_UNORM; break;
-            default: break;
-            }
-            layout.push_back({ names[i].first.c_str(), names[i].second, f, 0, vb->attributes[i].offset, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 });
-        }
+        std::vector<std::pair<std::string, UINT>> names;
+        ImP12_InputLayout(vb, names, layout);
         D3D12_GRAPHICS_PIPELINE_STATE_DESC pd = {};
         pd.pRootSignature = g_P12.graphics_rs;
         pd.VS = { prog->pVSBlob->GetBufferPointer(), prog->pVSBlob->GetBufferSize() };
@@ -3182,6 +3144,9 @@ static void ImPlatform_DX12_ReleaseAll()
     for (auto& p : g_P12.pages)
         p.res->Release();
     g_P12.pages.clear();
+    for (auto& p : g_P12.frame_pages)
+        p.res->Release();
+    g_P12.frame_pages.clear();
     for (auto& a : g_P12.allocators)
         if (a) a->Release();
     if (g_P12.list) g_P12.list->Release();
@@ -3193,80 +3158,302 @@ static void ImPlatform_DX12_ReleaseAll()
     g_P12 = ImP12_State();
 }
 
-// shortcut: render-target stack and immediate quad are implemented on DX11 and OpenGL3 only; here they report
-// "unsupported" until this backend gets them.
-IMPLATFORM_API bool ImPlatform_PushRenderTarget(ImTextureID texture, bool clear) { (void)texture; (void)clear; return false; }
-IMPLATFORM_API void ImPlatform_PopRenderTarget(void) {}
+// ---- Direct draws from draw callbacks ----------------------------------------------------------------------------
+// Draw callbacks record on Dear ImGui's command list (its render state): render targets pushed there, quads and indexed
+// draws with custom shaders, constants pushed for them. Their upload memory is fenced per frame (ImP12_EndFrameUploads).
+// The work list runs before the frame's lists and leaves every texture in its resting state, so the barriers recorded here
+// start from it and return to it.
+struct ImP12_Target
+{
+    ID3D12Resource* res;
+    D3D12_RESOURCE_STATES state;        // While the frame's list draws into it.
+    D3D12_CPU_DESCRIPTOR_HANDLE rtv;
+    UINT w, h;
+    ImP12_Texture* tex;                 // Null for the back buffer.
+};
+static ImVector<ImP12_Texture*> g_P12_PushedTargets;
+static ImPlatform_BufferData_DX12* g_P12_VertexBuffer = NULL;
+static ImPlatform_BufferData_DX12* g_P12_IndexBuffer = NULL;
 
-// From a draw callback: copies the target being drawn (a render pass's texture, or the main viewport's back buffer)
-// into 'dst' on ImGui's command list, then returns both to their states.
+// The target draw callbacks render into: the render target pushed last, the running render pass, or the main viewport's
+// back buffer. False inside a secondary viewport, whose back buffer belongs to the ImGui backend.
+static bool ImP12_CurrentTarget(ImP12_Target* out)
+{
+    if (!g_P12_PushedTargets.empty())
+    {
+        ImP12_Texture* t = g_P12_PushedTargets.back();
+        *out = { t->res, D3D12_RESOURCE_STATE_RENDER_TARGET, t->rtv, t->w, t->h, t };
+        return true;
+    }
+    if (g_PassRunning)
+    {
+        *out = { g_PassRunning->res, g_PassRunning->cur, g_PassRunning->rtv, g_PassRunning->w, g_PassRunning->h, g_PassRunning };
+        return true;
+    }
+    const bool rendering = ImGui::GetPlatformIO().Renderer_RenderState != NULL;
+    if (!g_GfxData.pSwapChain || (rendering && g_CurrentDrawData && g_CurrentDrawData->OwnerViewport != NULL
+                                  && g_CurrentDrawData->OwnerViewport != ImGui::GetMainViewport()))
+        return false;
+    const UINT back = g_GfxData.pSwapChain->GetCurrentBackBufferIndex();
+    ID3D12Resource* res = g_GfxData.pRenderTargetResource[back];
+    const D3D12_RESOURCE_DESC desc = res->GetDesc();
+    *out = { res, D3D12_RESOURCE_STATE_RENDER_TARGET, g_GfxData.renderTargetDescriptor[back], (UINT)desc.Width, desc.Height, NULL };
+    return true;
+}
+
+static bool ImP12_PushedTargetSize(UINT* width, UINT* height)
+{
+    if (g_P12_PushedTargets.empty())
+        return false;
+    *width = g_P12_PushedTargets.back()->w;
+    *height = g_P12_PushedTargets.back()->h;
+    return true;
+}
+
+static void ImP12_Barrier(ID3D12GraphicsCommandList* list, ID3D12Resource* res, D3D12_RESOURCE_STATES from, D3D12_RESOURCE_STATES to)
+{
+    if (from == to)
+        return;
+    D3D12_RESOURCE_BARRIER b = {};
+    b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    b.Transition.pResource = res;
+    b.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+    b.Transition.StateBefore = from;
+    b.Transition.StateAfter = to;
+    list->ResourceBarrier(1, &b);
+}
+
+static void ImP12_SetTarget(ID3D12GraphicsCommandList* list, const ImP12_Target& t)
+{
+    list->OMSetRenderTargets(1, &t.rtv, FALSE, NULL);
+    const D3D12_VIEWPORT vp = { 0.0f, 0.0f, (float)t.w, (float)t.h, 0.0f, 1.0f };
+    const D3D12_RECT sc = { 0, 0, (LONG)t.w, (LONG)t.h };
+    list->RSSetViewports(1, &vp);
+    list->RSSetScissorRects(1, &sc);
+}
+
+static ID3D12GraphicsCommandList* ImP12_CallbackList()
+{
+    ImGui_ImplDX12_RenderState* render_state = (ImGui_ImplDX12_RenderState*)ImGui::GetPlatformIO().Renderer_RenderState;
+    return render_state ? render_state->CommandList : NULL;
+}
+
+// shortcut: render targets are pushed from draw callbacks only (Dear ImGui's command list records them); outside one this
+// returns false. Recording them on the work list as well would serve frame-less use.
+IMPLATFORM_API bool ImPlatform_PushRenderTarget(ImTextureID texture, bool clear)
+{
+    ID3D12GraphicsCommandList* list = ImP12_CallbackList();
+    ImP12_Texture* t = ImP12_Find(texture);
+    ImP12_Target current;
+    if (!list || !t || !t->rtv.ptr || t->format != DXGI_FORMAT_R8G8B8A8_UNORM || t == g_PassRunning || g_P12_PushedTargets.contains(t)
+        || !ImP12_CurrentTarget(&current))
+        return false;
+    ImP12_Barrier(list, t->res, t->rest, D3D12_RESOURCE_STATE_RENDER_TARGET);
+    if (clear)
+    {
+        const float transparent[4] = { 0, 0, 0, 0 };
+        list->ClearRenderTargetView(t->rtv, transparent, 0, NULL);
+    }
+    g_P12_PushedTargets.push_back(t);
+    ImP12_Target pushed;
+    ImP12_CurrentTarget(&pushed);
+    ImP12_SetTarget(list, pushed);
+    return true;
+}
+
+IMPLATFORM_API void ImPlatform_PopRenderTarget(void)
+{
+    ID3D12GraphicsCommandList* list = ImP12_CallbackList();
+    if (!list || g_P12_PushedTargets.empty())
+        return;
+    ImP12_Texture* t = g_P12_PushedTargets.back();
+    g_P12_PushedTargets.pop_back();
+    ImP12_Barrier(list, t->res, D3D12_RESOURCE_STATE_RENDER_TARGET, t->rest);
+    ImP12_Target current;
+    if (ImP12_CurrentTarget(&current))
+        ImP12_SetTarget(list, current);     // Dear ImGui sets the scissor of each of its draws again.
+}
+
+// From a draw callback: copies the target being drawn (a pushed render target, a render pass's texture or the main
+// viewport's back buffer) into 'dst' on ImGui's command list, then returns both to their states.
 // shortcut: secondary viewports' targets are not copied (returns false), add them when a backdrop needs one there.
 IMPLATFORM_API bool ImPlatform_CopyCurrentTarget(ImTextureID dst_id, int src_x, int src_y, int w, int h, int dst_x, int dst_y)
 {
-    ImGui_ImplDX12_RenderState* render_state = (ImGui_ImplDX12_RenderState*)ImGui::GetPlatformIO().Renderer_RenderState;
+    ID3D12GraphicsCommandList* list = ImP12_CallbackList();
     ImP12_Texture* dst = ImP12_Find(dst_id);
-    if (!render_state || !render_state->CommandList || !dst || dst == g_PassRunning || dst->format != DXGI_FORMAT_R8G8B8A8_UNORM)
-        return false;
-    ID3D12GraphicsCommandList* list = render_state->CommandList;
-    ID3D12Resource* src = NULL;
-    D3D12_RESOURCE_STATES src_state = D3D12_RESOURCE_STATE_RENDER_TARGET;
-    UINT src_w = 0, src_h = 0;
-    if (g_PassRunning)
-    {
-        src = g_PassRunning->res;
-        src_state = g_PassRunning->cur;
-        src_w = g_PassRunning->w;
-        src_h = g_PassRunning->h;
-    }
-    else if (g_CurrentDrawData && (g_CurrentDrawData->OwnerViewport == NULL || g_CurrentDrawData->OwnerViewport == ImGui::GetMainViewport()))
-    {
-        src = g_GfxData.pRenderTargetResource[g_GfxData.pSwapChain->GetCurrentBackBufferIndex()];
-        const D3D12_RESOURCE_DESC desc = src->GetDesc();
-        if (desc.Format != DXGI_FORMAT_R8G8B8A8_UNORM)
-            return false;
-        src_w = (UINT)desc.Width;
-        src_h = desc.Height;
-    }
-    if (!src)
+    ImP12_Target src;
+    if (!list || !dst || dst->format != DXGI_FORMAT_R8G8B8A8_UNORM || !ImP12_CurrentTarget(&src) || src.tex == dst
+        || src.res->GetDesc().Format != DXGI_FORMAT_R8G8B8A8_UNORM)
         return false;
     // Clipped to both textures.
     if (src_x < 0) { dst_x -= src_x; w += src_x; src_x = 0; }
     if (src_y < 0) { dst_y -= src_y; h += src_y; src_y = 0; }
     if (dst_x < 0) { src_x -= dst_x; w += dst_x; dst_x = 0; }
     if (dst_y < 0) { src_y -= dst_y; h += dst_y; dst_y = 0; }
-    const int max_w = (int)src_w - src_x < (int)dst->w - dst_x ? (int)src_w - src_x : (int)dst->w - dst_x;
-    const int max_h = (int)src_h - src_y < (int)dst->h - dst_y ? (int)src_h - src_y : (int)dst->h - dst_y;
+    const int max_w = (int)src.w - src_x < (int)dst->w - dst_x ? (int)src.w - src_x : (int)dst->w - dst_x;
+    const int max_h = (int)src.h - src_y < (int)dst->h - dst_y ? (int)src.h - src_y : (int)dst->h - dst_y;
     if (w > max_w) w = max_w;
     if (h > max_h) h = max_h;
     if (w <= 0 || h <= 0)
         return false;
 
-    D3D12_RESOURCE_BARRIER b = {};
-    b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-    b.Transition.pResource = src;
-    b.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-    b.Transition.StateBefore = src_state;
-    b.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_SOURCE;
-    list->ResourceBarrier(1, &b);
-    const D3D12_RESOURCE_STATES dst_state = dst->cur;
-    ImP12_Transition(list, *dst, D3D12_RESOURCE_STATE_COPY_DEST);
-
+    ImP12_Barrier(list, src.res, src.state, D3D12_RESOURCE_STATE_COPY_SOURCE);
+    ImP12_Barrier(list, dst->res, dst->rest, D3D12_RESOURCE_STATE_COPY_DEST);
     D3D12_TEXTURE_COPY_LOCATION to = {}, from = {};
     to.pResource = dst->res;
     to.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
-    from.pResource = src;
+    from.pResource = src.res;
     from.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
     const D3D12_BOX box = { (UINT)src_x, (UINT)src_y, 0, (UINT)(src_x + w), (UINT)(src_y + h), 1 };
     list->CopyTextureRegion(&to, (UINT)dst_x, (UINT)dst_y, 0, &from, &box);
-
-    ImP12_Transition(list, *dst, dst_state);
-    b.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_SOURCE;
-    b.Transition.StateAfter = src_state;
-    list->ResourceBarrier(1, &b);
+    ImP12_Barrier(list, dst->res, D3D12_RESOURCE_STATE_COPY_DEST, dst->rest);
+    ImP12_Barrier(list, src.res, D3D12_RESOURCE_STATE_COPY_SOURCE, src.state);
     return true;
 }
 
-IMPLATFORM_API void ImPlatform_GetCurrentTargetSize(unsigned int* width, unsigned int* height) { if (width) *width = 0; if (height) *height = 0; }
-IMPLATFORM_API void ImPlatform_DrawQuadNow(ImPlatform_ShaderProgram program, ImVec4 dst_rect, ImVec4 uv_rect) { (void)program; (void)dst_rect; (void)uv_rect; }
+IMPLATFORM_API void ImPlatform_GetCurrentTargetSize(unsigned int* width, unsigned int* height)
+{
+    ImP12_Target t;
+    const bool ok = ImP12_CurrentTarget(&t);
+    if (width) *width = ok ? t.w : 0;
+    if (height) *height = ok ? t.h : 0;
+}
+
+// b1 for the draws that follow in this draw callback, and for Dear ImGui's draws after it until a program is bound again
+// (as the Direct3D 11 backend leaves it bound). The handle needs no release: the copy lives until the frame completes.
+IMPLATFORM_API void* ImPlatform_PushShaderConstants(const void* data, unsigned int size)
+{
+    ID3D12GraphicsCommandList* list = ImP12_CallbackList();
+    ImP12_Upload up = {};
+    if (!list || !data || size == 0 || !ImP12_Alloc((std::max)(256u, (size + 255u) & ~255u), 256, &up, true))
+        return nullptr;
+    memcpy(up.cpu, data, size);
+    g_P12_PushedConstants = up.gpu;
+    if (g_P12_Program)
+        ImP12_BindProgram(list, g_P12_Program, g_CurrentDrawData ? g_CurrentDrawData : ImGui::GetDrawData(), 0);
+    return (void*)(uintptr_t)up.gpu;
+}
+
+IMPLATFORM_API void ImPlatform_PopShaderConstants(void* handle)
+{
+    if (handle && (UINT64)(uintptr_t)handle == g_P12_PushedConstants)
+        g_P12_PushedConstants = 0;
+}
+
+// Draws dst_rect (current target pixels) with the program, t0 its slot 0 texture, into the current target.
+IMPLATFORM_API void ImPlatform_DrawQuadNow(ImPlatform_ShaderProgram program, ImVec4 dst_rect, ImVec4 uv_rect)
+{
+    ImPlatform_ShaderProgramData_DX12* program_data = (ImPlatform_ShaderProgramData_DX12*)program;
+    ID3D12GraphicsCommandList* list = ImP12_CallbackList();
+    ImP12_Target target;
+    ImP12_Upload up = {};
+    if (!program_data || !program_data->pPSO || !list || !ImP12_CurrentTarget(&target)
+        || !ImP12_Alloc(4 * sizeof(ImDrawVert) + 6 * sizeof(UINT16), 16, &up, true))
+        return;
+    ImDrawVert* v = (ImDrawVert*)up.cpu;
+    const ImU32 white = IM_COL32_WHITE;
+    v[0].pos = ImVec2(dst_rect.x, dst_rect.y); v[0].uv = ImVec2(uv_rect.x, uv_rect.y); v[0].col = white;
+    v[1].pos = ImVec2(dst_rect.z, dst_rect.y); v[1].uv = ImVec2(uv_rect.z, uv_rect.y); v[1].col = white;
+    v[2].pos = ImVec2(dst_rect.z, dst_rect.w); v[2].uv = ImVec2(uv_rect.z, uv_rect.w); v[2].col = white;
+    v[3].pos = ImVec2(dst_rect.x, dst_rect.w); v[3].uv = ImVec2(uv_rect.x, uv_rect.w); v[3].col = white;
+    const UINT16 indices[6] = { 0, 1, 2, 0, 2, 3 };
+    memcpy(up.cpu + 4 * sizeof(ImDrawVert), indices, sizeof(indices));
+
+    ImP12_BindProgram(list, program_data, g_CurrentDrawData ? g_CurrentDrawData : ImGui::GetDrawData(), 0);
+    // b0 in the target's pixels, as the Direct3D 11 backend projects it
+    const float R = (float)target.w, B = (float)target.h;
+    const float mvp[4][4] =
+    {
+        { 2.0f / R, 0.0f,      0.0f, 0.0f },
+        { 0.0f,     -2.0f / B, 0.0f, 0.0f },
+        { 0.0f,     0.0f,      0.5f, 0.0f },
+        { -1.0f,    1.0f,      0.5f, 1.0f },
+    };
+    list->SetGraphicsRoot32BitConstants(0, 16, mvp, 0);
+    const D3D12_VERTEX_BUFFER_VIEW vbv = { up.gpu, 4 * sizeof(ImDrawVert), sizeof(ImDrawVert) };
+    const D3D12_INDEX_BUFFER_VIEW ibv = { up.gpu + 4 * sizeof(ImDrawVert), sizeof(indices), DXGI_FORMAT_R16_UINT };
+    list->IASetVertexBuffers(0, 1, &vbv);
+    list->IASetIndexBuffer(&ibv);
+    list->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    list->DrawIndexedInstanced(6, 1, 0, 0, 0);
+}
+
+IMPLATFORM_API void ImPlatform_BindVertexBuffer(ImPlatform_VertexBuffer vertex_buffer) { g_P12_VertexBuffer = (ImPlatform_BufferData_DX12*)vertex_buffer; }
+IMPLATFORM_API void ImPlatform_BindIndexBuffer(ImPlatform_IndexBuffer index_buffer) { g_P12_IndexBuffer = (ImPlatform_BufferData_DX12*)index_buffer; }
+IMPLATFORM_API void ImPlatform_BindBuffers(ImPlatform_VertexBuffer vertex_buffer, ImPlatform_IndexBuffer index_buffer)
+{
+    ImPlatform_BindVertexBuffer(vertex_buffer);
+    ImPlatform_BindIndexBuffer(index_buffer);
+}
+
+// Draws the bound buffers inside a draw callback with the program bound last there (ImPlatform_BeginCustomShader,
+// ImPlatform_BeginCustomShader_Render, ImPlatform_SetShaderTexture), Dear ImGui's blending, into the current target. The
+// pipeline for the buffer's vertex layout is created on first use and kept by the program. primitive_type: 0 triangles,
+// 1 lines, 2 points. Offline drawing into a render texture uses ImPlatform_DrawMesh.
+IMPLATFORM_API void ImPlatform_DrawIndexed(unsigned int primitive_type, unsigned int index_count, unsigned int start_index)
+{
+    ImPlatform_ShaderProgramData_DX12* prog = g_P12_Program;
+    ImPlatform_BufferData_DX12* vb = g_P12_VertexBuffer;
+    ImPlatform_BufferData_DX12* ib = g_P12_IndexBuffer;
+    ID3D12GraphicsCommandList* list = ImP12_CallbackList();
+    if (!list || !prog || !prog->pVSBlob || !prog->pPSBlob || !vb || vb->is_index || !ib || !ib->is_index || primitive_type > 2
+        || start_index > ib->ib_desc.index_count)
+        return;
+    if (index_count == 0)
+        index_count = ib->ib_desc.index_count - start_index;    // The rest of the buffer
+    if ((UINT64)start_index + index_count > ib->ib_desc.index_count)
+        return;
+    std::string key = "callback|" + std::to_string(primitive_type) + "|" + std::to_string(vb->vb_desc.vertex_stride);
+    for (size_t i = 0; i < vb->attributes.size(); i++)
+        key += "|" + std::to_string((int)vb->attributes[i].format) + ":" + std::to_string(vb->attributes[i].offset) + ":" + vb->semantics[i];
+    ID3D12PipelineState*& pso = prog->meshPSOs[key];
+    if (!pso)
+    {
+        std::vector<D3D12_INPUT_ELEMENT_DESC> layout;
+        std::vector<std::pair<std::string, UINT>> names;
+        ImP12_InputLayout(vb, names, layout);
+        D3D12_GRAPHICS_PIPELINE_STATE_DESC pd = {};
+        pd.pRootSignature = prog->pRootSignature;
+        pd.VS = { prog->pVSBlob->GetBufferPointer(), prog->pVSBlob->GetBufferSize() };
+        pd.PS = { prog->pPSBlob->GetBufferPointer(), prog->pPSBlob->GetBufferSize() };
+        pd.InputLayout = { layout.data(), (UINT)layout.size() };
+        const D3D12_PRIMITIVE_TOPOLOGY_TYPE types[3] = { D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE, D3D12_PRIMITIVE_TOPOLOGY_TYPE_LINE,
+                                                         D3D12_PRIMITIVE_TOPOLOGY_TYPE_POINT };
+        pd.PrimitiveTopologyType = types[primitive_type];
+        pd.NumRenderTargets = 1;
+        pd.RTVFormats[0] = DXGI_FORMAT_R8G8B8A8_UNORM;      // The ImGui pipeline's target format
+        pd.SampleDesc.Count = 1;
+        pd.SampleMask = UINT_MAX;
+        pd.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
+        pd.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
+        pd.RasterizerState.DepthClipEnable = TRUE;
+        D3D12_RENDER_TARGET_BLEND_DESC& b = pd.BlendState.RenderTarget[0];
+        b.BlendEnable = TRUE;
+        b.SrcBlend = D3D12_BLEND_SRC_ALPHA;
+        b.DestBlend = D3D12_BLEND_INV_SRC_ALPHA;
+        b.BlendOp = D3D12_BLEND_OP_ADD;
+        b.SrcBlendAlpha = D3D12_BLEND_ONE;
+        b.DestBlendAlpha = D3D12_BLEND_INV_SRC_ALPHA;
+        b.BlendOpAlpha = D3D12_BLEND_OP_ADD;
+        b.LogicOp = D3D12_LOGIC_OP_NOOP;
+        b.RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
+        if (FAILED(g_GfxData.pDevice->CreateGraphicsPipelineState(&pd, IID_PPV_ARGS(&pso))))
+        {
+            pso = NULL;
+            prog->meshPSOs.erase(key);
+            return;
+        }
+    }
+    ImP12_BindProgram(list, prog, g_CurrentDrawData ? g_CurrentDrawData : ImGui::GetDrawData(), 0);
+    list->SetPipelineState(pso);
+    const D3D12_VERTEX_BUFFER_VIEW vbv = { vb->res->GetGPUVirtualAddress(), (UINT)vb->size, vb->vb_desc.vertex_stride };
+    const D3D12_INDEX_BUFFER_VIEW ibv = { ib->res->GetGPUVirtualAddress(), (UINT)ib->size,
+                                          ib->ib_desc.format == ImPlatform_IndexFormat_UInt16 ? DXGI_FORMAT_R16_UINT : DXGI_FORMAT_R32_UINT };
+    list->IASetVertexBuffers(0, 1, &vbv);
+    list->IASetIndexBuffer(&ibv);
+    const D3D_PRIMITIVE_TOPOLOGY topologies[3] = { D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST, D3D_PRIMITIVE_TOPOLOGY_LINELIST, D3D_PRIMITIVE_TOPOLOGY_POINTLIST };
+    list->IASetPrimitiveTopology(topologies[primitive_type]);
+    list->DrawIndexedInstanced(index_count, 1, start_index, 0, 0);
+}
 
 #endif // IM_GFX_DIRECTX12

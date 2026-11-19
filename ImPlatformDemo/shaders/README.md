@@ -1,102 +1,53 @@
-# Vulkan Shaders - SPIR-V Compilation
+# Demo shaders
 
-This directory contains GLSL shaders for the Vulkan backend and scripts to compile them to SPIR-V bytecode.
+Each custom shader is written once, in plain HLSL (`<name>.hlsl`, entry points `vs_main` and `ps_main`), and compiled
+for every graphics backend into headers that `main.cpp` includes:
 
-## Files
+| Header | Backend | Produced by |
+|---|---|---|
+| `<name>.hlsl.h` | Direct3D 10, 11, 12 (compiled at run time) | the source itself |
+| `<name>.spv.h` | Vulkan | Slang (`slangc`), SPIR-V 1.3 |
+| `<name>.glsl.h` | OpenGL 3.3+ (macOS included) | Slang's SPIR-V converted to GLSL 330 by SPIRV-Cross |
+| `<name>.wgsl.h` | WebGPU | Slang (`slangc -target wgsl`) |
 
-### GLSL Source Files
-- `arrow_sdf.vert` - Arrow SDF vertex shader
-- `arrow_sdf.frag` - Arrow SDF fragment shader
-- `gradient.vert` - Gradient vertex shader
-- `gradient.frag` - Gradient fragment shader
+The headers are generated and committed. Rerun the script after editing a `.hlsl`:
 
-### Compiled SPIR-V Bytecode
-- `*.spv` - Binary SPIR-V files (generated)
-- `*.h` - C++ header files with bytecode arrays (generated)
-
-### Compilation Scripts
-- `compile_shaders.bat` - Windows batch script to compile shaders
-- `compile_shaders.py` - Python script for cross-platform compilation
-- `spv_to_header.sh` - Bash script to convert SPIR-V to C++ headers
-
-## Requirements
-
-- **Vulkan SDK**: Required for `glslangValidator`
-  - Download from: https://vulkan.lunarg.com/
-  - Make sure `glslangValidator` is in your PATH
-
-For Python script:
-- **Python 3.x**
-
-For Bash scripts (Git Bash on Windows):
-- **xxd** (included with Git Bash)
-
-## Usage
-
-### Windows (Batch File)
 ```
-compile_shaders.bat
+compile_shaders.bat          # Windows
+./compile_shaders.sh         # Linux, macOS
 ```
 
-### Python (Cross-platform)
-```
-python compile_shaders.py
-```
+Both scripts produce the same bytes. They fetch the pinned Slang release into `extern/slang`
+(`buildsystem/fetch_slang.*`) and need `spirv-cross` (Vulkan SDK, or the `spirv-cross` package on Linux / Homebrew).
 
-### Manual Compilation
-```bash
-# Compile GLSL to SPIR-V
-glslangValidator -V arrow_sdf.vert -o arrow_sdf.vert.spv
-glslangValidator -V arrow_sdf.frag -o arrow_sdf.frag.spv
-glslangValidator -V gradient.vert -o gradient.vert.spv
-glslangValidator -V gradient.frag -o gradient.frag.spv
+## Shader convention
 
-# Convert to C++ headers (using bash script)
-bash spv_to_header.sh arrow_sdf.vert.spv arrow_sdf_vert_spv
-bash spv_to_header.sh arrow_sdf.frag.spv arrow_sdf_frag_spv
-bash spv_to_header.sh gradient.vert.spv gradient_vert_spv
-bash spv_to_header.sh gradient.frag.spv gradient_frag_spv
-```
+The same registers as ImPlatform's Direct3D 11 backend:
 
-## Generated Headers
+| Register | Content |
+|---|---|
+| `b0` | `float4x4 ProjMtx`, vertex stage (`mul(ProjMtx, float4(pos, 0, 1))`) |
+| `b1` | parameters, from `ImPlatform_BeginUniformBlock` / `SetUniform` / `EndUniformBlock` (D3D packing, back to back) |
+| `t0`, `s0` | the texture of the draw command and Dear ImGui's sampler |
+| `t1`..`t8` | textures from `ImPlatform_SetShaderTexture(program, name, slot, texture)`, slot 1..8 |
 
-The generated `.h` files contain:
-- `const unsigned int array_name[]` - SPIR-V bytecode as uint32_t array
-- `const unsigned int array_name_size` - Size of the array in bytes
+`ImPlatform_SetShaderTexture` takes any ImPlatform texture. The program keeps it for its later draws; called inside a
+draw callback while the program is bound, it also applies at once. Unset slots are a white texture on Vulkan, the
+font atlas on WebGPU, and undefined on the other backends. DirectX 9 and Metal do not support it. Slot 0 is the texture
+of the direct draws (`ImPlatform_DrawIndexed`, `ImPlatform_DrawQuadNow`); Dear ImGui's draws bind their own. On OpenGL, `name` is
+the HLSL texture name (SPIRV-Cross renames it `SPIRV_Cross_Combined<name><sampler>`, which is also found).
 
-These headers are included in `main.cpp` when compiling for Vulkan:
-```cpp
-#if (IM_CURRENT_GFX == IM_GFX_VULKAN)
-    #include "shaders/arrow_sdf.vert.h"
-    #include "shaders/arrow_sdf.frag.h"
-    #include "shaders/gradient.vert.h"
-    #include "shaders/gradient.frag.h"
-#endif
-```
+Vertex inputs are `ImDrawVert`: `float2 POSITION`, `float2 TEXCOORD0`, `float4 COLOR0`, in any order (Vulkan, OpenGL
+and WebGPU tell them apart by type: the 4-component input is the color, the first 2-component input the position).
 
-## Shader Structure
+OpenGL and WebGPU take the registers as bindings `b0` -> 0, `b1` -> 1, `t0` -> 16, `s0` -> 32
+(`-fvk-b-shift 0 0 -fvk-t-shift 16 0 -fvk-s-shift 32 0`); on WebGPU all of them are in bind group 0, with `t1`..`t8`
+(`ImPlatform_SetShaderTexture`, slot 1..8) at bindings 17..24; other registers (`s1`+, `b2`+) are not supported.
 
-All shaders follow ImGui's vertex format:
-```glsl
-layout(location = 0) in vec2 aPos;    // Position
-layout(location = 1) in vec2 aUV;     // Texture coordinates
-layout(location = 2) in vec4 aColor;  // Vertex color
-```
+Parameters belong to the program on every backend: the values set last before the frame is rendered apply to all of
+that program's draws in the frame.
 
-Vertex shaders use push constants for the projection matrix:
-```glsl
-layout(push_constant) uniform PushConstants {
-    mat4 ProjectionMatrix;
-} pc;
-```
-
-Fragment shaders use:
-- `layout(binding = 0)` - Texture sampler (from ImGui)
-- `layout(binding = 1)` - Custom uniform buffer
-
-## Notes
-
-- The SPIR-V bytecode is stored as little-endian uint32_t arrays
-- Each uint32_t value represents 4 bytes of the SPIR-V binary
-- Shaders must be recompiled after any changes to the GLSL source
-- The generated headers should be committed to version control for convenience
+On Vulkan, the scripts compile with each register class in its own binding range
+(`-fvk-t-shift 0 0 -fvk-s-shift 16 0 -fvk-b-shift 32 0 -fvk-u-shift 48 0`) and `ImPlatform_CreateShader` moves them to
+Dear ImGui's descriptor sets (texture set 0, sampler set 1, `b0`/`b1` set 2) and `t1`..`t8` to set 3. Other
+registers (`t9`+, `s1`+, `b2`+) are not supported there.

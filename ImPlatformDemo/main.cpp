@@ -30,9 +30,13 @@ extern "C" {
 #error "IM_CONFIG_GFX must be defined by project configuration"
 #endif
 
-// Define platform and graphics API from project configuration
+// Define platform and graphics API from project configuration (CMake already defines them for its static library)
+#ifndef IM_CURRENT_PLATFORM
 #define IM_CURRENT_PLATFORM IM_CONFIG_PLATFORM
+#endif
+#ifndef IM_CURRENT_GFX
 #define IM_CURRENT_GFX IM_CONFIG_GFX
+#endif
 
 // Define implementation to include the backend code
 #define IMPLATFORM_IMPLEMENTATION
@@ -210,6 +214,132 @@ static int CheckRenderPassTest()
 #endif // __EMSCRIPTEN__
 #endif
 
+#if IMPLATFORM_GFX_SUPPORT_CUSTOM_SHADER
+// Custom shaders are written once in HLSL (shaders/<name>.hlsl, entry points vs_main and ps_main) and compiled for every
+// backend by shaders/compile_shaders: Direct3D compiles the HLSL at run time, Vulkan takes SPIR-V, OpenGL GLSL 330 and
+// WebGPU WGSL.
+#if (IM_CURRENT_GFX == IM_GFX_VULKAN)
+#include "shaders/arrow_sdf.spv.h"
+#include "shaders/gradient.spv.h"
+#define DEMO_SHADER_PROGRAM( name, shaders ) CreateDemoProgram( ImPlatform_ShaderFormat_SPIRV, name##_vs_spv, sizeof( name##_vs_spv ), name##_ps_spv, sizeof( name##_ps_spv ), "main", "main", shaders )
+#elif (IM_CURRENT_GFX == IM_GFX_OPENGL3)
+#include "shaders/arrow_sdf.glsl.h"
+#include "shaders/gradient.glsl.h"
+#define DEMO_SHADER_PROGRAM( name, shaders ) CreateDemoProgram( ImPlatform_ShaderFormat_GLSL, name##_vs_glsl, 0, name##_ps_glsl, 0, "main", "main", shaders )
+#elif (IM_CURRENT_GFX == IM_GFX_DIRECTX10) || (IM_CURRENT_GFX == IM_GFX_DIRECTX11) || (IM_CURRENT_GFX == IM_GFX_DIRECTX12)
+#include "shaders/arrow_sdf.hlsl.h"
+#include "shaders/gradient.hlsl.h"
+#define DEMO_SHADER_PROGRAM( name, shaders ) CreateDemoProgram( ImPlatform_ShaderFormat_HLSL, name##_hlsl, 0, name##_hlsl, 0, "vs_main", "ps_main", shaders )
+#elif (IM_CURRENT_GFX == IM_GFX_WGPU)
+#include "shaders/arrow_sdf.wgsl.h"
+#include "shaders/gradient.wgsl.h"
+#define DEMO_SHADER_PROGRAM( name, shaders ) CreateDemoProgram( ImPlatform_ShaderFormat_WGSL, name##_vs_wgsl, 0, name##_ps_wgsl, 0, "vs_main", "ps_main", shaders )
+#else
+#define DEMO_SHADER_NONE	// No demo shader for this backend
+#define DEMO_SHADER_PROGRAM( name, shaders ) nullptr
+#endif
+
+#ifndef DEMO_SHADER_NONE
+// Creates both stages (kept in shaders[] to be destroyed) and the program; size 0: vs and ps are source text.
+static ImPlatform_ShaderProgram CreateDemoProgram( ImPlatform_ShaderFormat format, const void* vs, size_t vs_size, const void* ps, size_t ps_size,
+												   const char* vs_entry, const char* ps_entry, ImPlatform_Shader shaders[ 2 ] )
+{
+	for ( int i = 0; i < 2; ++i )
+	{
+		ImPlatform_ShaderDesc desc = {};
+		desc.stage = i == 0 ? ImPlatform_ShaderStage_Vertex : ImPlatform_ShaderStage_Fragment;
+		desc.format = format;
+		desc.entry_point = i == 0 ? vs_entry : ps_entry;
+		const void* code = i == 0 ? vs : ps;
+		const size_t size = i == 0 ? vs_size : ps_size;
+		if ( size )
+		{
+			desc.bytecode = code;
+			desc.bytecode_size = (unsigned int)size;
+		}
+		else
+			desc.source_code = (const char*)code;
+		shaders[ i ] = ImPlatform_CreateShader( &desc );
+	}
+	return shaders[ 0 ] && shaders[ 1 ] ? ImPlatform_CreateShaderProgram( shaders[ 0 ], shaders[ 1 ] ) : nullptr;
+}
+#endif // DEMO_SHADER_NONE
+
+#if defined( IMGUI_HAS_TEXTURES ) && !defined( __EMSCRIPTEN__ )
+// --shader-test: the gradient shader (shaders/gradient.hlsl, red to blue) drawn into a render pass target, read back.
+// Checks the custom shader path of each backend: compilation, b0 projection, b1 parameters. Exit code as above.
+static RenderPassScene g_ShaderTest;
+static ImPlatform_ShaderProgram g_ShaderTestProgram = nullptr;
+static void DrawShaderTest( ImDrawList* dl )
+{
+	ImPlatform_BeginCustomShader( dl, g_ShaderTestProgram );
+	dl->AddImage( ImGui::GetIO().Fonts->TexRef, ImVec2( 0, 0 ), ImVec2( 64, 64 ) );
+	ImPlatform_EndCustomShader( dl );
+}
+
+static int CheckShaderTest()
+{
+	static unsigned char px[ 64 * 64 * 4 ];
+	if ( !ImPlatform_ReadTexture( g_ShaderTest.Target, 0, 0, 64, 64, px, sizeof( px ) ) )
+	{
+		printf( "SKIP: no readback of the pass target\n" );
+		return 2;
+	}
+	// uv.y at the centers of rows 0, 32 and 63: 0.008, 0.508, 0.992
+	const RenderPassProbe probes[] = { { 32, 0, { 253, 0, 2, 255 } }, { 32, 32, { 125, 0, 130, 255 } }, { 32, 63, { 2, 0, 253, 255 } } };
+	const int bad = CheckRenderPassProbes( "gradient", px, 64, probes, 3, 4 );
+	if ( !bad )
+		printf( "PASS\n" );
+	return bad ? 1 : 0;
+}
+
+// --direct-draw-test: from a draw callback inside a render pass, the same gradient drawn by ImPlatform_DrawQuadNow into a
+// pushed render target, its colors from ImPlatform_PushShaderConstants, then read back: the direct draws a backdrop
+// effect makes (copy, push a target, draw a quad, pop).
+static RenderPassScene g_DirectDrawPass;
+static ImTextureID g_DirectDrawTarget = 0;
+static bool g_DirectDrawPushed = false;
+static void DirectDrawCallback( const ImDrawList*, const ImDrawCmd* )
+{
+	if ( !ImPlatform_PushRenderTarget( g_DirectDrawTarget, true ) )
+		return;
+	g_DirectDrawPushed = true;
+	const ImVec4 colors[ 2 ] = { ImVec4( 1, 0, 0, 1 ), ImVec4( 0, 0, 1, 1 ) };	// gradient.hlsl's ColorStart, ColorEnd
+	void* constants = ImPlatform_PushShaderConstants( colors, sizeof( colors ) );
+	ImPlatform_DrawQuadNow( g_ShaderTestProgram, ImVec4( 0, 0, 64, 64 ), ImVec4( 0, 0, 1, 1 ) );
+	ImPlatform_PopShaderConstants( constants );
+	ImPlatform_PopRenderTarget();
+}
+
+static void DrawDirectDrawTest( ImDrawList* dl )
+{
+	dl->AddCallback( DirectDrawCallback, nullptr );
+	dl->AddCallback( ImGui::GetPlatformIO().DrawCallback_ResetRenderState, nullptr );
+	dl->AddRectFilled( ImVec2( 0, 0 ), ImVec2( 1, 1 ), IM_COL32_WHITE );	// Backends may skip draw data without vertices
+}
+
+static int CheckDirectDrawTest()
+{
+	static unsigned char px[ 64 * 64 * 4 ];
+	if ( !g_DirectDrawPushed )
+	{
+		printf( "SKIP: no render target stack in draw callbacks on this backend\n" );
+		return 2;
+	}
+	if ( !ImPlatform_ReadTexture( g_DirectDrawTarget, 0, 0, 64, 64, px, sizeof( px ) ) )
+	{
+		printf( "SKIP: no readback of the pushed target\n" );
+		return 2;
+	}
+	const RenderPassProbe probes[] = { { 32, 0, { 253, 0, 2, 255 } }, { 32, 32, { 125, 0, 130, 255 } }, { 32, 63, { 2, 0, 253, 255 } } };
+	const int bad = CheckRenderPassProbes( "direct draw", px, 64, probes, 3, 4 );
+	if ( !bad )
+		printf( "PASS\n" );
+	return bad ? 1 : 0;
+}
+#endif
+#endif // IMPLATFORM_GFX_SUPPORT_CUSTOM_SHADER
+
 // --compute-test: storage texture + compute dispatch + readback, the same check on every backend.
 // Reads an input texture (t0), writes a storage texture (u0) with a constant from b0, reads it back.
 // Exit code: 0 pass, 1 fail, 2 unsupported here.
@@ -349,6 +479,8 @@ int main( int argc, char** argv )
 {
 	const bool computeTest = argc > 1 && strcmp( argv[ 1 ], "--compute-test" ) == 0;
 	const bool renderPassTest = argc > 1 && strcmp( argv[ 1 ], "--render-pass-test" ) == 0;
+	const bool shaderTest = argc > 1 && strcmp( argv[ 1 ], "--shader-test" ) == 0;
+	const bool directDrawTest = argc > 1 && strcmp( argv[ 1 ], "--direct-draw-test" ) == 0;
 	int exitCode = 0;
 #ifndef __EMSCRIPTEN__
 	int renderPassFrame = 0;
@@ -500,392 +632,13 @@ int main( int argc, char** argv )
 #endif
 
 #if IMPLATFORM_GFX_SUPPORT_CUSTOM_SHADER
-	// ========================================================================
-	// Custom Shader Demo: Arrow SDF Shape
-	// ========================================================================
-
-	// Define shader source code based on graphics API
-#if (IM_CURRENT_GFX != IM_GFX_VULKAN)
-	const char* arrow_vs_source = nullptr;
-	const char* arrow_ps_source = nullptr;
-	ImPlatform_ShaderFormat arrow_format = ImPlatform_ShaderFormat_GLSL;
-#endif
-
-#if (IM_CURRENT_GFX == IM_GFX_OPENGL3)
-	// GLSL for OpenGL3
-	arrow_format = ImPlatform_ShaderFormat_GLSL;
-	arrow_vs_source =
-		"#version 130\n"
-		"uniform mat4 ProjMtx;\n"
-		"in vec2 Position;\n"
-		"in vec2 UV;\n"
-		"out vec2 Frag_UV;\n"
-		"void main() {\n"
-		"    Frag_UV = UV;\n"
-		"    gl_Position = ProjMtx * vec4(Position.xy, 0, 1);\n"
-		"}\n";
-
-	arrow_ps_source =
-		"#version 130\n"
-		"in vec2 Frag_UV;\n"
-		"out vec4 Out_Color;\n"
-		"float sdArrow(vec2 p) {\n"
-		"    // Arrow head (triangle pointing right)\n"
-		"    vec2 head = p - vec2(0.5, 0.0);\n"
-		"    float dHead = max(abs(head.y) + head.x * 0.5 - 0.25, -head.x - 0.3);\n"
-		"    \n"
-		"    // Arrow shaft (rectangle)\n"
-		"    vec2 shaft = p - vec2(-0.1, 0.0);\n"
-		"    float dShaft = max(abs(shaft.y) - 0.1, max(shaft.x - 0.4, -shaft.x - 0.6));\n"
-		"    \n"
-		"    return min(dHead, dShaft);\n"
-		"}\n"
-		"void main() {\n"
-		"    vec2 uv = Frag_UV * 2.0 - 1.0;\n"
-		"    float d = sdArrow(uv);\n"
-		"    float alpha = 1.0 - smoothstep(0.0, 0.02, d);\n"
-		"    Out_Color = vec4(1.0, 0.5, 0.2, 1.0) * alpha;\n"
-		"}\n";
-
-#elif (IM_CURRENT_GFX == IM_GFX_DIRECTX10) || (IM_CURRENT_GFX == IM_GFX_DIRECTX11) || (IM_CURRENT_GFX == IM_GFX_DIRECTX12)
-	// HLSL for DirectX 10/11/12
-	arrow_format = ImPlatform_ShaderFormat_HLSL;
-	arrow_vs_source =
-		"cbuffer vertexBuffer : register(b0) {\n"
-		"    float4x4 ProjMtx;\n"
-		"};\n"
-		"struct VS_INPUT {\n"
-		"    float2 pos : POSITION;\n"
-		"    float4 col : COLOR0;\n"
-		"    float2 uv  : TEXCOORD0;\n"
-		"};\n"
-		"struct PS_INPUT {\n"
-		"    float4 pos : SV_POSITION;\n"
-		"    float4 col : COLOR0;\n"
-		"    float2 uv  : TEXCOORD0;\n"
-		"};\n"
-		"PS_INPUT main(VS_INPUT input) {\n"
-		"    PS_INPUT output;\n"
-		"    output.pos = mul(ProjMtx, float4(input.pos.xy, 0.0, 1.0));\n"
-		"    output.col = input.col;\n"
-		"    output.uv = input.uv;\n"
-		"    return output;\n"
-		"}\n";
-
-	arrow_ps_source =
-		"struct PS_INPUT {\n"
-		"    float4 pos : SV_POSITION;\n"
-		"    float4 col : COLOR0;\n"
-		"    float2 uv  : TEXCOORD0;\n"
-		"};\n"
-		"float sdArrow(float2 p) {\n"
-		"    // Arrow head (triangle pointing right)\n"
-		"    float2 head = p - float2(0.5, 0.0);\n"
-		"    float dHead = max(abs(head.y) + head.x * 0.5 - 0.25, -head.x - 0.3);\n"
-		"    \n"
-		"    // Arrow shaft (rectangle)\n"
-		"    float2 shaft = p - float2(-0.1, 0.0);\n"
-		"    float dShaft = max(abs(shaft.y) - 0.1, max(shaft.x - 0.4, -shaft.x - 0.6));\n"
-		"    \n"
-		"    return min(dHead, dShaft);\n"
-		"}\n"
-		"float4 main(PS_INPUT input) : SV_TARGET {\n"
-		"    // Arrow SDF shader - renders arrow shape\n"
-		"    float2 uv = input.uv * 2.0 - 1.0;\n"
-		"    float d = sdArrow(uv);\n"
-		"    float alpha = 1.0 - smoothstep(0.0, 0.02, d);\n"
-		"    return float4(1.0, 0.5, 0.2, 1.0) * alpha;\n"
-		"}\n";
-
-#elif (IM_CURRENT_GFX == IM_GFX_VULKAN)
-	// Vulkan uses pre-compiled SPIR-V bytecode
-	// Include generated SPIR-V headers
-	#include "shaders/arrow_sdf.vert.h"
-	#include "shaders/arrow_sdf.frag.h"
-	// Note: For Vulkan, we'll use bytecode fields instead of source_code
-
-#elif (IM_CURRENT_GFX == IM_GFX_WGPU)
-	// WGSL for WebGPU
-	arrow_format = ImPlatform_ShaderFormat_WGSL;
-	arrow_vs_source =
-		"struct Uniforms {\n"
-		"    projMtx: mat4x4<f32>,\n"
-		"};\n"
-		"@group(0) @binding(0) var<uniform> uniforms: Uniforms;\n"
-		"\n"
-		"struct VertexInput {\n"
-		"    @location(0) pos: vec2<f32>,\n"
-		"    @location(1) uv: vec2<f32>,\n"
-		"    @location(2) col: vec4<f32>,\n"
-		"};\n"
-		"\n"
-		"struct VertexOutput {\n"
-		"    @builtin(position) position: vec4<f32>,\n"
-		"    @location(0) uv: vec2<f32>,\n"
-		"};\n"
-		"\n"
-		"@vertex\n"
-		"fn main(input: VertexInput) -> VertexOutput {\n"
-		"    var output: VertexOutput;\n"
-		"    output.position = uniforms.projMtx * vec4<f32>(input.pos, 0.0, 1.0);\n"
-		"    output.uv = input.uv;\n"
-		"    return output;\n"
-		"}\n";
-
-	arrow_ps_source =
-		"struct FragInput {\n"
-		"    @location(0) uv: vec2<f32>,\n"
-		"};\n"
-		"\n"
-		"fn sdArrow(p: vec2<f32>) -> f32 {\n"
-		"    let head = p - vec2<f32>(0.5, 0.0);\n"
-		"    let dHead = max(abs(head.y) + head.x * 0.5 - 0.25, -head.x - 0.3);\n"
-		"    let shaft = p - vec2<f32>(-0.1, 0.0);\n"
-		"    let dShaft = max(abs(shaft.y) - 0.1, max(shaft.x - 0.4, -shaft.x - 0.6));\n"
-		"    return min(dHead, dShaft);\n"
-		"}\n"
-		"\n"
-		"@fragment\n"
-		"fn main(input: FragInput) -> @location(0) vec4<f32> {\n"
-		"    let uv = input.uv * 2.0 - 1.0;\n"
-		"    let d = sdArrow(uv);\n"
-		"    let alpha = 1.0 - smoothstep(0.0, 0.02, d);\n"
-		"    return vec4<f32>(1.0, 0.5, 0.2, 1.0) * alpha;\n"
-		"}\n";
-#endif
-
-	// ========================================================================
-	// Custom Shader Demo: Linear Gradient with Custom Vertex Buffer
-	// ========================================================================
-
-#if (IM_CURRENT_GFX != IM_GFX_VULKAN)
-	const char* gradient_vs_source = nullptr;
-	const char* gradient_ps_source = nullptr;
-	ImPlatform_ShaderFormat gradient_format = ImPlatform_ShaderFormat_GLSL;
-#endif
-
-	// Gradient colors
+	// Custom shaders: an arrow drawn from a signed distance field, and a gradient between two adjustable colors
 	ImVec4 gradient_color_start = ImVec4(1.0f, 0.2f, 0.2f, 1.0f);
 	ImVec4 gradient_color_end = ImVec4(0.2f, 0.2f, 1.0f, 1.0f);
-
-#if (IM_CURRENT_GFX == IM_GFX_OPENGL3)
-	gradient_format = ImPlatform_ShaderFormat_GLSL;
-	gradient_vs_source =
-		"#version 130\n"
-		"uniform mat4 ProjMtx;\n"
-		"in vec2 Position;\n"
-		"in vec2 UV;\n"
-		"out vec2 Frag_UV;\n"
-		"void main() {\n"
-		"    Frag_UV = UV;\n"
-		"    gl_Position = ProjMtx * vec4(Position.xy, 0, 1);\n"
-		"}\n";
-
-	gradient_ps_source =
-		"#version 130\n"
-		"uniform vec4 ColorStart;\n"
-		"uniform vec4 ColorEnd;\n"
-		"in vec2 Frag_UV;\n"
-		"out vec4 Out_Color;\n"
-		"void main() {\n"
-		"    Out_Color = mix(ColorStart, ColorEnd, Frag_UV.y);\n"
-		"}\n";
-
-#elif (IM_CURRENT_GFX == IM_GFX_DIRECTX10) || (IM_CURRENT_GFX == IM_GFX_DIRECTX11) || (IM_CURRENT_GFX == IM_GFX_DIRECTX12)
-	gradient_format = ImPlatform_ShaderFormat_HLSL;
-	gradient_vs_source =
-		"cbuffer vertexBuffer : register(b0) {\n"
-		"    float4x4 ProjMtx;\n"
-		"};\n"
-		"struct VS_INPUT {\n"
-		"    float2 pos : POSITION;\n"
-		"    float4 col : COLOR0;\n"
-		"    float2 uv  : TEXCOORD0;\n"
-		"};\n"
-		"struct PS_INPUT {\n"
-		"    float4 pos : SV_POSITION;\n"
-		"    float4 col : COLOR0;\n"
-		"    float2 uv  : TEXCOORD0;\n"
-		"};\n"
-		"PS_INPUT main(VS_INPUT input) {\n"
-		"    PS_INPUT output;\n"
-		"    output.pos = mul(ProjMtx, float4(input.pos.xy, 0.0, 1.0));\n"
-		"    output.col = input.col;\n"
-		"    output.uv = input.uv;\n"
-		"    return output;\n"
-		"}\n";
-
-	gradient_ps_source =
-		"cbuffer pixelBuffer : register(b1) {\n"  // b1 for DX12 compatibility (b0 is projection matrix)
-		"    float4 ColorStart;\n"
-		"    float4 ColorEnd;\n"
-		"};\n"
-		"struct PS_INPUT {\n"
-		"    float4 pos : SV_POSITION;\n"
-		"    float4 col : COLOR0;\n"
-		"    float2 uv  : TEXCOORD0;\n"
-		"};\n"
-		"float4 main(PS_INPUT input) : SV_Target {\n"
-		"    return lerp(ColorStart, ColorEnd, input.uv.y);\n"
-		"}\n";
-
-#elif (IM_CURRENT_GFX == IM_GFX_VULKAN)
-	// Vulkan uses pre-compiled SPIR-V bytecode
-	// Include generated SPIR-V headers
-	#include "shaders/gradient.vert.h"
-	#include "shaders/gradient.frag.h"
-	// Note: For Vulkan, we'll use bytecode fields instead of source_code
-
-#elif (IM_CURRENT_GFX == IM_GFX_WGPU)
-	// WGSL for WebGPU
-	gradient_format = ImPlatform_ShaderFormat_WGSL;
-	gradient_vs_source =
-		"struct Uniforms {\n"
-		"    projMtx: mat4x4<f32>,\n"
-		"    colorStart: vec4<f32>,\n"
-		"    colorEnd: vec4<f32>,\n"
-		"};\n"
-		"@group(0) @binding(0) var<uniform> uniforms: Uniforms;\n"
-		"\n"
-		"struct VertexInput {\n"
-		"    @location(0) pos: vec2<f32>,\n"
-		"    @location(1) uv: vec2<f32>,\n"
-		"    @location(2) col: vec4<f32>,\n"
-		"};\n"
-		"\n"
-		"struct VertexOutput {\n"
-		"    @builtin(position) position: vec4<f32>,\n"
-		"    @location(0) uv: vec2<f32>,\n"
-		"};\n"
-		"\n"
-		"@vertex\n"
-		"fn main(input: VertexInput) -> VertexOutput {\n"
-		"    var output: VertexOutput;\n"
-		"    output.position = uniforms.projMtx * vec4<f32>(input.pos, 0.0, 1.0);\n"
-		"    output.uv = input.uv;\n"
-		"    return output;\n"
-		"}\n";
-
-	gradient_ps_source =
-		"struct Uniforms {\n"
-		"    projMtx: mat4x4<f32>,\n"
-		"    colorStart: vec4<f32>,\n"
-		"    colorEnd: vec4<f32>,\n"
-		"};\n"
-		"@group(0) @binding(0) var<uniform> uniforms: Uniforms;\n"
-		"\n"
-		"struct FragInput {\n"
-		"    @location(0) uv: vec2<f32>,\n"
-		"};\n"
-		"\n"
-		"@fragment\n"
-		"fn main(input: FragInput) -> @location(0) vec4<f32> {\n"
-		"    return mix(uniforms.colorStart, uniforms.colorEnd, input.uv.y);\n"
-		"}\n";
-#endif
-
-	// Create shaders and programs
-	ImPlatform_Shader arrow_vs = nullptr;
-	ImPlatform_Shader arrow_ps = nullptr;
-	ImPlatform_ShaderProgram arrow_program = nullptr;
-
-	ImPlatform_Shader gradient_vs = nullptr;
-	ImPlatform_Shader gradient_ps = nullptr;
-	ImPlatform_ShaderProgram gradient_program = nullptr;
-
-	// Create arrow shaders based on graphics API
-#if (IM_CURRENT_GFX == IM_GFX_VULKAN)
-	// Vulkan: Use pre-compiled SPIR-V bytecode
-	{
-		ImPlatform_ShaderDesc vs_desc = {};
-		vs_desc.stage = ImPlatform_ShaderStage_Vertex;
-		vs_desc.format = ImPlatform_ShaderFormat_SPIRV;
-		vs_desc.bytecode = arrow_sdf_vert_spv;
-		vs_desc.bytecode_size = arrow_sdf_vert_spv_size;
-		vs_desc.entry_point = "main";
-		arrow_vs = ImPlatform_CreateShader(&vs_desc);
-
-		ImPlatform_ShaderDesc ps_desc = {};
-		ps_desc.stage = ImPlatform_ShaderStage_Fragment;
-		ps_desc.format = ImPlatform_ShaderFormat_SPIRV;
-		ps_desc.bytecode = arrow_sdf_frag_spv;
-		ps_desc.bytecode_size = arrow_sdf_frag_spv_size;
-		ps_desc.entry_point = "main";
-		arrow_ps = ImPlatform_CreateShader(&ps_desc);
-
-		if (arrow_vs && arrow_ps) {
-			arrow_program = ImPlatform_CreateShaderProgram(arrow_vs, arrow_ps);
-		}
-	}
-#else
-	// Other APIs: Use source code
-	if (arrow_vs_source && arrow_ps_source) {
-		ImPlatform_ShaderDesc vs_desc = {};
-		vs_desc.stage = ImPlatform_ShaderStage_Vertex;
-		vs_desc.format = arrow_format;
-		vs_desc.source_code = arrow_vs_source;
-		vs_desc.entry_point = "main";
-		arrow_vs = ImPlatform_CreateShader(&vs_desc);
-
-		ImPlatform_ShaderDesc ps_desc = {};
-		ps_desc.stage = ImPlatform_ShaderStage_Fragment;
-		ps_desc.format = arrow_format;
-		ps_desc.source_code = arrow_ps_source;
-		ps_desc.entry_point = "main";
-		arrow_ps = ImPlatform_CreateShader(&ps_desc);
-
-		if (arrow_vs && arrow_ps) {
-			arrow_program = ImPlatform_CreateShaderProgram(arrow_vs, arrow_ps);
-		}
-	}
-#endif
-
-	// Create gradient shaders based on graphics API
-#if (IM_CURRENT_GFX == IM_GFX_VULKAN)
-	// Vulkan: Use pre-compiled SPIR-V bytecode
-	{
-		ImPlatform_ShaderDesc vs_desc = {};
-		vs_desc.stage = ImPlatform_ShaderStage_Vertex;
-		vs_desc.format = ImPlatform_ShaderFormat_SPIRV;
-		vs_desc.bytecode = gradient_vert_spv;
-		vs_desc.bytecode_size = gradient_vert_spv_size;
-		vs_desc.entry_point = "main";
-		gradient_vs = ImPlatform_CreateShader(&vs_desc);
-
-		ImPlatform_ShaderDesc ps_desc = {};
-		ps_desc.stage = ImPlatform_ShaderStage_Fragment;
-		ps_desc.format = ImPlatform_ShaderFormat_SPIRV;
-		ps_desc.bytecode = gradient_frag_spv;
-		ps_desc.bytecode_size = gradient_frag_spv_size;
-		ps_desc.entry_point = "main";
-		gradient_ps = ImPlatform_CreateShader(&ps_desc);
-
-		if (gradient_vs && gradient_ps) {
-			gradient_program = ImPlatform_CreateShaderProgram(gradient_vs, gradient_ps);
-		}
-	}
-#else
-	// Other APIs: Use source code
-	if (gradient_vs_source && gradient_ps_source) {
-		ImPlatform_ShaderDesc vs_desc = {};
-		vs_desc.stage = ImPlatform_ShaderStage_Vertex;
-		vs_desc.format = gradient_format;
-		vs_desc.source_code = gradient_vs_source;
-		vs_desc.entry_point = "main";
-		gradient_vs = ImPlatform_CreateShader(&vs_desc);
-
-		ImPlatform_ShaderDesc ps_desc = {};
-		ps_desc.stage = ImPlatform_ShaderStage_Fragment;
-		ps_desc.format = gradient_format;
-		ps_desc.source_code = gradient_ps_source;
-		ps_desc.entry_point = "main";
-		gradient_ps = ImPlatform_CreateShader(&ps_desc);
-
-		if (gradient_vs && gradient_ps) {
-			gradient_program = ImPlatform_CreateShaderProgram(gradient_vs, gradient_ps);
-		}
-	}
-#endif
+	ImPlatform_Shader arrow_shaders[2] = {};
+	ImPlatform_Shader gradient_shaders[2] = {};
+	ImPlatform_ShaderProgram arrow_program = DEMO_SHADER_PROGRAM(arrow_sdf, arrow_shaders);
+	ImPlatform_ShaderProgram gradient_program = DEMO_SHADER_PROGRAM(gradient, gradient_shaders);
 #endif // IMPLATFORM_GFX_SUPPORT_CUSTOM_SHADER
 
 #ifdef IMGUI_HAS_TEXTURES
@@ -915,7 +668,9 @@ int main( int argc, char** argv )
 			continue;
 		}
 
-		if ( !ImPlatform_GfxCheck() )
+		// The self-tests read back what they render: they keep rendering when the window is occluded (screen off or
+		// locked), where presenting is skipped.
+		if ( !ImPlatform_GfxCheck() && !renderPassTest && !shaderTest && !directDrawTest )
 		{
 			continue;
 		}
@@ -933,6 +688,38 @@ int main( int argc, char** argv )
 		}
 		if ( renderPassTest && renderPassFrame == 1 )
 			QueueRenderPassScene( g_RenderPassComposite, 128, DrawRenderPassComposite );
+		if ( shaderTest && renderPassFrame == 0 )
+		{
+#if IMPLATFORM_GFX_SUPPORT_CUSTOM_SHADER
+			g_ShaderTestProgram = gradient_program;
+			const ImVec4 red( 1, 0, 0, 1 ), blue( 0, 0, 1, 1 );
+			ImPlatform_BeginUniformBlock( gradient_program );
+			ImPlatform_SetUniform( "ColorStart", &red, sizeof( red ) );
+			ImPlatform_SetUniform( "ColorEnd", &blue, sizeof( blue ) );
+			ImPlatform_EndUniformBlock( gradient_program );
+			if ( !gradient_program || !QueueRenderPassScene( g_ShaderTest, 64, DrawShaderTest ) )
+#endif
+			{
+				printf( "SKIP: no custom shader or render pass on this backend\n" );
+				exitCode = 2;
+				break;
+			}
+		}
+		if ( directDrawTest && renderPassFrame == 0 )
+		{
+#if IMPLATFORM_GFX_SUPPORT_CUSTOM_SHADER
+			g_ShaderTestProgram = gradient_program;
+			ImPlatform_TextureDesc desc = ImPlatform_TextureDesc_Default( 64, 64 );
+			desc.format = ImPlatform_GetRenderPassFormat();
+			g_DirectDrawTarget = ImPlatform_CreateRenderTexture( &desc );
+			if ( !gradient_program || !g_DirectDrawTarget || !QueueRenderPassScene( g_DirectDrawPass, 64, DrawDirectDrawTest ) )
+#endif
+			{
+				printf( "SKIP: no custom shader or render pass on this backend\n" );
+				exitCode = 2;
+				break;
+			}
+		}
 #endif
 
 		// Custom Title Bar (using Em-based sizing for DPI independence)
@@ -985,7 +772,7 @@ int main( int argc, char** argv )
 			ImGui::Image(img_white, ImPlatform_EmToVec2(8.0f, 8.0f));
 
 			ImGui::Separator();
-			if ( !renderPassTest )		// One pass per frame: the test's.
+			if ( !renderPassTest && !shaderTest && !directDrawTest )		// One pass per frame: the test's.
 				RenderPassDemo();
 
 			ImGui::Separator();
@@ -1009,17 +796,7 @@ int main( int argc, char** argv )
 
 			ImGui::Separator();
 			ImGui::TextColored(ImVec4(0.2f, 1.0f, 0.2f, 1.0f), "Shader API Used:");
-#if (IM_CURRENT_GFX == IM_GFX_OPENGL3)
-			ImGui::BulletText("GLSL #version 130");
-#elif (IM_CURRENT_GFX == IM_GFX_DIRECTX10)
-			ImGui::BulletText("HLSL Shader Model 4.0 (DirectX 10)");
-#elif (IM_CURRENT_GFX == IM_GFX_DIRECTX11)
-			ImGui::BulletText("HLSL Shader Model 4.0 (DirectX 11)");
-#elif (IM_CURRENT_GFX == IM_GFX_DIRECTX12)
-			ImGui::BulletText("HLSL Shader Model 5.0 (DirectX 12)");
-#elif (IM_CURRENT_GFX == IM_GFX_WGPU)
-			ImGui::BulletText("WGSL (WebGPU Shading Language)");
-#endif
+			ImGui::BulletText("shaders/arrow_sdf.hlsl, compiled for this backend");
 			ImGui::BulletText("Custom pixel shader with SDF function");
 			ImGui::BulletText("No custom vertex buffer (uses ImGui's default)");
 
@@ -1032,7 +809,7 @@ int main( int argc, char** argv )
 		}
 
 		// Custom Shader Demo Window 2: Linear Gradient (Bottom-left)
-		if (gradient_program)
+		if (gradient_program && !shaderTest && !directDrawTest)		// The tests set their own constants
 		{
 			ImGui::SetNextWindowPos(ImVec2(0, half_height), ImGuiCond_Always);
 			ImGui::SetNextWindowSize(ImVec2(half_width, half_height), ImGuiCond_Always);
@@ -1046,15 +823,7 @@ int main( int argc, char** argv )
 
 			ImGui::Separator();
 			ImGui::TextColored(ImVec4(0.2f, 1.0f, 0.2f, 1.0f), "Shader API Used:");
-#if (IM_CURRENT_GFX == IM_GFX_OPENGL3)
-			ImGui::BulletText("GLSL #version 130");
-#elif (IM_CURRENT_GFX == IM_GFX_DIRECTX10) || (IM_CURRENT_GFX == IM_GFX_DIRECTX11)
-			ImGui::BulletText("HLSL Shader Model 4.0");
-#elif (IM_CURRENT_GFX == IM_GFX_DIRECTX12)
-			ImGui::BulletText("HLSL Shader Model 5.0");
-#elif (IM_CURRENT_GFX == IM_GFX_WGPU)
-			ImGui::BulletText("WGSL (WebGPU Shading Language)");
-#endif
+			ImGui::BulletText("shaders/gradient.hlsl, compiled for this backend");
 			ImGui::BulletText("Uniforms: ColorStart, ColorEnd");
 			ImGui::BulletText("Using ImPlatform Uniform Block API");
 			ImGui::BulletText("Pixel shader interpolates between two colors");
@@ -1112,9 +881,13 @@ int main( int argc, char** argv )
 
 		ImPlatform_GfxAPISwapBuffer();
 #if defined( IMGUI_HAS_TEXTURES ) && !defined( __EMSCRIPTEN__ )
-		if ( renderPassTest && ++renderPassFrame == 3 )
+		if ( ( renderPassTest || shaderTest || directDrawTest ) && ++renderPassFrame == 3 )
 		{
+#if IMPLATFORM_GFX_SUPPORT_CUSTOM_SHADER
+			exitCode = shaderTest ? CheckShaderTest() : directDrawTest ? CheckDirectDrawTest() : CheckRenderPassTest();
+#else
 			exitCode = CheckRenderPassTest();
+#endif
 			break;
 		}
 #endif
@@ -1135,17 +908,15 @@ int main( int argc, char** argv )
 	// Cleanup shaders
 	if (arrow_program)
 		ImPlatform_DestroyShaderProgram(arrow_program);
-	if (arrow_vs)
-		ImPlatform_DestroyShader(arrow_vs);
-	if (arrow_ps)
-		ImPlatform_DestroyShader(arrow_ps);
+	for (ImPlatform_Shader shader : arrow_shaders)
+		if (shader)
+			ImPlatform_DestroyShader(shader);
 
 	if (gradient_program)
 		ImPlatform_DestroyShaderProgram(gradient_program);
-	if (gradient_vs)
-		ImPlatform_DestroyShader(gradient_vs);
-	if (gradient_ps)
-		ImPlatform_DestroyShader(gradient_ps);
+	for (ImPlatform_Shader shader : gradient_shaders)
+		if (shader)
+			ImPlatform_DestroyShader(shader);
 #endif
 
 #ifdef IMGUI_HAS_TEXTURES
@@ -1153,6 +924,12 @@ int main( int argc, char** argv )
 #ifndef __EMSCRIPTEN__
 	DestroyRenderPassScene( g_RenderPassTest );
 	DestroyRenderPassScene( g_RenderPassComposite );
+#if IMPLATFORM_GFX_SUPPORT_CUSTOM_SHADER
+	DestroyRenderPassScene( g_ShaderTest );
+	DestroyRenderPassScene( g_DirectDrawPass );
+	if ( g_DirectDrawTarget )
+		ImPlatform_DestroyTexture( g_DirectDrawTarget );
+#endif
 #endif
 #endif
 	ImPlatform_ShutdownGfxAPI();

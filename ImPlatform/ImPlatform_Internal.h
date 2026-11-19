@@ -24,7 +24,9 @@ static inline void ImPlatform_RenderPassLists(ImDrawData* draw_data, RenderFn re
     one.OwnerViewport = draw_data->OwnerViewport;
     one.Textures = draw_data->Textures;
     one.CmdLists.resize(1);
+#ifndef IMGUI_DISABLE_OBSOLETE_FUNCTIONS
     one.CmdListsCount = 1;
+#endif
     for (ImDrawList* list : draw_data->CmdLists)
     {
         one.CmdLists[0] = list;
@@ -293,10 +295,6 @@ struct ImPlatform_GfxData_Vulkan {
     uint32_t imageCount;
     uint32_t currentFrameIndex;
     int minImageCount;
-    VkSampler defaultSampler;        // Default sampler for custom shaders
-    VkImageView defaultImageView;    // Default white 1x1 texture for custom shaders
-    VkImage defaultImage;            // Default white 1x1 image
-    VkDeviceMemory defaultImageMemory; // Memory for default image
 };
 #endif
 

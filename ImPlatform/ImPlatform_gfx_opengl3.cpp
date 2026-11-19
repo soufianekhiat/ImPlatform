@@ -221,6 +221,14 @@ static PFNGLSAMPLERPARAMETERIPROC glSamplerParameteri_Ptr = NULL;
 #endif
 typedef void (APIENTRYP PFNIMPGLBINDBUFFERBASEPROC)(GLenum target, GLuint index, GLuint buffer);
 static PFNIMPGLBINDBUFFERBASEPROC glBindBufferBase_Ptr = NULL;
+// Uniform blocks bound by name (GL 3.1) and attribute introspection (GL 2.0), not in Dear ImGui's loader
+typedef GLuint (APIENTRYP PFNIMPGLGETUNIFORMBLOCKINDEXPROC)(GLuint program, const char* name);
+typedef void (APIENTRYP PFNIMPGLUNIFORMBLOCKBINDINGPROC)(GLuint program, GLuint index, GLuint binding);
+typedef void (APIENTRYP PFNIMPGLGETACTIVEATTRIBPROC)(GLuint program, GLuint index, GLsizei buf_size, GLsizei* length, GLint* size, GLenum* type, char* name);
+static PFNIMPGLGETUNIFORMBLOCKINDEXPROC glGetUniformBlockIndex_Ptr = NULL;
+static PFNIMPGLUNIFORMBLOCKBINDINGPROC  glUniformBlockBinding_Ptr = NULL;
+static PFNIMPGLGETACTIVEATTRIBPROC      glGetActiveAttrib_Ptr = NULL;
+static PFNIMPGLGETACTIVEATTRIBPROC      glGetActiveUniform_Ptr = NULL;     // Same signature as glGetActiveAttrib
 static PFNGLPROGRAMBINARYPROC     glProgramBinary_Ptr     = NULL;
 static PFNGLGETPROGRAMBINARYPROC  glGetProgramBinary_Ptr  = NULL;
 
@@ -528,6 +536,10 @@ IMPLATFORM_API bool ImPlatform_InitGfx(void)
     glBindSampler_Ptr       = (PFNGLBINDSAMPLERPROC)imgl3wGetProcAddress("glBindSampler");
     glSamplerParameteri_Ptr = (PFNGLSAMPLERPARAMETERIPROC)imgl3wGetProcAddress("glSamplerParameteri");
     glBindBufferBase_Ptr    = (PFNIMPGLBINDBUFFERBASEPROC)imgl3wGetProcAddress("glBindBufferBase");
+    glGetUniformBlockIndex_Ptr = (PFNIMPGLGETUNIFORMBLOCKINDEXPROC)imgl3wGetProcAddress("glGetUniformBlockIndex");
+    glUniformBlockBinding_Ptr  = (PFNIMPGLUNIFORMBLOCKBINDINGPROC)imgl3wGetProcAddress("glUniformBlockBinding");
+    glGetActiveAttrib_Ptr      = (PFNIMPGLGETACTIVEATTRIBPROC)imgl3wGetProcAddress("glGetActiveAttrib");
+    glGetActiveUniform_Ptr     = (PFNIMPGLGETACTIVEATTRIBPROC)imgl3wGetProcAddress("glGetActiveUniform");
 
     // Program binary cache (GL 4.1+), disabled when unavailable
     glProgramBinary_Ptr    = (PFNGLPROGRAMBINARYPROC)imgl3wGetProcAddress("glProgramBinary");
@@ -1738,6 +1750,10 @@ struct ImPlatform_ShaderData_GL
     char*        entry_point;     // NULL if not using cache
     char*        cache_key;       // NULL if not using cache
     unsigned int compile_flags;
+    // Uniform blocks whose binding qualifier was removed from the source, bound by name once linked
+    int          block_count;
+    char         block_names[4][64];
+    GLuint       block_bindings[4];
 };
 
 // Internal shader program structure
@@ -1756,6 +1772,7 @@ struct ImPlatform_ShaderProgramData_GL
     GLuint fragment_shader;
     ImPlatform_UniformData_GL uniforms[8];  // Support up to 8 uniforms
     int uniform_count;
+    int attrib_locations[3];                // ImDrawVert's pos, uv, col in this program, -1 when not read
     // Raw parameter block, as on D3D11 (pixel constant buffer b1): uploaded to a
     // uniform buffer at binding 1 when the shader is activated.
     void*        cb_data;
@@ -1839,6 +1856,99 @@ static GLuint ImPlatform_CompileShader_GL(GLenum shader_type, const char* source
     return shader;
 }
 
+// SPIRV-Cross writes HLSL cbuffers as "layout(binding = N, std140) uniform Name". Binding qualifiers need GLSL 4.20
+// (macOS stops at 4.10), so they are removed and the blocks bound by name once the program is linked.
+static void ImPlatform_GL_StripBlockBindings(const char* source, ImGuiTextBuffer* out, ImPlatform_ShaderData_GL* shader_data)
+{
+    static const char prefix[] = "layout(binding = ";
+    static const char middle[] = ", std140) uniform ";
+    const char* p = source;
+    for (const char* hit = strstr(p, prefix); hit; hit = strstr(p, prefix))
+    {
+        char* end = NULL;
+        const long binding = strtol(hit + sizeof(prefix) - 1, &end, 10);
+        if (end == hit + sizeof(prefix) - 1 || strncmp(end, middle, sizeof(middle) - 1) != 0)
+        {
+            out->append(p, hit + sizeof(prefix) - 1);     // Another layout: kept as is
+            p = hit + sizeof(prefix) - 1;
+            continue;
+        }
+        const char* name = end + sizeof(middle) - 1;
+        const size_t len = strcspn(name, " \t\r\n{");
+        if (shader_data->block_count < 4 && len < sizeof(shader_data->block_names[0]))
+        {
+            memcpy(shader_data->block_names[shader_data->block_count], name, len);
+            shader_data->block_names[shader_data->block_count][len] = 0;
+            shader_data->block_bindings[shader_data->block_count++] = (GLuint)binding;
+        }
+        out->append(p, hit);
+        out->append("layout(std140) uniform ");
+        p = name;
+    }
+    out->append(p);
+}
+
+static void ImPlatform_GL_BindBlocksByName(GLuint program, const ImPlatform_ShaderData_GL* shader_data)
+{
+    if (!glGetUniformBlockIndex_Ptr || !glUniformBlockBinding_Ptr)
+        return;
+    for (int i = 0; i < shader_data->block_count; i++)
+    {
+        const GLuint index = glGetUniformBlockIndex_Ptr(program, shader_data->block_names[i]);
+        if (index != 0xFFFFFFFFu)     // GL_INVALID_INDEX: optimized out
+            glUniformBlockBinding_Ptr(program, index, shader_data->block_bindings[i]);
+    }
+}
+
+// Custom programs draw with Dear ImGui's vertex array, so its attributes are pointed at the program's own locations.
+// Found by Dear ImGui's names (Position, UV, Color), else by type: the vec4 is the color, the first vec2 (lowest
+// location) the position and the second the UV.
+static void ImPlatform_GL_FindAttributes(GLuint program, int locations[3])
+{
+    locations[0] = glGetAttribLocation(program, "Position");
+    locations[1] = glGetAttribLocation(program, "UV");
+    locations[2] = glGetAttribLocation(program, "Color");
+    if (locations[0] >= 0 || !glGetActiveAttrib_Ptr)
+        return;
+    GLint count = 0;
+    glGetProgramiv(program, 0x8B89 /*GL_ACTIVE_ATTRIBUTES*/, &count);
+    GLenum type_at[16] = {};
+    for (GLint i = 0; i < count; i++)
+    {
+        char name[64];
+        GLint size = 0;
+        GLenum type = 0;
+        glGetActiveAttrib_Ptr(program, (GLuint)i, sizeof(name), NULL, &size, &type, name);
+        const GLint location = glGetAttribLocation(program, name);
+        if (location >= 0 && location < 16)
+            type_at[location] = type;
+    }
+    for (int location = 0; location < 16; location++)
+    {
+        if (type_at[location] == 0x8B52 /*GL_FLOAT_VEC4*/ && locations[2] < 0)
+            locations[2] = location;
+        else if (type_at[location] == 0x8B50 /*GL_FLOAT_VEC2*/ && locations[0] < 0)
+            locations[0] = location;
+        else if (type_at[location] == 0x8B50 && locations[1] < 0)
+            locations[1] = location;
+    }
+}
+
+static void ImPlatform_GL_PointAttributes(const ImPlatform_ShaderProgramData_GL* program_data)
+{
+    const GLint    sizes[3]   = { 2, 2, 4 };
+    const GLenum   types[3]   = { GL_FLOAT, GL_FLOAT, GL_UNSIGNED_BYTE };
+    const size_t   offsets[3] = { offsetof(ImDrawVert, pos), offsetof(ImDrawVert, uv), offsetof(ImDrawVert, col) };
+    for (int i = 0; i < 3; i++)
+    {
+        const int location = program_data->attrib_locations[i];
+        if (location < 0)
+            continue;
+        glEnableVertexAttribArray((GLuint)location);
+        glVertexAttribPointer((GLuint)location, sizes[i], types[i], i == 2 ? GL_TRUE : GL_FALSE, sizeof(ImDrawVert), (void*)offsets[i]);
+    }
+}
+
 // Tiny string dup helper (malloc-based so DestroyShader can use free()).
 static char* ImPlatform_StrDup_GL(const char* s)
 {
@@ -1874,11 +1984,18 @@ IMPLATFORM_API ImPlatform_Shader ImPlatform_CreateShader(const ImPlatform_Shader
         return NULL;
     }
 
-    GLuint shader_id = ImPlatform_CompileShader_GL(shader_type, desc->source_code);
-    if (shader_id == 0)
-        return NULL;
-
     ImPlatform_ShaderData_GL* shader_data = new ImPlatform_ShaderData_GL();
+    shader_data->block_count = 0;
+    ImGuiTextBuffer source;
+    ImPlatform_GL_StripBlockBindings(desc->source_code, &source, shader_data);
+
+    GLuint shader_id = ImPlatform_CompileShader_GL(shader_type, source.c_str());
+    if (shader_id == 0)
+    {
+        delete shader_data;
+        return NULL;
+    }
+
     shader_data->shader_id   = shader_id;
     shader_data->compute_program = 0;
     shader_data->stage       = desc->stage;
@@ -2083,11 +2200,15 @@ IMPLATFORM_API ImPlatform_ShaderProgram ImPlatform_CreateShaderProgram(ImPlatfor
             ImPlatform_GL_SaveProgramBinary(program, cache_path, vs_data->cache_key);
     }
 
+    ImPlatform_GL_BindBlocksByName(program, vs_data);
+    ImPlatform_GL_BindBlocksByName(program, fs_data);
+
     ImPlatform_ShaderProgramData_GL* program_data = new ImPlatform_ShaderProgramData_GL();
     program_data->program_id = program;
     program_data->vertex_shader = vs_data->shader_id;
     program_data->fragment_shader = fs_data->shader_id;
     program_data->uniform_count = 0;
+    ImPlatform_GL_FindAttributes(program, program_data->attrib_locations);
 
     return (ImPlatform_ShaderProgram)program_data;
 }
@@ -2256,6 +2377,23 @@ IMPLATFORM_API bool ImPlatform_SetShaderTexture(ImPlatform_ShaderProgram program
         snprintf(suffixed, sizeof(suffixed), "%s_0", name);
         location = glGetUniformLocation(program_data->program_id, suffixed);
     }
+    if (location == -1 && glGetActiveUniform_Ptr)
+    {
+        // SPIRV-Cross combines an HLSL texture and the sampler it is read with: SPIRV_Cross_Combined<texture><sampler>
+        char prefix[96];
+        const int prefix_len = snprintf(prefix, sizeof(prefix), "SPIRV_Cross_Combined%s", name);
+        GLint count = 0;
+        glGetProgramiv(program_data->program_id, 0x8B86 /*GL_ACTIVE_UNIFORMS*/, &count);
+        for (GLint i = 0; i < count && location == -1; i++)
+        {
+            char uniform[128];
+            GLint size = 0;
+            GLenum type = 0;
+            glGetActiveUniform_Ptr(program_data->program_id, (GLuint)i, sizeof(uniform), NULL, &size, &type, uniform);
+            if (strncmp(uniform, prefix, (size_t)prefix_len) == 0)
+                location = glGetUniformLocation(program_data->program_id, uniform);
+        }
+    }
     if (location != -1)
         glUniform1i(location, slot);
     glUseProgram((GLuint)prev_program);
@@ -2281,6 +2419,7 @@ static void ImPlatform_SetCustomShader(const ImDrawList* parent_list, const ImDr
 
     // Bind the shader program
     ImPlatform_BindShaderProgram(program);
+    ImPlatform_GL_PointAttributes(program_data);
 
     // Use cached draw data for correct viewport projection in multi-viewport mode
     ImDrawData* draw_data = g_CurrentDrawData;
@@ -2337,6 +2476,7 @@ IMPLATFORM_API void ImPlatform_BeginCustomShader_Render(ImPlatform_ShaderProgram
 
     // Bind the shader program
     ImPlatform_BindShaderProgram(program);
+    ImPlatform_GL_PointAttributes(program_data);
 
     // Use cached draw data for correct viewport projection in multi-viewport mode
     ImDrawData* draw_data = g_CurrentDrawData;
@@ -2613,7 +2753,7 @@ IMPLATFORM_API void ImPlatform_DrawQuadNow(ImPlatform_ShaderProgram program, ImV
         return;
     if (!g_QuadVAO)
     {
-        // ImDrawVert at Dear ImGui's attribute locations: 0 Position, 1 UV, 2 Color
+        // ImDrawVert; each draw points its attributes at the program's locations
         const unsigned short idx[6] = { 0, 1, 2, 0, 2, 3 };
         glGenVertexArrays(1, &g_QuadVAO);
         glGenBuffers(1, &g_QuadVBO);
@@ -2668,6 +2808,9 @@ IMPLATFORM_API void ImPlatform_DrawQuadNow(ImPlatform_ShaderProgram program, ImV
     glBindVertexArray(g_QuadVAO);
     glBindBuffer(GL_ARRAY_BUFFER, g_QuadVBO);
     glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(v), v);
+    for (GLuint i = 0; i < 3; i++)      // The program's own input locations, as for Dear ImGui's draws
+        glDisableVertexAttribArray(i);
+    ImPlatform_GL_PointAttributes(program_data);
     glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_SHORT, (void*)0);
     glBindVertexArray(0);
 }

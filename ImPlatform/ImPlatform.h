@@ -896,12 +896,15 @@ IMPLATFORM_API void ImPlatform_EndUniformBlock(
     ImPlatform_ShaderProgram program
 );
 
-// Set shader texture binding
+// Set a texture of a custom shader: HLSL register t<slot>.
+// Slots 1..8: the program keeps the texture for its later draws; inside a draw callback with the program bound it also
+// applies at once. Slot 0 is the texture of the direct draws that follow (ImPlatform_DrawIndexed, ImPlatform_DrawQuadNow);
+// Dear ImGui's draws bind their own.
 // program: Shader program
-// name: Texture uniform name (e.g., "u_Texture")
-// slot: Texture slot/unit (0-15 typically)
-// texture: Texture ID to bind
-// Returns: true on success, false if uniform not found
+// name: HLSL texture name (used by OpenGL)
+// slot: Texture register
+// texture: An ImPlatform texture; it must stay alive while set
+// Returns: false when the backend does not support it (DirectX 9, Metal) or the arguments are invalid
 IMPLATFORM_API bool ImPlatform_SetShaderTexture(
     ImPlatform_ShaderProgram program,
     const char* name,

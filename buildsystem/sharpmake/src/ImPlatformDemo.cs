@@ -85,6 +85,9 @@ namespace ImPlatform
 
             conf.Defines.Add("IM_CONFIG_PLATFORM=" + s_appDefine[target.App]);
             conf.Defines.Add("IM_CONFIG_GFX=" + s_gfxDefine[target.Gfx]);
+            // imconfig overrides of DearWidgets, which builds on ImPlatform: kept in the build so imconfig.h stays upstream
+            conf.Defines.Add("ImDrawIdx=unsigned int");
+            conf.Defines.Add("IMGUI_USE_WCHAR32");
             if (target.App == App.SDL2 || target.App == App.SDL3)
                 conf.Defines.Add("SDL_MAIN_HANDLED"); // the demo provides its own main()
 

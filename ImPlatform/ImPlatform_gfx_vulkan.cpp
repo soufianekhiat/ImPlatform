@@ -59,6 +59,7 @@ struct ImPlatform_TexReg_Vulkan {
     VkDescriptorSet         id;
     VkImage                 image;
     VkImageView             view;
+    VkDeviceMemory          memory;       // null for render textures (their tracking entry owns the objects)
     VkFormat                format;
     unsigned int            width, height, bpp;
     VkImageLayout           idleLayout;   // layout between uses; storage textures stay GENERAL
@@ -66,11 +67,11 @@ struct ImPlatform_TexReg_Vulkan {
     ImPlatform_TexReg_Vulkan* next;
 };
 static ImPlatform_TexReg_Vulkan* g_TexRegHead = NULL;
-static void ImPlatform_Vulkan_RegisterTexture(VkDescriptorSet id, VkImage image, VkImageView view, VkFormat format,
+static void ImPlatform_Vulkan_RegisterTexture(VkDescriptorSet id, VkImage image, VkImageView view, VkDeviceMemory memory, VkFormat format,
                                               unsigned int w, unsigned int h, int bpp, VkImageLayout idle, bool storage)
 {
     ImPlatform_TexReg_Vulkan* e = new ImPlatform_TexReg_Vulkan();
-    e->id = id; e->image = image; e->view = view; e->format = format; e->width = w; e->height = h; e->bpp = (unsigned int)bpp;
+    e->id = id; e->image = image; e->view = view; e->memory = memory; e->format = format; e->width = w; e->height = h; e->bpp = (unsigned int)bpp;
     e->idleLayout = idle; e->storage = storage; e->next = g_TexRegHead;
     g_TexRegHead = e;
 }
@@ -81,6 +82,8 @@ static ImPlatform_TexReg_Vulkan* ImPlatform_Vulkan_FindTexture(ImTextureID id)
             return e;
     return NULL;
 }
+static void ImPlatform_Vulkan_ForgetShaderTexture(ImTextureID texture);
+static ImTextureID g_WhiteTexture = 0;      // Custom shaders' t1..t8 when unset
 static ImPlatform_RTTracking_Vulkan* g_ActiveRTEntry   = NULL;
 static ImGui_ImplVulkanH_Window g_MainWindowData;  // Don't use = {} - let constructor run!
 static bool g_SwapChainRebuild = false;
@@ -95,11 +98,28 @@ static VkSampler             g_ComputeSampler        = VK_NULL_HANDLE;
 
 // Uniform block API state
 static ImPlatform_ShaderProgram g_CurrentUniformBlockProgram = nullptr;
-static void* g_UniformBlockData = nullptr;
-static size_t g_UniformBlockSize = 0;
 
-// Current command buffer for custom shader rendering
+// Current command buffer for custom shader rendering, and its render pass (custom pipelines are made per render pass;
+// null: the main window's, which secondary viewports' render passes are compatible with)
 static VkCommandBuffer g_CurrentCommandBuffer = VK_NULL_HANDLE;
+static VkRenderPass g_CurrentRenderPass = VK_NULL_HANDLE;
+static void ImPlatform_Vulkan_ReleaseConstantRing();
+
+// The render passes being recorded on the frame's command buffer, innermost last: the main viewport's or a queued render
+// pass's, then the targets of ImPlatform_PushRenderTarget. Draw callbacks end the innermost to copy or switch targets and
+// begin it again with a LOAD pass. Empty while secondary viewports render (the ImGui backend owns their passes).
+struct ImPlatform_ActivePass_Vulkan
+{
+    VkRenderPass  renderPass;       // The pass pipelines are created for (compatible with its LOAD variant).
+    VkFramebuffer framebuffer;
+    VkImage       image;
+    VkFormat      format;
+    uint32_t      width, height;
+    VkImageLayout restLayout;       // The image's layout between passes.
+};
+static ImVector<ImPlatform_ActivePass_Vulkan> g_ActivePasses;
+static int g_PushedTargetCount = 0;     // Entries of g_ActivePasses pushed by ImPlatform_PushRenderTarget
+static void ImPlatform_Vulkan_ResumePass(VkCommandBuffer cmd);
 
 // Current draw data for custom shader rendering (needed for multi-viewport)
 static ImDrawData* g_CurrentDrawData = nullptr;
@@ -251,8 +271,13 @@ static bool SetupVulkan(const char** instance_extensions, uint32_t instance_exte
 
     // Create Vulkan Instance
     {
+        // Vulkan 1.1 accepts SPIR-V 1.3, the oldest version Slang emits (custom shaders are compiled with -profile spirv_1_3)
+        VkApplicationInfo app_info = {};
+        app_info.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
+        app_info.apiVersion = VK_API_VERSION_1_1;
         VkInstanceCreateInfo create_info = {};
         create_info.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
+        create_info.pApplicationInfo = &app_info;
 
         // Enumerate available extensions
         uint32_t properties_count;
@@ -286,10 +311,21 @@ static bool SetupVulkan(const char** instance_extensions, uint32_t instance_exte
 #endif
 
 #ifdef _DEBUG
+        // The validation layer ships with the Vulkan SDK: without it, run unvalidated instead of failing instance creation.
         const char* layers[] = { "VK_LAYER_KHRONOS_validation" };
-        create_info.enabledLayerCount = 1;
-        create_info.ppEnabledLayerNames = layers;
-        extensions[ext_idx++] = "VK_EXT_debug_report";
+        uint32_t layer_count = 0;
+        vkEnumerateInstanceLayerProperties(&layer_count, NULL);
+        VkLayerProperties* layer_props = (VkLayerProperties*)malloc(sizeof(VkLayerProperties) * (layer_count + 1));
+        vkEnumerateInstanceLayerProperties(&layer_count, layer_props);
+        for (uint32_t i = 0; i < layer_count; i++)
+            if (strcmp(layer_props[i].layerName, layers[0]) == 0)
+            {
+                create_info.enabledLayerCount = 1;
+                create_info.ppEnabledLayerNames = layers;
+                extensions[ext_idx++] = "VK_EXT_debug_report";
+                break;
+            }
+        free(layer_props);
 #endif
 
         create_info.enabledExtensionCount = ext_idx;
@@ -423,7 +459,7 @@ static bool ImPlatform_Vulkan_SetupWindow(ImPlatform_GfxData_Vulkan* pData, int 
     // Create SwapChain, RenderPass, Framebuffer, etc.
     IM_ASSERT(pData->minImageCount >= 2);
     ImGui_ImplVulkanH_CreateOrResizeWindow(pData->instance, pData->physicalDevice, pData->device,
-        &g_MainWindowData, g_QueueFamily, g_Allocator, width, height, pData->minImageCount, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT);
+        &g_MainWindowData, g_QueueFamily, g_Allocator, width, height, pData->minImageCount, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT);
     g_ImPlatform_BackbufferW = (unsigned int)g_MainWindowData.Width;
     g_ImPlatform_BackbufferH = (unsigned int)g_MainWindowData.Height;
 
@@ -640,95 +676,6 @@ IMPLATFORM_API bool ImPlatform_InitGfx(void)
     if (!ImGui_ImplVulkan_Init(&init_info))
         return false;
 
-    // Create a default white 1x1 texture for custom shaders
-    // This will be used as the default texture (binding 0) in custom shader descriptor sets
-    g_GfxData.defaultSampler = VK_NULL_HANDLE;
-    g_GfxData.defaultImageView = VK_NULL_HANDLE;
-    g_GfxData.defaultImage = VK_NULL_HANDLE;
-    g_GfxData.defaultImageMemory = VK_NULL_HANDLE;
-
-    // Create default white 1x1 texture
-    {
-        VkResult err;
-
-        // Create image
-        VkImageCreateInfo image_info = {};
-        image_info.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
-        image_info.imageType = VK_IMAGE_TYPE_2D;
-        image_info.format = VK_FORMAT_R8G8B8A8_UNORM;
-        image_info.extent.width = 1;
-        image_info.extent.height = 1;
-        image_info.extent.depth = 1;
-        image_info.mipLevels = 1;
-        image_info.arrayLayers = 1;
-        image_info.samples = VK_SAMPLE_COUNT_1_BIT;
-        image_info.tiling = VK_IMAGE_TILING_OPTIMAL;
-        image_info.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
-        image_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-        image_info.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-
-        err = vkCreateImage(g_GfxData.device, &image_info, g_Allocator, &g_GfxData.defaultImage);
-        check_vk_result(err);
-
-        // Allocate memory
-        VkMemoryRequirements mem_reqs;
-        vkGetImageMemoryRequirements(g_GfxData.device, g_GfxData.defaultImage, &mem_reqs);
-
-        VkMemoryAllocateInfo alloc_info = {};
-        alloc_info.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-        alloc_info.allocationSize = mem_reqs.size;
-        alloc_info.memoryTypeIndex = 0; // Find device local memory
-        VkPhysicalDeviceMemoryProperties mem_props;
-        vkGetPhysicalDeviceMemoryProperties(g_GfxData.physicalDevice, &mem_props);
-        for (uint32_t i = 0; i < mem_props.memoryTypeCount; i++)
-        {
-            if ((mem_reqs.memoryTypeBits & (1 << i)) &&
-                (mem_props.memoryTypes[i].propertyFlags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT))
-            {
-                alloc_info.memoryTypeIndex = i;
-                break;
-            }
-        }
-
-        err = vkAllocateMemory(g_GfxData.device, &alloc_info, g_Allocator, &g_GfxData.defaultImageMemory);
-        check_vk_result(err);
-
-        err = vkBindImageMemory(g_GfxData.device, g_GfxData.defaultImage, g_GfxData.defaultImageMemory, 0);
-        check_vk_result(err);
-
-        // Create image view
-        VkImageViewCreateInfo view_info = {};
-        view_info.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-        view_info.image = g_GfxData.defaultImage;
-        view_info.viewType = VK_IMAGE_VIEW_TYPE_2D;
-        view_info.format = VK_FORMAT_R8G8B8A8_UNORM;
-        view_info.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-        view_info.subresourceRange.levelCount = 1;
-        view_info.subresourceRange.layerCount = 1;
-
-        err = vkCreateImageView(g_GfxData.device, &view_info, g_Allocator, &g_GfxData.defaultImageView);
-        check_vk_result(err);
-
-        // Create sampler
-        VkSamplerCreateInfo sampler_info = {};
-        sampler_info.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
-        sampler_info.magFilter = VK_FILTER_LINEAR;
-        sampler_info.minFilter = VK_FILTER_LINEAR;
-        sampler_info.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
-        sampler_info.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-        sampler_info.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-        sampler_info.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-        sampler_info.minLod = -1000;
-        sampler_info.maxLod = 1000;
-        sampler_info.maxAnisotropy = 1.0f;
-
-        err = vkCreateSampler(g_GfxData.device, &sampler_info, g_Allocator, &g_GfxData.defaultSampler);
-        check_vk_result(err);
-
-        // The default image is neither uploaded nor transitioned here: its content is undefined
-        // and it stays in VK_IMAGE_LAYOUT_UNDEFINED until first use.
-    }
-
     return true;
 }
 
@@ -766,7 +713,7 @@ IMPLATFORM_API bool ImPlatform_GfxCheck(void)
     {
         ImGui_ImplVulkan_SetMinImageCount(g_GfxData.minImageCount);
         ImGui_ImplVulkanH_CreateOrResizeWindow(g_GfxData.instance, g_GfxData.physicalDevice, g_GfxData.device,
-            &g_MainWindowData, g_QueueFamily, g_Allocator, fb_width, fb_height, g_GfxData.minImageCount, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT);
+            &g_MainWindowData, g_QueueFamily, g_Allocator, fb_width, fb_height, g_GfxData.minImageCount, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT);
         g_MainWindowData.FrameIndex = 0;
         g_SwapChainRebuild = false;
         g_ImPlatform_BackbufferW = (unsigned int)g_MainWindowData.Width;
@@ -861,7 +808,19 @@ IMPLATFORM_API bool ImPlatform_GfxAPIRender(ImVec4 const vClearColor)
     g_CurrentCommandBuffer = fd->CommandBuffer;
 
     // Record dear imgui primitives into command buffer
+    const ImPlatform_ActivePass_Vulkan main_pass = { wd->RenderPass, fd->Framebuffer, fd->Backbuffer, wd->SurfaceFormat.format,
+                                                     (uint32_t)wd->Width, (uint32_t)wd->Height, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR };
+    g_ActivePasses.push_back(main_pass);
     ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), fd->CommandBuffer);
+    while (g_PushedTargetCount > 0)     // Targets the frame's callbacks did not pop: their passes end here
+    {
+        vkCmdEndRenderPass(fd->CommandBuffer);
+        g_ActivePasses.pop_back();
+        g_PushedTargetCount--;
+        ImPlatform_Vulkan_ResumePass(fd->CommandBuffer);
+    }
+    g_ActivePasses.pop_back();
+    g_CurrentRenderPass = VK_NULL_HANDLE;
 
     // Clear command buffer reference
     g_CurrentCommandBuffer = VK_NULL_HANDLE;
@@ -953,28 +912,9 @@ IMPLATFORM_API void ImPlatform_ShutdownGfxAPI(void)
 // ImPlatform API - ShutdownWindow
 IMPLATFORM_API void ImPlatform_ShutdownWindow(void)
 {
-    // Clean up default texture resources
-    if (g_GfxData.defaultSampler != VK_NULL_HANDLE)
-    {
-        vkDestroySampler(g_GfxData.device, g_GfxData.defaultSampler, g_Allocator);
-        g_GfxData.defaultSampler = VK_NULL_HANDLE;
-    }
-    if (g_GfxData.defaultImageView != VK_NULL_HANDLE)
-    {
-        vkDestroyImageView(g_GfxData.device, g_GfxData.defaultImageView, g_Allocator);
-        g_GfxData.defaultImageView = VK_NULL_HANDLE;
-    }
-    if (g_GfxData.defaultImage != VK_NULL_HANDLE)
-    {
-        vkDestroyImage(g_GfxData.device, g_GfxData.defaultImage, g_Allocator);
-        g_GfxData.defaultImage = VK_NULL_HANDLE;
-    }
-    if (g_GfxData.defaultImageMemory != VK_NULL_HANDLE)
-    {
-        vkFreeMemory(g_GfxData.device, g_GfxData.defaultImageMemory, g_Allocator);
-        g_GfxData.defaultImageMemory = VK_NULL_HANDLE;
-    }
-
+    ImPlatform_DestroyTexture(g_WhiteTexture);
+    g_WhiteTexture = 0;
+    ImPlatform_Vulkan_ReleaseConstantRing();
     if (g_UploadCommandPool != VK_NULL_HANDLE)
     {
         vkDestroyCommandPool(g_GfxData.device, g_UploadCommandPool, g_Allocator); // Also frees g_UploadCommandBuffer
@@ -1411,8 +1351,7 @@ IMPLATFORM_API ImTextureID ImPlatform_CreateTexture(const void* pixel_data, cons
     vkDestroyBuffer(g_GfxData.device, staging_buffer, g_Allocator);
     vkFreeMemory(g_GfxData.device, staging_memory, g_Allocator);
 
-    // Note: image and image_memory are never freed (DestroyTexture only unregisters the descriptor set)
-    ImPlatform_Vulkan_RegisterTexture(descriptor_set, image, image_view, format, desc->width, desc->height, bytes_per_pixel,
+    ImPlatform_Vulkan_RegisterTexture(descriptor_set, image, image_view, image_memory, format, desc->width, desc->height, bytes_per_pixel,
                                       VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, false);
 
     return (ImTextureID)descriptor_set;
@@ -1425,6 +1364,21 @@ IMPLATFORM_API bool ImPlatform_UpdateTexture(ImTextureID /*texture_id*/, const v
     // Vulkan texture updates require staging buffers and command lists
     // This is complex and not implemented yet
     return false;
+}
+
+// The external dependency of render texture passes: identical to Dear ImGui's window render pass, so that the passes
+// are compatible with it and Dear ImGui's pipeline draws in them (render pass compatibility compares dependencies).
+// ImPlatform_RunRenderPass records the rest of the synchronization as a barrier before each pass.
+static VkSubpassDependency ImPlatform_PassDependency()
+{
+    VkSubpassDependency dep = {};
+    dep.srcSubpass    = VK_SUBPASS_EXTERNAL;
+    dep.dstSubpass    = 0;
+    dep.srcStageMask  = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+    dep.dstStageMask  = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+    dep.srcAccessMask = 0;
+    dep.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+    return dep;
 }
 
 IMPLATFORM_API ImTextureID ImPlatform_CreateRenderTexture(const ImPlatform_TextureDesc* desc)
@@ -1505,13 +1459,7 @@ IMPLATFORM_API ImTextureID ImPlatform_CreateRenderTexture(const ImPlatform_Textu
         subpass.colorAttachmentCount = 1;
         subpass.pColorAttachments    = &color_ref;
 
-        VkSubpassDependency dep = {};
-        dep.srcSubpass    = VK_SUBPASS_EXTERNAL;
-        dep.dstSubpass    = 0;
-        dep.srcStageMask  = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
-        dep.dstStageMask  = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-        dep.srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
-        dep.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+        const VkSubpassDependency dep = ImPlatform_PassDependency();
 
         VkRenderPassCreateInfo rp_info = {};
         rp_info.sType           = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
@@ -1596,7 +1544,7 @@ IMPLATFORM_API ImTextureID ImPlatform_CreateRenderTexture(const ImPlatform_Textu
     g_RTTrackingHead     = entry;
     // shortcut: the image is UNDEFINED until its first render pass, so reading it back before that
     // reads garbage (and trips the validation layer); transition it at creation if that ever matters.
-    ImPlatform_Vulkan_RegisterTexture(descriptorSet, image, imageView, format, desc->width, desc->height, bytes_per_pixel,
+    ImPlatform_Vulkan_RegisterTexture(descriptorSet, image, imageView, VK_NULL_HANDLE, format, desc->width, desc->height, bytes_per_pixel,
                                       VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, false);
 
     return (ImTextureID)descriptorSet;
@@ -1608,8 +1556,8 @@ IMPLATFORM_API ImTextureID ImPlatform_CreateRenderTexture(const ImPlatform_Textu
 static ImTextureID  g_PassTarget = 0;
 static ImDrawData*  g_PassDrawData = NULL;
 static bool         g_PassClear = false;
-static VkRenderPass g_PassLoadRenderPass = VK_NULL_HANDLE;     // Keeps the target's content (LOAD).
-static VkFormat     g_PassLoadFormat = VK_FORMAT_UNDEFINED;
+struct ImPlatform_LoadPass_Vulkan { VkFormat format; VkImageLayout layout; VkRenderPass pass; };
+static ImVector<ImPlatform_LoadPass_Vulkan> g_LoadPasses;      // See ImPlatform_PassLoadRenderPass.
 
 static ImPlatform_RTTracking_Vulkan* ImPlatform_FindRT_Vulkan(ImTextureID texture)
 {
@@ -1635,17 +1583,13 @@ IMPLATFORM_API bool ImPlatform_QueueRenderPass(ImTextureID target, ImDrawData* d
     return true;
 }
 
-// A render pass compatible with the targets' (same format), loading their content from shader reads.
-static VkRenderPass ImPlatform_PassLoadRenderPass(VkFormat format)
+// Render passes that keep a target's content (LOAD), compatible with the passes that drew it (same format): one per format
+// and layout the target rests in between passes (shader reads for render textures, presentation for the swapchain).
+static VkRenderPass ImPlatform_PassLoadRenderPass(VkFormat format, VkImageLayout layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)
 {
-    if (g_PassLoadRenderPass != VK_NULL_HANDLE && g_PassLoadFormat == format)
-        return g_PassLoadRenderPass;
-    if (g_PassLoadRenderPass != VK_NULL_HANDLE)
-    {
-        vkDeviceWaitIdle(g_GfxData.device);
-        vkDestroyRenderPass(g_GfxData.device, g_PassLoadRenderPass, g_Allocator);
-        g_PassLoadRenderPass = VK_NULL_HANDLE;
-    }
+    for (const ImPlatform_LoadPass_Vulkan& p : g_LoadPasses)
+        if (p.format == format && p.layout == layout)
+            return p.pass;
     VkAttachmentDescription attachment = {};
     attachment.format         = format;
     attachment.samples        = VK_SAMPLE_COUNT_1_BIT;
@@ -1653,20 +1597,14 @@ static VkRenderPass ImPlatform_PassLoadRenderPass(VkFormat format)
     attachment.storeOp        = VK_ATTACHMENT_STORE_OP_STORE;
     attachment.stencilLoadOp  = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
     attachment.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-    attachment.initialLayout  = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-    attachment.finalLayout    = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    attachment.initialLayout  = layout;
+    attachment.finalLayout    = layout;
     VkAttachmentReference color_ref = { 0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL };
     VkSubpassDescription subpass = {};
     subpass.pipelineBindPoint    = VK_PIPELINE_BIND_POINT_GRAPHICS;
     subpass.colorAttachmentCount = 1;
     subpass.pColorAttachments    = &color_ref;
-    VkSubpassDependency dep = {};
-    dep.srcSubpass    = VK_SUBPASS_EXTERNAL;
-    dep.dstSubpass    = 0;
-    dep.srcStageMask  = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
-    dep.dstStageMask  = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-    dep.srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
-    dep.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+    const VkSubpassDependency dep = ImPlatform_PassDependency();
     VkRenderPassCreateInfo rp_info = {};
     rp_info.sType           = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
     rp_info.attachmentCount = 1;
@@ -1675,10 +1613,11 @@ static VkRenderPass ImPlatform_PassLoadRenderPass(VkFormat format)
     rp_info.pSubpasses      = &subpass;
     rp_info.dependencyCount = 1;
     rp_info.pDependencies   = &dep;
-    if (vkCreateRenderPass(g_GfxData.device, &rp_info, g_Allocator, &g_PassLoadRenderPass) != VK_SUCCESS)
-        g_PassLoadRenderPass = VK_NULL_HANDLE;
-    g_PassLoadFormat = format;
-    return g_PassLoadRenderPass;
+    ImPlatform_LoadPass_Vulkan p = { format, layout, VK_NULL_HANDLE };
+    if (vkCreateRenderPass(g_GfxData.device, &rp_info, g_Allocator, &p.pass) != VK_SUCCESS)
+        return VK_NULL_HANDLE;
+    g_LoadPasses.push_back(p);
+    return p.pass;
 }
 
 static void ImPlatform_RunRenderPass(VkCommandBuffer cmd)
@@ -1705,99 +1644,119 @@ static void ImPlatform_RunRenderPass(VkCommandBuffer cmd)
     info.renderArea.extent.height = entry->height;
     info.clearValueCount = clear ? 1 : 0;
     info.pClearValues = &transparent;
+    // The pass's dependency only orders it after earlier color output (see ImPlatform_PassDependency): earlier
+    // sampling of the target, and earlier passes' writes that a LOAD reads or blends with, are ordered here.
+    VkMemoryBarrier barrier = {};
+    barrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+    barrier.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+    barrier.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                         VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, 0, 1, &barrier, 0, nullptr, 0, nullptr);
     vkCmdBeginRenderPass(cmd, &info, VK_SUBPASS_CONTENTS_INLINE);
     ImDrawData* saved_draw_data = g_CurrentDrawData;
     g_CurrentDrawData = draw_data;                      // Custom shaders project with it.
     g_CurrentCommandBuffer = cmd;
+    g_CurrentRenderPass = render_pass;
+    const ImPlatform_ActivePass_Vulkan active = { render_pass, entry->framebuffer, entry->image, entry->format, entry->width, entry->height,
+                                                  VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
+    g_ActivePasses.push_back(active);
     ImGui_ImplVulkan_RenderDrawData(draw_data, cmd);   // Its viewport and projection come from the draw data.
+    g_ActivePasses.pop_back();
+    g_CurrentRenderPass = VK_NULL_HANDLE;
     g_CurrentCommandBuffer = VK_NULL_HANDLE;
     g_CurrentDrawData = saved_draw_data;
     vkCmdEndRenderPass(cmd);
     entry->rendered = true;
 }
 
-// Premultiplied alpha: blending is part of the pipelines, so an ImGui-layout program un-premultiplies the texels
-// instead, and the straight alpha blending composites them as premultiplied (texel times the premultiplied vertex color).
-// SPIR-V (glslangValidator -V, spirv-opt --strip-debug) of the ImGui-layout vertex shader (push constant mat4
-// ProjectionMatrix; aPos, aUV, aColor at locations 0, 1, 2) and of:
-//   layout(binding = 0) uniform sampler2D Texture;
-//   layout(location = 0) in vec4 vColor;  layout(location = 1) in vec2 vUV;  layout(location = 0) out vec4 FragColor;
-//   void main() { vec4 c = texture(Texture, vUV) * vColor;      // Texel and vertex color premultiplied.
-//                 FragColor = vec4(c.a > 0.0 ? c.rgb / c.a : vec3(0.0), c.a); }
+// Premultiplied alpha: blending is part of the pipelines, so a custom program un-premultiplies the texels instead,
+// and the straight alpha blending composites them as premultiplied (texel times the premultiplied vertex color).
+// SPIR-V of this HLSL, compiled as every custom shader (see "Custom Shader System - Vulkan"), -O3:
+//   cbuffer vertexBuffer : register(b0) { float4x4 ProjMtx; };
+//   Texture2D texture0 : register(t0);
+//   SamplerState sampler0 : register(s0);
+//   struct VS_INPUT { float2 pos : POSITION; float4 col : COLOR0; float2 uv : TEXCOORD0; };
+//   struct PS_INPUT { float4 pos : SV_POSITION; float4 col : COLOR0; float2 uv : TEXCOORD0; };
+//   PS_INPUT vs_main(VS_INPUT input) { PS_INPUT o; o.pos = mul(ProjMtx, float4(input.pos.xy, 0.0, 1.0)); o.col = input.col; o.uv = input.uv; return o; }
+//   float4 ps_main(PS_INPUT input) : SV_Target
+//   {
+//       float4 c = texture0.Sample(sampler0, input.uv) * input.col;     // Texel and vertex color premultiplied.
+//       return float4(c.a > 0.0 ? c.rgb / c.a : float3(0.0, 0.0, 0.0), c.a);
+//   }
 static const unsigned int g_UnpremultiplyVert[] = {
-    0x07230203, 0x00010000, 0x0008000b, 0x0000002b, 0x00000000, 0x00020011, 0x00000001, 0x0006000b,
-    0x00000001, 0x4c534c47, 0x6474732e, 0x3035342e, 0x00000000, 0x0003000e, 0x00000000, 0x00000001,
-    0x000b000f, 0x00000000, 0x00000004, 0x6e69616d, 0x00000000, 0x00000009, 0x0000000b, 0x0000000f,
-    0x00000011, 0x00000018, 0x00000022, 0x00040047, 0x00000009, 0x0000001e, 0x00000000, 0x00040047,
-    0x0000000b, 0x0000001e, 0x00000002, 0x00040047, 0x0000000f, 0x0000001e, 0x00000001, 0x00040047,
-    0x00000011, 0x0000001e, 0x00000001, 0x00030047, 0x00000016, 0x00000002, 0x00050048, 0x00000016,
-    0x00000000, 0x0000000b, 0x00000000, 0x00050048, 0x00000016, 0x00000001, 0x0000000b, 0x00000001,
-    0x00050048, 0x00000016, 0x00000002, 0x0000000b, 0x00000003, 0x00050048, 0x00000016, 0x00000003,
-    0x0000000b, 0x00000004, 0x00030047, 0x0000001c, 0x00000002, 0x00040048, 0x0000001c, 0x00000000,
-    0x00000005, 0x00050048, 0x0000001c, 0x00000000, 0x00000007, 0x00000010, 0x00050048, 0x0000001c,
-    0x00000000, 0x00000023, 0x00000000, 0x00040047, 0x00000022, 0x0000001e, 0x00000000, 0x00020013,
-    0x00000002, 0x00030021, 0x00000003, 0x00000002, 0x00030016, 0x00000006, 0x00000020, 0x00040017,
-    0x00000007, 0x00000006, 0x00000004, 0x00040020, 0x00000008, 0x00000003, 0x00000007, 0x0004003b,
-    0x00000008, 0x00000009, 0x00000003, 0x00040020, 0x0000000a, 0x00000001, 0x00000007, 0x0004003b,
-    0x0000000a, 0x0000000b, 0x00000001, 0x00040017, 0x0000000d, 0x00000006, 0x00000002, 0x00040020,
-    0x0000000e, 0x00000003, 0x0000000d, 0x0004003b, 0x0000000e, 0x0000000f, 0x00000003, 0x00040020,
-    0x00000010, 0x00000001, 0x0000000d, 0x0004003b, 0x00000010, 0x00000011, 0x00000001, 0x00040015,
-    0x00000013, 0x00000020, 0x00000000, 0x0004002b, 0x00000013, 0x00000014, 0x00000001, 0x0004001c,
-    0x00000015, 0x00000006, 0x00000014, 0x0006001e, 0x00000016, 0x00000007, 0x00000006, 0x00000015,
-    0x00000015, 0x00040020, 0x00000017, 0x00000003, 0x00000016, 0x0004003b, 0x00000017, 0x00000018,
-    0x00000003, 0x00040015, 0x00000019, 0x00000020, 0x00000001, 0x0004002b, 0x00000019, 0x0000001a,
-    0x00000000, 0x00040018, 0x0000001b, 0x00000007, 0x00000004, 0x0003001e, 0x0000001c, 0x0000001b,
-    0x00040020, 0x0000001d, 0x00000009, 0x0000001c, 0x0004003b, 0x0000001d, 0x0000001e, 0x00000009,
-    0x00040020, 0x0000001f, 0x00000009, 0x0000001b, 0x0004003b, 0x00000010, 0x00000022, 0x00000001,
-    0x0004002b, 0x00000006, 0x00000024, 0x00000000, 0x0004002b, 0x00000006, 0x00000025, 0x3f800000,
-    0x00050036, 0x00000002, 0x00000004, 0x00000000, 0x00000003, 0x000200f8, 0x00000005, 0x0004003d,
-    0x00000007, 0x0000000c, 0x0000000b, 0x0003003e, 0x00000009, 0x0000000c, 0x0004003d, 0x0000000d,
-    0x00000012, 0x00000011, 0x0003003e, 0x0000000f, 0x00000012, 0x00050041, 0x0000001f, 0x00000020,
-    0x0000001e, 0x0000001a, 0x0004003d, 0x0000001b, 0x00000021, 0x00000020, 0x0004003d, 0x0000000d,
-    0x00000023, 0x00000022, 0x00050051, 0x00000006, 0x00000026, 0x00000023, 0x00000000, 0x00050051,
-    0x00000006, 0x00000027, 0x00000023, 0x00000001, 0x00070050, 0x00000007, 0x00000028, 0x00000026,
-    0x00000027, 0x00000024, 0x00000025, 0x00050091, 0x00000007, 0x00000029, 0x00000021, 0x00000028,
-    0x00050041, 0x00000008, 0x0000002a, 0x00000018, 0x0000001a, 0x0003003e, 0x0000002a, 0x00000029,
+    0x07230203, 0x00010300, 0x00280000, 0x00000023, 0x00000000, 0x00020011, 0x00000001, 0x0003000e,
+    0x00000000, 0x00000001, 0x000b000f, 0x00000000, 0x00000001, 0x6e69616d, 0x00000000, 0x00000002,
+    0x00000003, 0x00000004, 0x00000005, 0x00000006, 0x00000007, 0x00030003, 0x0000000b, 0x00000001,
+    0x000d0005, 0x00000008, 0x4e414c53, 0x61505f47, 0x656d6172, 0x47726574, 0x70756f72, 0x7265765f,
+    0x42786574, 0x65666675, 0x74735f72, 0x30343164, 0x00000000, 0x00050006, 0x00000008, 0x00000000,
+    0x6a6f7250, 0x0078744d, 0x00060005, 0x00000009, 0x74726576, 0x75427865, 0x72656666, 0x00000000,
+    0x00050005, 0x00000005, 0x75706e69, 0x6f702e74, 0x00000073, 0x00050005, 0x00000006, 0x75706e69,
+    0x6f632e74, 0x0000006c, 0x00050005, 0x00000007, 0x75706e69, 0x76752e74, 0x00000000, 0x00090005,
+    0x00000003, 0x72746e65, 0x696f5079, 0x6150746e, 0x5f6d6172, 0x6d5f7376, 0x2e6e6961, 0x006c6f63,
+    0x00090005, 0x00000004, 0x72746e65, 0x696f5079, 0x6150746e, 0x5f6d6172, 0x6d5f7376, 0x2e6e6961,
+    0x00007675, 0x00040005, 0x00000001, 0x6d5f7376, 0x006e6961, 0x00030047, 0x00000008, 0x00000002,
+    0x00050048, 0x00000008, 0x00000000, 0x00000023, 0x00000000, 0x00040048, 0x00000008, 0x00000000,
+    0x00000004, 0x00050048, 0x00000008, 0x00000000, 0x00000007, 0x00000010, 0x00040047, 0x00000009,
+    0x00000021, 0x00000020, 0x00040047, 0x00000009, 0x00000022, 0x00000000, 0x00040047, 0x00000005,
+    0x0000001e, 0x00000000, 0x00040047, 0x00000006, 0x0000001e, 0x00000001, 0x00040047, 0x00000007,
+    0x0000001e, 0x00000002, 0x00040047, 0x00000002, 0x0000000b, 0x00000000, 0x00040047, 0x00000003,
+    0x0000001e, 0x00000000, 0x00040047, 0x00000004, 0x0000001e, 0x00000001, 0x00020013, 0x0000000a,
+    0x00030021, 0x0000000b, 0x0000000a, 0x00030016, 0x0000000c, 0x00000020, 0x00040017, 0x0000000d,
+    0x0000000c, 0x00000004, 0x00040017, 0x0000000e, 0x0000000c, 0x00000002, 0x00040015, 0x0000000f,
+    0x00000020, 0x00000001, 0x0004002b, 0x0000000f, 0x00000010, 0x00000000, 0x00040018, 0x00000011,
+    0x0000000d, 0x00000004, 0x0003001e, 0x00000008, 0x00000011, 0x00040020, 0x00000012, 0x00000002,
+    0x00000008, 0x00040020, 0x00000013, 0x00000002, 0x00000011, 0x00040020, 0x00000014, 0x00000001,
+    0x0000000e, 0x0004002b, 0x0000000c, 0x00000015, 0x00000000, 0x0004002b, 0x0000000c, 0x00000016,
+    0x3f800000, 0x00040020, 0x00000017, 0x00000001, 0x0000000d, 0x00040020, 0x00000018, 0x00000003,
+    0x0000000d, 0x00040020, 0x00000019, 0x00000003, 0x0000000e, 0x0004003b, 0x00000012, 0x00000009,
+    0x00000002, 0x0004003b, 0x00000014, 0x00000005, 0x00000001, 0x0004003b, 0x00000017, 0x00000006,
+    0x00000001, 0x0004003b, 0x00000014, 0x00000007, 0x00000001, 0x0004003b, 0x00000018, 0x00000002,
+    0x00000003, 0x0004003b, 0x00000018, 0x00000003, 0x00000003, 0x0004003b, 0x00000019, 0x00000004,
+    0x00000003, 0x00050036, 0x0000000a, 0x00000001, 0x00000000, 0x0000000b, 0x000200f8, 0x0000001a,
+    0x00050041, 0x00000013, 0x0000001b, 0x00000009, 0x00000010, 0x0004003d, 0x00000011, 0x0000001c,
+    0x0000001b, 0x0004003d, 0x0000000e, 0x0000001d, 0x00000005, 0x0007004f, 0x0000000e, 0x0000001e,
+    0x0000001d, 0x0000001d, 0x00000000, 0x00000001, 0x00060050, 0x0000000d, 0x0000001f, 0x0000001e,
+    0x00000015, 0x00000016, 0x00050090, 0x0000000d, 0x00000020, 0x0000001f, 0x0000001c, 0x0004003d,
+    0x0000000d, 0x00000021, 0x00000006, 0x0004003d, 0x0000000e, 0x00000022, 0x00000007, 0x0003003e,
+    0x00000002, 0x00000020, 0x0003003e, 0x00000003, 0x00000021, 0x0003003e, 0x00000004, 0x00000022,
     0x000100fd, 0x00010038
 };
 static const unsigned int g_UnpremultiplyFrag[] = {
-    0x07230203, 0x00010000, 0x0008000b, 0x00000036, 0x00000000, 0x00020011, 0x00000001, 0x0006000b,
-    0x00000001, 0x4c534c47, 0x6474732e, 0x3035342e, 0x00000000, 0x0003000e, 0x00000000, 0x00000001,
-    0x0008000f, 0x00000004, 0x00000004, 0x6e69616d, 0x00000000, 0x00000011, 0x00000015, 0x00000019,
-    0x00030010, 0x00000004, 0x00000007, 0x00040047, 0x0000000d, 0x00000021, 0x00000000, 0x00040047,
-    0x0000000d, 0x00000022, 0x00000000, 0x00040047, 0x00000011, 0x0000001e, 0x00000001, 0x00040047,
-    0x00000015, 0x0000001e, 0x00000000, 0x00040047, 0x00000019, 0x0000001e, 0x00000000, 0x00020013,
-    0x00000002, 0x00030021, 0x00000003, 0x00000002, 0x00030016, 0x00000006, 0x00000020, 0x00040017,
-    0x00000007, 0x00000006, 0x00000004, 0x00040020, 0x00000008, 0x00000007, 0x00000007, 0x00090019,
-    0x0000000a, 0x00000006, 0x00000001, 0x00000000, 0x00000000, 0x00000000, 0x00000001, 0x00000000,
-    0x0003001b, 0x0000000b, 0x0000000a, 0x00040020, 0x0000000c, 0x00000000, 0x0000000b, 0x0004003b,
-    0x0000000c, 0x0000000d, 0x00000000, 0x00040017, 0x0000000f, 0x00000006, 0x00000002, 0x00040020,
-    0x00000010, 0x00000001, 0x0000000f, 0x0004003b, 0x00000010, 0x00000011, 0x00000001, 0x00040020,
-    0x00000014, 0x00000001, 0x00000007, 0x0004003b, 0x00000014, 0x00000015, 0x00000001, 0x00040020,
-    0x00000018, 0x00000003, 0x00000007, 0x0004003b, 0x00000018, 0x00000019, 0x00000003, 0x00040015,
-    0x0000001a, 0x00000020, 0x00000000, 0x0004002b, 0x0000001a, 0x0000001b, 0x00000003, 0x00040020,
-    0x0000001c, 0x00000007, 0x00000006, 0x0004002b, 0x00000006, 0x0000001f, 0x00000000, 0x00020014,
-    0x00000020, 0x00040017, 0x00000022, 0x00000006, 0x00000003, 0x00040020, 0x00000023, 0x00000007,
-    0x00000022, 0x0006002c, 0x00000022, 0x0000002e, 0x0000001f, 0x0000001f, 0x0000001f, 0x00050036,
-    0x00000002, 0x00000004, 0x00000000, 0x00000003, 0x000200f8, 0x00000005, 0x0004003b, 0x00000008,
-    0x00000009, 0x00000007, 0x0004003b, 0x00000023, 0x00000024, 0x00000007, 0x0004003d, 0x0000000b,
-    0x0000000e, 0x0000000d, 0x0004003d, 0x0000000f, 0x00000012, 0x00000011, 0x00050057, 0x00000007,
-    0x00000013, 0x0000000e, 0x00000012, 0x0004003d, 0x00000007, 0x00000016, 0x00000015, 0x00050085,
-    0x00000007, 0x00000017, 0x00000013, 0x00000016, 0x0003003e, 0x00000009, 0x00000017, 0x00050041,
-    0x0000001c, 0x0000001d, 0x00000009, 0x0000001b, 0x0004003d, 0x00000006, 0x0000001e, 0x0000001d,
-    0x000500ba, 0x00000020, 0x00000021, 0x0000001e, 0x0000001f, 0x000300f7, 0x00000026, 0x00000000,
-    0x000400fa, 0x00000021, 0x00000025, 0x0000002d, 0x000200f8, 0x00000025, 0x0004003d, 0x00000007,
-    0x00000027, 0x00000009, 0x0008004f, 0x00000022, 0x00000028, 0x00000027, 0x00000027, 0x00000000,
-    0x00000001, 0x00000002, 0x00050041, 0x0000001c, 0x00000029, 0x00000009, 0x0000001b, 0x0004003d,
-    0x00000006, 0x0000002a, 0x00000029, 0x00060050, 0x00000022, 0x0000002b, 0x0000002a, 0x0000002a,
-    0x0000002a, 0x00050088, 0x00000022, 0x0000002c, 0x00000028, 0x0000002b, 0x0003003e, 0x00000024,
-    0x0000002c, 0x000200f9, 0x00000026, 0x000200f8, 0x0000002d, 0x0003003e, 0x00000024, 0x0000002e,
-    0x000200f9, 0x00000026, 0x000200f8, 0x00000026, 0x0004003d, 0x00000022, 0x0000002f, 0x00000024,
-    0x00050041, 0x0000001c, 0x00000030, 0x00000009, 0x0000001b, 0x0004003d, 0x00000006, 0x00000031,
-    0x00000030, 0x00050051, 0x00000006, 0x00000032, 0x0000002f, 0x00000000, 0x00050051, 0x00000006,
-    0x00000033, 0x0000002f, 0x00000001, 0x00050051, 0x00000006, 0x00000034, 0x0000002f, 0x00000002,
-    0x00070050, 0x00000007, 0x00000035, 0x00000032, 0x00000033, 0x00000034, 0x00000031, 0x0003003e,
-    0x00000019, 0x00000035, 0x000100fd, 0x00010038
+    0x07230203, 0x00010300, 0x00280000, 0x0000002a, 0x00000000, 0x00020011, 0x00000001, 0x0003000e,
+    0x00000000, 0x00000001, 0x0008000f, 0x00000004, 0x00000001, 0x6e69616d, 0x00000000, 0x00000002,
+    0x00000003, 0x00000004, 0x00030010, 0x00000001, 0x00000007, 0x00030003, 0x0000000b, 0x00000001,
+    0x00050005, 0x00000004, 0x75706e69, 0x76752e74, 0x00000000, 0x00050005, 0x00000005, 0x74786574,
+    0x30657275, 0x00000000, 0x00050005, 0x00000006, 0x706d6173, 0x3072656c, 0x00000000, 0x00050005,
+    0x00000007, 0x61735f5f, 0x656c706d, 0x00000064, 0x00050005, 0x00000003, 0x75706e69, 0x6f632e74,
+    0x0000006c, 0x00030005, 0x00000008, 0x00000063, 0x00080005, 0x00000002, 0x72746e65, 0x696f5079,
+    0x6150746e, 0x5f6d6172, 0x6d5f7370, 0x006e6961, 0x00040005, 0x00000001, 0x6d5f7370, 0x006e6961,
+    0x00040047, 0x00000004, 0x0000001e, 0x00000001, 0x00040047, 0x00000005, 0x00000021, 0x00000000,
+    0x00040047, 0x00000005, 0x00000022, 0x00000000, 0x00040047, 0x00000006, 0x00000021, 0x00000010,
+    0x00040047, 0x00000006, 0x00000022, 0x00000000, 0x00040047, 0x00000003, 0x0000001e, 0x00000000,
+    0x00040047, 0x00000002, 0x0000001e, 0x00000000, 0x00020013, 0x00000009, 0x00030021, 0x0000000a,
+    0x00000009, 0x00030016, 0x0000000b, 0x00000020, 0x00040017, 0x0000000c, 0x0000000b, 0x00000003,
+    0x00040017, 0x0000000d, 0x0000000b, 0x00000002, 0x00040020, 0x0000000e, 0x00000001, 0x0000000d,
+    0x00090019, 0x0000000f, 0x0000000b, 0x00000001, 0x00000002, 0x00000000, 0x00000000, 0x00000001,
+    0x00000000, 0x00040020, 0x00000010, 0x00000000, 0x0000000f, 0x0002001a, 0x00000011, 0x00040020,
+    0x00000012, 0x00000000, 0x00000011, 0x0003001b, 0x00000013, 0x0000000f, 0x00040017, 0x00000014,
+    0x0000000b, 0x00000004, 0x00040020, 0x00000015, 0x00000001, 0x00000014, 0x00020014, 0x00000016,
+    0x0004002b, 0x0000000b, 0x00000017, 0x00000000, 0x0006002c, 0x0000000c, 0x00000018, 0x00000017,
+    0x00000017, 0x00000017, 0x00040020, 0x00000019, 0x00000003, 0x00000014, 0x0004003b, 0x0000000e,
+    0x00000004, 0x00000001, 0x0004003b, 0x00000010, 0x00000005, 0x00000000, 0x0004003b, 0x00000012,
+    0x00000006, 0x00000000, 0x0004003b, 0x00000015, 0x00000003, 0x00000001, 0x0004003b, 0x00000019,
+    0x00000002, 0x00000003, 0x00050036, 0x00000009, 0x00000001, 0x00000000, 0x0000000a, 0x000200f8,
+    0x0000001a, 0x0004003d, 0x0000000d, 0x0000001b, 0x00000004, 0x0004003d, 0x0000000f, 0x0000001c,
+    0x00000005, 0x0004003d, 0x00000011, 0x0000001d, 0x00000006, 0x00050056, 0x00000013, 0x0000001e,
+    0x0000001c, 0x0000001d, 0x00060057, 0x00000014, 0x00000007, 0x0000001e, 0x0000001b, 0x00000000,
+    0x0004003d, 0x00000014, 0x0000001f, 0x00000003, 0x00050085, 0x00000014, 0x00000008, 0x00000007,
+    0x0000001f, 0x00050051, 0x0000000b, 0x00000020, 0x00000008, 0x00000003, 0x000500ba, 0x00000016,
+    0x00000021, 0x00000020, 0x00000017, 0x000300f7, 0x00000022, 0x00000000, 0x000400fa, 0x00000021,
+    0x00000023, 0x00000024, 0x000200f8, 0x00000023, 0x0008004f, 0x0000000c, 0x00000025, 0x00000008,
+    0x00000008, 0x00000000, 0x00000001, 0x00000002, 0x00060050, 0x0000000c, 0x00000026, 0x00000020,
+    0x00000020, 0x00000020, 0x00050088, 0x0000000c, 0x00000027, 0x00000025, 0x00000026, 0x000200f9,
+    0x00000022, 0x000200f8, 0x00000024, 0x000200f9, 0x00000022, 0x000200f8, 0x00000022, 0x000700f5,
+    0x0000000c, 0x00000028, 0x00000027, 0x00000023, 0x00000018, 0x00000024, 0x00050050, 0x00000014,
+    0x00000029, 0x00000028, 0x00000020, 0x0003003e, 0x00000002, 0x00000029, 0x000100fd, 0x00010038
 };
 static ImPlatform_ShaderProgram g_UnpremultiplyProgram = NULL;
 static ImPlatform_Shader        g_UnpremultiplyShaders[2] = {};
@@ -1836,9 +1795,9 @@ IMPLATFORM_API void ImPlatform_PopPremultipliedAlpha(ImDrawList* draw)
 
 static void ImPlatform_ReleaseRenderPasses()
 {
-    if (g_PassLoadRenderPass != VK_NULL_HANDLE)
-        vkDestroyRenderPass(g_GfxData.device, g_PassLoadRenderPass, g_Allocator);
-    g_PassLoadRenderPass = VK_NULL_HANDLE;
+    for (const ImPlatform_LoadPass_Vulkan& p : g_LoadPasses)
+        vkDestroyRenderPass(g_GfxData.device, p.pass, g_Allocator);
+    g_LoadPasses.clear();
     if (g_UnpremultiplyProgram)
         ImPlatform_DestroyShaderProgram(g_UnpremultiplyProgram);
     g_UnpremultiplyProgram = NULL;
@@ -1928,6 +1887,8 @@ IMPLATFORM_API void ImPlatform_DestroyTexture(ImTextureID texture_id)
     if (!texture_id)
         return;
 
+    ImPlatform_Vulkan_ForgetShaderTexture(texture_id);
+
     // Remove from ImGui's texture registry
     VkDescriptorSet descriptor_set = (VkDescriptorSet)texture_id;
     ImGui_ImplVulkan_RemoveTexture(descriptor_set);
@@ -1936,6 +1897,14 @@ IMPLATFORM_API void ImPlatform_DestroyTexture(ImTextureID texture_id)
         {
             ImPlatform_TexReg_Vulkan* dead = *e;
             *e = dead->next;
+            if (dead->memory)
+            {
+                // Frames in flight may still sample it
+                vkDeviceWaitIdle(g_GfxData.device);
+                vkDestroyImageView(g_GfxData.device, dead->view, g_Allocator);
+                vkDestroyImage(g_GfxData.device, dead->image, g_Allocator);
+                vkFreeMemory(g_GfxData.device, dead->memory, g_Allocator);
+            }
             delete dead;
             break;
         }
@@ -1957,58 +1926,361 @@ IMPLATFORM_API void ImPlatform_DestroyTexture(ImTextureID texture_id)
             delete rt;
             return;
         }
-
-    // shortcut: textures from ImPlatform_CreateTexture keep their image, memory and view (not tracked); track them
-    // when they are created and destroyed often.
 }
 
 // ============================================================================
-// Custom Vertex/Index Buffer Management API - Vulkan (Stubs)
+// Custom Vertex/Index Buffer Management API - Vulkan
 // ============================================================================
 
-IMPLATFORM_API ImPlatform_VertexBuffer ImPlatform_CreateVertexBuffer(const void* /*vertex_data*/, const ImPlatform_VertexBufferDesc* /*desc*/) { return NULL; }
-IMPLATFORM_API bool ImPlatform_UpdateVertexBuffer(ImPlatform_VertexBuffer /*vertex_buffer*/, const void* /*vertex_data*/, unsigned int /*vertex_count*/, unsigned int /*offset*/) { return false; }
-IMPLATFORM_API void ImPlatform_DestroyVertexBuffer(ImPlatform_VertexBuffer /*vertex_buffer*/) {}
-IMPLATFORM_API ImPlatform_IndexBuffer ImPlatform_CreateIndexBuffer(const void* /*index_data*/, const ImPlatform_IndexBufferDesc* /*desc*/) { return NULL; }
-IMPLATFORM_API bool ImPlatform_UpdateIndexBuffer(ImPlatform_IndexBuffer /*index_buffer*/, const void* /*index_data*/, unsigned int /*index_count*/, unsigned int /*offset*/) { return false; }
-IMPLATFORM_API void ImPlatform_DestroyIndexBuffer(ImPlatform_IndexBuffer /*index_buffer*/) {}
-IMPLATFORM_API void ImPlatform_BindVertexBuffer(ImPlatform_VertexBuffer /*vertex_buffer*/) {}
-IMPLATFORM_API void ImPlatform_BindIndexBuffer(ImPlatform_IndexBuffer /*index_buffer*/) {}
+// Vertex and index buffers drawn by ImPlatform_DrawIndexed inside draw callbacks, in host-visible memory.
+// shortcut: static buffers stay in host-visible memory too; move them to device memory if drawing them gets slow.
+struct ImPlatform_BufferData_Vulkan
+{
+    VkBuffer       buffer;
+    VkDeviceMemory memory;
+    char*          mapped;
+    VkDeviceSize   size;
+    bool           index;
+    ImPlatform_VertexBufferDesc vb_desc;
+    ImVector<ImPlatform_VertexAttribute> attributes;
+    ImPlatform_IndexBufferDesc ib_desc;
+};
+static ImPlatform_BufferData_Vulkan* g_BoundVertexBuffer = NULL;
+static ImPlatform_BufferData_Vulkan* g_BoundIndexBuffer = NULL;
+static bool ImPlatform_Vulkan_CreateHostBuffer(VkDeviceSize size, VkBufferUsageFlags usage, VkBuffer* buf, VkDeviceMemory* mem);
+static void ImPlatform_Vulkan_DestroyHostBuffer(VkBuffer buf, VkDeviceMemory mem);
+
+static ImPlatform_BufferData_Vulkan* ImPlatform_Vulkan_CreateBuffer(const void* data, VkDeviceSize size, VkBufferUsageFlags usage)
+{
+    if (!data || size == 0)
+        return NULL;
+    ImPlatform_BufferData_Vulkan* b = IM_NEW(ImPlatform_BufferData_Vulkan)();
+    void* mapped = NULL;
+    if (!ImPlatform_Vulkan_CreateHostBuffer(size, usage, &b->buffer, &b->memory))
+    {
+        IM_DELETE(b);
+        return NULL;
+    }
+    vkMapMemory(g_GfxData.device, b->memory, 0, VK_WHOLE_SIZE, 0, &mapped);
+    b->mapped = (char*)mapped;
+    b->size = size;
+    if (b->mapped)
+        memcpy(b->mapped, data, (size_t)size);
+    return b;
+}
+
+static bool ImPlatform_Vulkan_UpdateBuffer(ImPlatform_BufferData_Vulkan* b, const void* data, VkDeviceSize at, VkDeviceSize bytes)
+{
+    if (!b || !b->mapped || !data || at + bytes > b->size)
+        return false;
+    memcpy(b->mapped + at, data, (size_t)bytes);     // Callers must not update a buffer the GPU still reads.
+    return true;
+}
+
+static void ImPlatform_Vulkan_DestroyBuffer(ImPlatform_BufferData_Vulkan* b)
+{
+    if (!b)
+        return;
+    if (g_BoundVertexBuffer == b) g_BoundVertexBuffer = NULL;
+    if (g_BoundIndexBuffer == b) g_BoundIndexBuffer = NULL;
+    vkDeviceWaitIdle(g_GfxData.device);     // Frames in flight may still draw it
+    vkUnmapMemory(g_GfxData.device, b->memory);
+    ImPlatform_Vulkan_DestroyHostBuffer(b->buffer, b->memory);
+    IM_DELETE(b);
+}
+
+IMPLATFORM_API ImPlatform_VertexBuffer ImPlatform_CreateVertexBuffer(const void* vertex_data, const ImPlatform_VertexBufferDesc* desc)
+{
+    if (!desc || !desc->attributes || !desc->attribute_count || desc->attribute_count > 16)
+        return NULL;
+    ImPlatform_BufferData_Vulkan* b = ImPlatform_Vulkan_CreateBuffer(vertex_data, (VkDeviceSize)desc->vertex_count * desc->vertex_stride,
+                                                                     VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);
+    if (!b)
+        return NULL;
+    b->vb_desc = *desc;
+    for (unsigned int i = 0; i < desc->attribute_count; i++)
+        b->attributes.push_back(desc->attributes[i]);
+    b->vb_desc.attributes = b->attributes.Data;
+    return (ImPlatform_VertexBuffer)b;
+}
+
+IMPLATFORM_API bool ImPlatform_UpdateVertexBuffer(ImPlatform_VertexBuffer vertex_buffer, const void* vertex_data, unsigned int vertex_count, unsigned int offset)
+{
+    ImPlatform_BufferData_Vulkan* b = (ImPlatform_BufferData_Vulkan*)vertex_buffer;
+    const VkDeviceSize stride = b ? b->vb_desc.vertex_stride : 0;
+    return b && !b->index && ImPlatform_Vulkan_UpdateBuffer(b, vertex_data, offset * stride, vertex_count * stride);
+}
+
+IMPLATFORM_API void ImPlatform_DestroyVertexBuffer(ImPlatform_VertexBuffer vertex_buffer) { ImPlatform_Vulkan_DestroyBuffer((ImPlatform_BufferData_Vulkan*)vertex_buffer); }
+
+IMPLATFORM_API ImPlatform_IndexBuffer ImPlatform_CreateIndexBuffer(const void* index_data, const ImPlatform_IndexBufferDesc* desc)
+{
+    if (!desc)
+        return NULL;
+    const VkDeviceSize index_size = desc->format == ImPlatform_IndexFormat_UInt16 ? 2 : 4;
+    ImPlatform_BufferData_Vulkan* b = ImPlatform_Vulkan_CreateBuffer(index_data, desc->index_count * index_size, VK_BUFFER_USAGE_INDEX_BUFFER_BIT);
+    if (!b)
+        return NULL;
+    b->index = true;
+    b->ib_desc = *desc;
+    return (ImPlatform_IndexBuffer)b;
+}
+
+IMPLATFORM_API bool ImPlatform_UpdateIndexBuffer(ImPlatform_IndexBuffer index_buffer, const void* index_data, unsigned int index_count, unsigned int offset)
+{
+    ImPlatform_BufferData_Vulkan* b = (ImPlatform_BufferData_Vulkan*)index_buffer;
+    const VkDeviceSize index_size = b && b->ib_desc.format == ImPlatform_IndexFormat_UInt16 ? 2 : 4;
+    return b && b->index && ImPlatform_Vulkan_UpdateBuffer(b, index_data, offset * index_size, index_count * index_size);
+}
+
+IMPLATFORM_API void ImPlatform_DestroyIndexBuffer(ImPlatform_IndexBuffer index_buffer) { ImPlatform_Vulkan_DestroyBuffer((ImPlatform_BufferData_Vulkan*)index_buffer); }
+IMPLATFORM_API void ImPlatform_BindVertexBuffer(ImPlatform_VertexBuffer vertex_buffer) { g_BoundVertexBuffer = (ImPlatform_BufferData_Vulkan*)vertex_buffer; }
+IMPLATFORM_API void ImPlatform_BindIndexBuffer(ImPlatform_IndexBuffer index_buffer) { g_BoundIndexBuffer = (ImPlatform_BufferData_Vulkan*)index_buffer; }
 IMPLATFORM_API void ImPlatform_BindBuffers(ImPlatform_VertexBuffer vertex_buffer, ImPlatform_IndexBuffer index_buffer)
 {
     ImPlatform_BindVertexBuffer(vertex_buffer);
     ImPlatform_BindIndexBuffer(index_buffer);
 }
 
-IMPLATFORM_API void ImPlatform_DrawIndexed(unsigned int /*primitive_type*/, unsigned int /*index_count*/, unsigned int /*start_index*/) {}
-
 // ============================================================================
 // Custom Shader System - Vulkan
 // ============================================================================
 
-// Shader data structures
+// Custom shaders are plain HLSL compiled to SPIR-V 1.3 with Slang, each register class offset into its own binding range:
+//   slangc -target spirv -profile spirv_1_3 -fvk-t-shift 0 0 -fvk-s-shift 16 0 -fvk-b-shift 32 0 -fvk-u-shift 48 0
+// so bindings 0-15 are t0-t15, 16-31 are s0-s15 and 32-47 are b0-b15, all in set 0. ImPlatform_CreateShader moves them
+// to the sets of ImGui's pipeline layout, so that ImGui keeps binding the texture and the sampler of each draw:
+//   t0 -> set 0 binding 0: the texture of the draw command;
+//   s0 -> set 1 binding 0: ImGui's sampler (ImPlatform_PushSampler);
+//   b0 -> set 2 binding 0: the projection (float4x4, as D3D's vertex constant buffer);
+//   b1 -> set 2 binding 1: the parameters (BeginUniformBlock / SetUniform / EndUniformBlock);
+//   t1..t8 -> set 3 bindings 0..7: ImPlatform textures from ImPlatform_SetShaderTexture (a white texture when unset).
+// Vertex inputs are matched by type: the 4-component input is the color, the first 2-component input (lowest location)
+// the position and the second the UV, as in ImDrawVert.
+// shortcut: no other graphics register (t9+, s1+, b2+, u) is supported; add bindings for them when a shader needs one.
 struct ImPlatform_ShaderData_Vulkan
 {
     VkShaderModule shaderModule;
     ImPlatform_ShaderStage stage;
     VkPipeline computePipeline;     // Compute stage: created on first dispatch
+    int locPos, locUV, locCol;      // Vertex stage: input locations of ImDrawVert's members, -1 when not read
+    bool extraTextures;             // Reads t1..t8 (set 3)
+    bool customLayout;              // Vertex stage: inputs other than ImDrawVert's (vertex buffers, by location)
+};
+
+// Set 3 written for one combination of t1..t8 (a set the GPU may be reading cannot be rewritten)
+struct ImPlatform_TextureSet_Vulkan
+{
+    ImTextureID     ids[8];
+    VkDescriptorSet set;
+};
+static const int g_TextureSetMax = 32;     // Per program
+
+struct ImPlatform_PipelineVariant_Vulkan
+{
+    VkRenderPass renderPass;
+    ImGuiID      layout;        // 0: ImDrawVert; else a hash of the vertex buffer layout (ImPlatform_DrawIndexed)
+    unsigned int topology;      // ImPlatform_DrawIndexed's primitive type
+    VkPipeline   pipeline;
 };
 
 struct ImPlatform_ShaderProgramData_Vulkan
 {
     VkShaderModule vertShaderModule;
     VkShaderModule fragShaderModule;
-    VkPipeline pipeline;
+    int locPos, locUV, locCol;
+    ImVector<ImPlatform_PipelineVariant_Vulkan> pipelines;     // One per render pass the program is drawn in
     VkPipelineLayout pipelineLayout;
-    VkDescriptorSetLayout descriptorSetLayout;
+    VkDescriptorSetLayout setLayouts[4];                        // ImGui's texture and sampler layouts, b0 / b1, t1..t8
     VkDescriptorPool descriptorPool;
-    VkDescriptorSet descriptorSet;
-    VkBuffer uniformBuffer;
-    VkDeviceMemory uniformBufferMemory;
-    void* uniformBufferMapped;
-    size_t uniformBufferSize;
-    bool uniformBufferDirty;
+    VkDescriptorSet constantSet;                                // Set 2: dynamic offsets into g_ConstantRing
+    ImVector<char> parameters;                                  // b1
+    bool extraTextures;                                         // The shaders read t1..t8
+    ImTextureID textures[8];                                    // t1..t8, 0 when unset
+    ImVector<ImPlatform_TextureSet_Vulkan> textureSets;         // Set 3 of each combination drawn so far
+    ImTextureID texture0;                                       // t0 of the direct draws (ImPlatform_SetShaderTexture slot 0)
+    bool customLayout;                                          // Draws vertex buffers of its own layout only
 };
+static ImVector<ImPlatform_ShaderProgramData_Vulkan*> g_ShaderPrograms;     // Live programs (DestroyTexture drops their sets)
+static ImPlatform_ShaderProgramData_Vulkan* g_BoundShaderProgram = NULL;   // Bound in the command buffer being recorded
+
+// SPIR-V opcodes, decorations and storage class used below
+enum
+{
+    ImPlatform_SpvOpTypeVector = 23, ImPlatform_SpvOpTypePointer = 32, ImPlatform_SpvOpVariable = 59, ImPlatform_SpvOpDecorate = 71,
+    ImPlatform_SpvDecorationLocation = 30, ImPlatform_SpvDecorationBinding = 33, ImPlatform_SpvDecorationDescriptorSet = 34,
+    ImPlatform_SpvStorageClassInput = 1,
+};
+
+// Moves the HLSL registers to ImGui's sets and finds the vertex inputs (see above). False on an unsupported register.
+static bool ImPlatform_Vulkan_PrepareSpirv(uint32_t* w, size_t count, ImPlatform_ShaderData_Vulkan* sd)
+{
+    if (count < 5 || w[0] != 0x07230203)
+        return false;
+    const uint32_t bound = w[3];
+    ImVector<size_t>   binding_at, set_at;     // Word index of each id's Binding / DescriptorSet literal, 0 when none
+    ImVector<int>      location;               // Each id's Location, -1 when none
+    ImVector<uint32_t> vector_size, pointee, input_ptr_type;
+    binding_at.resize((int)bound, 0); set_at.resize((int)bound, 0); location.resize((int)bound, -1);
+    vector_size.resize((int)bound, 0); pointee.resize((int)bound, 0); input_ptr_type.resize((int)bound, 0);
+    for (size_t i = 5; i < count; )
+    {
+        const uint32_t op = w[i] & 0xFFFF, len = w[i] >> 16;
+        if (len == 0 || i + len > count)
+            return false;
+        if (op == ImPlatform_SpvOpDecorate && len >= 4 && w[i + 1] < bound)
+        {
+            if (w[i + 2] == ImPlatform_SpvDecorationBinding)       binding_at[(int)w[i + 1]] = i + 3;
+            if (w[i + 2] == ImPlatform_SpvDecorationDescriptorSet) set_at[(int)w[i + 1]] = i + 3;
+            if (w[i + 2] == ImPlatform_SpvDecorationLocation)      location[(int)w[i + 1]] = (int)w[i + 3];
+        }
+        else if (op == ImPlatform_SpvOpTypeVector && len >= 4 && w[i + 1] < bound)
+            vector_size[(int)w[i + 1]] = w[i + 3];
+        else if (op == ImPlatform_SpvOpTypePointer && len >= 4 && w[i + 1] < bound)
+            pointee[(int)w[i + 1]] = w[i + 3];
+        else if (op == ImPlatform_SpvOpVariable && len >= 4 && w[i + 2] < bound && w[i + 3] == ImPlatform_SpvStorageClassInput)
+            input_ptr_type[(int)w[i + 2]] = w[i + 1];
+        i += len;
+    }
+
+    for (uint32_t id = 0; id < bound; id++)
+    {
+        if (!binding_at[(int)id] || !set_at[(int)id])
+            continue;
+        const uint32_t binding = w[binding_at[(int)id]], reg = binding % 16, cls = binding / 16;   // cls: 0 t, 1 s, 2 b, 3 u
+        uint32_t set;
+        if (w[set_at[(int)id]] == 0 && cls == 0 && reg == 0)      set = 0;
+        else if (w[set_at[(int)id]] == 0 && cls == 1 && reg == 0) set = 1;
+        else if (w[set_at[(int)id]] == 0 && cls == 2 && reg <= 1) set = 2;
+        else if (w[set_at[(int)id]] == 0 && cls == 0 && reg <= 8) set = 3;
+        else
+        {
+            fprintf(stderr, "[ImPlatform] Vulkan: unsupported register %c%u (set %u, binding %u): custom shaders use t0..t8, s0, b0 and b1\n",
+                    "tsbu"[cls < 4 ? cls : 3], reg, w[set_at[(int)id]], binding);
+            return false;
+        }
+        w[set_at[(int)id]] = set;
+        w[binding_at[(int)id]] = set == 2 ? reg : set == 3 ? reg - 1 : 0;
+        sd->extraTextures |= set == 3;
+    }
+
+    sd->locPos = sd->locUV = sd->locCol = -1;
+    if (sd->stage != ImPlatform_ShaderStage_Vertex)
+        return true;
+    int size_at[16] = {};      // Component count of the input at each location
+    for (uint32_t id = 0; id < bound; id++)
+        if (input_ptr_type[(int)id] && location[(int)id] >= 0 && location[(int)id] < 16)
+        {
+            const uint32_t type = pointee[(int)input_ptr_type[(int)id]];
+            size_at[location[(int)id]] = type < bound && vector_size[(int)type] ? (int)vector_size[(int)type] : 1;
+        }
+    for (int loc = 0; loc < 16; loc++)
+    {
+        if (size_at[loc] == 4 && sd->locCol < 0)       sd->locCol = loc;
+        else if (size_at[loc] == 2 && sd->locPos < 0)  sd->locPos = loc;
+        else if (size_at[loc] == 2 && sd->locUV < 0)   sd->locUV = loc;
+        else if (size_at[loc] != 0)
+        {
+            // Not ImDrawVert: the shader draws vertex buffers of its own layout (ImPlatform_DrawIndexed)
+            sd->locPos = sd->locUV = sd->locCol = -1;
+            sd->customLayout = true;
+            break;
+        }
+    }
+    return true;
+}
+
+// Per-draw constants (b0, b1) of custom shaders: a host-visible buffer split into segments, each owned by the command
+// buffer recording into it. A segment restarts when its command buffer records again in a later frame: a command buffer
+// is only recorded again once its previous submission completed.
+struct ImPlatform_ConstantSegment_Vulkan
+{
+    VkCommandBuffer cmd;
+    int             frame;
+    uint32_t        used;
+};
+static const uint32_t g_ConstantBlockSize   = 256;          // Range of b0 and b1: 16 float4
+static const uint32_t g_ConstantSegmentSize = 64 * 1024;
+static const int      g_ConstantSegmentCount = 16;
+static struct
+{
+    VkBuffer       buffer;
+    VkDeviceMemory memory;
+    char*          mapped;
+    uint32_t       align;
+    ImPlatform_ConstantSegment_Vulkan segments[g_ConstantSegmentCount];
+} g_ConstantRing;
+
+static bool ImPlatform_Vulkan_CreateHostBuffer(VkDeviceSize size, VkBufferUsageFlags usage, VkBuffer* buf, VkDeviceMemory* mem);
+static void ImPlatform_Vulkan_DestroyHostBuffer(VkBuffer buf, VkDeviceMemory mem);
+
+static bool ImPlatform_Vulkan_InitConstantRing()
+{
+    if (g_ConstantRing.buffer)
+        return true;
+    // Also the vertices and indices of ImPlatform_DrawQuadNow (one block each draw)
+    const VkBufferUsageFlags usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT;
+    if (!ImPlatform_Vulkan_CreateHostBuffer((VkDeviceSize)g_ConstantSegmentSize * g_ConstantSegmentCount, usage,
+                                            &g_ConstantRing.buffer, &g_ConstantRing.memory))
+        return false;
+    void* mapped = NULL;
+    vkMapMemory(g_GfxData.device, g_ConstantRing.memory, 0, VK_WHOLE_SIZE, 0, &mapped);
+    g_ConstantRing.mapped = (char*)mapped;
+    VkPhysicalDeviceProperties props;
+    vkGetPhysicalDeviceProperties(g_GfxData.physicalDevice, &props);
+    g_ConstantRing.align = (uint32_t)props.limits.minUniformBufferOffsetAlignment;
+    if (g_ConstantRing.align < 16)
+        g_ConstantRing.align = 16;
+    memset(g_ConstantRing.segments, 0, sizeof(g_ConstantRing.segments));
+    return g_ConstantRing.mapped != NULL;
+}
+
+static void ImPlatform_Vulkan_ReleaseConstantRing()
+{
+    if (!g_ConstantRing.buffer)
+        return;
+    vkUnmapMemory(g_GfxData.device, g_ConstantRing.memory);
+    ImPlatform_Vulkan_DestroyHostBuffer(g_ConstantRing.buffer, g_ConstantRing.memory);
+    memset(&g_ConstantRing, 0, sizeof(g_ConstantRing));
+}
+
+// Copies a constant block (zero padded to g_ConstantBlockSize) for a draw recorded in cmd; returns its buffer offset.
+static bool ImPlatform_Vulkan_WriteConstants(VkCommandBuffer cmd, const void* data, uint32_t size, uint32_t* offset)
+{
+    const int frame = ImGui::GetFrameCount();
+    int s = -1;
+    for (int i = 0; i < g_ConstantSegmentCount && s < 0; i++)
+        if (g_ConstantRing.segments[i].cmd == cmd)
+            s = i;
+    // A free segment, or one whose command buffer stopped recording long enough ago to be complete (swapchains keep
+    // fewer than 8 frames in flight).
+    for (int i = 0; i < g_ConstantSegmentCount && s < 0; i++)
+        if (!g_ConstantRing.segments[i].cmd || g_ConstantRing.segments[i].frame < frame - 8)
+        {
+            s = i;
+            g_ConstantRing.segments[i].cmd = cmd;
+            g_ConstantRing.segments[i].frame = frame - 1;
+        }
+    if (s < 0)
+        return false;
+    ImPlatform_ConstantSegment_Vulkan& seg = g_ConstantRing.segments[s];
+    if (seg.frame != frame)
+    {
+        seg.frame = frame;
+        seg.used = 0;
+    }
+    const uint32_t at = (seg.used + g_ConstantRing.align - 1) / g_ConstantRing.align * g_ConstantRing.align;
+    if (at + g_ConstantBlockSize > g_ConstantSegmentSize)
+        return false;
+    char* dst = g_ConstantRing.mapped + (size_t)s * g_ConstantSegmentSize + at;
+    const uint32_t n = size < g_ConstantBlockSize ? size : g_ConstantBlockSize;
+    if (n)
+        memcpy(dst, data, n);
+    memset(dst + n, 0, g_ConstantBlockSize - n);
+    seg.used = at + g_ConstantBlockSize;
+    *offset = (uint32_t)s * g_ConstantSegmentSize + at;
+    return true;
+}
 
 // Custom Shader System API - Vulkan
 //
@@ -2029,7 +2301,7 @@ struct ImPlatform_ShaderProgramData_Vulkan
 //   See ImPlatform_Vulkan_InitPipelineCache / _SavePipelineCache above.
 IMPLATFORM_API ImPlatform_Shader ImPlatform_CreateShader(const ImPlatform_ShaderDesc* desc)
 {
-    if (!desc || !desc->bytecode || desc->bytecode_size == 0)
+    if (!desc || !desc->bytecode || desc->bytecode_size == 0 || desc->bytecode_size % 4 != 0)
     {
         fprintf(stderr, "[ImPlatform] Vulkan: Invalid shader description\n");
         return NULL;
@@ -2048,12 +2320,21 @@ IMPLATFORM_API ImPlatform_Shader ImPlatform_CreateShader(const ImPlatform_Shader
 
     memset(shader_data, 0, sizeof(ImPlatform_ShaderData_Vulkan));
     shader_data->stage = desc->stage;
+    shader_data->locPos = shader_data->locUV = shader_data->locCol = -1;
 
-    // Create shader module from SPIR-V bytecode
+    ImVector<uint32_t> code;
+    code.resize((int)(desc->bytecode_size / 4));
+    memcpy(code.Data, desc->bytecode, desc->bytecode_size);
+    if (desc->stage != ImPlatform_ShaderStage_Compute && !ImPlatform_Vulkan_PrepareSpirv(code.Data, (size_t)code.Size, shader_data))
+    {
+        free(shader_data);
+        return NULL;
+    }
+
     VkShaderModuleCreateInfo create_info = {};
     create_info.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
     create_info.codeSize = desc->bytecode_size;
-    create_info.pCode = (const uint32_t*)desc->bytecode;
+    create_info.pCode = code.Data;
 
     VkResult err = vkCreateShaderModule(g_GfxData.device, &create_info, g_Allocator, &shader_data->shaderModule);
     if (err != VK_SUCCESS)
@@ -2081,6 +2362,159 @@ IMPLATFORM_API void ImPlatform_DestroyShader(ImPlatform_Shader shader)
     free(shader_data);
 }
 
+// The program's pipeline for a render pass, created on first use (pipelines are tied to compatible render passes). Without
+// 'vertices' it reads ImDrawVert (Dear ImGui's draws); with them, attribute i of the buffer feeds the shader's location i
+// (Slang numbers the inputs in declaration order), as 'topology' (ImPlatform_DrawIndexed's primitive type).
+static VkPipeline ImPlatform_Vulkan_ProgramPipeline(ImPlatform_ShaderProgramData_Vulkan* program_data, VkRenderPass render_pass,
+                                                    const ImPlatform_VertexBufferDesc* vertices = NULL, unsigned int topology = 0)
+{
+    ImGuiID layout = 0;
+    if (vertices)
+    {
+        // FNV-1a of the stride and each attribute's format and offset, never 0 (ImDrawVert's key)
+        layout = (2166136261u ^ vertices->vertex_stride) * 16777619u;
+        for (unsigned int i = 0; i < vertices->attribute_count; i++)
+            layout = (((layout ^ (ImGuiID)vertices->attributes[i].format) * 16777619u) ^ vertices->attributes[i].offset) * 16777619u;
+        layout |= 1u;
+    }
+    else if (program_data->customLayout)
+        return VK_NULL_HANDLE;      // Its inputs are not ImDrawVert's
+    for (const ImPlatform_PipelineVariant_Vulkan& v : program_data->pipelines)
+        if (v.renderPass == render_pass && v.layout == layout && v.topology == topology)
+            return v.pipeline;
+
+    VkPipelineShaderStageCreateInfo stage[2] = {};
+    stage[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    stage[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
+    stage[0].module = program_data->vertShaderModule;
+    stage[0].pName = "main";
+    stage[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    stage[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+    stage[1].module = program_data->fragShaderModule;
+    stage[1].pName = "main";
+
+    // Vertex input: ImDrawVert, at the locations the vertex shader reads
+    VkVertexInputBindingDescription binding_desc = {};
+    binding_desc.stride = vertices ? vertices->vertex_stride : (uint32_t)sizeof(ImDrawVert);
+    binding_desc.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
+    VkVertexInputAttributeDescription attribute_desc[16] = {};
+    uint32_t attribute_count = 0;
+    if (vertices)
+    {
+        for (unsigned int i = 0; i < vertices->attribute_count && i < 16; i++)
+        {
+            VkFormat f = VK_FORMAT_R32G32B32A32_SFLOAT;
+            switch (vertices->attributes[i].format)
+            {
+            case ImPlatform_VertexFormat_Float:   f = VK_FORMAT_R32_SFLOAT; break;
+            case ImPlatform_VertexFormat_Float2:  f = VK_FORMAT_R32G32_SFLOAT; break;
+            case ImPlatform_VertexFormat_Float3:  f = VK_FORMAT_R32G32B32_SFLOAT; break;
+            case ImPlatform_VertexFormat_UByte4:  f = VK_FORMAT_R8G8B8A8_UINT; break;
+            case ImPlatform_VertexFormat_UByte4N: f = VK_FORMAT_R8G8B8A8_UNORM; break;
+            default: break;
+            }
+            attribute_desc[attribute_count].location = i;
+            attribute_desc[attribute_count].format = f;
+            attribute_desc[attribute_count].offset = vertices->attributes[i].offset;
+            attribute_count++;
+        }
+    }
+    else
+    {
+        const int locations[3] = { program_data->locPos, program_data->locUV, program_data->locCol };
+        const VkFormat formats[3] = { VK_FORMAT_R32G32_SFLOAT, VK_FORMAT_R32G32_SFLOAT, VK_FORMAT_R8G8B8A8_UNORM };
+        const uint32_t offsets[3] = { (uint32_t)offsetof(ImDrawVert, pos), (uint32_t)offsetof(ImDrawVert, uv), (uint32_t)offsetof(ImDrawVert, col) };
+        for (int i = 0; i < 3; i++)
+            if (locations[i] >= 0)
+            {
+                attribute_desc[attribute_count].location = (uint32_t)locations[i];
+                attribute_desc[attribute_count].format = formats[i];
+                attribute_desc[attribute_count].offset = offsets[i];
+                attribute_count++;
+            }
+    }
+
+    VkPipelineVertexInputStateCreateInfo vertex_info = {};
+    vertex_info.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+    vertex_info.vertexBindingDescriptionCount = 1;
+    vertex_info.pVertexBindingDescriptions = &binding_desc;
+    vertex_info.vertexAttributeDescriptionCount = attribute_count;
+    vertex_info.pVertexAttributeDescriptions = attribute_desc;
+
+    VkPipelineInputAssemblyStateCreateInfo ia_info = {};
+    ia_info.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
+    const VkPrimitiveTopology topologies[3] = { VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, VK_PRIMITIVE_TOPOLOGY_LINE_LIST, VK_PRIMITIVE_TOPOLOGY_POINT_LIST };
+    ia_info.topology = topologies[topology < 3 ? topology : 0];
+
+    VkPipelineViewportStateCreateInfo viewport_info = {};
+    viewport_info.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
+    viewport_info.viewportCount = 1;
+    viewport_info.scissorCount = 1;
+
+    VkPipelineRasterizationStateCreateInfo raster_info = {};
+    raster_info.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
+    raster_info.polygonMode = VK_POLYGON_MODE_FILL;
+    raster_info.cullMode = VK_CULL_MODE_NONE;
+    raster_info.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+    raster_info.lineWidth = 1.0f;
+
+    VkPipelineMultisampleStateCreateInfo ms_info = {};
+    ms_info.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
+    ms_info.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+
+    VkPipelineColorBlendAttachmentState color_attachment = {};
+    color_attachment.blendEnable = VK_TRUE;
+    color_attachment.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
+    color_attachment.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+    color_attachment.colorBlendOp = VK_BLEND_OP_ADD;
+    color_attachment.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+    color_attachment.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+    color_attachment.alphaBlendOp = VK_BLEND_OP_ADD;
+    color_attachment.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+
+    VkPipelineDepthStencilStateCreateInfo depth_info = {};
+    depth_info.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
+
+    VkPipelineColorBlendStateCreateInfo blend_info = {};
+    blend_info.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
+    blend_info.attachmentCount = 1;
+    blend_info.pAttachments = &color_attachment;
+
+    VkDynamicState dynamic_states[2] = { VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR };
+    VkPipelineDynamicStateCreateInfo dynamic_state = {};
+    dynamic_state.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
+    dynamic_state.dynamicStateCount = 2;
+    dynamic_state.pDynamicStates = dynamic_states;
+
+    VkGraphicsPipelineCreateInfo pipeline_info = {};
+    pipeline_info.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+    pipeline_info.stageCount = 2;
+    pipeline_info.pStages = stage;
+    pipeline_info.pVertexInputState = &vertex_info;
+    pipeline_info.pInputAssemblyState = &ia_info;
+    pipeline_info.pViewportState = &viewport_info;
+    pipeline_info.pRasterizationState = &raster_info;
+    pipeline_info.pMultisampleState = &ms_info;
+    pipeline_info.pDepthStencilState = &depth_info;
+    pipeline_info.pColorBlendState = &blend_info;
+    pipeline_info.pDynamicState = &dynamic_state;
+    pipeline_info.layout = program_data->pipelineLayout;
+    pipeline_info.renderPass = render_pass;
+    pipeline_info.subpass = 0;
+
+    // The global pipeline cache lets the compiled state be reused across runs (see ImPlatform_Vulkan_InitPipelineCache).
+    ImPlatform_PipelineVariant_Vulkan variant = { render_pass, layout, topology, VK_NULL_HANDLE };
+    VkResult err = vkCreateGraphicsPipelines(g_GfxData.device, g_VulkanPipelineCache, 1, &pipeline_info, g_Allocator, &variant.pipeline);
+    if (err != VK_SUCCESS)
+    {
+        fprintf(stderr, "[ImPlatform] Vulkan: Failed to create graphics pipeline (VkResult = %d)\n", err);
+        return VK_NULL_HANDLE;
+    }
+    program_data->pipelines.push_back(variant);
+    return variant.pipeline;
+}
+
+
 IMPLATFORM_API ImPlatform_ShaderProgram ImPlatform_CreateShaderProgram(ImPlatform_Shader vertex_shader, ImPlatform_Shader fragment_shader)
 {
     if (!vertex_shader || !fragment_shader)
@@ -2097,257 +2531,112 @@ IMPLATFORM_API ImPlatform_ShaderProgram ImPlatform_CreateShaderProgram(ImPlatfor
         fprintf(stderr, "[ImPlatform] Vulkan: Invalid shader stages\n");
         return NULL;
     }
-
-    ImPlatform_ShaderProgramData_Vulkan* program_data = (ImPlatform_ShaderProgramData_Vulkan*)malloc(sizeof(ImPlatform_ShaderProgramData_Vulkan));
-    if (!program_data)
+    if (vs_data->locPos < 0 && !vs_data->customLayout)
+    {
+        fprintf(stderr, "[ImPlatform] Vulkan: the vertex shader reads no position\n");
+        return NULL;
+    }
+    if (!ImPlatform_Vulkan_InitConstantRing())
         return NULL;
 
-    memset(program_data, 0, sizeof(ImPlatform_ShaderProgramData_Vulkan));
+    ImPlatform_ShaderProgramData_Vulkan* program_data = IM_NEW(ImPlatform_ShaderProgramData_Vulkan)();
     program_data->vertShaderModule = vs_data->shaderModule;
     program_data->fragShaderModule = fs_data->shaderModule;
+    program_data->locPos = vs_data->locPos;
+    program_data->locUV = vs_data->locUV;
+    program_data->locCol = vs_data->locCol;
+    program_data->pipelineLayout = VK_NULL_HANDLE;
+    program_data->descriptorPool = VK_NULL_HANDLE;
+    program_data->constantSet = VK_NULL_HANDLE;
+    program_data->extraTextures = vs_data->extraTextures || fs_data->extraTextures;
+    program_data->customLayout = vs_data->customLayout;
+    program_data->texture0 = 0;
+    memset(program_data->textures, 0, sizeof(program_data->textures));
+    for (VkDescriptorSetLayout& layout : program_data->setLayouts)
+        layout = VK_NULL_HANDLE;
+    g_ShaderPrograms.push_back(program_data);
 
-    VkResult err;
-
-    // Create descriptor set layout for uniforms and textures
-    // This layout matches ImGui's expectations:
-    // - Binding 0: Combined image sampler (texture)
-    // - Binding 1: Uniform buffer (our custom parameters)
+    // Sets 0 and 1 are defined as ImGui's (a sampled image, a sampler) and the push constant range is ImGui's too: the
+    // layouts are then compatible for those sets, so ImGui's per-draw texture binds neither disturb sets 2 and 3 nor
+    // need rebinding them.
+    bool ok = true;
+    for (int set = 0; set < 4 && ok; set++)
     {
-        VkDescriptorSetLayoutBinding bindings[1] = {};
-
-        // Binding 0: Texture sampler (compatible with ImGui)
-        bindings[0].binding = 0;
-        bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        bindings[0].descriptorCount = 1;
-        bindings[0].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
-
-        // Binding 1: Uniform buffer for custom parameters
-        // bindings[1].binding = 1;
-        // bindings[1].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-        // bindings[1].descriptorCount = 1;
-        // bindings[1].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
-
+        VkDescriptorSetLayoutBinding bindings[8] = {};
+        const uint32_t binding_count = set == 2 ? 2 : set == 3 ? 8 : 1;
+        for (uint32_t b = 0; b < binding_count; b++)
+        {
+            bindings[b].binding = b;
+            bindings[b].descriptorCount = 1;
+            bindings[b].descriptorType = set == 1 ? VK_DESCRIPTOR_TYPE_SAMPLER : set == 2 ? VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC : VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+            bindings[b].stageFlags = set >= 2 ? (VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT) : VK_SHADER_STAGE_FRAGMENT_BIT;
+        }
         VkDescriptorSetLayoutCreateInfo layout_info = {};
         layout_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-        layout_info.bindingCount = 1;
+        layout_info.bindingCount = binding_count;
         layout_info.pBindings = bindings;
-
-        err = vkCreateDescriptorSetLayout(g_GfxData.device, &layout_info, g_Allocator, &program_data->descriptorSetLayout);
-        if (err != VK_SUCCESS)
-        {
-            fprintf(stderr, "[ImPlatform] Vulkan: Failed to create descriptor set layout (VkResult = %d)\n", err);
-            free(program_data);
-            return NULL;
-        }
+        ok = vkCreateDescriptorSetLayout(g_GfxData.device, &layout_info, g_Allocator, &program_data->setLayouts[set]) == VK_SUCCESS;
     }
-
-    // Create pipeline layout
-    // Uses push constants for projection matrix (compatible with ImGui)
+    if (ok)
     {
-        VkDescriptorSetLayout set_layouts[1] = { program_data->descriptorSetLayout };
-
         VkPushConstantRange push_constants = {};
-        push_constants.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
-        push_constants.offset = 0;
-        push_constants.size = 128; // Projection matrix (64 bytes) + custom uniforms (64 bytes max)
-
+        push_constants.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+        push_constants.size = sizeof(float) * 4;
         VkPipelineLayoutCreateInfo layout_info = {};
         layout_info.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-        layout_info.setLayoutCount = 1;
-        layout_info.pSetLayouts = set_layouts;
+        layout_info.setLayoutCount = 4;
+        layout_info.pSetLayouts = program_data->setLayouts;
         layout_info.pushConstantRangeCount = 1;
         layout_info.pPushConstantRanges = &push_constants;
-
-        err = vkCreatePipelineLayout(g_GfxData.device, &layout_info, g_Allocator, &program_data->pipelineLayout);
-        if (err != VK_SUCCESS)
-        {
-            fprintf(stderr, "[ImPlatform] Vulkan: Failed to create pipeline layout (VkResult = %d)\n", err);
-            vkDestroyDescriptorSetLayout(g_GfxData.device, program_data->descriptorSetLayout, g_Allocator);
-            free(program_data);
-            return NULL;
-        }
+        ok = vkCreatePipelineLayout(g_GfxData.device, &layout_info, g_Allocator, &program_data->pipelineLayout) == VK_SUCCESS;
     }
-
-    // Create graphics pipeline
+    if (ok)
     {
-        VkPipelineShaderStageCreateInfo stage[2] = {};
-        stage[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-        stage[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
-        stage[0].module = program_data->vertShaderModule;
-        stage[0].pName = "main";
-        stage[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-        stage[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
-        stage[1].module = program_data->fragShaderModule;
-        stage[1].pName = "main";
-
-        // Vertex input: same as ImGui (ImDrawVert)
-        VkVertexInputBindingDescription binding_desc = {};
-        binding_desc.stride = sizeof(ImDrawVert);
-        binding_desc.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
-
-        VkVertexInputAttributeDescription attribute_desc[3] = {};
-        attribute_desc[0].location = 0;
-        attribute_desc[0].binding = 0;
-        attribute_desc[0].format = VK_FORMAT_R32G32_SFLOAT;
-        attribute_desc[0].offset = offsetof(ImDrawVert, pos);
-        attribute_desc[1].location = 1;
-        attribute_desc[1].binding = 0;
-        attribute_desc[1].format = VK_FORMAT_R32G32_SFLOAT;
-        attribute_desc[1].offset = offsetof(ImDrawVert, uv);
-        attribute_desc[2].location = 2;
-        attribute_desc[2].binding = 0;
-        attribute_desc[2].format = VK_FORMAT_R8G8B8A8_UNORM;
-        attribute_desc[2].offset = offsetof(ImDrawVert, col);
-
-        VkPipelineVertexInputStateCreateInfo vertex_info = {};
-        vertex_info.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
-        vertex_info.vertexBindingDescriptionCount = 1;
-        vertex_info.pVertexBindingDescriptions = &binding_desc;
-        vertex_info.vertexAttributeDescriptionCount = 3;
-        vertex_info.pVertexAttributeDescriptions = attribute_desc;
-
-        VkPipelineInputAssemblyStateCreateInfo ia_info = {};
-        ia_info.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
-        ia_info.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
-
-        VkPipelineViewportStateCreateInfo viewport_info = {};
-        viewport_info.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
-        viewport_info.viewportCount = 1;
-        viewport_info.scissorCount = 1;
-
-        VkPipelineRasterizationStateCreateInfo raster_info = {};
-        raster_info.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
-        raster_info.polygonMode = VK_POLYGON_MODE_FILL;
-        raster_info.cullMode = VK_CULL_MODE_NONE;
-        raster_info.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
-        raster_info.lineWidth = 1.0f;
-
-        VkPipelineMultisampleStateCreateInfo ms_info = {};
-        ms_info.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
-        ms_info.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
-
-        VkPipelineColorBlendAttachmentState color_attachment = {};
-        color_attachment.blendEnable = VK_TRUE;
-        color_attachment.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
-        color_attachment.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
-        color_attachment.colorBlendOp = VK_BLEND_OP_ADD;
-        color_attachment.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
-        color_attachment.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
-        color_attachment.alphaBlendOp = VK_BLEND_OP_ADD;
-        color_attachment.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
-
-        VkPipelineDepthStencilStateCreateInfo depth_info = {};
-        depth_info.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
-
-        VkPipelineColorBlendStateCreateInfo blend_info = {};
-        blend_info.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
-        blend_info.attachmentCount = 1;
-        blend_info.pAttachments = &color_attachment;
-
-        VkDynamicState dynamic_states[2] = { VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR };
-        VkPipelineDynamicStateCreateInfo dynamic_state = {};
-        dynamic_state.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
-        dynamic_state.dynamicStateCount = 2;
-        dynamic_state.pDynamicStates = dynamic_states;
-
-        VkGraphicsPipelineCreateInfo pipeline_info = {};
-        pipeline_info.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
-        pipeline_info.flags = 0; // No special flags needed
-        pipeline_info.stageCount = 2;
-        pipeline_info.pStages = stage;
-        pipeline_info.pVertexInputState = &vertex_info;
-        pipeline_info.pInputAssemblyState = &ia_info;
-        pipeline_info.pViewportState = &viewport_info;
-        pipeline_info.pRasterizationState = &raster_info;
-        pipeline_info.pMultisampleState = &ms_info;
-        pipeline_info.pDepthStencilState = &depth_info;
-        pipeline_info.pColorBlendState = &blend_info;
-        pipeline_info.pDynamicState = &dynamic_state;
-        pipeline_info.layout = program_data->pipelineLayout;
-        pipeline_info.renderPass = g_MainWindowData.RenderPass;
-        pipeline_info.subpass = 0;
-
-        // Pass the global pipeline cache so this pipeline's compiled state can
-        // be reused across runs (see ImPlatform_Vulkan_InitPipelineCache above).
-        err = vkCreateGraphicsPipelines(g_GfxData.device, g_VulkanPipelineCache, 1, &pipeline_info, g_Allocator, &program_data->pipeline);
-        if (err != VK_SUCCESS)
-        {
-            fprintf(stderr, "[ImPlatform] Vulkan: Failed to create graphics pipeline (VkResult = %d)\n", err);
-            vkDestroyPipelineLayout(g_GfxData.device, program_data->pipelineLayout, g_Allocator);
-            vkDestroyDescriptorSetLayout(g_GfxData.device, program_data->descriptorSetLayout, g_Allocator);
-            free(program_data);
-            return NULL;
-        }
-    }
-
-    // Create descriptor pool and initial descriptor set
-    // This ensures we always have a valid descriptor set even if uniforms are never set
-    {
-        // Create descriptor pool
-        VkDescriptorPoolSize pool_sizes[1] = {};
-        pool_sizes[0].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        pool_sizes[0].descriptorCount = 1;
-        // pool_sizes[1].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-        // pool_sizes[1].descriptorCount = 1;
-
+        const VkDescriptorPoolSize pool_sizes[2] = { { VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, 2 },
+                                                     { VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 8 * g_TextureSetMax } };
         VkDescriptorPoolCreateInfo pool_info = {};
         pool_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-        pool_info.poolSizeCount = 1;
+        pool_info.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;     // Texture sets of destroyed textures
+        pool_info.poolSizeCount = program_data->extraTextures ? 2 : 1;
         pool_info.pPoolSizes = pool_sizes;
-        pool_info.maxSets = 1;
-
-        err = vkCreateDescriptorPool(g_GfxData.device, &pool_info, g_Allocator, &program_data->descriptorPool);
-        if (err != VK_SUCCESS)
-        {
-            fprintf(stderr, "[ImPlatform] Vulkan: Failed to create descriptor pool (VkResult = %d)\n", err);
-            vkDestroyPipeline(g_GfxData.device, program_data->pipeline, g_Allocator);
-            vkDestroyPipelineLayout(g_GfxData.device, program_data->pipelineLayout, g_Allocator);
-            vkDestroyDescriptorSetLayout(g_GfxData.device, program_data->descriptorSetLayout, g_Allocator);
-            free(program_data);
-            return NULL;
-        }
-
-        // Allocate descriptor set
+        pool_info.maxSets = program_data->extraTextures ? 1 + g_TextureSetMax : 1;
+        ok = vkCreateDescriptorPool(g_GfxData.device, &pool_info, g_Allocator, &program_data->descriptorPool) == VK_SUCCESS;
+    }
+    if (ok)
+    {
         VkDescriptorSetAllocateInfo alloc_info = {};
         alloc_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
         alloc_info.descriptorPool = program_data->descriptorPool;
         alloc_info.descriptorSetCount = 1;
-        alloc_info.pSetLayouts = &program_data->descriptorSetLayout;
-
-        err = vkAllocateDescriptorSets(g_GfxData.device, &alloc_info, &program_data->descriptorSet);
-        if (err != VK_SUCCESS)
-        {
-            fprintf(stderr, "[ImPlatform] Vulkan: Failed to allocate descriptor set (VkResult = %d)\n", err);
-            vkDestroyDescriptorPool(g_GfxData.device, program_data->descriptorPool, g_Allocator);
-            vkDestroyPipeline(g_GfxData.device, program_data->pipeline, g_Allocator);
-            vkDestroyPipelineLayout(g_GfxData.device, program_data->pipelineLayout, g_Allocator);
-            vkDestroyDescriptorSetLayout(g_GfxData.device, program_data->descriptorSetLayout, g_Allocator);
-            free(program_data);
-            return NULL;
-        }
-
-        // Initialize descriptor set with default texture (binding 0)
-        // Binding 1 (uniform buffer) will be updated later via EndUniformBlock
-        VkDescriptorImageInfo image_info = {};
-        image_info.sampler = g_GfxData.defaultSampler;
-        image_info.imageView = g_GfxData.defaultImageView;
-        image_info.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-
-        VkWriteDescriptorSet descriptor_write = {};
-        descriptor_write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        descriptor_write.dstSet = program_data->descriptorSet;
-        descriptor_write.dstBinding = 0;  // Binding 0 for texture
-        descriptor_write.dstArrayElement = 0;
-        descriptor_write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        descriptor_write.descriptorCount = 1;
-        descriptor_write.pImageInfo = &image_info;
-
-        vkUpdateDescriptorSets(g_GfxData.device, 1, &descriptor_write, 0, nullptr);
-
-        // Debug: log successful descriptor set creation
-        fprintf(stderr, "[ImPlatform] Vulkan: Created shader program with descriptor set: %p, pipeline layout: %p\n",
-                (void*)program_data->descriptorSet, (void*)program_data->pipelineLayout);
+        alloc_info.pSetLayouts = &program_data->setLayouts[2];
+        ok = vkAllocateDescriptorSets(g_GfxData.device, &alloc_info, &program_data->constantSet) == VK_SUCCESS;
     }
+    if (ok && program_data->extraTextures && !g_WhiteTexture)
+    {
+        const unsigned int white = 0xFFFFFFFF;
+        const ImPlatform_TextureDesc white_desc = ImPlatform_TextureDesc_Default(1, 1);
+        g_WhiteTexture = ImPlatform_CreateTexture(&white, &white_desc);
+        ok = g_WhiteTexture != 0;
+    }
+    if (!ok)
+    {
+        fprintf(stderr, "[ImPlatform] Vulkan: Failed to create the layout of a shader program\n");
+        ImPlatform_DestroyShaderProgram((ImPlatform_ShaderProgram)program_data);
+        return NULL;
+    }
+
+    VkDescriptorBufferInfo buffer_info = { g_ConstantRing.buffer, 0, g_ConstantBlockSize };
+    VkWriteDescriptorSet writes[2] = {};
+    for (uint32_t b = 0; b < 2; b++)
+    {
+        writes[b].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        writes[b].dstSet = program_data->constantSet;
+        writes[b].dstBinding = b;
+        writes[b].descriptorCount = 1;
+        writes[b].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC;
+        writes[b].pBufferInfo = &buffer_info;
+    }
+    vkUpdateDescriptorSets(g_GfxData.device, 2, writes, 0, nullptr);
 
     return (ImPlatform_ShaderProgram)program_data;
 }
@@ -2358,22 +2647,21 @@ IMPLATFORM_API void ImPlatform_DestroyShaderProgram(ImPlatform_ShaderProgram pro
         return;
 
     ImPlatform_ShaderProgramData_Vulkan* program_data = (ImPlatform_ShaderProgramData_Vulkan*)program;
+    g_ShaderPrograms.find_erase_unsorted(program_data);
+    if (g_BoundShaderProgram == program_data)
+        g_BoundShaderProgram = NULL;
 
-    if (program_data->pipeline)
-        vkDestroyPipeline(g_GfxData.device, program_data->pipeline, g_Allocator);
+    vkDeviceWaitIdle(g_GfxData.device);     // Frames in flight may still draw with it
+    for (const ImPlatform_PipelineVariant_Vulkan& v : program_data->pipelines)
+        vkDestroyPipeline(g_GfxData.device, v.pipeline, g_Allocator);
     if (program_data->pipelineLayout)
         vkDestroyPipelineLayout(g_GfxData.device, program_data->pipelineLayout, g_Allocator);
-    if (program_data->descriptorSet && program_data->descriptorPool)
-        vkFreeDescriptorSets(g_GfxData.device, program_data->descriptorPool, 1, &program_data->descriptorSet);
     if (program_data->descriptorPool)
-        vkDestroyDescriptorPool(g_GfxData.device, program_data->descriptorPool, g_Allocator);
-    if (program_data->descriptorSetLayout)
-        vkDestroyDescriptorSetLayout(g_GfxData.device, program_data->descriptorSetLayout, g_Allocator);
-    // Free uniform data buffer (used for push constants, not Vulkan buffers)
-    if (program_data->uniformBufferMapped)
-        free(program_data->uniformBufferMapped);
-
-    free(program_data);
+        vkDestroyDescriptorPool(g_GfxData.device, program_data->descriptorPool, g_Allocator);   // Frees its sets
+    for (VkDescriptorSetLayout layout : program_data->setLayouts)
+        if (layout)
+            vkDestroyDescriptorSetLayout(g_GfxData.device, layout, g_Allocator);
+    IM_DELETE(program_data);
 }
 
 IMPLATFORM_API void ImPlatform_UseShaderProgram(ImPlatform_ShaderProgram /*program*/)
@@ -2381,50 +2669,133 @@ IMPLATFORM_API void ImPlatform_UseShaderProgram(ImPlatform_ShaderProgram /*progr
     // Not needed for Vulkan - shaders are bound through draw callbacks
 }
 
-IMPLATFORM_API bool ImPlatform_SetShaderUniform(ImPlatform_ShaderProgram /*program*/, const char* /*name*/, const void* /*data*/, unsigned int /*size*/)
+// A whole b1 constant buffer, as on Direct3D (the name is not used)
+IMPLATFORM_API bool ImPlatform_SetShaderUniform(ImPlatform_ShaderProgram program, const char* /*name*/, const void* data, unsigned int size)
 {
-    // Not needed for Vulkan - uniforms are set through uniform blocks
-    return false;
+    if (!program || !data || size == 0)
+        return false;
+    ImPlatform_ShaderProgramData_Vulkan* program_data = (ImPlatform_ShaderProgramData_Vulkan*)program;
+    program_data->parameters.resize((int)size);
+    memcpy(program_data->parameters.Data, data, size);
+    return true;
 }
 
-IMPLATFORM_API bool ImPlatform_SetShaderTexture(ImPlatform_ShaderProgram /*program*/, const char* /*name*/, unsigned int /*slot*/, ImTextureID /*texture*/)
+// Set 3 holding the program's current t1..t8, written on first use of the combination. Null when the pool is full.
+static VkDescriptorSet ImPlatform_Vulkan_TextureSet(ImPlatform_ShaderProgramData_Vulkan* program_data)
 {
-    // Not needed for Vulkan - textures are bound through descriptor sets
-    return false;
+    for (const ImPlatform_TextureSet_Vulkan& s : program_data->textureSets)
+        if (memcmp(s.ids, program_data->textures, sizeof(s.ids)) == 0)
+            return s.set;
+
+    VkDescriptorImageInfo infos[8] = {};
+    for (int i = 0; i < 8; i++)
+    {
+        const ImPlatform_TexReg_Vulkan* e = ImPlatform_Vulkan_FindTexture(program_data->textures[i] ? program_data->textures[i] : g_WhiteTexture);
+        if (!e)
+            return VK_NULL_HANDLE;
+        infos[i].imageView = e->view;
+        infos[i].imageLayout = e->idleLayout;
+    }
+    ImPlatform_TextureSet_Vulkan entry;
+    memcpy(entry.ids, program_data->textures, sizeof(entry.ids));
+    VkDescriptorSetAllocateInfo alloc_info = {};
+    alloc_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+    alloc_info.descriptorPool = program_data->descriptorPool;
+    alloc_info.descriptorSetCount = 1;
+    alloc_info.pSetLayouts = &program_data->setLayouts[3];
+    if (vkAllocateDescriptorSets(g_GfxData.device, &alloc_info, &entry.set) != VK_SUCCESS)
+    {
+        static bool reported = false;
+        if (!reported)
+            fprintf(stderr, "[ImPlatform] Vulkan: more than %d texture combinations on a custom shader, draws skipped\n", g_TextureSetMax);
+        reported = true;
+        return VK_NULL_HANDLE;
+    }
+    VkWriteDescriptorSet write = {};
+    write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    write.dstSet = entry.set;
+    write.descriptorCount = 8;      // Bindings 0..7
+    write.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+    write.pImageInfo = infos;
+    vkUpdateDescriptorSets(g_GfxData.device, 1, &write, 0, nullptr);
+    program_data->textureSets.push_back(entry);
+    return entry.set;
 }
+
+// Drops the texture from every program (DestroyTexture): its sets are freed, slots holding it become unset.
+static void ImPlatform_Vulkan_ForgetShaderTexture(ImTextureID texture)
+{
+    bool idle = false;
+    for (ImPlatform_ShaderProgramData_Vulkan* p : g_ShaderPrograms)
+    {
+        for (ImTextureID& t : p->textures)
+            if (t == texture)
+                t = 0;
+        if (p->texture0 == texture)
+            p->texture0 = 0;
+        for (int i = p->textureSets.Size - 1; i >= 0; i--)
+        {
+            bool uses = false;
+            for (ImTextureID id : p->textureSets[i].ids)
+                uses |= id == texture;
+            if (!uses)
+                continue;
+            if (!idle)
+                vkDeviceWaitIdle(g_GfxData.device);     // Frames in flight may still read the set
+            idle = true;
+            vkFreeDescriptorSets(g_GfxData.device, p->descriptorPool, 1, &p->textureSets[i].set);
+            p->textureSets.erase(p->textureSets.Data + i);
+        }
+    }
+}
+
+// t<slot>: an ImPlatform texture. Slots 1..8 (0: unset, a white texture) apply from the program's next bind; slot 0 serves
+// the direct draws (ImPlatform_DrawQuadNow, ImPlatform_DrawIndexed; Dear ImGui's draws bind their own t0). Both apply at
+// once inside a draw callback with the program bound, as on Direct3D.
+IMPLATFORM_API bool ImPlatform_SetShaderTexture(ImPlatform_ShaderProgram program, const char* /*name*/, unsigned int slot, ImTextureID texture)
+{
+    ImPlatform_ShaderProgramData_Vulkan* program_data = (ImPlatform_ShaderProgramData_Vulkan*)program;
+    if (!program_data || slot > 8 || (slot >= 1 && !program_data->extraTextures) || (texture && !ImPlatform_Vulkan_FindTexture(texture)))
+        return false;
+    ImGui_ImplVulkan_RenderState* render_state = (ImGui_ImplVulkan_RenderState*)ImGui::GetPlatformIO().Renderer_RenderState;
+    const bool bound = render_state && render_state->CommandBuffer && g_BoundShaderProgram == program_data;
+    if (slot == 0)
+    {
+        // The ImTextureID is the descriptor set Dear ImGui binds as set 0 (layout compatible with the program's)
+        program_data->texture0 = texture;
+        VkDescriptorSet set = (VkDescriptorSet)texture;
+        if (bound && set != VK_NULL_HANDLE)
+            vkCmdBindDescriptorSets(render_state->CommandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, program_data->pipelineLayout, 0, 1, &set, 0, nullptr);
+        return true;
+    }
+    program_data->textures[slot - 1] = texture;
+    if (bound)
+    {
+        VkDescriptorSet set = ImPlatform_Vulkan_TextureSet(program_data);
+        if (set == VK_NULL_HANDLE)
+            return false;
+        vkCmdBindDescriptorSets(render_state->CommandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, program_data->pipelineLayout, 3, 1, &set, 0, nullptr);
+    }
+    return true;
+}
+
+static ImVector<char> g_UniformBlockBytes;      // Accumulated block (D3D packing: back to back)
 
 IMPLATFORM_API void ImPlatform_BeginUniformBlock(ImPlatform_ShaderProgram program)
 {
     if (!program)
         return;
-
     g_CurrentUniformBlockProgram = program;
-
-    // Free any previous block data
-    if (g_UniformBlockData)
-    {
-        free(g_UniformBlockData);
-        g_UniformBlockData = nullptr;
-        g_UniformBlockSize = 0;
-    }
+    g_UniformBlockBytes.resize(0);
 }
 
 IMPLATFORM_API bool ImPlatform_SetUniform(const char* /*name*/, const void* data, unsigned int size)
 {
     if (!g_CurrentUniformBlockProgram || !data || size == 0)
         return false;
-
-    // Accumulate all uniforms into a single buffer
-    // Allocate or expand the buffer
-    size_t new_size = g_UniformBlockSize + size;
-    void* new_data = realloc(g_UniformBlockData, new_size);
-    if (!new_data)
-        return false;
-
-    g_UniformBlockData = new_data;
-    memcpy((char*)g_UniformBlockData + g_UniformBlockSize, data, size);
-    g_UniformBlockSize = new_size;
-
+    const int at = g_UniformBlockBytes.Size;
+    g_UniformBlockBytes.resize(at + (int)size);
+    memcpy(g_UniformBlockBytes.Data + at, data, size);
     return true;
 }
 
@@ -2432,30 +2803,9 @@ IMPLATFORM_API void ImPlatform_EndUniformBlock(ImPlatform_ShaderProgram program)
 {
     if (!program || program != g_CurrentUniformBlockProgram)
         return;
-
     ImPlatform_ShaderProgramData_Vulkan* program_data = (ImPlatform_ShaderProgramData_Vulkan*)program;
-
-    // Store uniform data in the program structure for later use in push constants
-    // No need to create a uniform buffer anymore - we will pass this via push constants
-    if (g_UniformBlockData && g_UniformBlockSize > 0)
-    {
-        // Reallocate program uniform buffer to store the data
-        if (program_data->uniformBufferSize != g_UniformBlockSize)
-        {
-            if (program_data->uniformBufferMapped)
-                free(program_data->uniformBufferMapped);
-            
-            program_data->uniformBufferMapped = malloc(g_UniformBlockSize);
-            program_data->uniformBufferSize = g_UniformBlockSize;
-        }
-
-        if (program_data->uniformBufferMapped)
-        {
-            memcpy(program_data->uniformBufferMapped, g_UniformBlockData, g_UniformBlockSize);
-            program_data->uniformBufferDirty = true;
-        }
-    }
-
+    program_data->parameters = g_UniformBlockBytes;
+    g_UniformBlockBytes.resize(0);
     g_CurrentUniformBlockProgram = nullptr;
 }
 
@@ -2463,153 +2813,120 @@ IMPLATFORM_API void ImPlatform_EndUniformBlock(ImPlatform_ShaderProgram program)
 // Custom Shader DrawList Integration
 // ============================================================================
 
-// ImDrawCallback handler to activate a custom shader
-static void ImPlatform_SetCustomShader(const ImDrawList* parent_list, const ImDrawCmd* cmd)
+// The draw data being rendered: the pass's, else the viewport owning parent_list, else the main one.
+static ImDrawData* ImPlatform_Vulkan_FindDrawData(const ImDrawList* parent_list)
 {
-    ImPlatform_ShaderProgram program = (ImPlatform_ShaderProgram)cmd->UserCallbackData;
-    if (!program || g_CurrentCommandBuffer == VK_NULL_HANDLE)
-        return;
-
-    ImPlatform_ShaderProgramData_Vulkan* program_data = (ImPlatform_ShaderProgramData_Vulkan*)program;
-
-    // Bind custom pipeline
-    vkCmdBindPipeline(g_CurrentCommandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, program_data->pipeline);
-
-    // Rebind push constants (scale and translate for projection)
-    // Find which viewport owns this draw list
-    ImDrawData* draw_data = nullptr;
-
-    // First, try the cached draw data (if multi-viewport wrapper is active)
     if (g_CurrentDrawData)
-    {
-        draw_data = g_CurrentDrawData;
-    }
+        return g_CurrentDrawData;
 #ifdef IMGUI_HAS_VIEWPORT
-    else
+    if (parent_list)
     {
-        // Fallback: search through all viewports to find which one owns this draw list
         ImGuiPlatformIO& platform_io = ImGui::GetPlatformIO();
-        for (int i = 0; i < platform_io.Viewports.Size; i++)
-        {
-            ImGuiViewport* viewport = platform_io.Viewports[i];
+        for (ImGuiViewport* viewport : platform_io.Viewports)
             if (viewport->DrawData)
-            {
-                for (int j = 0; j < viewport->DrawData->CmdLists.Size; j++)
-                {
-                    if (viewport->DrawData->CmdLists[j] == parent_list)
-                    {
-                        draw_data = viewport->DrawData;
-                        break;
-                    }
-                }
-                if (draw_data)
-                    break;
-            }
-        }
+                for (ImDrawList* list : viewport->DrawData->CmdLists)
+                    if (list == parent_list)
+                        return viewport->DrawData;
     }
+#else
+    (void)parent_list;
 #endif
-    if (!draw_data)
-        draw_data = ImGui::GetDrawData();
+    return ImGui::GetDrawData();
+}
 
-    if (!draw_data)
-        return;
+// b1 of ImPlatform_PushShaderConstants, until ImPlatform_PopShaderConstants
+static ImVector<char> g_PushedConstants;
+static bool g_PushedConstantsActive = false;
 
-    // Build projection matrix (same as ImGui's approach)
-    float L = draw_data->DisplayPos.x;
-    float R = draw_data->DisplayPos.x + draw_data->DisplaySize.x;
-    float T = draw_data->DisplayPos.y;
-    float B = draw_data->DisplayPos.y + draw_data->DisplaySize.y;
-
-    // Orthographic projection; Vulkan's clip space points down, the top (T) maps to -1 as in ImGui's backend
-    float mvp[4][4] =
+// Orthographic projection of a rectangle; Vulkan's clip space points down, the top (T) maps to -1 as in ImGui's backend
+static void ImPlatform_Vulkan_Projection(float L, float T, float R, float B, float mvp[4][4])
+{
+    const float m[4][4] =
     {
         { 2.0f/(R-L),   0.0f,           0.0f,       0.0f },
         { 0.0f,         2.0f/(B-T),     0.0f,       0.0f },
         { 0.0f,         0.0f,          -1.0f,       0.0f },
         { (R+L)/(L-R),  (T+B)/(T-B),    0.0f,       1.0f },
     };
+    memcpy(mvp, m, sizeof(m));
+}
 
-    // Push projection matrix (offset 0, 64 bytes)
-    vkCmdPushConstants(g_CurrentCommandBuffer, program_data->pipelineLayout,
-                      VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(float) * 16, mvp);
+// Binds a program and its constants (b0: the draw data's projection or 'projection', b1: the pushed constants or its
+// parameters) in cmd. texture_set, when not null, is bound as set 0 (else the program's slot 0 texture, if any): ImGui then
+// rebinds set 0 with a layout compatible for it, which keeps sets 2 and 3. 'vertices' selects the pipeline of a vertex
+// buffer layout (ImPlatform_DrawIndexed); a program with its own layout binds its pipeline there only.
+static void ImPlatform_Vulkan_BindProgram(ImPlatform_ShaderProgramData_Vulkan* program_data, VkCommandBuffer cmd, ImDrawData* draw_data, VkDescriptorSet texture_set,
+                                          const ImPlatform_VertexBufferDesc* vertices = NULL, unsigned int topology = 0, const float* projection = NULL)
+{
+    if (!draw_data || cmd == VK_NULL_HANDLE)
+        return;
+    VkPipeline pipeline = ImPlatform_Vulkan_ProgramPipeline(program_data, g_CurrentRenderPass ? g_CurrentRenderPass : g_MainWindowData.RenderPass,
+                                                            vertices, topology);
+    if (pipeline == VK_NULL_HANDLE && (vertices || !program_data->customLayout))
+        return;
 
-    // Push custom uniform data (offset 64, variable size)
-    // This data was set via BeginUniformBlock/SetUniform/EndUniformBlock
-    if (program_data->uniformBufferMapped && program_data->uniformBufferSize > 0)
-    {
-        vkCmdPushConstants(g_CurrentCommandBuffer, program_data->pipelineLayout,
-                          VK_SHADER_STAGE_FRAGMENT_BIT, 64,
-                          (uint32_t)program_data->uniformBufferSize, program_data->uniformBufferMapped);
-    }
-
-    // Bind descriptor set (set 0) containing only the texture (binding 0)
-    // This descriptor set layout is now IDENTICAL to ImGui's layout
-    // Binding 0: Default white 1x1 texture (set during shader program creation)
-    // Binding 1: Uniform buffer with custom shader parameters (updated via UpdateUniformBlock)
-    if (program_data->descriptorSet == VK_NULL_HANDLE)
-    {
-        fprintf(stderr, "[ImPlatform] Vulkan: ERROR - Descriptor set is NULL in SetCustomShader callback!\n");
-    }
+    float mvp[4][4];
+    if (projection)
+        memcpy(mvp, projection, sizeof(mvp));
     else
+        ImPlatform_Vulkan_Projection(draw_data->DisplayPos.x, draw_data->DisplayPos.y, draw_data->DisplayPos.x + draw_data->DisplaySize.x,
+                                     draw_data->DisplayPos.y + draw_data->DisplaySize.y, mvp);
+    const ImVector<char>& b1 = g_PushedConstantsActive ? g_PushedConstants : program_data->parameters;
+    uint32_t offsets[2];
+    if (!ImPlatform_Vulkan_WriteConstants(cmd, mvp, sizeof(mvp), &offsets[0]) ||
+        !ImPlatform_Vulkan_WriteConstants(cmd, b1.Data, (uint32_t)b1.Size, &offsets[1]))
     {
-        // Debug: log that we're binding our descriptor sets
-        fprintf(stderr, "[ImPlatform] Vulkan: Binding custom shader descriptor set: %p with pipeline layout: %p\n",
-                (void*)program_data->descriptorSet, (void*)program_data->pipelineLayout);
-        vkCmdBindDescriptorSets(g_CurrentCommandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, program_data->pipelineLayout, 0, 1, &program_data->descriptorSet, 0, nullptr);
+        static bool reported = false;
+        if (!reported)
+            fprintf(stderr, "[ImPlatform] Vulkan: custom shader constants full, draws skipped\n");
+        reported = true;
+        return;
     }
+
+    VkDescriptorSet extra_set = VK_NULL_HANDLE;
+    if (program_data->extraTextures && (extra_set = ImPlatform_Vulkan_TextureSet(program_data)) == VK_NULL_HANDLE)
+        return;
+
+    if (pipeline != VK_NULL_HANDLE)
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
+    if (texture_set == VK_NULL_HANDLE)
+        texture_set = (VkDescriptorSet)program_data->texture0;
+    if (texture_set != VK_NULL_HANDLE)
+        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, program_data->pipelineLayout, 0, 1, &texture_set, 0, nullptr);
+    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, program_data->pipelineLayout, 2, 1, &program_data->constantSet, 2, offsets);
+    if (extra_set != VK_NULL_HANDLE)
+        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, program_data->pipelineLayout, 3, 1, &extra_set, 0, nullptr);
+    g_BoundShaderProgram = program_data;
+}
+
+// ImDrawCallback handler to activate a custom shader
+static void ImPlatform_SetCustomShader(const ImDrawList* parent_list, const ImDrawCmd* cmd)
+{
+    ImPlatform_ShaderProgramData_Vulkan* program_data = (ImPlatform_ShaderProgramData_Vulkan*)cmd->UserCallbackData;
+    if (!program_data)
+        return;
+    // ImGui's render state holds the command buffer of whichever viewport or pass is being recorded
+    ImGui_ImplVulkan_RenderState* render_state = (ImGui_ImplVulkan_RenderState*)ImGui::GetPlatformIO().Renderer_RenderState;
+    VkCommandBuffer command_buffer = render_state ? render_state->CommandBuffer : g_CurrentCommandBuffer;
+    // The texture of the next draw, bound now so that set 0 is always bound with a compatible layout
+    VkDescriptorSet texture_set = VK_NULL_HANDLE;
+    for (const ImDrawCmd* next = cmd + 1; next < parent_list->CmdBuffer.Data + parent_list->CmdBuffer.Size; next++)
+        if (next->UserCallback == NULL)
+        {
+            texture_set = (VkDescriptorSet)next->GetTexID();
+            break;
+        }
+    ImPlatform_Vulkan_BindProgram(program_data, command_buffer, ImPlatform_Vulkan_FindDrawData(parent_list), texture_set);
 }
 
 // Activate a custom shader immediately (for use inside draw callbacks).
 IMPLATFORM_API void ImPlatform_BeginCustomShader_Render(ImPlatform_ShaderProgram program)
 {
-    if (!program || g_CurrentCommandBuffer == VK_NULL_HANDLE)
+    if (!program)
         return;
-
-    ImPlatform_ShaderProgramData_Vulkan* program_data = (ImPlatform_ShaderProgramData_Vulkan*)program;
-
-    // Bind custom pipeline
-    vkCmdBindPipeline(g_CurrentCommandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, program_data->pipeline);
-
-    // Rebind push constants (scale and translate for projection)
-    ImDrawData* draw_data = g_CurrentDrawData;
-    if (!draw_data)
-        draw_data = ImGui::GetDrawData();
-    if (!draw_data)
-        return;
-
-    // Build projection matrix (same as ImGui's approach)
-    float L = draw_data->DisplayPos.x;
-    float R = draw_data->DisplayPos.x + draw_data->DisplaySize.x;
-    float T = draw_data->DisplayPos.y;
-    float B = draw_data->DisplayPos.y + draw_data->DisplaySize.y;
-
-    // Orthographic projection; Vulkan's clip space points down, the top (T) maps to -1 as in ImGui's backend
-    float mvp[4][4] =
-    {
-        { 2.0f/(R-L),   0.0f,           0.0f,       0.0f },
-        { 0.0f,         2.0f/(B-T),     0.0f,       0.0f },
-        { 0.0f,         0.0f,          -1.0f,       0.0f },
-        { (R+L)/(L-R),  (T+B)/(T-B),    0.0f,       1.0f },
-    };
-
-    // Push projection matrix (offset 0, 64 bytes)
-    vkCmdPushConstants(g_CurrentCommandBuffer, program_data->pipelineLayout,
-                      VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(float) * 16, mvp);
-
-    // Push custom uniform data (offset 64, variable size)
-    // This data was set via BeginUniformBlock/SetUniform/EndUniformBlock
-    if (program_data->uniformBufferMapped && program_data->uniformBufferSize > 0)
-    {
-        vkCmdPushConstants(g_CurrentCommandBuffer, program_data->pipelineLayout,
-                          VK_SHADER_STAGE_FRAGMENT_BIT, 64,
-                          (uint32_t)program_data->uniformBufferSize, program_data->uniformBufferMapped);
-    }
-
-    // Bind descriptor set (set 0) containing only the texture (binding 0)
-    if (program_data->descriptorSet != VK_NULL_HANDLE)
-    {
-        vkCmdBindDescriptorSets(g_CurrentCommandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, program_data->pipelineLayout, 0, 1, &program_data->descriptorSet, 0, nullptr);
-    }
+    ImGui_ImplVulkan_RenderState* render_state = (ImGui_ImplVulkan_RenderState*)ImGui::GetPlatformIO().Renderer_RenderState;
+    ImPlatform_Vulkan_BindProgram((ImPlatform_ShaderProgramData_Vulkan*)program, render_state ? render_state->CommandBuffer : g_CurrentCommandBuffer,
+                                  ImPlatform_Vulkan_FindDrawData(NULL), VK_NULL_HANDLE);
 }
 
 IMPLATFORM_API void ImPlatform_BeginCustomShader(ImDrawList* draw, ImPlatform_ShaderProgram shader)
@@ -2625,18 +2942,29 @@ IMPLATFORM_API void ImPlatform_EndCustomShader(ImDrawList* draw)
     if (!draw)
         return;
 
+    draw->AddCallback([](const ImDrawList*, const ImDrawCmd*) { g_BoundShaderProgram = NULL; }, NULL);
     draw->AddCallback(ImGui::GetPlatformIO().DrawCallback_ResetRenderState, NULL);
 }
 
+// b1 for the draws that follow in this draw callback, and for Dear ImGui's draws after it until a program is bound again
+// (as the Direct3D 11 backend leaves it bound). At most 256 bytes (the constant block).
 IMPLATFORM_API void* ImPlatform_PushShaderConstants(const void* data, unsigned int size)
 {
-    (void)data; (void)size;
-    return nullptr;
+    if (!data || size == 0 || size > g_ConstantBlockSize)
+        return nullptr;
+    g_PushedConstants.resize((int)size);
+    memcpy(g_PushedConstants.Data, data, size);
+    g_PushedConstantsActive = true;
+    ImGui_ImplVulkan_RenderState* render_state = (ImGui_ImplVulkan_RenderState*)ImGui::GetPlatformIO().Renderer_RenderState;
+    if (render_state && render_state->CommandBuffer && g_BoundShaderProgram)
+        ImPlatform_Vulkan_BindProgram(g_BoundShaderProgram, render_state->CommandBuffer, ImPlatform_Vulkan_FindDrawData(NULL), VK_NULL_HANDLE);
+    return &g_PushedConstants;
 }
 
 IMPLATFORM_API void ImPlatform_PopShaderConstants(void* handle)
 {
-    (void)handle;
+    if (handle == &g_PushedConstants)
+        g_PushedConstantsActive = false;
 }
 
 // ============================================================================
@@ -2893,7 +3221,7 @@ IMPLATFORM_API ImTextureID ImPlatform_CreateStorageTexture(const void* pixel_dat
         vkDestroyImage(g_GfxData.device, image, g_Allocator);
         return (ImTextureID)0;
     }
-    ImPlatform_Vulkan_RegisterTexture(ds, image, view, format, desc->width, desc->height, bpp, VK_IMAGE_LAYOUT_GENERAL, true);
+    ImPlatform_Vulkan_RegisterTexture(ds, image, view, memory, format, desc->width, desc->height, bpp, VK_IMAGE_LAYOUT_GENERAL, true);
     return (ImTextureID)ds;
 }
 
@@ -3055,13 +3383,192 @@ IMPLATFORM_API bool ImPlatform_DispatchCompute(ImPlatform_Shader compute_shader,
     return ok;
 }
 
-// shortcut: render-target stack, current-target copy and immediate quad are implemented on DX11 and
-// OpenGL3 only; here they report "unsupported" until this backend gets them (see ImPlatform_GetCaps).
-IMPLATFORM_API bool ImPlatform_PushRenderTarget(ImTextureID texture, bool clear) { (void)texture; (void)clear; return false; }
-IMPLATFORM_API void ImPlatform_PopRenderTarget(void) {}
+// ---- Direct draws from draw callbacks ----------------------------------------------------------------------------
+// Draw callbacks record on the frame's command buffer inside a render pass (g_ActivePasses). Switching targets or copying
+// the current one ends that pass and begins it again afterwards with a LOAD pass, so what was drawn stays.
+// shortcut: secondary viewports' passes belong to the ImGui backend; target switches and copies return false there.
+
+static VkCommandBuffer ImPlatform_Vulkan_CallbackCommandBuffer()
+{
+    ImGui_ImplVulkan_RenderState* render_state = (ImGui_ImplVulkan_RenderState*)ImGui::GetPlatformIO().Renderer_RenderState;
+    return render_state && !g_ActivePasses.empty() ? render_state->CommandBuffer : VK_NULL_HANDLE;
+}
+
+// Begins the innermost active pass again after it was ended, keeping its content.
+static void ImPlatform_Vulkan_ResumePass(VkCommandBuffer cmd)
+{
+    const ImPlatform_ActivePass_Vulkan& p = g_ActivePasses.back();
+    VkRenderPassBeginInfo info = {};
+    info.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+    info.renderPass = ImPlatform_PassLoadRenderPass(p.format, p.restLayout);
+    info.framebuffer = p.framebuffer;
+    info.renderArea.extent.width = p.width;
+    info.renderArea.extent.height = p.height;
+    vkCmdBeginRenderPass(cmd, &info, VK_SUBPASS_CONTENTS_INLINE);
+    const VkViewport viewport = { 0.0f, 0.0f, (float)p.width, (float)p.height, 0.0f, 1.0f };
+    const VkRect2D scissor = { { 0, 0 }, { p.width, p.height } };
+    vkCmdSetViewport(cmd, 0, 1, &viewport);
+    vkCmdSetScissor(cmd, 0, 1, &scissor);      // Dear ImGui sets the scissor of each of its draws again.
+    g_CurrentRenderPass = p.renderPass;
+}
+
+IMPLATFORM_API bool ImPlatform_PushRenderTarget(ImTextureID texture, bool clear)
+{
+    VkCommandBuffer cmd = ImPlatform_Vulkan_CallbackCommandBuffer();
+    ImPlatform_RTTracking_Vulkan* rt = ImPlatform_FindRT_Vulkan(texture);
+    if (cmd == VK_NULL_HANDLE || !rt)
+        return false;
+    for (const ImPlatform_ActivePass_Vulkan& p : g_ActivePasses)
+        if (p.image == rt->image)
+            return false;
+    const bool clear_it = clear || !rt->rendered;      // Undefined content: cleared the first time.
+    VkRenderPass render_pass = clear_it ? rt->renderPass : ImPlatform_PassLoadRenderPass(rt->format);
+    if (render_pass == VK_NULL_HANDLE)
+        return false;
+    vkCmdEndRenderPass(cmd);
+    VkMemoryBarrier barrier = {};      // Orders the target after its earlier sampling and drawing (see ImPlatform_RunRenderPass)
+    barrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+    barrier.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+    barrier.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                         VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, 0, 1, &barrier, 0, nullptr, 0, nullptr);
+    VkClearValue transparent = {};
+    VkRenderPassBeginInfo info = {};
+    info.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+    info.renderPass = render_pass;
+    info.framebuffer = rt->framebuffer;
+    info.renderArea.extent.width = rt->width;
+    info.renderArea.extent.height = rt->height;
+    info.clearValueCount = clear_it ? 1 : 0;
+    info.pClearValues = &transparent;
+    vkCmdBeginRenderPass(cmd, &info, VK_SUBPASS_CONTENTS_INLINE);
+    const ImPlatform_ActivePass_Vulkan pushed = { rt->renderPass, rt->framebuffer, rt->image, rt->format, rt->width, rt->height,
+                                                  VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
+    g_ActivePasses.push_back(pushed);
+    g_PushedTargetCount++;
+    rt->rendered = true;
+    const VkViewport viewport = { 0.0f, 0.0f, (float)rt->width, (float)rt->height, 0.0f, 1.0f };
+    const VkRect2D scissor = { { 0, 0 }, { rt->width, rt->height } };
+    vkCmdSetViewport(cmd, 0, 1, &viewport);
+    vkCmdSetScissor(cmd, 0, 1, &scissor);
+    g_CurrentRenderPass = rt->renderPass;
+    return true;
+}
+
+IMPLATFORM_API void ImPlatform_PopRenderTarget(void)
+{
+    VkCommandBuffer cmd = ImPlatform_Vulkan_CallbackCommandBuffer();
+    if (cmd == VK_NULL_HANDLE || g_PushedTargetCount == 0)
+        return;
+    vkCmdEndRenderPass(cmd);
+    g_ActivePasses.pop_back();
+    g_PushedTargetCount--;
+    ImPlatform_Vulkan_ResumePass(cmd);
+}
+
+// From a draw callback: copies the target being drawn (a pushed render target, a render pass's texture or the main
+// viewport's swapchain image) into 'dst'. A blit converts the swapchain's format (BGRA on most platforms).
 IMPLATFORM_API bool ImPlatform_CopyCurrentTarget(ImTextureID dst, int src_x, int src_y, int w, int h, int dst_x, int dst_y)
-{ (void)dst; (void)src_x; (void)src_y; (void)w; (void)h; (void)dst_x; (void)dst_y; return false; }
-IMPLATFORM_API void ImPlatform_GetCurrentTargetSize(unsigned int* width, unsigned int* height) { if (width) *width = 0; if (height) *height = 0; }
-IMPLATFORM_API void ImPlatform_DrawQuadNow(ImPlatform_ShaderProgram program, ImVec4 dst_rect, ImVec4 uv_rect) { (void)program; (void)dst_rect; (void)uv_rect; }
+{
+    VkCommandBuffer cmd = ImPlatform_Vulkan_CallbackCommandBuffer();
+    ImPlatform_TexReg_Vulkan* d = ImPlatform_Vulkan_FindTexture(dst);
+    if (cmd == VK_NULL_HANDLE || !d || d->image == g_ActivePasses.back().image)
+        return false;
+    const ImPlatform_ActivePass_Vulkan& src = g_ActivePasses.back();
+    // Clipped to both images.
+    if (src_x < 0) { dst_x -= src_x; w += src_x; src_x = 0; }
+    if (src_y < 0) { dst_y -= src_y; h += src_y; src_y = 0; }
+    if (dst_x < 0) { src_x -= dst_x; w += dst_x; dst_x = 0; }
+    if (dst_y < 0) { src_y -= dst_y; h += dst_y; dst_y = 0; }
+    const int max_w = (int)src.width - src_x < (int)d->width - dst_x ? (int)src.width - src_x : (int)d->width - dst_x;
+    const int max_h = (int)src.height - src_y < (int)d->height - dst_y ? (int)src.height - src_y : (int)d->height - dst_y;
+    if (w > max_w) w = max_w;
+    if (h > max_h) h = max_h;
+    if (w <= 0 || h <= 0)
+        return false;
+
+    vkCmdEndRenderPass(cmd);
+    ImPlatform_Vulkan_ImageBarrier(cmd, src.image, src.restLayout, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_READ_BIT);
+    ImPlatform_Vulkan_ImageBarrier(cmd, d->image, d->idleLayout, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT);
+    VkImageBlit blit = {};
+    blit.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    blit.srcSubresource.layerCount = 1;
+    blit.dstSubresource = blit.srcSubresource;
+    blit.srcOffsets[0] = { src_x, src_y, 0 };
+    blit.srcOffsets[1] = { src_x + w, src_y + h, 1 };
+    blit.dstOffsets[0] = { dst_x, dst_y, 0 };
+    blit.dstOffsets[1] = { dst_x + w, dst_y + h, 1 };
+    vkCmdBlitImage(cmd, src.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, d->image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit, VK_FILTER_NEAREST);
+    ImPlatform_Vulkan_ImageBarrier(cmd, d->image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, d->idleLayout,
+                                   VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT);
+    ImPlatform_Vulkan_ImageBarrier(cmd, src.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, src.restLayout, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                                   VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT);
+    ImPlatform_Vulkan_ResumePass(cmd);
+    return true;
+}
+
+IMPLATFORM_API void ImPlatform_GetCurrentTargetSize(unsigned int* width, unsigned int* height)
+{
+    const bool active = !g_ActivePasses.empty();
+    if (width) *width = active ? g_ActivePasses.back().width : (unsigned int)g_MainWindowData.Width;
+    if (height) *height = active ? g_ActivePasses.back().height : (unsigned int)g_MainWindowData.Height;
+}
+
+// Draws dst_rect (current target pixels) with the program, t0 its slot 0 texture, into the current target.
+IMPLATFORM_API void ImPlatform_DrawQuadNow(ImPlatform_ShaderProgram program, ImVec4 dst_rect, ImVec4 uv_rect)
+{
+    ImPlatform_ShaderProgramData_Vulkan* program_data = (ImPlatform_ShaderProgramData_Vulkan*)program;
+    VkCommandBuffer cmd = ImPlatform_Vulkan_CallbackCommandBuffer();
+    if (!program_data || program_data->customLayout || cmd == VK_NULL_HANDLE)
+        return;
+    struct { ImDrawVert v[4]; uint16_t i[6]; } quad;
+    const ImU32 white = IM_COL32_WHITE;
+    quad.v[0].pos = ImVec2(dst_rect.x, dst_rect.y); quad.v[0].uv = ImVec2(uv_rect.x, uv_rect.y); quad.v[0].col = white;
+    quad.v[1].pos = ImVec2(dst_rect.z, dst_rect.y); quad.v[1].uv = ImVec2(uv_rect.z, uv_rect.y); quad.v[1].col = white;
+    quad.v[2].pos = ImVec2(dst_rect.z, dst_rect.w); quad.v[2].uv = ImVec2(uv_rect.z, uv_rect.w); quad.v[2].col = white;
+    quad.v[3].pos = ImVec2(dst_rect.x, dst_rect.w); quad.v[3].uv = ImVec2(uv_rect.x, uv_rect.w); quad.v[3].col = white;
+    const uint16_t indices[6] = { 0, 1, 2, 0, 2, 3 };
+    memcpy(quad.i, indices, sizeof(indices));
+    uint32_t offset = 0;
+    if (!ImPlatform_Vulkan_WriteConstants(cmd, &quad, (uint32_t)sizeof(quad), &offset))     // A constant-ring block holds both
+        return;
+    float mvp[4][4];     // b0 in the target's pixels, as the Direct3D 11 backend projects it
+    ImPlatform_Vulkan_Projection(0.0f, 0.0f, (float)g_ActivePasses.back().width, (float)g_ActivePasses.back().height, mvp);
+    g_BoundShaderProgram = NULL;
+    ImPlatform_Vulkan_BindProgram(program_data, cmd, ImPlatform_Vulkan_FindDrawData(NULL), VK_NULL_HANDLE, NULL, 0, &mvp[0][0]);
+    if (g_BoundShaderProgram != program_data)
+        return;
+    const VkDeviceSize vertex_offset = offset;
+    vkCmdBindVertexBuffers(cmd, 0, 1, &g_ConstantRing.buffer, &vertex_offset);
+    vkCmdBindIndexBuffer(cmd, g_ConstantRing.buffer, offset + (VkDeviceSize)offsetof(decltype(quad), i), VK_INDEX_TYPE_UINT16);
+    vkCmdDrawIndexed(cmd, 6, 1, 0, 0, 0);
+}
+
+// Draws the bound buffers inside a draw callback with the program bound last there (ImPlatform_BeginCustomShader,
+// ImPlatform_BeginCustomShader_Render), Dear ImGui's blending, into the current target. primitive_type: 0 triangles,
+// 1 lines, 2 points.
+IMPLATFORM_API void ImPlatform_DrawIndexed(unsigned int primitive_type, unsigned int index_count, unsigned int start_index)
+{
+    ImPlatform_ShaderProgramData_Vulkan* program_data = g_BoundShaderProgram;
+    ImPlatform_BufferData_Vulkan* vb = g_BoundVertexBuffer;
+    ImPlatform_BufferData_Vulkan* ib = g_BoundIndexBuffer;
+    ImGui_ImplVulkan_RenderState* render_state = (ImGui_ImplVulkan_RenderState*)ImGui::GetPlatformIO().Renderer_RenderState;
+    VkCommandBuffer cmd = render_state ? render_state->CommandBuffer : VK_NULL_HANDLE;
+    if (cmd == VK_NULL_HANDLE || !program_data || !vb || vb->index || !ib || !ib->index || primitive_type > 2
+        || start_index > ib->ib_desc.index_count)
+        return;
+    if (index_count == 0)
+        index_count = ib->ib_desc.index_count - start_index;    // The rest of the buffer
+    if ((VkDeviceSize)start_index + index_count > ib->ib_desc.index_count)
+        return;
+    g_BoundShaderProgram = NULL;
+    ImPlatform_Vulkan_BindProgram(program_data, cmd, ImPlatform_Vulkan_FindDrawData(NULL), VK_NULL_HANDLE, &vb->vb_desc, primitive_type);
+    if (g_BoundShaderProgram != program_data)
+        return;
+    const VkDeviceSize zero = 0;
+    vkCmdBindVertexBuffers(cmd, 0, 1, &vb->buffer, &zero);
+    vkCmdBindIndexBuffer(cmd, ib->buffer, 0, ib->ib_desc.format == ImPlatform_IndexFormat_UInt16 ? VK_INDEX_TYPE_UINT16 : VK_INDEX_TYPE_UINT32);
+    vkCmdDrawIndexed(cmd, index_count, 1, start_index, 0, 0);
+}
 
 #endif // IM_GFX_VULKAN

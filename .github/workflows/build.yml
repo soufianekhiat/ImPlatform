@@ -365,6 +365,8 @@ jobs:
             libdrm-dev \
             libgbm-dev \
             libegl1-mesa-dev \
+            mesa-vulkan-drivers \
+            vulkan-validationlayers \
             xvfb \
             x11-utils \
             imagemagick
@@ -398,6 +400,23 @@ jobs:
           for config in glfw_opengl3 glfw_vulkan sdl2_opengl3 sdl2_vulkan sdl3_opengl3 sdl3_vulkan; do
             make -f ImPlatform_make_Linux.make config=$config -j$(nproc)
           done
+
+      # Software rendering (Mesa llvmpipe / lavapipe) under Xvfb; exit 2 means unsupported by the backend.
+      - name: Self-tests (Sharpmake builds)
+        run: |
+          cd bin/Linux
+          status=0
+          for demo in ImPlatformDemo_*; do
+            for test in compute-test render-pass-test shader-test direct-draw-test; do
+              set +e
+              timeout 120 xvfb-run -a -s "-screen 0 1280x800x24" ./$demo --$test
+              code=$?
+              set -e
+              echo "$demo --$test: exit $code"
+              if [ $code -ne 0 ] && [ $code -ne 2 ]; then status=1; fi
+            done
+          done
+          exit $status
 
       - name: Run Demo and Capture Screenshot
         run: |

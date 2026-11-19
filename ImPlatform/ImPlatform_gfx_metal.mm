@@ -1106,9 +1106,8 @@ IMPLATFORM_API bool ImPlatform_SetShaderUniform(ImPlatform_ShaderProgram program
 
 IMPLATFORM_API bool ImPlatform_SetShaderTexture(ImPlatform_ShaderProgram /*program*/, const char* /*name*/, unsigned int /*slot*/, ImTextureID /*texture*/)
 {
-    // Metal texture binding happens in the render callback
-    // This is a stub for API consistency
-    return true;
+    // shortcut: only the draw's texture is bound; extra textures need per-program storage bound in the render callback.
+    return false;
 }
 
 IMPLATFORM_API void ImPlatform_BeginUniformBlock(ImPlatform_ShaderProgram program)

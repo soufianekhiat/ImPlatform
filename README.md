@@ -12,6 +12,7 @@ ImPlatform is a platform abstraction layer that simplifies multiplatform develop
 - **Custom Shader Support**: Render custom shaders with ImGui's vertex/index buffers
 - **Texture Creation API**: Platform-agnostic texture loading and management
 - **Render Targets and Render Passes**: Nestable render-target stack, and Dear ImGui draw data rendered into a texture before the frame on every backend, with premultiplied alpha
+- **Direct Draws from Draw Callbacks**: switch to a render texture, copy the current target, draw a quad or your own vertex buffers with a custom shader and pushed constants (DirectX 11/12, OpenGL 3, Vulkan; DirectX 10 and WebGPU without target switches or copies)
 - **Readback and Compute**: Texture readback (synchronous, and asynchronous on DirectX 11/12) and compute dispatch on DirectX 11/12, Vulkan and OpenGL 4.3+
 - **Pen Input**: Pressure, tilt, barrel rotation, eraser and coalesced samples (Win32)
 - **Custom Graphics Backend**: `IM_GFX_CUSTOM` keeps the platform layer and lets the application provide the renderer
@@ -409,11 +410,13 @@ cmake --build build --config Release --parallel
 
 ### Self-tests
 
-The demo checks the readback/compute and render pass paths of whichever backend it was built with:
+The demo checks the readback/compute, render pass and custom shader paths of whichever backend it was built with:
 
 ```bash
 ImPlatformDemo_Win32_DX12 --compute-test       # dispatch + readback
 ImPlatformDemo_Win32_DX12 --render-pass-test   # render pass target and premultiplied composite
+ImPlatformDemo_Win32_DX12 --shader-test        # shaders/gradient.hlsl drawn into a render pass, read back
+ImPlatformDemo_Win32_DX12 --direct-draw-test   # from a draw callback: push a render target, push constants, DrawQuadNow
 ```
 
 Each prints PASS or FAIL and exits with 0 (pass), 1 (fail) or 2 (unsupported by the backend).
@@ -458,10 +461,10 @@ The library has been tested with the following configurations:
 ### Platforms Tested
 - **Windows 10/11** (Win32 API) - Tested
 - **Windows 10/11** (GLFW) - Tested
-- **Windows 10/11** (SDL2) - Not tested (contributions welcome!)
-- **Windows 10/11** (SDL3) - Not tested (contributions welcome!)
+- **Windows 10/11** (SDL2) - Tested (self-tests)
+- **Windows 10/11** (SDL3) - Tested (self-tests)
 - **macOS** - Not tested (contributions welcome!)
-- **Linux** - Not tested (contributions welcome!)
+- **Linux** (GLFW, SDL2, SDL3) - Tested (self-tests, Ubuntu 24.04 with Mesa)
 
 ### Graphics APIs Tested
 - **DirectX 9** - Tested (Win32 only)
@@ -471,7 +474,7 @@ The library has been tested with the following configurations:
 - **OpenGL 3** - Tested (Win32, GLFW)
 - **Vulkan** - Basic testing (GLFW, SDL2, SDL3)
 - **Metal** - Not tested (macOS/iOS only, contributions welcome!)
-- **WebGPU** - Not tested (contributions welcome!)
+- **WebGPU** - Basic testing (Emscripten + GLFW in Chrome)
 
 ### Dear ImGui Version
 - **Tested with**: Dear ImGui v1.92.x (docking branch)
@@ -481,7 +484,6 @@ The library has been tested with the following configurations:
 ## Known Limitations
 
 - Apple (macOS/iOS) platform implementation needs testing
-- WebGPU backend is not yet implemented
 - OpenGL3 multi-viewport with custom shaders may have minor offset issues in some edge cases
 - Custom titlebar on GLFW requires TheCherno's fork
 
@@ -498,7 +500,6 @@ Contributions are welcome! The author primarily develops and tests on **Windows 
 - iOS/mobile platform testing
 
 **Feature Contributors:**
-- WebGPU backend implementation
 - Apple Metal backend improvements
 - SDL platform feature parity (custom titlebar, etc.)
 - Platform-specific bug fixes and optimizations

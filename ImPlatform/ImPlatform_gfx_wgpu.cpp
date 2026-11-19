@@ -16,6 +16,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <ctype.h>
 #include <stdint.h>
 
 // Platform-specific includes for surface creation
@@ -80,6 +81,17 @@ static bool g_SurfaceLost = false;
 
 // Default sampler for custom shader bind groups (created on first use)
 static WGPUSampler g_DefaultSampler = nullptr;
+
+// Custom shader program whose bind group 0 is set on the current render pass (ImPlatform_SetShaderTexture rebinds it)
+struct ImPlatform_ShaderProgramData_WebGPU;
+static ImPlatform_ShaderProgramData_WebGPU* g_BoundProgram = nullptr;
+static void ImPlatform_WGPU_BindProgram(ImPlatform_ShaderProgramData_WebGPU* program_data, ImDrawData* draw_data, WGPUTextureView texture);
+static WGPURenderPipeline ImPlatform_WGPU_LayoutPipeline(ImPlatform_ShaderProgramData_WebGPU* program_data, const ImPlatform_VertexBufferDesc* vertices,
+                                                         unsigned int topology);
+
+// b1 of ImPlatform_PushShaderConstants, until ImPlatform_PopShaderConstants
+static ImVector<char> g_PushedConstants;
+static bool g_PushedConstantsActive = false;
 
 // Active render-to-texture state
 static WGPUCommandEncoder     g_RTEncoder = nullptr;
@@ -689,6 +701,7 @@ IMPLATFORM_API bool ImPlatform_GfxAPIRender(ImVec4 const vClearColor)
     // Render ImGui
     ImDrawData* draw_data = ImGui::GetDrawData();
     g_CurrentDrawData = draw_data;
+    g_BoundProgram = nullptr;
     ImGui_ImplWGPU_RenderDrawData(draw_data, pass);
 
     wgpuRenderPassEncoderEnd(pass);
@@ -873,39 +886,6 @@ static WGPUTextureFormat ImPlatform_GetWebGPUFormat(ImPlatform_PixelFormat forma
     }
 }
 
-static int ImPlatform_GetBytesPerPixelFromWGPUFormat(WGPUTextureFormat format)
-{
-    switch (format)
-    {
-    case WGPUTextureFormat_R8Unorm:           return 1;
-    case WGPUTextureFormat_RG8Unorm:          return 2;
-    case WGPUTextureFormat_RGBA8Unorm:        return 4;
-    case WGPUTextureFormat_R16Unorm:          return 2;
-    case WGPUTextureFormat_RG16Unorm:         return 4;
-    case WGPUTextureFormat_RGBA16Unorm:       return 8;
-    case WGPUTextureFormat_R32Float:          return 4;
-    case WGPUTextureFormat_RG32Float:         return 8;
-    case WGPUTextureFormat_RGBA32Float:       return 16;
-    case WGPUTextureFormat_BGRA8Unorm:        return 4;
-    case WGPUTextureFormat_R16Float:          return 2;
-    case WGPUTextureFormat_RG16Float:         return 4;
-    case WGPUTextureFormat_RGBA16Float:       return 8;
-    case WGPUTextureFormat_RGBA8UnormSrgb:    return 4;
-    case WGPUTextureFormat_RGB10A2Unorm:      return 4;
-    case WGPUTextureFormat_Depth16Unorm:      return 2;
-    case WGPUTextureFormat_Depth32Float:      return 4;
-    case WGPUTextureFormat_Depth24PlusStencil8:  return 4;
-    case WGPUTextureFormat_Depth32FloatStencil8: return 8;
-    case WGPUTextureFormat_R8Uint:            return 1;
-    case WGPUTextureFormat_R8Sint:            return 1;
-    case WGPUTextureFormat_R16Uint:           return 2;
-    case WGPUTextureFormat_R16Sint:           return 2;
-    case WGPUTextureFormat_R32Uint:           return 4;
-    case WGPUTextureFormat_R32Sint:           return 4;
-    default:                                  return 4;
-    }
-}
-
 IMPLATFORM_API ImPlatform_TextureDesc ImPlatform_TextureDesc_Default(unsigned int width, unsigned int height)
 {
     ImPlatform_TextureDesc desc;
@@ -1066,7 +1046,7 @@ IMPLATFORM_API bool ImPlatform_UpdateTexture(ImTextureID texture_id, const void*
         return false;
 
     int bytes_per_pixel;
-    WGPUTextureFormat format = ImPlatform_GetWebGPUFormat(tracking->format, &bytes_per_pixel);
+    ImPlatform_GetWebGPUFormat(tracking->format, &bytes_per_pixel);
 
     // Handle RGB8 → RGBA8 conversion
     const void* upload_data = pixel_data;
@@ -1163,6 +1143,7 @@ static void ImPlatform_RunRenderPass()
     WGPURenderPassEncoder pass = wgpuCommandEncoderBeginRenderPass(encoder, &render_pass_desc);
     ImDrawData* saved_draw_data = g_CurrentDrawData;
     g_CurrentDrawData = draw_data;
+    g_BoundProgram = nullptr;
     ImGui_ImplWGPU_RenderDrawData(draw_data, pass);     // Its viewport and projection come from the draw data.
     g_CurrentDrawData = saved_draw_data;
     wgpuRenderPassEncoderEnd(pass);
@@ -1651,16 +1632,25 @@ IMPLATFORM_API void ImPlatform_BindBuffers(ImPlatform_VertexBuffer vertex_buffer
     ImPlatform_BindIndexBuffer(index_buffer);
 }
 
+// Draws the bound buffers inside a draw callback with the program bound last there (ImPlatform_BeginCustomShader,
+// ImPlatform_BeginCustomShader_Render), in its pipeline for the vertex buffer's layout. primitive_type: 0 triangles,
+// 1 lines, 2 points.
 IMPLATFORM_API void ImPlatform_DrawIndexed(unsigned int primitive_type, unsigned int index_count, unsigned int start_index)
 {
     // WebGPU draw commands require a render pass encoder.
     // Get the current render pass from ImGui's render state (available during draw callbacks).
     ImGuiPlatformIO& platform_io = ImGui::GetPlatformIO();
     ImGui_ImplWGPU_RenderState* render_state = (ImGui_ImplWGPU_RenderState*)platform_io.Renderer_RenderState;
-    if (!render_state || !render_state->RenderPassEncoder)
+    ImPlatform_ShaderProgramData_WebGPU* program_data = g_BoundProgram;
+    if (!render_state || !render_state->RenderPassEncoder || !program_data || !g_BoundVertexBuffer || primitive_type > 2)
         return;
 
     WGPURenderPassEncoder pass = render_state->RenderPassEncoder;
+    WGPURenderPipeline pipeline = ImPlatform_WGPU_LayoutPipeline(program_data, &g_BoundVertexBuffer->desc, primitive_type);
+    if (!pipeline)
+        return;
+    ImPlatform_WGPU_BindProgram(program_data, g_CurrentDrawData ? g_CurrentDrawData : ImGui::GetDrawData(), nullptr);     // t0: the program's slot 0 texture
+    wgpuRenderPassEncoderSetPipeline(pass, pipeline);
 
     if (g_BoundVertexBuffer && g_BoundVertexBuffer->buffer)
     {
@@ -1675,6 +1665,8 @@ IMPLATFORM_API void ImPlatform_DrawIndexed(unsigned int primitive_type, unsigned
         unsigned int index_size = (g_BoundIndexBuffer->desc.format == ImPlatform_IndexFormat_UInt16) ? 2 : 4;
         size_t ib_size = (size_t)g_BoundIndexBuffer->desc.index_count * index_size;
         wgpuRenderPassEncoderSetIndexBuffer(pass, g_BoundIndexBuffer->buffer, fmt, 0, ib_size);
+        if (index_count == 0 && start_index < g_BoundIndexBuffer->desc.index_count)
+            index_count = g_BoundIndexBuffer->desc.index_count - start_index;     // The rest of the buffer
         wgpuRenderPassEncoderDrawIndexed(pass, index_count, 1, start_index, 0, 0);
     }
 }
@@ -1689,13 +1681,28 @@ struct ImPlatform_ShaderData_WebGPU
     WGPUShaderModule shaderModule;
     ImPlatform_ShaderStage stage;
     char* entryPoint;
+    int vertexLocations[3]; // Vertex stage: shader locations of position, uv, color (-1: not an input)
+    bool customLayout;      // Vertex stage: inputs other than ImDrawVert's (vertex buffers, by location)
+};
+
+// A program's pipeline for a vertex buffer layout (ImPlatform_DrawIndexed)
+struct ImPlatform_LayoutPipeline_WebGPU
+{
+    ImGuiID layout;
+    unsigned int topology;
+    WGPURenderPipeline pipeline;
 };
 
 struct ImPlatform_ShaderProgramData_WebGPU
 {
     WGPUShaderModule vertexModule;
     WGPUShaderModule fragmentModule;
-    WGPURenderPipeline renderPipeline;
+    WGPURenderPipeline renderPipeline;      // ImDrawVert; null for a program with its own vertex layout
+    WGPUPipelineLayout pipelineLayout;
+    int vertexLocations[3];
+    ImPlatform_LayoutPipeline_WebGPU layoutPipelines[8];
+    int layoutPipelineCount;
+    WGPUTextureView texture0;               // t0 of the direct draws (ImPlatform_SetShaderTexture slot 0)
     WGPUBindGroupLayout bindGroupLayout;
     WGPUBindGroup bindGroup;
     WGPUBuffer uniformBuffer;
@@ -1705,6 +1712,9 @@ struct ImPlatform_ShaderProgramData_WebGPU
     bool uniformDataDirty;
     char* vertexEntryPoint;
     char* fragmentEntryPoint;
+    WGPUTextureView textures[8];    // t1..t8 from ImPlatform_SetShaderTexture (null: the font atlas)
+    WGPUTextureView boundTexture;   // t0 of the last bind
+    ImDrawData* boundDrawData;      // Draw data of the last bind
 };
 
 // Caching strategy:
@@ -1733,6 +1743,87 @@ struct ImPlatform_ShaderProgramData_WebGPU
 //   same way ImPlatform_gfx_vulkan.cpp wires VkPipelineCache: create one at
 //   device-create, pass it into every wgpuDeviceCreateRenderPipeline call,
 //   serialize it back on cleanup. Until then, this is a documented no-op.
+
+// Records the @location(N) inputs of [b, e) by type, like the other backends: vec4 = color, first vec2 = position,
+// second vec2 = uv.
+// 'custom' is set by an input ImDrawVert does not have (a second vec4, a third vec2, any other type).
+static void ImPlatform_WGPU_ScanLocations(const char* b, const char* e, int locs[3], int* vec2_count, bool* custom)
+{
+    for (const char* p = strstr(b, "@location("); p && p < e; p = strstr(p, "@location("))
+    {
+        p += 10;
+        const int loc = atoi(p);
+        const char* colon = strchr(p, ':');
+        if (!colon || colon >= e)
+            return;
+        const char* type = colon + 1;
+        while (*type == ' ' || *type == '\t')
+            type++;
+        if (strncmp(type, "vec4", 4) == 0 && locs[2] < 0)
+            locs[2] = loc;
+        else if (strncmp(type, "vec2", 4) == 0 && *vec2_count < 2)
+            locs[(*vec2_count)++] = loc;
+        else
+            *custom = true;
+        p = colon;
+    }
+}
+
+// Shader locations of ImDrawVert's position, uv and color for the vertex entry point of a WGSL module. WebGPU has no
+// reflection, so the text is scanned: the entry's parameters and the structs they are typed with (Slang's output).
+// Falls back to 0, 1, 2 when nothing is found.
+static void ImPlatform_WGPU_FindVertexLocations(const char* src, const char* entry, int locs[3], bool* custom)
+{
+    locs[0] = locs[1] = locs[2] = -1;
+    int vec2_count = 0;
+    const size_t entry_len = strlen(entry);
+    for (const char* fn = strstr(src, "fn "); fn; fn = strstr(fn + 3, "fn "))
+    {
+        const char* name = fn + 3;
+        while (*name == ' ')
+            name++;
+        const char* open = name + entry_len;
+        while (*open == ' ')
+            open++;
+        if (strncmp(name, entry, entry_len) != 0 || *open != '(')
+            continue;
+        const char* close = open + 1;
+        for (int depth = 1; *close && depth; close++)
+            depth += *close == '(' ? 1 : *close == ')' ? -1 : 0;
+        ImPlatform_WGPU_ScanLocations(open, close, locs, &vec2_count, custom);
+        // Struct-typed parameters: "name : Type"
+        for (const char* colon = strchr(open, ':'); colon && colon < close; colon = strchr(colon + 1, ':'))
+        {
+            const char* type = colon + 1;
+            while (*type == ' ')
+                type++;
+            size_t type_len = 0;
+            while (type[type_len] == '_' || isalnum((unsigned char)type[type_len]))
+                type_len++;
+            for (const char* s = strstr(src, "struct "); s && type_len; s = strstr(s + 7, "struct "))
+            {
+                const char* sname = s + 7;
+                while (*sname == ' ')
+                    sname++;
+                if (strncmp(sname, type, type_len) != 0 || (sname[type_len] != ' ' && sname[type_len] != '\n' && sname[type_len] != '\r' && sname[type_len] != '{'))
+                    continue;
+                const char* body = strchr(sname, '{');
+                const char* end = body ? strchr(body, '}') : nullptr;
+                if (end)
+                    ImPlatform_WGPU_ScanLocations(body, end, locs, &vec2_count, custom);
+                break;
+            }
+        }
+        break;
+    }
+    if (locs[0] < 0 && locs[1] < 0 && locs[2] < 0)
+    {
+        locs[0] = 0;
+        locs[1] = 1;
+        locs[2] = 2;
+    }
+}
+
 IMPLATFORM_API ImPlatform_Shader ImPlatform_CreateShader(const ImPlatform_ShaderDesc* desc)
 {
     if (!desc || !desc->source_code || !g_GfxData.device)
@@ -1758,6 +1849,7 @@ IMPLATFORM_API ImPlatform_Shader ImPlatform_CreateShader(const ImPlatform_Shader
     const char* entry = desc->entry_point ? desc->entry_point : "main";
     shader_data->entryPoint = (char*)malloc(strlen(entry) + 1);
     strcpy(shader_data->entryPoint, entry);
+    ImPlatform_WGPU_FindVertexLocations(desc->source_code, entry, shader_data->vertexLocations, &shader_data->customLayout);
 
     return shader_data;
 }
@@ -1777,6 +1869,93 @@ IMPLATFORM_API void ImPlatform_DestroyShader(ImPlatform_Shader shader)
     delete shader_data;
 }
 
+// A program's pipeline: ImDrawVert at the locations its vertex shader declares, or with 'vertices' a vertex buffer whose
+// attribute i feeds location i (Slang numbers the inputs in declaration order), as 'topology' (ImPlatform_DrawIndexed's
+// primitive type). Dear ImGui's blending, into the surface's format.
+static WGPURenderPipeline ImPlatform_WGPU_CreatePipeline(ImPlatform_ShaderProgramData_WebGPU* program_data, const ImPlatform_VertexBufferDesc* vertices,
+                                                         unsigned int topology)
+{
+    WGPUVertexAttribute vertex_attributes[16] = {};
+    size_t attribute_count = 0;
+    if (vertices)
+    {
+        for (unsigned int i = 0; i < vertices->attribute_count && i < 16; i++)
+        {
+            WGPUVertexFormat f = WGPUVertexFormat_Float32x4;
+            switch (vertices->attributes[i].format)
+            {
+            case ImPlatform_VertexFormat_Float:   f = WGPUVertexFormat_Float32; break;
+            case ImPlatform_VertexFormat_Float2:  f = WGPUVertexFormat_Float32x2; break;
+            case ImPlatform_VertexFormat_Float3:  f = WGPUVertexFormat_Float32x3; break;
+            case ImPlatform_VertexFormat_UByte4:  f = WGPUVertexFormat_Uint8x4; break;
+            case ImPlatform_VertexFormat_UByte4N: f = WGPUVertexFormat_Unorm8x4; break;
+            default: break;
+            }
+            vertex_attributes[attribute_count].format = f;
+            vertex_attributes[attribute_count].offset = vertices->attributes[i].offset;
+            vertex_attributes[attribute_count].shaderLocation = i;
+            attribute_count++;
+        }
+    }
+    else
+    {
+        // ImDrawVert's position, uv and color, at the locations the vertex shader declares
+        const WGPUVertexFormat formats[3] = { WGPUVertexFormat_Float32x2, WGPUVertexFormat_Float32x2, WGPUVertexFormat_Unorm8x4 };
+        const uint64_t offsets[3] = { offsetof(ImDrawVert, pos), offsetof(ImDrawVert, uv), offsetof(ImDrawVert, col) };
+        for (int i = 0; i < 3; i++)
+        {
+            if (program_data->vertexLocations[i] < 0)
+                continue;
+            vertex_attributes[attribute_count].format = formats[i];
+            vertex_attributes[attribute_count].offset = offsets[i];
+            vertex_attributes[attribute_count].shaderLocation = (uint32_t)program_data->vertexLocations[i];
+            attribute_count++;
+        }
+    }
+
+    WGPUVertexBufferLayout vertex_buffer_layout = {};
+    vertex_buffer_layout.arrayStride = vertices ? vertices->vertex_stride : sizeof(ImDrawVert);
+    vertex_buffer_layout.stepMode = WGPUVertexStepMode_Vertex;
+    vertex_buffer_layout.attributeCount = attribute_count;
+    vertex_buffer_layout.attributes = vertex_attributes;
+
+    WGPUVertexState vertex_state = {};
+    vertex_state.module = program_data->vertexModule;
+    vertex_state.entryPoint = WGPU_STR(program_data->vertexEntryPoint);
+    vertex_state.bufferCount = 1;
+    vertex_state.buffers = &vertex_buffer_layout;
+
+    WGPUBlendState blend_state = {};
+    blend_state.color.operation = WGPUBlendOperation_Add;
+    blend_state.color.srcFactor = WGPUBlendFactor_SrcAlpha;
+    blend_state.color.dstFactor = WGPUBlendFactor_OneMinusSrcAlpha;
+    blend_state.alpha.operation = WGPUBlendOperation_Add;
+    blend_state.alpha.srcFactor = WGPUBlendFactor_One;
+    blend_state.alpha.dstFactor = WGPUBlendFactor_OneMinusSrcAlpha;
+
+    WGPUColorTargetState color_target = {};
+    color_target.format = g_GfxData.swapChainFormat;
+    color_target.blend = &blend_state;
+    color_target.writeMask = WGPUColorWriteMask_All;
+
+    WGPUFragmentState fragment_state = {};
+    fragment_state.module = program_data->fragmentModule;
+    fragment_state.entryPoint = WGPU_STR(program_data->fragmentEntryPoint);
+    fragment_state.targetCount = 1;
+    fragment_state.targets = &color_target;
+
+    const WGPUPrimitiveTopology topologies[3] = { WGPUPrimitiveTopology_TriangleList, WGPUPrimitiveTopology_LineList, WGPUPrimitiveTopology_PointList };
+    WGPURenderPipelineDescriptor pipeline_desc = {};
+    pipeline_desc.layout = program_data->pipelineLayout;
+    pipeline_desc.vertex = vertex_state;
+    pipeline_desc.fragment = &fragment_state;
+    pipeline_desc.primitive.topology = topologies[topology < 3 ? topology : 0];
+    pipeline_desc.primitive.cullMode = WGPUCullMode_None;
+    pipeline_desc.multisample.count = 1;
+    pipeline_desc.multisample.mask = 0xFFFFFFFF;
+    return wgpuDeviceCreateRenderPipeline(g_GfxData.device, &pipeline_desc);
+}
+
 IMPLATFORM_API ImPlatform_ShaderProgram ImPlatform_CreateShaderProgram(ImPlatform_Shader vertex_shader, ImPlatform_Shader fragment_shader)
 {
     if (!vertex_shader || !fragment_shader || !g_GfxData.device)
@@ -1785,28 +1964,37 @@ IMPLATFORM_API ImPlatform_ShaderProgram ImPlatform_CreateShaderProgram(ImPlatfor
     ImPlatform_ShaderData_WebGPU* vs_data = (ImPlatform_ShaderData_WebGPU*)vertex_shader;
     ImPlatform_ShaderData_WebGPU* fs_data = (ImPlatform_ShaderData_WebGPU*)fragment_shader;
 
-    // Create bind group layout:
-    // binding 0: uniform buffer (VS+FS) - projection matrix + custom uniforms
-    // binding 1: sampler (FS)
-    // binding 2: texture (FS)
-    WGPUBindGroupLayoutEntry bg_layout_entries[3] = {};
+    // Bind group 0, the HLSL registers with compile_shaders' GL shifts (slangc -target wgsl):
+    // binding 0: b0 (projection matrix), binding 1: b1 (parameters), binding 16: t0 (the draw's texture), binding 32: s0,
+    // bindings 17..24: t1..t8 (ImPlatform_SetShaderTexture)
+    const WGPUShaderStage visibility = WGPUShaderStage_Vertex | WGPUShaderStage_Fragment;
+    WGPUBindGroupLayoutEntry bg_layout_entries[4 + 8] = {};
 
     bg_layout_entries[0].binding = 0;
-    bg_layout_entries[0].visibility = WGPUShaderStage_Vertex | WGPUShaderStage_Fragment;
+    bg_layout_entries[0].visibility = visibility;
     bg_layout_entries[0].buffer.type = WGPUBufferBindingType_Uniform;
-    bg_layout_entries[0].buffer.minBindingSize = 0;
 
     bg_layout_entries[1].binding = 1;
-    bg_layout_entries[1].visibility = WGPUShaderStage_Fragment;
-    bg_layout_entries[1].sampler.type = WGPUSamplerBindingType_Filtering;
+    bg_layout_entries[1].visibility = visibility;
+    bg_layout_entries[1].buffer.type = WGPUBufferBindingType_Uniform;
 
-    bg_layout_entries[2].binding = 2;
-    bg_layout_entries[2].visibility = WGPUShaderStage_Fragment;
+    bg_layout_entries[2].binding = 16;
+    bg_layout_entries[2].visibility = visibility;
     bg_layout_entries[2].texture.sampleType = WGPUTextureSampleType_Float;
     bg_layout_entries[2].texture.viewDimension = WGPUTextureViewDimension_2D;
 
+    bg_layout_entries[3].binding = 32;
+    bg_layout_entries[3].visibility = visibility;
+    bg_layout_entries[3].sampler.type = WGPUSamplerBindingType_Filtering;
+
+    for (int i = 0; i < 8; i++)
+    {
+        bg_layout_entries[4 + i] = bg_layout_entries[2];
+        bg_layout_entries[4 + i].binding = 17 + i;
+    }
+
     WGPUBindGroupLayoutDescriptor bg_layout_desc = {};
-    bg_layout_desc.entryCount = 3;
+    bg_layout_desc.entryCount = 4 + 8;
     bg_layout_desc.entries = bg_layout_entries;
 
     WGPUBindGroupLayout bind_group_layout = wgpuDeviceCreateBindGroupLayout(g_GfxData.device, &bg_layout_desc);
@@ -1825,90 +2013,24 @@ IMPLATFORM_API ImPlatform_ShaderProgram ImPlatform_CreateShaderProgram(ImPlatfor
         return NULL;
     }
 
-    // Create vertex state matching ImDrawVert layout
-    WGPUVertexAttribute vertex_attributes[3] = {};
-
-    // Position (float2) - offset 0
-    vertex_attributes[0].format = WGPUVertexFormat_Float32x2;
-    vertex_attributes[0].offset = 0;
-    vertex_attributes[0].shaderLocation = 0;
-
-    // UV (float2) - offset 8
-    vertex_attributes[1].format = WGPUVertexFormat_Float32x2;
-    vertex_attributes[1].offset = 8;
-    vertex_attributes[1].shaderLocation = 1;
-
-    // Color (unorm8x4) - offset 16
-    vertex_attributes[2].format = WGPUVertexFormat_Unorm8x4;
-    vertex_attributes[2].offset = 16;
-    vertex_attributes[2].shaderLocation = 2;
-
-    WGPUVertexBufferLayout vertex_buffer_layout = {};
-    vertex_buffer_layout.arrayStride = sizeof(ImDrawVert);
-    vertex_buffer_layout.stepMode = WGPUVertexStepMode_Vertex;
-    vertex_buffer_layout.attributeCount = 3;
-    vertex_buffer_layout.attributes = vertex_attributes;
-
-    WGPUVertexState vertex_state = {};
-    vertex_state.module = vs_data->shaderModule;
-    vertex_state.entryPoint = WGPU_STR(vs_data->entryPoint);
-    vertex_state.bufferCount = 1;
-    vertex_state.buffers = &vertex_buffer_layout;
-
-    // Create fragment state
-    WGPUBlendState blend_state = {};
-    blend_state.color.operation = WGPUBlendOperation_Add;
-    blend_state.color.srcFactor = WGPUBlendFactor_SrcAlpha;
-    blend_state.color.dstFactor = WGPUBlendFactor_OneMinusSrcAlpha;
-    blend_state.alpha.operation = WGPUBlendOperation_Add;
-    blend_state.alpha.srcFactor = WGPUBlendFactor_One;
-    blend_state.alpha.dstFactor = WGPUBlendFactor_OneMinusSrcAlpha;
-
-    WGPUColorTargetState color_target = {};
-    color_target.format = g_GfxData.swapChainFormat;
-    color_target.blend = &blend_state;
-    color_target.writeMask = WGPUColorWriteMask_All;
-
-    WGPUFragmentState fragment_state = {};
-    fragment_state.module = fs_data->shaderModule;
-    fragment_state.entryPoint = WGPU_STR(fs_data->entryPoint);
-    fragment_state.targetCount = 1;
-    fragment_state.targets = &color_target;
-
-    // Create render pipeline
-    WGPURenderPipelineDescriptor pipeline_desc = {};
-    pipeline_desc.layout = pipeline_layout;
-    pipeline_desc.vertex = vertex_state;
-    pipeline_desc.fragment = &fragment_state;
-    pipeline_desc.primitive.topology = WGPUPrimitiveTopology_TriangleList;
-    pipeline_desc.primitive.cullMode = WGPUCullMode_None;
-    pipeline_desc.multisample.count = 1;
-    pipeline_desc.multisample.mask = 0xFFFFFFFF;
-
-    WGPURenderPipeline render_pipeline = wgpuDeviceCreateRenderPipeline(g_GfxData.device, &pipeline_desc);
-
-    wgpuPipelineLayoutRelease(pipeline_layout);
-
-    if (!render_pipeline)
-    {
-        wgpuBindGroupLayoutRelease(bind_group_layout);
-        return NULL;
-    }
-
-    // Create program data
     ImPlatform_ShaderProgramData_WebGPU* program_data = new ImPlatform_ShaderProgramData_WebGPU();
     memset(program_data, 0, sizeof(*program_data));
     program_data->vertexModule = vs_data->shaderModule;
     program_data->fragmentModule = fs_data->shaderModule;
-    program_data->renderPipeline = render_pipeline;
     program_data->bindGroupLayout = bind_group_layout;
-
-    // Copy entry points
+    program_data->pipelineLayout = pipeline_layout;
+    memcpy(program_data->vertexLocations, vs_data->vertexLocations, sizeof(program_data->vertexLocations));
     program_data->vertexEntryPoint = (char*)malloc(strlen(vs_data->entryPoint) + 1);
     strcpy(program_data->vertexEntryPoint, vs_data->entryPoint);
     program_data->fragmentEntryPoint = (char*)malloc(strlen(fs_data->entryPoint) + 1);
     strcpy(program_data->fragmentEntryPoint, fs_data->entryPoint);
 
+    // A program whose vertex inputs are not ImDrawVert's draws vertex buffers only (ImPlatform_DrawIndexed)
+    if (!vs_data->customLayout && !(program_data->renderPipeline = ImPlatform_WGPU_CreatePipeline(program_data, NULL, 0)))
+    {
+        ImPlatform_DestroyShaderProgram(program_data);
+        return NULL;
+    }
     return program_data;
 }
 
@@ -1918,11 +2040,16 @@ IMPLATFORM_API void ImPlatform_DestroyShaderProgram(ImPlatform_ShaderProgram pro
         return;
 
     ImPlatform_ShaderProgramData_WebGPU* program_data = (ImPlatform_ShaderProgramData_WebGPU*)program;
+    if (g_BoundProgram == program_data)
+        g_BoundProgram = nullptr;
 
     if (program_data->bindGroup) wgpuBindGroupRelease(program_data->bindGroup);
     if (program_data->uniformBuffer) wgpuBufferRelease(program_data->uniformBuffer);
     if (program_data->bindGroupLayout) wgpuBindGroupLayoutRelease(program_data->bindGroupLayout);
     if (program_data->renderPipeline) wgpuRenderPipelineRelease(program_data->renderPipeline);
+    for (int i = 0; i < program_data->layoutPipelineCount; i++)
+        if (program_data->layoutPipelines[i].pipeline) wgpuRenderPipelineRelease(program_data->layoutPipelines[i].pipeline);
+    if (program_data->pipelineLayout) wgpuPipelineLayoutRelease(program_data->pipelineLayout);
     if (program_data->uniformData) free(program_data->uniformData);
     if (program_data->vertexEntryPoint) free(program_data->vertexEntryPoint);
     if (program_data->fragmentEntryPoint) free(program_data->fragmentEntryPoint);
@@ -1961,8 +2088,20 @@ IMPLATFORM_API bool ImPlatform_SetShaderUniform(ImPlatform_ShaderProgram program
 
 IMPLATFORM_API bool ImPlatform_SetShaderTexture(ImPlatform_ShaderProgram program, const char* name, unsigned int slot, ImTextureID texture)
 {
-    // Texture binding happens via bind groups in the render callback
-    (void)program; (void)name; (void)slot; (void)texture;
+    // Register t<slot> (binding 16 + slot); the program keeps it for its later binds, a null texture restores the font
+    // atlas. Slot 0 serves the direct draws (ImPlatform_DrawIndexed; Dear ImGui's draws bind their own t0). The texture
+    // view must stay alive while it is set.
+    (void)name;
+    if (!program || slot > 8)
+        return false;
+    ImPlatform_ShaderProgramData_WebGPU* program_data = (ImPlatform_ShaderProgramData_WebGPU*)program;
+    WGPUTextureView view = (WGPUTextureView)(void*)(intptr_t)texture;
+    (slot == 0 ? program_data->texture0 : program_data->textures[slot - 1]) = view;
+
+    // Inside a draw callback with this program bound: rebind now, as the Direct3D backends do
+    ImGui_ImplWGPU_RenderState* render_state = (ImGui_ImplWGPU_RenderState*)ImGui::GetPlatformIO().Renderer_RenderState;
+    if (render_state && render_state->RenderPassEncoder && g_BoundProgram == program_data)
+        ImPlatform_WGPU_BindProgram(program_data, program_data->boundDrawData, slot == 0 ? view : program_data->boundTexture);
     return true;
 }
 
@@ -2035,265 +2174,141 @@ IMPLATFORM_API void ImPlatform_EndUniformBlock(ImPlatform_ShaderProgram program)
 // Custom Shader DrawList Integration
 // ============================================================================
 
+// Uploads b0 (projection) and b1 (parameters), builds bind group 0 with the given texture and binds the program.
+static void ImPlatform_WGPU_BindProgram(ImPlatform_ShaderProgramData_WebGPU* program_data, ImDrawData* draw_data, WGPUTextureView texture)
+{
+    ImGui_ImplWGPU_RenderState* render_state = (ImGui_ImplWGPU_RenderState*)ImGui::GetPlatformIO().Renderer_RenderState;
+    if (!render_state || !render_state->RenderPassEncoder || !draw_data)
+        return;
+    WGPURenderPassEncoder pass = render_state->RenderPassEncoder;
+
+    const float L = draw_data->DisplayPos.x;
+    const float R = draw_data->DisplayPos.x + draw_data->DisplaySize.x;
+    const float T = draw_data->DisplayPos.y;
+    const float B = draw_data->DisplayPos.y + draw_data->DisplaySize.y;
+    const float mvp[4][4] =
+    {
+        { 2.0f / (R - L),     0.0f,              0.0f, 0.0f },
+        { 0.0f,               2.0f / (T - B),    0.0f, 0.0f },
+        { 0.0f,               0.0f,              0.5f, 0.0f },
+        { (R + L) / (L - R),  (T + B) / (B - T), 0.5f, 1.0f },
+    };
+
+    // b0 at offset 0, b1 at 256 (minUniformBufferOffsetAlignment); b1 is at least 256 bytes so a shader that reads it
+    // before any parameter is set still binds. Parameters belong to the program as on the other backends (the last
+    // values set before rendering), and queue writes are ordered with submissions, so one buffer per program suffices.
+    // b1: the constants of ImPlatform_PushShaderConstants while pushed, else the program's parameters
+    const void* custom_data = g_PushedConstantsActive ? (const void*)g_PushedConstants.Data : program_data->uniformData;
+    const size_t custom_size = g_PushedConstantsActive ? (size_t)g_PushedConstants.Size : program_data->uniformData ? program_data->uniformDataSize : 0;
+    const size_t required_capacity = 256 + (custom_size > 256 ? (custom_size + 255) & ~(size_t)255 : 256);
+    if (!program_data->uniformBuffer || program_data->uniformBufferCapacity < required_capacity)
+    {
+        if (program_data->uniformBuffer)
+            wgpuBufferRelease(program_data->uniformBuffer);
+        WGPUBufferDescriptor buf_desc = {};
+        buf_desc.usage = WGPUBufferUsage_Uniform | WGPUBufferUsage_CopyDst;
+        buf_desc.size = required_capacity;
+        program_data->uniformBuffer = wgpuDeviceCreateBuffer(g_GfxData.device, &buf_desc);
+        program_data->uniformBufferCapacity = program_data->uniformBuffer ? required_capacity : 0;
+    }
+    if (!program_data->uniformBuffer)
+        return;
+    wgpuQueueWriteBuffer(g_GfxData.queue, program_data->uniformBuffer, 0, mvp, sizeof(mvp));
+    if (custom_size > 0)
+        wgpuQueueWriteBuffer(g_GfxData.queue, program_data->uniformBuffer, 256, custom_data, custom_size);
+    if (!g_DefaultSampler)
+    {
+        WGPUSamplerDescriptor sampler_desc = {};
+        sampler_desc.addressModeU = WGPUAddressMode_ClampToEdge;
+        sampler_desc.addressModeV = WGPUAddressMode_ClampToEdge;
+        sampler_desc.addressModeW = WGPUAddressMode_ClampToEdge;
+        sampler_desc.magFilter = WGPUFilterMode_Linear;
+        sampler_desc.minFilter = WGPUFilterMode_Linear;
+        sampler_desc.mipmapFilter = WGPUMipmapFilterMode_Linear;
+        sampler_desc.maxAnisotropy = 1;
+        g_DefaultSampler = wgpuDeviceCreateSampler(g_GfxData.device, &sampler_desc);
+    }
+
+    program_data->boundTexture = texture;
+    program_data->boundDrawData = draw_data;
+    const WGPUTextureView font_atlas = (WGPUTextureView)(void*)(intptr_t)ImGui::GetIO().Fonts->TexRef.GetTexID();
+    if (!texture)
+        texture = program_data->texture0 ? program_data->texture0 : font_atlas;
+
+    WGPUBindGroupEntry bg_entries[4 + 8] = {};
+    bg_entries[0].binding = 0;
+    bg_entries[0].buffer = program_data->uniformBuffer;
+    bg_entries[0].size = sizeof(mvp);
+    bg_entries[1].binding = 1;
+    bg_entries[1].buffer = program_data->uniformBuffer;
+    bg_entries[1].offset = 256;
+    bg_entries[1].size = program_data->uniformBufferCapacity - 256;
+    bg_entries[2].binding = 16;
+    bg_entries[2].textureView = texture;
+    bg_entries[3].binding = 32;
+    bg_entries[3].sampler = g_DefaultSampler;
+    for (int i = 0; i < 8; i++)
+    {
+        bg_entries[4 + i].binding = 17 + i;
+        bg_entries[4 + i].textureView = program_data->textures[i] ? program_data->textures[i] : font_atlas;
+    }
+
+    WGPUBindGroupDescriptor bg_desc = {};
+    bg_desc.layout = program_data->bindGroupLayout;
+    bg_desc.entryCount = 4 + 8;
+    bg_desc.entries = bg_entries;
+
+    if (program_data->bindGroup)
+        wgpuBindGroupRelease(program_data->bindGroup);
+    program_data->bindGroup = wgpuDeviceCreateBindGroup(g_GfxData.device, &bg_desc);
+    if (!program_data->bindGroup)
+        return;
+
+    // ImGui rebinds only group 1 (its texture) per draw, so group 0 stays this program's until the callback ends. A
+    // program with its own vertex layout gets its pipeline from ImPlatform_DrawIndexed.
+    if (program_data->renderPipeline)
+        wgpuRenderPassEncoderSetPipeline(pass, program_data->renderPipeline);
+    wgpuRenderPassEncoderSetBindGroup(pass, 0, program_data->bindGroup, 0, nullptr);
+    g_BoundProgram = program_data;
+}
+
 // ImDrawCallback handler to activate a custom shader during rendering
 static void ImPlatform_SetCustomShader(const ImDrawList* parent_list, const ImDrawCmd* cmd)
 {
-    ImPlatform_ShaderProgram program = (ImPlatform_ShaderProgram)cmd->UserCallbackData;
-    if (!program)
+    ImPlatform_ShaderProgramData_WebGPU* program_data = (ImPlatform_ShaderProgramData_WebGPU*)cmd->UserCallbackData;
+    if (!program_data)
         return;
 
-    ImPlatform_ShaderProgramData_WebGPU* program_data = (ImPlatform_ShaderProgramData_WebGPU*)program;
-
-    // Get the current render pass encoder from ImGui's render state
-    ImGuiPlatformIO& platform_io = ImGui::GetPlatformIO();
-    ImGui_ImplWGPU_RenderState* render_state = (ImGui_ImplWGPU_RenderState*)platform_io.Renderer_RenderState;
-    if (!render_state || !render_state->RenderPassEncoder)
-        return;
-
-    WGPURenderPassEncoder pass = render_state->RenderPassEncoder;
-
-    // Find draw data for projection matrix calculation
     ImDrawData* draw_data = g_CurrentDrawData;
     if (!draw_data)
     {
         ImGuiPlatformIO& pio = ImGui::GetPlatformIO();
         for (int i = 0; i < pio.Viewports.Size && !draw_data; i++)
         {
-            ImGuiViewport* viewport = pio.Viewports[i];
-            if (viewport->DrawData)
-            {
-                for (int j = 0; j < viewport->DrawData->CmdLists.Size; j++)
-                {
-                    if (viewport->DrawData->CmdLists[j] == parent_list)
-                    {
-                        draw_data = viewport->DrawData;
-                        break;
-                    }
-                }
-            }
+            ImDrawData* viewport_data = pio.Viewports[i]->DrawData;
+            if (viewport_data && viewport_data->CmdLists.contains((ImDrawList*)parent_list))
+                draw_data = viewport_data;
         }
     }
 
-    if (!draw_data)
-        return;
-
-    // Calculate projection matrix
-    float L = draw_data->DisplayPos.x;
-    float R = draw_data->DisplayPos.x + draw_data->DisplaySize.x;
-    float T = draw_data->DisplayPos.y;
-    float B = draw_data->DisplayPos.y + draw_data->DisplaySize.y;
-
-    float mvp[4][4] =
-    {
-        { 2.0f / (R - L),     0.0f,              0.0f, 0.0f },
-        { 0.0f,               2.0f / (T - B),    0.0f, 0.0f },
-        { 0.0f,               0.0f,              0.5f, 0.0f },
-        { (R + L) / (L - R),  (T + B) / (B - T), 0.5f, 1.0f },
-    };
-
-    // Build combined uniform data: [projection_matrix | custom_uniforms]
-    size_t mvp_size = sizeof(mvp);
-    size_t custom_size = program_data->uniformData ? program_data->uniformDataSize : 0;
-    size_t total_size = mvp_size + custom_size;
-
-    // Align to 256 bytes (WebGPU requirement)
-    size_t aligned_size = (total_size + 255) & ~(size_t)255;
-
-    // Create or recreate uniform buffer if needed (grow if too small)
-    size_t required_capacity = aligned_size < 256 ? 256 : aligned_size;
-    if (!program_data->uniformBuffer || program_data->uniformBufferCapacity < required_capacity)
-    {
-        if (program_data->uniformBuffer)
-            wgpuBufferRelease(program_data->uniformBuffer);
-        WGPUBufferDescriptor buf_desc = {};
-        buf_desc.usage = WGPUBufferUsage_Uniform | WGPUBufferUsage_CopyDst;
-        buf_desc.size = required_capacity;
-        program_data->uniformBuffer = wgpuDeviceCreateBuffer(g_GfxData.device, &buf_desc);
-        program_data->uniformBufferCapacity = program_data->uniformBuffer ? required_capacity : 0;
-    }
-
-    if (!program_data->uniformBuffer)
-        return;
-
-    // Upload projection matrix
-    wgpuQueueWriteBuffer(g_GfxData.queue, program_data->uniformBuffer, 0, mvp, mvp_size);
-
-    // Upload custom uniforms (if any)
-    if (program_data->uniformData && custom_size > 0)
-    {
-        wgpuQueueWriteBuffer(g_GfxData.queue, program_data->uniformBuffer, mvp_size, program_data->uniformData, custom_size);
-    }
-
-    // Get default texture/sampler from ImGui's font atlas for shaders that don't use textures
-    ImTextureRef font_tex = ImGui::GetIO().Fonts->TexRef;
-    WGPUTextureView default_view = (WGPUTextureView)(void*)(intptr_t)font_tex.GetTexID();
-
-    // Create a default sampler if we haven't yet
-    if (!g_DefaultSampler)
-    {
-        WGPUSamplerDescriptor sampler_desc = {};
-        sampler_desc.addressModeU = WGPUAddressMode_ClampToEdge;
-        sampler_desc.addressModeV = WGPUAddressMode_ClampToEdge;
-        sampler_desc.addressModeW = WGPUAddressMode_ClampToEdge;
-        sampler_desc.magFilter = WGPUFilterMode_Linear;
-        sampler_desc.minFilter = WGPUFilterMode_Linear;
-        sampler_desc.mipmapFilter = WGPUMipmapFilterMode_Linear;
-        sampler_desc.maxAnisotropy = 1;
-        g_DefaultSampler = wgpuDeviceCreateSampler(g_GfxData.device, &sampler_desc);
-    }
-
-    // Create bind group
-    WGPUBindGroupEntry bg_entries[3] = {};
-
-    bg_entries[0].binding = 0;
-    bg_entries[0].buffer = program_data->uniformBuffer;
-    bg_entries[0].offset = 0;
-    bg_entries[0].size = program_data->uniformBufferCapacity;
-
-    bg_entries[1].binding = 1;
-    bg_entries[1].sampler = g_DefaultSampler;
-
-    bg_entries[2].binding = 2;
-    bg_entries[2].textureView = default_view;
-
-    WGPUBindGroupDescriptor bg_desc = {};
-    bg_desc.layout = program_data->bindGroupLayout;
-    bg_desc.entryCount = 3;
-    bg_desc.entries = bg_entries;
-
-    // Release previous bind group
-    if (program_data->bindGroup)
-        wgpuBindGroupRelease(program_data->bindGroup);
-
-    program_data->bindGroup = wgpuDeviceCreateBindGroup(g_GfxData.device, &bg_desc);
-
-    if (!program_data->bindGroup)
-        return;
-
-    // Set the custom pipeline and bind group on the render pass
-    wgpuRenderPassEncoderSetPipeline(pass, program_data->renderPipeline);
-    wgpuRenderPassEncoderSetBindGroup(pass, 0, program_data->bindGroup, 0, nullptr);
+    // t0 is the texture of the next draw
+    WGPUTextureView texture = nullptr;
+    for (const ImDrawCmd* next = cmd + 1; next < parent_list->CmdBuffer.Data + parent_list->CmdBuffer.Size; next++)
+        if (!next->UserCallback)
+        {
+            texture = (WGPUTextureView)(void*)(intptr_t)next->GetTexID();
+            break;
+        }
+    ImPlatform_WGPU_BindProgram(program_data, draw_data, texture);
 }
 
-// Activate a custom shader immediately (for use inside draw callbacks).
+// Activate a custom shader immediately (for use inside draw callbacks); t0 is the font atlas.
 IMPLATFORM_API void ImPlatform_BeginCustomShader_Render(ImPlatform_ShaderProgram program)
 {
     if (!program)
         return;
-
-    ImPlatform_ShaderProgramData_WebGPU* program_data = (ImPlatform_ShaderProgramData_WebGPU*)program;
-
-    // Get the current render pass encoder from ImGui's render state
-    ImGuiPlatformIO& platform_io = ImGui::GetPlatformIO();
-    ImGui_ImplWGPU_RenderState* render_state = (ImGui_ImplWGPU_RenderState*)platform_io.Renderer_RenderState;
-    if (!render_state || !render_state->RenderPassEncoder)
-        return;
-
-    WGPURenderPassEncoder pass = render_state->RenderPassEncoder;
-
-    // Find draw data for projection matrix calculation
-    ImDrawData* draw_data = g_CurrentDrawData;
-    if (!draw_data)
-        draw_data = ImGui::GetDrawData();
-    if (!draw_data)
-        return;
-
-    // Calculate projection matrix
-    float L = draw_data->DisplayPos.x;
-    float R = draw_data->DisplayPos.x + draw_data->DisplaySize.x;
-    float T = draw_data->DisplayPos.y;
-    float B = draw_data->DisplayPos.y + draw_data->DisplaySize.y;
-
-    float mvp[4][4] =
-    {
-        { 2.0f / (R - L),     0.0f,              0.0f, 0.0f },
-        { 0.0f,               2.0f / (T - B),    0.0f, 0.0f },
-        { 0.0f,               0.0f,              0.5f, 0.0f },
-        { (R + L) / (L - R),  (T + B) / (B - T), 0.5f, 1.0f },
-    };
-
-    // Build combined uniform data: [projection_matrix | custom_uniforms]
-    size_t mvp_size = sizeof(mvp);
-    size_t custom_size = program_data->uniformData ? program_data->uniformDataSize : 0;
-    size_t total_size = mvp_size + custom_size;
-
-    // Align to 256 bytes (WebGPU requirement)
-    size_t aligned_size = (total_size + 255) & ~(size_t)255;
-
-    // Create or recreate uniform buffer if needed (grow if too small)
-    size_t required_capacity = aligned_size < 256 ? 256 : aligned_size;
-    if (!program_data->uniformBuffer || program_data->uniformBufferCapacity < required_capacity)
-    {
-        if (program_data->uniformBuffer)
-            wgpuBufferRelease(program_data->uniformBuffer);
-        WGPUBufferDescriptor buf_desc = {};
-        buf_desc.usage = WGPUBufferUsage_Uniform | WGPUBufferUsage_CopyDst;
-        buf_desc.size = required_capacity;
-        program_data->uniformBuffer = wgpuDeviceCreateBuffer(g_GfxData.device, &buf_desc);
-        program_data->uniformBufferCapacity = program_data->uniformBuffer ? required_capacity : 0;
-    }
-
-    if (!program_data->uniformBuffer)
-        return;
-
-    // Upload projection matrix
-    wgpuQueueWriteBuffer(g_GfxData.queue, program_data->uniformBuffer, 0, mvp, mvp_size);
-
-    // Upload custom uniforms (if any)
-    if (program_data->uniformData && custom_size > 0)
-    {
-        wgpuQueueWriteBuffer(g_GfxData.queue, program_data->uniformBuffer, mvp_size, program_data->uniformData, custom_size);
-    }
-
-    // Get default texture/sampler from ImGui's font atlas for shaders that don't use textures
-    ImTextureRef font_tex = ImGui::GetIO().Fonts->TexRef;
-    WGPUTextureView default_view = (WGPUTextureView)(void*)(intptr_t)font_tex.GetTexID();
-
-    // Create a default sampler if we haven't yet
-    if (!g_DefaultSampler)
-    {
-        WGPUSamplerDescriptor sampler_desc = {};
-        sampler_desc.addressModeU = WGPUAddressMode_ClampToEdge;
-        sampler_desc.addressModeV = WGPUAddressMode_ClampToEdge;
-        sampler_desc.addressModeW = WGPUAddressMode_ClampToEdge;
-        sampler_desc.magFilter = WGPUFilterMode_Linear;
-        sampler_desc.minFilter = WGPUFilterMode_Linear;
-        sampler_desc.mipmapFilter = WGPUMipmapFilterMode_Linear;
-        sampler_desc.maxAnisotropy = 1;
-        g_DefaultSampler = wgpuDeviceCreateSampler(g_GfxData.device, &sampler_desc);
-    }
-
-    // Create bind group
-    WGPUBindGroupEntry bg_entries[3] = {};
-
-    bg_entries[0].binding = 0;
-    bg_entries[0].buffer = program_data->uniformBuffer;
-    bg_entries[0].offset = 0;
-    bg_entries[0].size = program_data->uniformBufferCapacity;
-
-    bg_entries[1].binding = 1;
-    bg_entries[1].sampler = g_DefaultSampler;
-
-    bg_entries[2].binding = 2;
-    bg_entries[2].textureView = default_view;
-
-    WGPUBindGroupDescriptor bg_desc = {};
-    bg_desc.layout = program_data->bindGroupLayout;
-    bg_desc.entryCount = 3;
-    bg_desc.entries = bg_entries;
-
-    // Release previous bind group
-    if (program_data->bindGroup)
-        wgpuBindGroupRelease(program_data->bindGroup);
-
-    program_data->bindGroup = wgpuDeviceCreateBindGroup(g_GfxData.device, &bg_desc);
-
-    if (!program_data->bindGroup)
-        return;
-
-    // Set the custom pipeline and bind group on the render pass
-    wgpuRenderPassEncoderSetPipeline(pass, program_data->renderPipeline);
-    wgpuRenderPassEncoderSetBindGroup(pass, 0, program_data->bindGroup, 0, nullptr);
+    ImDrawData* draw_data = g_CurrentDrawData ? g_CurrentDrawData : ImGui::GetDrawData();
+    ImPlatform_WGPU_BindProgram((ImPlatform_ShaderProgramData_WebGPU*)program, draw_data, nullptr);
 }
 
 IMPLATFORM_API void ImPlatform_BeginCustomShader(ImDrawList* draw, ImPlatform_ShaderProgram shader)
@@ -2309,18 +2324,49 @@ IMPLATFORM_API void ImPlatform_EndCustomShader(ImDrawList* draw)
     if (!draw)
         return;
 
+    draw->AddCallback([](const ImDrawList*, const ImDrawCmd*) { g_BoundProgram = nullptr; }, NULL);
     draw->AddCallback(ImGui::GetPlatformIO().DrawCallback_ResetRenderState, NULL);
 }
 
+// b1 for the draws that follow in this draw callback, and for Dear ImGui's draws after it until a program is bound again.
+// shortcut: b1 lives in the program's one uniform buffer (see ImPlatform_WGPU_BindProgram), so every draw of the program in
+// the frame reads the constants written last; give each push its own buffer range when draws need different ones.
 IMPLATFORM_API void* ImPlatform_PushShaderConstants(const void* data, unsigned int size)
 {
-    (void)data; (void)size;
-    return nullptr;
+    if (!data || size == 0)
+        return nullptr;
+    g_PushedConstants.resize((int)size);
+    memcpy(g_PushedConstants.Data, data, size);
+    g_PushedConstantsActive = true;
+    ImGui_ImplWGPU_RenderState* render_state = (ImGui_ImplWGPU_RenderState*)ImGui::GetPlatformIO().Renderer_RenderState;
+    if (render_state && render_state->RenderPassEncoder && g_BoundProgram)
+        ImPlatform_WGPU_BindProgram(g_BoundProgram, g_BoundProgram->boundDrawData, g_BoundProgram->boundTexture);
+    return &g_PushedConstants;
 }
 
 IMPLATFORM_API void ImPlatform_PopShaderConstants(void* handle)
 {
-    (void)handle;
+    if (handle == &g_PushedConstants)
+        g_PushedConstantsActive = false;
+}
+
+// The program's pipeline for a vertex buffer layout and primitive type, created on first use (a few per program).
+static WGPURenderPipeline ImPlatform_WGPU_LayoutPipeline(ImPlatform_ShaderProgramData_WebGPU* program_data, const ImPlatform_VertexBufferDesc* vertices,
+                                                         unsigned int topology)
+{
+    // FNV-1a of the stride and each attribute's format and offset
+    ImGuiID layout = (2166136261u ^ vertices->vertex_stride) * 16777619u;
+    for (unsigned int i = 0; i < vertices->attribute_count; i++)
+        layout = (((layout ^ (ImGuiID)vertices->attributes[i].format) * 16777619u) ^ vertices->attributes[i].offset) * 16777619u;
+    for (int i = 0; i < program_data->layoutPipelineCount; i++)
+        if (program_data->layoutPipelines[i].layout == layout && program_data->layoutPipelines[i].topology == topology)
+            return program_data->layoutPipelines[i].pipeline;
+    if (program_data->layoutPipelineCount == IM_ARRAYSIZE(program_data->layoutPipelines))
+        return nullptr;
+    WGPURenderPipeline pipeline = ImPlatform_WGPU_CreatePipeline(program_data, vertices, topology);
+    if (pipeline)
+        program_data->layoutPipelines[program_data->layoutPipelineCount++] = { layout, topology, pipeline };
+    return pipeline;
 }
 
 // ============================================================================
@@ -2340,13 +2386,22 @@ IMPLATFORM_API void ImPlatform_PopSampler(void)
     ImPlatform_PopSampler_StdCallbacks();
 }
 
-// shortcut: render-target stack, current-target copy and immediate quad are implemented on DX11 and
-// OpenGL3 only; here they report "unsupported" until this backend gets them (see ImPlatform_GetCaps).
+// shortcut: no render-target stack, current-target copy or immediate quad here. Dear ImGui's backend keeps drawing with
+// its render pass encoder after a draw callback returns, so a callback cannot end that pass to switch targets, and what
+// the pass drew is not in the target yet to copy. Recording them would need passes split around the callbacks.
 IMPLATFORM_API bool ImPlatform_PushRenderTarget(ImTextureID texture, bool clear) { (void)texture; (void)clear; return false; }
 IMPLATFORM_API void ImPlatform_PopRenderTarget(void) {}
 IMPLATFORM_API bool ImPlatform_CopyCurrentTarget(ImTextureID dst, int src_x, int src_y, int w, int h, int dst_x, int dst_y)
 { (void)dst; (void)src_x; (void)src_y; (void)w; (void)h; (void)dst_x; (void)dst_y; return false; }
-IMPLATFORM_API void ImPlatform_GetCurrentTargetSize(unsigned int* width, unsigned int* height) { if (width) *width = 0; if (height) *height = 0; }
 IMPLATFORM_API void ImPlatform_DrawQuadNow(ImPlatform_ShaderProgram program, ImVec4 dst_rect, ImVec4 uv_rect) { (void)program; (void)dst_rect; (void)uv_rect; }
+
+// The size of the target being rendered (the draw data's, in pixels), else the surface's.
+IMPLATFORM_API void ImPlatform_GetCurrentTargetSize(unsigned int* width, unsigned int* height)
+{
+    const ImDrawData* d = g_CurrentDrawData;
+    const bool rendering = d && ImGui::GetPlatformIO().Renderer_RenderState != NULL;
+    if (width) *width = rendering ? (unsigned int)(d->DisplaySize.x * d->FramebufferScale.x) : g_GfxData.uSurfaceWidth;
+    if (height) *height = rendering ? (unsigned int)(d->DisplaySize.y * d->FramebufferScale.y) : g_GfxData.uSurfaceHeight;
+}
 
 #endif // IM_GFX_WGPU

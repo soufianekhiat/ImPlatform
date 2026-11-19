@@ -42,6 +42,7 @@ $SOURCES = @(
     "$IMGUI/imgui_draw.cpp",
     "$IMGUI/imgui_tables.cpp",
     "$IMGUI/imgui_widgets.cpp",
+    "$IMGUI/imgui_stacklayout.cpp",
     "$IMGUI/backends/imgui_impl_glfw.cpp",
     "$IMGUI/backends/imgui_impl_wgpu.cpp"
 )
@@ -91,7 +92,11 @@ $ARGS = @(
 Write-Host "Building ImPlatform Demo for Emscripten (GLFW + WebGPU)..." -ForegroundColor Cyan
 Write-Host "em++ $($ARGS -join ' ')" -ForegroundColor DarkGray
 
-& em++ @ARGS
+# Windows PowerShell 5.1 turns a native command's stderr (compiler warnings) into terminating errors under "Stop":
+# the exit code decides instead.
+$ErrorActionPreference = "Continue"
+& em++ @ARGS 2>&1 | ForEach-Object { "$_" }
+$ErrorActionPreference = "Stop"
 
 if ($LASTEXITCODE -eq 0) {
     Write-Host ""
