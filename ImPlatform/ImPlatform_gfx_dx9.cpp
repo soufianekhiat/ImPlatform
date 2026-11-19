@@ -103,14 +103,12 @@ bool ImPlatform_Gfx_CreateDevice_DX9(HWND hWnd, ImPlatform_GfxData_DX9* pData)
     pData->d3dpp.AutoDepthStencilFormat = D3DFMT_D16;
     pData->d3dpp.PresentationInterval = D3DPRESENT_INTERVAL_ONE; // Vsync
 
-    if (pData->pD3D->CreateDevice(
-        D3DADAPTER_DEFAULT,
-        D3DDEVTYPE_HAL,
-        hWnd,
-        D3DCREATE_HARDWARE_VERTEXPROCESSING,
-        &pData->d3dpp,
-        &pData->pDevice) < 0)
+    const HRESULT hr = pData->pD3D->CreateDevice(D3DADAPTER_DEFAULT, D3DDEVTYPE_HAL, hWnd, D3DCREATE_HARDWARE_VERTEXPROCESSING,
+                                                 &pData->d3dpp, &pData->pDevice);
+    if (FAILED(hr))
     {
+        // D3DERR_NOTAVAILABLE / DEVICELOST also while the session is locked or the display is off
+        fprintf(stderr, "[ImPlatform] DX9: CreateDevice failed (0x%08lx)\n", (unsigned long)hr);
         return false;
     }
 
@@ -987,6 +985,7 @@ struct ImP9_Constant
     unsigned int reg, count;    // First float4 register and register count
     unsigned int cb;            // Constant buffer slot: 0 projection, 1 parameters
     unsigned int offset, size;  // Byte range in that constant buffer
+    bool integer;               // int / uint / bool member: shader model 3 reads floats, the values are converted
 };
 
 struct ImPlatform_ShaderData_DX9
@@ -1113,7 +1112,9 @@ IMPLATFORM_API ImPlatform_Shader ImPlatform_CreateShader(const ImPlatform_Shader
         }
         if (info.RegisterSet != 2)                                  // D3DXRS_FLOAT4 only
             continue;
-        ImP9_Constant k = { info.RegisterIndex, info.RegisterCount, 1, info.RegisterIndex * 16u, info.RegisterCount * 16u };
+        // D3DXSHADER_TYPEINFO: WORD Class, Type (1 bool, 2 int, 3 float), ...
+        const WORD type = info.TypeInfo + 4 <= ctab_bytes ? *(const WORD*)((const char*)ctab + info.TypeInfo + 2) : 3;
+        ImP9_Constant k = { info.RegisterIndex, info.RegisterCount, 1, info.RegisterIndex * 16u, info.RegisterCount * 16u, type == 1 || type == 2 };
         if (reflect)
         {
             ID3D11ShaderReflectionVariable* var = reflect->GetVariableByName(name);
@@ -1199,6 +1200,13 @@ static void ImP9_UploadConstants(const ImPlatform_ShaderData_DX9* sd, const D3DM
                 unsigned int n = end - at < 16u ? end - at : 16u;
                 n = src_size - at < n ? src_size - at : n;
                 memcpy(value, src + at, n);
+                if (k.integer)
+                    for (int c = 0; c < 4; c++)
+                    {
+                        int bits;
+                        memcpy(&bits, &value[c], sizeof(bits));
+                        value[c] = (float)bits;
+                    }
             }
             if (sd->stage == ImPlatform_ShaderStage_Vertex)
                 g_GfxData.pDevice->SetVertexShaderConstantF(k.reg + r, value, 1);

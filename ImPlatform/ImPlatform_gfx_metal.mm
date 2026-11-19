@@ -1461,11 +1461,19 @@ IMPLATFORM_API void ImPlatform_BeginCustomShader_Render(ImPlatform_ShaderProgram
             [renderEncoder setRenderPipelineState:(__bridge id<MTLRenderPipelineState>)program_data->mtlRenderPipelineState];
         [renderEncoder setVertexBytes:&ortho_projection length:sizeof(ortho_projection) atIndex:1];
         [renderEncoder setFragmentBytes:&ortho_projection length:sizeof(ortho_projection) atIndex:1];
-        // shortcut: parameters go through setBytes, limited to 4 KB; use a buffer when a program needs more.
+        // Parameters up to 4 KB through setBytes; larger blocks in a buffer made for this bind (both copy the values now,
+        // so each draw keeps the parameters set for it).
         if (program_data->uniformData && program_data->uniformDataSize > 0 && program_data->uniformDataSize <= 4096)
         {
             [renderEncoder setVertexBytes:program_data->uniformData length:program_data->uniformDataSize atIndex:2];
             [renderEncoder setFragmentBytes:program_data->uniformData length:program_data->uniformDataSize atIndex:2];
+        }
+        else if (program_data->uniformData && program_data->uniformDataSize > 0)
+        {
+            id<MTLDevice> device = (__bridge id<MTLDevice>)g_GfxData.pMetalDevice;
+            id<MTLBuffer> buffer = [device newBufferWithBytes:program_data->uniformData length:program_data->uniformDataSize options:MTLResourceStorageModeShared];
+            [renderEncoder setVertexBuffer:buffer offset:0 atIndex:2];
+            [renderEncoder setFragmentBuffer:buffer offset:0 atIndex:2];
         }
         ImPlatform_Metal_BindProgramTextures(program_data);
         g_MetalBoundProgram = program_data;

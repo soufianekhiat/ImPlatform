@@ -1022,12 +1022,15 @@ IMPLATFORM_API void ImPlatform_DrawQuadNow(ImPlatform_ShaderProgram program, ImV
 // functions and the vertex / pixel bodies; ImPlatform writes the entry points, inputs, outputs and declarations.
 // The text is HLSL plus these macros, which every language maps:
 //   IMP_SAMPLE(tex, uv), IMP_SAMPLE_LEVEL(tex, uv, lod), IMP_LOAD(tex, int2 xy), IMP_MUL(matrix, vector),
-//   IMP_CAST(type, x) (instead of C-style casts), IMP_UNROLL / IMP_LOOP / IMP_BRANCH (loop and branch attributes),
+//   IMP_CAST(type, x) (instead of C-style casts), IMP_OUT(type) / IMP_INOUT(type) (function parameters written by the
+//   function; MSL has no out / inout), IMP_UNROLL / IMP_LOOP / IMP_BRANCH (loop and branch attributes),
 //   IMP_HLSL / IMP_GLSL / IMP_MSL (defined for the language being generated).
 // lerp, frac, saturate, rcp, rsqrt, atan2, fmod, mad, ddx, ddy, mul, clip (scalar) and discard are available
-// everywhere. Write float literals (1.0, not 1), construct vectors fully (float2(x, x), not x.xx), compare vectors
-// component by component, do not index matrices, keep 'static const' data in functions, and do not name functions or
-// variables after GLSL / MSL built-ins (cross, distance, step...).
+// everywhere. Write float literals (1.0, not 1), construct vectors fully (float2(x, x), not x.xx), give pow a vector
+// exponent with a vector base, compare vectors component by component, do not index matrices, keep 'static const' data
+// in functions, do not name functions or variables after GLSL / MSL built-ins (cross, distance, step...), write uint
+// literals with u (GLSL 330 does not convert int to uint), fill arrays element by element (no {...} initializers), and
+// do not 'return' from a body (assign col_out / position).
 // Names in scope:
 //   both stages  ProjMtx (b0), the parameters by member name (b1), texture0 (t0: the draw's texture) and the named
 //                textures (pixel stage), the helper functions

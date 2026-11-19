@@ -93,7 +93,8 @@ static void ImPlatform_PartsHLSL(ImGuiTextBuffer& out, const ImPlatform_ShaderPa
         "#define IMP_SAMPLE_LEVEL(t, uv, lod) t.SampleLevel(imp_sampler, uv, lod)\n"
         "#define IMP_LOAD(t, xy) t.Load(int3(xy, 0))\n"
         "#define IMP_MUL(m, v) mul(m, v)\n"
-        "#define IMP_CAST(type, x) ((type)(x))\n");
+        "#define IMP_CAST(type, x) ((type)(x))\n"
+        "#define IMP_OUT(type) out type\n#define IMP_INOUT(type) inout type\n");
     ImPlatform_PartsDefines(out, parts->defines);
     out.append("cbuffer ImpVertex : register(b0) { float4x4 ProjMtx; };\n");
     if (parts->params && parts->params[0])
@@ -147,7 +148,8 @@ static void ImPlatform_PartsGLSL(ImGuiTextBuffer& out, const ImPlatform_ShaderPa
         "#define IMP_SAMPLE_LEVEL(t, uv, lod) textureLod(t, uv, lod)\n"
         "#define IMP_LOAD(t, xy) texelFetch(t, ivec2(xy), 0)\n"
         "#define IMP_MUL(m, v) ((m) * (v))\n"
-        "#define IMP_CAST(type, x) type(x)\n");
+        "#define IMP_CAST(type, x) type(x)\n"
+        "#define IMP_OUT(type) out type\n#define IMP_INOUT(type) inout type\n");
     ImPlatform_PartsDefines(out, parts->defines);
     // The backend binds these blocks by name to bindings 0 and 1 (the binding qualifier needs GLSL 4.20). Render passes
     // mirror the vertices (render textures are stored bottom-up; imp_mirror.x is 1, imp_mirror.y the mirror line): in_pos
@@ -200,22 +202,37 @@ static void ImPlatform_PartsMSL(ImGuiTextBuffer& out, const ImPlatform_ShaderPar
         "#define IMP_SAMPLE_LEVEL(t, uv, lod) t.sample(imp_sampler, uv, level(lod))\n"
         "#define IMP_LOAD(t, xy) t.read(uint2(xy))\n"
         "#define IMP_MUL(m, v) ((m) * (v))\n"
-        "#define IMP_CAST(type, x) type(x)\n");
+        "#define IMP_CAST(type, x) type(x)\n"
+        "#define IMP_OUT(type) thread type&\n#define IMP_INOUT(type) thread type&\n"
+        // HLSL promotes scalars to vectors in these functions: the scalar / vector mixes, forwarded to MSL.
+        "template<typename T, int N, typename S, typename = enable_if_t<is_scalar<S>::value>> vec<T, N> mix(vec<T, N> a, vec<T, N> b, S t) { return mix(a, b, vec<T, N>(T(t))); }\n"
+        "template<typename T, int N, typename S, typename = enable_if_t<is_scalar<S>::value>> vec<T, N> min(vec<T, N> a, S b) { return min(a, vec<T, N>(T(b))); }\n"
+        "template<typename T, int N, typename S, typename = enable_if_t<is_scalar<S>::value>> vec<T, N> max(vec<T, N> a, S b) { return max(a, vec<T, N>(T(b))); }\n"
+        "template<typename T, int N, typename S, typename = enable_if_t<is_scalar<S>::value>> vec<T, N> clamp(vec<T, N> x, S a, S b) { return clamp(x, vec<T, N>(T(a)), vec<T, N>(T(b))); }\n"
+        "template<typename T, int N, typename S, typename = enable_if_t<is_scalar<S>::value>> vec<T, N> step(S e, vec<T, N> x) { return step(vec<T, N>(T(e)), x); }\n"
+        "template<typename T, int N, typename S, typename = enable_if_t<is_scalar<S>::value>> vec<T, N> smoothstep(S a, S b, vec<T, N> x) { return smoothstep(vec<T, N>(T(a)), vec<T, N>(T(b)), x); }\n"
+        "template<typename T, int N, typename S, typename = enable_if_t<is_scalar<S>::value>> vec<T, N> pow(vec<T, N> x, S y) { return pow(x, vec<T, N>(T(y))); }\n");
     ImPlatform_PartsDefines(out, parts->defines);
     const bool has_params = parts->params && parts->params[0];
-    // float3 is 16 bytes in MSL: packed_float3 keeps the HLSL / std140 offsets of the parameter block.
+    // ImpParams is the buffer layout (float3 is 16 bytes in MSL: packed_float3 keeps the HLSL / std140 offsets);
+    // ImpParamsView is what the bodies see: the values, and the arrays as pointers into the buffer (not copied).
+    ImPlatform_PartsDecl params[64];
+    const int param_count = has_params ? ImPlatform_ParseDecls(parts->params, params, IM_ARRAYSIZE(params)) : 0;
     out.append("struct ImpVertex { float4x4 ProjMtx; };\nstruct ImpParams {\n");
-    if (has_params)
+    for (int i = 0; i < param_count; i++)
+        out.appendf("    %s%s;\n", strcmp(params[i].type, "float3") == 0 ? "packed_" : "", params[i].decl);
+    out.append("};\nstruct ImpParamsView {\n");
+    for (int i = 0; i < param_count; i++)
     {
-        ImPlatform_PartsDecl params[64];
-        const int count = ImPlatform_ParseDecls(parts->params, params, IM_ARRAYSIZE(params));
-        for (int i = 0; i < count; i++)
-            out.appendf("    %s%s;\n", strcmp(params[i].type, "float3") == 0 ? "packed_" : "", params[i].decl);
+        if (strchr(params[i].decl, '['))
+            out.appendf("    constant %s%s* %s;\n", strcmp(params[i].type, "float3") == 0 ? "packed_" : "", params[i].type, params[i].name);
+        else
+            out.appendf("    %s;\n", params[i].decl);
     }
     out.append("};\nstruct ImpVaryings {\n    float4 position [[position]];\n    float4 col;\n    float2 uv;\n");
     for (int i = 0; i < varying_count; i++)
         out.appendf("    %s;\n", varyings[i].decl);
-    out.appendf("};\nstruct ImpContext : ImpVertex, ImpParams {\n    texture2d<float> %s;\n    sampler imp_sampler;\n", ImPlatform_PartsTexture0(parts));
+    out.appendf("};\nstruct ImpContext : ImpVertex, ImpParamsView {\n    texture2d<float> %s;\n    sampler imp_sampler;\n", ImPlatform_PartsTexture0(parts));
     for (int slot = 1; slot < 9; slot++)
         if (parts->textures[slot])
             out.appendf("    texture2d<float> %s;\n", parts->textures[slot]);
@@ -243,22 +260,10 @@ static void ImPlatform_PartsMSL(ImGuiTextBuffer& out, const ImPlatform_ShaderPar
     for (int slot = 1; slot < 9; slot++)
         if (parts->textures[slot])
             out.appendf(", texture2d<float> %s [[texture(%d)]]", parts->textures[slot], slot);
-    // The blocks are copied member by member (array members element by element): loads from constant memory.
+    // Values are copied member by member (loads from constant memory); arrays point into the buffer.
     out.append(", sampler imp_sampler [[sampler(0)]])\n{\n    ImpContext ctx;\n    ctx.ProjMtx = imp_vertex.ProjMtx;\n");
-    if (has_params)
-    {
-        ImPlatform_PartsDecl params[64];
-        const int count = ImPlatform_ParseDecls(parts->params, params, IM_ARRAYSIZE(params));
-        for (int i = 0; i < count; i++)
-        {
-            const char* bracket = strchr(params[i].decl, '[');
-            if (bracket)
-                out.appendf("    for (int i = 0; i < %.*s; i++) ctx.%s[i] = imp_params.%s[i];\n",
-                            (int)strcspn(bracket + 1, "]"), bracket + 1, params[i].name, params[i].name);
-            else
-                out.appendf("    ctx.%s = imp_params.%s;\n", params[i].name, params[i].name);
-        }
-    }
+    for (int i = 0; i < param_count; i++)
+        out.appendf("    ctx.%s = imp_params.%s;\n", params[i].name, params[i].name);
     out.appendf("    ctx.%s = %s;\n    ctx.imp_sampler = imp_sampler;\n", ImPlatform_PartsTexture0(parts), ImPlatform_PartsTexture0(parts));
     for (int slot = 1; slot < 9; slot++)
         if (parts->textures[slot])
