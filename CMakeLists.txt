@@ -127,6 +127,7 @@ set(IMPLATFORM_HEADERS
 
 set(IMPLATFORM_COMMON_SOURCES
     ${IMPLATFORM_DIR}/ImPlatform_titlebar.cpp
+    ${IMPLATFORM_DIR}/ImPlatform_shader_parts.cpp
 )
 
 # Platform-specific sources

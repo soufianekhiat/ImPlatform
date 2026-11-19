@@ -47,7 +47,12 @@
   (OpenGL, macOS included); Direct3D compiles the HLSL itself. `buildsystem/fetch_slang.*` downloads the pinned Slang release.
   A compute shader (entry point `cs_main`) gets SPIR-V and GLSL 430 with `ImPlatform_DispatchCompute()`'s bindings; the
   demo's `--compute-test` shader is one HLSL file.
-- DirectX 9 custom shaders: the same HLSL, compiled for `vs_3_0` / `ps_3_0`; cbuffer members are uploaded to the
+- **Shader parts**: `ImPlatform_CreateShaderFromParts()` builds a custom shader written once (parameter block, varyings,
+  textures, helper functions, vertex and pixel bodies in HLSL plus `IMP_*` macros) for the backend at run time: HLSL
+  on DirectX 9 to 12, GLSL 330 on OpenGL, MSL on Metal (`IMPLATFORM_GFX_SUPPORT_SHADER_PARTS`).
+  `ImPlatform_GenerateShaderSource()` gives the text of any language. Demo: `--shader-parts-test`.
+- Metal: `ImPlatform_SetShaderTexture()` slots 1..8 (both stages).
+- The custom shader parameters (`b1`) are bound to the vertex stage too on DirectX 10, 11 and 12 (vertex animation).- DirectX 9 custom shaders: the same HLSL, compiled for `vs_3_0` / `ps_3_0`; cbuffer members are uploaded to the
   constant registers shader model 3 assigns them, and texture `tN` is sampler N (`ImPlatform_SetShaderTexture()` slots
   0..8). DirectX 9 also gets the render-target stack, `ImPlatform_CopyCurrentTarget()` (StretchRect),
   `ImPlatform_DrawQuadNow()` and `ImPlatform_PushShaderConstants()`.
@@ -83,7 +88,12 @@
   and the vertex attributes are found by name or type instead of relying on Dear ImGui's locations.
 
 ### Fixed
-- `ImPlatform_BindBuffers()` on DirectX 9, 10, 12, Vulkan and WebGPU (only DirectX 11 bound them).
+- DirectX 9: RGBA8 textures had red and blue swapped (the bytes were copied into `D3DFMT_A8R8G8B8`); uploads and
+  readbacks now swizzle them.
+- OpenGL render passes: shaders reading vertex positions saw them mirrored (render textures are stored bottom-up);
+  shader parts undo the mirror through the projection block.
+- DirectX 10 and 11: a custom shader's parameters were bound only when they had changed, so a program could draw
+  with another program's parameters.- `ImPlatform_BindBuffers()` on DirectX 9, 10, 12, Vulkan and WebGPU (only DirectX 11 bound them).
 - `ImPlatform_SetShaderTexture()` on OpenGL finds the sampler SPIRV-Cross generates for the named HLSL texture (on Metal,
   where it bound nothing and reported success, it is no longer declared).
 - DirectX 12 custom shaders: the parameters (`b1`) are bound on every activation, not only after they changed; textures

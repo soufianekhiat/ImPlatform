@@ -661,6 +661,8 @@ IMPLATFORM_API bool ImPlatform_QueueRenderPass(ImTextureID target, ImDrawData* d
     return true;
 }
 
+static float g_PassMirror[2] = {};     // Mirror of the render pass being drawn (see ImPlatform_GL_SetProjectionBlock)
+
 static void ImPlatform_RunRenderPass()
 {
     ImDrawData* draw_data = g_PassDrawData;
@@ -683,7 +685,10 @@ static void ImPlatform_RunRenderPass()
     if (draw_data->Textures == NULL)
         draw_data->Textures = &ImGui::GetPlatformIO().Textures;     // The frame's texture updates, before they are drawn.
     g_CurrentDrawData = draw_data;
+    g_PassMirror[0] = 1.0f;
+    g_PassMirror[1] = mirror;
     ImPlatform_RenderPassLists(draw_data, [](ImDrawData* d) { ImGui_ImplOpenGL3_RenderDrawData(d); });  // Viewport and projection from the draw data.
+    g_PassMirror[0] = g_PassMirror[1] = 0.0f;
     ImPlatform_PopRenderTarget();
 }
 
@@ -1781,19 +1786,21 @@ struct ImPlatform_ShaderProgramData_GL
 };
 
 // Projection matrix block (binding 0, HLSL `cbuffer vertexBuffer : register(b0)`),
-// same bytes as the D3D11 backend's vertex constant buffer.
+// same bytes as the D3D11 backend's vertex constant buffer, followed by the render pass mirror (x: 1 while the vertices
+// are mirrored for a render texture, y: the mirror line), which shader parts undo (Slang shaders read the matrix only).
 static GLuint g_ProjectionUBO = 0;
 
 // Upload an orthographic projection (D3D11 vertex-constant layout) to the block at binding 0.
-static void ImPlatform_GL_SetProjectionBlock(float L, float R, float T, float B)
+static void ImPlatform_GL_SetProjectionBlock(float L, float R, float T, float B, bool mirrored = false)
 {
     if (!glBindBufferBase_Ptr)
         return;
-    const float mvp[4][4] = {
+    const float mvp[5][4] = {
         { 2.0f / (R - L),     0.0f,              0.0f, 0.0f },
         { 0.0f,               2.0f / (T - B),    0.0f, 0.0f },
         { 0.0f,               0.0f,              0.5f, 0.0f },
         { (R + L) / (L - R),  (T + B) / (B - T), 0.5f, 1.0f },
+        { mirrored ? g_PassMirror[0] : 0.0f, mirrored ? g_PassMirror[1] : 0.0f, 0.0f, 0.0f },
     };
     if (!g_ProjectionUBO)
         glGenBuffers(1, &g_ProjectionUBO);
@@ -1809,7 +1816,7 @@ static void ImPlatform_GL_BindUniformBlocks(ImPlatform_ShaderProgramData_GL* pro
         return;
     if (draw_data)
         ImPlatform_GL_SetProjectionBlock(draw_data->DisplayPos.x, draw_data->DisplayPos.x + draw_data->DisplaySize.x,
-                                         draw_data->DisplayPos.y, draw_data->DisplayPos.y + draw_data->DisplaySize.y);
+                                         draw_data->DisplayPos.y, draw_data->DisplayPos.y + draw_data->DisplaySize.y, true);
     if (program_data->cb_data && program_data->cb_size)
     {
         if (!program_data->cb_ubo)

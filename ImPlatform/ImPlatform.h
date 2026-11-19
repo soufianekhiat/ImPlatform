@@ -225,7 +225,11 @@
     #define IMPLATFORM_GFX_IN(gfx_set) ((((IM_CURRENT_GFX) & (IM_GFX_CUSTOM | (gfx_set))) != 0) ? 1 : 0)
     // ImPlatform_SetShaderTexture: textures t0..t8 of custom shaders
     #ifndef IMPLATFORM_GFX_SUPPORT_SHADER_TEXTURES
-        #define IMPLATFORM_GFX_SUPPORT_SHADER_TEXTURES IMPLATFORM_GFX_IN(IM_GFX_DIRECTX9 | IM_GFX_DIRECTX10 | IM_GFX_DIRECTX11 | IM_GFX_DIRECTX12 | IM_GFX_OPENGL3 | IM_GFX_VULKAN | IM_GFX_WGPU)
+        #define IMPLATFORM_GFX_SUPPORT_SHADER_TEXTURES IMPLATFORM_GFX_IN(IM_GFX_DIRECTX9 | IM_GFX_DIRECTX10 | IM_GFX_DIRECTX11 | IM_GFX_DIRECTX12 | IM_GFX_OPENGL3 | IM_GFX_VULKAN | IM_GFX_METAL | IM_GFX_WGPU)
+    #endif
+    // ImPlatform_CreateShaderFromParts: shaders written once as parts, compiled at run time
+    #ifndef IMPLATFORM_GFX_SUPPORT_SHADER_PARTS
+        #define IMPLATFORM_GFX_SUPPORT_SHADER_PARTS IMPLATFORM_GFX_IN(IM_GFX_DIRECTX9 | IM_GFX_DIRECTX10 | IM_GFX_DIRECTX11 | IM_GFX_DIRECTX12 | IM_GFX_OPENGL3 | IM_GFX_METAL)
     #endif
     // Vertex / index buffers and ImPlatform_DrawIndexed
     #ifndef IMPLATFORM_GFX_SUPPORT_VERTEX_BUFFERS
@@ -1012,6 +1016,48 @@ IMPLATFORM_API void ImPlatform_DrawCustomShaderQuad(
 IMPLATFORM_API void ImPlatform_DrawQuadNow(ImPlatform_ShaderProgram program, ImVec4 dst_rect, ImVec4 uv_rect);
 #endif
 
+// ----------------------------------------------------------------------------
+// Shader parts: a custom shader written once, completed per shading language at run time (HLSL on Direct3D 9 to 12,
+// GLSL 330 on OpenGL, MSL on Metal). The application gives its parameter block, extra varyings, textures, helper
+// functions and the vertex / pixel bodies; ImPlatform writes the entry points, inputs, outputs and declarations.
+// The text is HLSL plus these macros, which every language maps:
+//   IMP_SAMPLE(tex, uv), IMP_SAMPLE_LEVEL(tex, uv, lod), IMP_LOAD(tex, int2 xy), IMP_MUL(matrix, vector),
+//   IMP_CAST(type, x) (instead of C-style casts), IMP_UNROLL / IMP_LOOP / IMP_BRANCH (loop and branch attributes),
+//   IMP_HLSL / IMP_GLSL / IMP_MSL (defined for the language being generated).
+// lerp, frac, saturate, rcp, rsqrt, atan2, fmod, ddx, ddy and mul are available everywhere. Write float literals
+// (1.0, not 1), construct vectors fully (float2(x, x)), do not index matrices, keep 'static const' data in functions.
+// Names in scope:
+//   both stages  ProjMtx (b0), the parameters by member name (b1), texture0 (t0: the draw's texture) and the named
+//                textures (pixel stage), the helper functions
+//   vertex body  in_pos, in_uv, in_col (Dear ImGui's vertex); v.col, v.uv and v.<varying> to write; position (clip
+//                space, preset to mul(ProjMtx, float4(in_pos, 0, 1)))
+//   pixel body   v.col, v.uv, v.<varying>; col_out (preset to v.col * texture0 at v.uv)
+// Parameter block layout, identical in HLSL cbuffers, GLSL std140 and MSL: float, float2, float4, int / uint vectors
+// and float4x4 members; arrays of 16-byte types only; a float3 starts a 16-byte row (a scalar may follow it); no bool.
+// Set it with ImPlatform_SetShaderUniform / ImPlatform_PushShaderConstants and the same C struct.
+typedef struct ImPlatform_ShaderParts {
+    const char* params;         // Members of the parameter block (b1): "float4 col0; float4 col1; float2 uv_start;"
+    const char* varyings;       // Extra vertex -> pixel values, floats: "float2 world; float4 extra;" (up to 7)
+    const char* textures[9];    // Names of t1..t8 (index = register); [0] unused, the draw's texture is texture0
+    const char* defines;        // Preprocessor variants: "CLIP=1;MODE=2"
+    const char* functions;      // Helper functions shared by both stages
+    const char* vs_body;        // Vertex body (optional): changes position / v.* after the defaults
+    const char* ps_body;        // Pixel body (optional): writes col_out
+    const char* cache_key;      // As ImPlatform_ShaderDesc::cache_key (optional)
+} ImPlatform_ShaderParts;
+
+// The complete source of one stage in `format` (HLSL, GLSL or MSL), whatever the backend: for inspection, or for an
+// IM_GFX_CUSTOM backend. Writes up to out_size - 1 characters plus a terminator; returns the full length, -1 for an
+// unsupported format or stage.
+IMPLATFORM_API int ImPlatform_GenerateShaderSource(const ImPlatform_ShaderParts* parts, ImPlatform_ShaderStage stage,
+                                                   ImPlatform_ShaderFormat format, char* out, int out_size);
+#if IMPLATFORM_GFX_SUPPORT_SHADER_PARTS
+// Generates and compiles one stage for the backend (entry points vs_main / ps_main, or main in GLSL). Destroy with
+// ImPlatform_DestroyShader; link two stages with ImPlatform_CreateShaderProgram. NULL when the generated source does
+// not compile (the source and the compiler messages are printed).
+IMPLATFORM_API ImPlatform_Shader ImPlatform_CreateShaderFromParts(const ImPlatform_ShaderParts* parts, ImPlatform_ShaderStage stage);
+#endif
+
 // ============================================================================
 // Readback and Compute API (optional capabilities)
 // ============================================================================
@@ -1474,6 +1520,9 @@ IMPLATFORM_API bool ImPlatform_SupportsDepthDraw(void) { return false; }
 #if IMPLATFORM_APP_SUPPORT_CUSTOM_TITLEBAR
     #include "ImPlatform_titlebar.cpp"
 #endif
+
+// Shader parts generator (ImPlatform_GenerateShaderSource, ImPlatform_CreateShaderFromParts)
+#include "ImPlatform_shader_parts.cpp"
 
 // ============================================================================
 // Borderless Params Implementation

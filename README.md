@@ -164,27 +164,46 @@ int main()
 #### Custom Shaders (when `IMPLATFORM_GFX_SUPPORT_CUSTOM_SHADER` is enabled)
 
 ```cpp
-// Create custom shader
-ImPlatform_ShaderDesc vs_desc = ImPlatform_ShaderDesc_Default();
-vs_desc.shader_type = ImPlatform_ShaderType_Vertex;
-vs_desc.format = ImPlatform_ShaderFormat_GLSL; // or HLSL, MSL, SPIRV
+// One stage from source (HLSL on Direct3D, GLSL on OpenGL, MSL on Metal) or bytecode (SPIR-V on Vulkan)
+ImPlatform_ShaderDesc vs_desc = {};
+vs_desc.stage = ImPlatform_ShaderStage_Vertex;
+vs_desc.format = ImPlatform_ShaderFormat_HLSL;
 vs_desc.source_code = vertex_shader_source;
-vs_desc.entry_point = "main";
+vs_desc.entry_point = "vs_main";
 ImPlatform_Shader vs = ImPlatform_CreateShader(&vs_desc);
 
-// Create shader program
 ImPlatform_ShaderProgram program = ImPlatform_CreateShaderProgram(vs, ps);
 
-// Set uniform parameters
-ImPlatform_BeginUniformBlock(program);
-ImPlatform_SetUniform("ColorStart", &color1, sizeof(ImVec4));
-ImPlatform_SetUniform("ColorEnd", &color2, sizeof(ImVec4));
-ImPlatform_EndUniformBlock(program);
-
-// Draw with custom shader
-ImPlatform_DrawCustomShaderQuad(program);
+// Parameters (register b1), then draw list commands drawn with the program
+ImPlatform_SetShaderUniform(program, "params", &params, sizeof(params));
+ImPlatform_BeginCustomShader(draw_list, program);
+draw_list->AddImage(...);
+ImPlatform_EndCustomShader(draw_list);
 ```
 
+Plain HLSL files can be compiled offline for every backend with Slang (see `ImPlatformDemo/shaders/README.md`).
+
+#### Shader Parts (when `IMPLATFORM_GFX_SUPPORT_SHADER_PARTS` is enabled)
+
+A custom shader written once and completed at run time for the backend: HLSL on Direct3D 9 to 12, GLSL 330 on
+OpenGL, MSL on Metal. The application gives its parameter block, extra varyings, textures, helper functions and the
+vertex / pixel bodies; ImPlatform writes the entry points, inputs, outputs and declarations. Bodies are HLSL plus a few
+macros (`IMP_SAMPLE`, `IMP_LOAD`, `IMP_MUL`, `IMP_CAST`, `IMP_UNROLL`); the rules are in `ImPlatform.h`.
+
+```cpp
+ImPlatform_ShaderParts parts = {};
+parts.params    = "float4 ColorStart; float4 ColorEnd; float4 Offset;";   // b1, same layout as the C struct
+parts.varyings  = "float2 world;";
+parts.textures[1] = "tint";                                                // t1, ImPlatform_SetShaderTexture(..., 1, ...)
+parts.functions = "float4 Gradient(float t) { return lerp(ColorStart, ColorEnd, saturate(t)); }";
+parts.vs_body   = "position = mul(ProjMtx, float4(in_pos + Offset.xy, 0.0, 1.0)); v.world = in_pos;";   // vertex animation
+parts.ps_body   = "col_out = Gradient(v.world.y / 64.0) * IMP_SAMPLE(tint, v.uv);";
+ImPlatform_Shader vs = ImPlatform_CreateShaderFromParts(&parts, ImPlatform_ShaderStage_Vertex);
+ImPlatform_Shader ps = ImPlatform_CreateShaderFromParts(&parts, ImPlatform_ShaderStage_Fragment);
+ImPlatform_ShaderProgram program = ImPlatform_CreateShaderProgram(vs, ps);
+```
+
+`ImPlatform_GenerateShaderSource()` returns the generated text of any language, whatever the backend.
 #### Texture Creation (when `IMGUI_HAS_TEXTURES` is defined)
 
 ```cpp
@@ -313,7 +332,8 @@ between backends:
 
 | `IMPLATFORM_GFX_SUPPORT_` | Functions | DX9 | DX10 | DX11 | DX12 | OpenGL 3 | Vulkan | Metal | WebGPU |
 |---|---|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|
-| `SHADER_TEXTURES` | `SetShaderTexture` (t0..t8) | x | x | x | x | x | x | | x |
+| `SHADER_TEXTURES` | `SetShaderTexture` (t0..t8) | x | x | x | x | x | x | x | x |
+| `SHADER_PARTS` | `CreateShaderFromParts` (shaders written once, compiled at run time) | x | x | x | x | x | | x | |
 | `VERTEX_BUFFERS` | vertex / index buffers, `DrawIndexed` | x | x | x | x | x | x | | x |
 | `DIRECT_DRAW` | `Push/PopShaderConstants`, `GetCurrentTargetSize` | x | | x | x | x | x | | x |
 | `RENDER_TARGETS` | `Push/PopRenderTarget`, `CopyCurrentTarget`, `DrawQuadNow` | x | | x | x | x | x | | |
@@ -446,6 +466,7 @@ ImPlatformDemo_Win32_DX12 --compute-test       # dispatch + readback
 ImPlatformDemo_Win32_DX12 --render-pass-test   # render pass target and premultiplied composite
 ImPlatformDemo_Win32_DX12 --shader-test        # shaders/gradient.hlsl drawn into a render pass, read back
 ImPlatformDemo_Win32_DX12 --direct-draw-test   # from a draw callback: push a render target, push constants, DrawQuadNow
+ImPlatformDemo_Win32_DX12 --shader-parts-test  # a shader written as parts: parameters in both stages, varying, texture t1
 ```
 
 Each prints PASS or FAIL and exits with 0 (pass), 1 (fail) or 2 (unsupported by the backend).

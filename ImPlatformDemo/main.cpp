@@ -308,6 +308,85 @@ static int CheckShaderTest()
 	return bad ? 1 : 0;
 }
 
+// --shader-parts-test: a shader written once as parts (ImPlatform_CreateShaderFromParts) drawn into a render pass and
+// read back: its parameter block is read in both stages (the vertex body moves the quad down by Offset), with a
+// varying, helper functions, a define, a named texture t1, IMP_UNROLL and IMP_CAST. The gradient of --shader-test, its
+// blue halved by t1.
+static RenderPassScene g_PartsTest;
+static ImPlatform_ShaderProgram g_PartsProgram = nullptr;
+static ImPlatform_Shader g_PartsShaders[ 2 ] = {};
+static ImTextureID g_PartsTint = 0;
+#if IMPLATFORM_GFX_SUPPORT_SHADER_PARTS && IMPLATFORM_GFX_SUPPORT_SHADER_TEXTURES
+static void DrawPartsTest( ImDrawList* dl )
+{
+	ImPlatform_BeginCustomShader( dl, g_PartsProgram );
+	dl->AddImage( ImGui::GetIO().Fonts->TexRef, ImVec2( 0, -8 ), ImVec2( 64, 56 ) );
+	ImPlatform_EndCustomShader( dl );
+}
+#endif
+
+static bool CreatePartsTest()
+{
+#if IMPLATFORM_GFX_SUPPORT_SHADER_PARTS && IMPLATFORM_GFX_SUPPORT_SHADER_TEXTURES
+	ImPlatform_ShaderParts parts = {};
+	parts.params = "float4 ColorStart; float4 ColorEnd; float4 Offset;";
+	parts.varyings = "float2 world;";
+	parts.textures[ 1 ] = "tint";
+	parts.defines = "TINT_SCALE=1.0";
+	parts.functions =
+		"float4 Gradient(float t) { return lerp(ColorStart, ColorEnd, saturate(t)); }\n"
+		"float4 Tint(float2 uv) { return IMP_SAMPLE(tint, uv) * TINT_SCALE; }\n";
+	parts.vs_body =
+		"position = mul(ProjMtx, float4(in_pos + Offset.xy, 0.0, 1.0));\n"
+		"v.world = in_pos + Offset.xy;\n";
+	parts.ps_body =
+		"float sum = 0.0;\n"
+		"IMP_UNROLL for (int i = 0; i < 4; i++) sum += 0.25;\n"
+		"col_out = Gradient(v.world.y / 64.0) * Tint(v.uv) * IMP_CAST(float, IMP_CAST(int, sum + 0.5));\n";
+	g_PartsShaders[ 0 ] = ImPlatform_CreateShaderFromParts( &parts, ImPlatform_ShaderStage_Vertex );
+	g_PartsShaders[ 1 ] = ImPlatform_CreateShaderFromParts( &parts, ImPlatform_ShaderStage_Fragment );
+	if ( g_PartsShaders[ 0 ] && g_PartsShaders[ 1 ] )
+		g_PartsProgram = ImPlatform_CreateShaderProgram( g_PartsShaders[ 0 ], g_PartsShaders[ 1 ] );
+	const unsigned char tint[ 2 * 2 * 4 ] = { 255, 255, 128, 255, 255, 255, 128, 255, 255, 255, 128, 255, 255, 255, 128, 255 };
+	ImPlatform_TextureDesc desc = ImPlatform_TextureDesc_Default( 2, 2 );
+	g_PartsTint = ImPlatform_CreateTexture( tint, &desc );
+	if ( !g_PartsProgram || !g_PartsTint )
+		return false;
+	const ImVec4 params[ 3 ] = { ImVec4( 1, 0, 0, 1 ), ImVec4( 0, 0, 1, 1 ), ImVec4( 0, 8, 0, 0 ) };	// ColorStart, ColorEnd, Offset
+	ImPlatform_SetShaderUniform( g_PartsProgram, "ImpParams", params, sizeof( params ) );
+	ImPlatform_SetShaderTexture( g_PartsProgram, "tint", 1, g_PartsTint );
+	return QueueRenderPassScene( g_PartsTest, 64, DrawPartsTest );
+#else
+	return false;
+#endif
+}
+
+static int CheckPartsTest()
+{
+	static unsigned char px[ 64 * 64 * 4 ];
+	if ( !DemoReadTexture( g_PartsTest.Target, 0, 0, 64, 64, px, sizeof( px ) ) )
+	{
+		printf( "SKIP: no readback of the pass target\n" );
+		return 2;
+	}
+	const RenderPassProbe probes[] = { { 32, 0, { 253, 0, 1, 255 } }, { 32, 32, { 125, 0, 65, 255 } }, { 32, 63, { 2, 0, 127, 255 } } };
+	const int bad = CheckRenderPassProbes( "shader parts", px, 64, probes, 3, 4 );
+	if ( !bad )
+		printf( "PASS\n" );
+	return bad ? 1 : 0;
+}
+
+static void DestroyPartsTest()
+{
+	if ( g_PartsProgram )
+		ImPlatform_DestroyShaderProgram( g_PartsProgram );
+	for ( ImPlatform_Shader shader : g_PartsShaders )
+		if ( shader )
+			ImPlatform_DestroyShader( shader );
+	if ( g_PartsTint )
+		ImPlatform_DestroyTexture( g_PartsTint );
+}
+
 // --direct-draw-test: from a draw callback inside a render pass, the same gradient drawn by ImPlatform_DrawQuadNow into a
 // pushed render target, its colors from ImPlatform_PushShaderConstants, copied by ImPlatform_CopyCurrentTarget, then both
 // read back: the direct draws a backdrop effect makes (copy, push a target, draw a quad, pop).
@@ -456,6 +535,8 @@ int main( int argc, char** argv )
 	const bool renderPassTest = argc > 1 && strcmp( argv[ 1 ], "--render-pass-test" ) == 0;
 	const bool shaderTest = argc > 1 && strcmp( argv[ 1 ], "--shader-test" ) == 0;
 	const bool directDrawTest = argc > 1 && strcmp( argv[ 1 ], "--direct-draw-test" ) == 0;
+	const bool partsTest = argc > 1 && strcmp( argv[ 1 ], "--shader-parts-test" ) == 0;
+	const bool passTest = renderPassTest || shaderTest || directDrawTest || partsTest;	// Tests read back a render pass
 	int exitCode = 0;
 #ifndef __EMSCRIPTEN__
 	int renderPassFrame = 0;
@@ -645,7 +726,7 @@ int main( int argc, char** argv )
 
 		// The self-tests read back what they render: they keep rendering when the window is occluded (screen off or
 		// locked), where presenting is skipped.
-		if ( !ImPlatform_GfxCheck() && !renderPassTest && !shaderTest && !directDrawTest )
+		if ( !ImPlatform_GfxCheck() && !passTest )
 		{
 			continue;
 		}
@@ -679,6 +760,12 @@ int main( int argc, char** argv )
 				exitCode = 2;
 				break;
 			}
+		}
+		if ( partsTest && renderPassFrame == 0 && !CreatePartsTest() )
+		{
+			printf( "SKIP: no shader parts on this backend\n" );
+			exitCode = 2;
+			break;
 		}
 		if ( directDrawTest && renderPassFrame == 0 )
 		{
@@ -748,7 +835,7 @@ int main( int argc, char** argv )
 			ImGui::Image(img_white, ImPlatform_EmToVec2(8.0f, 8.0f));
 
 			ImGui::Separator();
-			if ( !renderPassTest && !shaderTest && !directDrawTest )		// One pass per frame: the test's.
+			if ( !passTest )		// One pass per frame: the test's.
 				RenderPassDemo();
 
 			ImGui::Separator();
@@ -857,10 +944,10 @@ int main( int argc, char** argv )
 
 		ImPlatform_GfxAPISwapBuffer();
 #if defined( IMGUI_HAS_TEXTURES ) && !defined( __EMSCRIPTEN__ )
-		if ( ( renderPassTest || shaderTest || directDrawTest ) && ++renderPassFrame == 3 )
+		if ( passTest && ++renderPassFrame == 3 )
 		{
 #if IMPLATFORM_GFX_SUPPORT_CUSTOM_SHADER
-			exitCode = shaderTest ? CheckShaderTest() : directDrawTest ? CheckDirectDrawTest() : CheckRenderPassTest();
+			exitCode = shaderTest ? CheckShaderTest() : directDrawTest ? CheckDirectDrawTest() : partsTest ? CheckPartsTest() : CheckRenderPassTest();
 #else
 			exitCode = CheckRenderPassTest();
 #endif
@@ -902,6 +989,8 @@ int main( int argc, char** argv )
 	DestroyRenderPassScene( g_RenderPassComposite );
 #if IMPLATFORM_GFX_SUPPORT_CUSTOM_SHADER
 	DestroyRenderPassScene( g_ShaderTest );
+	DestroyRenderPassScene( g_PartsTest );
+	DestroyPartsTest();
 	DestroyRenderPassScene( g_DirectDrawPass );
 	if ( g_DirectDrawTarget )
 		ImPlatform_DestroyTexture( g_DirectDrawTarget );

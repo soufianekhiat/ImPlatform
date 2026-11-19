@@ -1,0 +1,319 @@
+// dear imgui: Graphics API Abstraction - shader parts
+// Builds a complete shader for a backend from ImPlatform_ShaderParts: the application writes its parameter block, extra
+// varyings, textures, helper functions and the vertex / pixel bodies once (HLSL syntax plus the IMP_* macros), and the
+// entry points, inputs, outputs and resource declarations are generated per shading language.
+
+#include "ImPlatform_Internal.h"
+
+#include <stdio.h>
+#include <string.h>
+
+// One declaration of a ';' separated list ("float4 col0; float2 uv[2];"): its type and name (the array suffix kept in
+// 'decl' only).
+struct ImPlatform_PartsDecl
+{
+    char type[32];
+    char name[64];
+    char decl[160];
+};
+
+static int ImPlatform_ParseDecls(const char* list, ImPlatform_PartsDecl* out, int max)
+{
+    int count = 0;
+    for (const char* p = list; p && *p && count < max; )
+    {
+        const char* end = strchr(p, ';');
+        if (!end)
+            end = p + strlen(p);
+        while (p < end && (*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n'))
+            p++;
+        const char* e = end;
+        while (e > p && (e[-1] == ' ' || e[-1] == '\t' || e[-1] == '\r' || e[-1] == '\n'))
+            e--;
+        const char* space = e;
+        while (space > p && space[-1] != ' ' && space[-1] != '\t')
+            space--;
+        if (space > p && (size_t)(e - p) < sizeof(out->decl))
+        {
+            ImPlatform_PartsDecl& d = out[count++];
+            const char* type_end = space;
+            while (type_end > p && (type_end[-1] == ' ' || type_end[-1] == '\t'))
+                type_end--;
+            size_t type_len = (size_t)(type_end - p);
+            type_len = type_len < sizeof(d.type) - 1 ? type_len : sizeof(d.type) - 1;
+            memcpy(d.type, p, type_len);
+            d.type[type_len] = 0;
+            size_t name_len = strcspn(space, "[ \t;");
+            name_len = name_len < sizeof(d.name) - 1 ? name_len : sizeof(d.name) - 1;
+            memcpy(d.name, space, name_len);
+            d.name[name_len] = 0;
+            memcpy(d.decl, p, (size_t)(e - p));
+            d.decl[e - p] = 0;
+        }
+        p = *end ? end + 1 : end;
+    }
+    return count;
+}
+
+// "NAME=VALUE;OTHER" -> #define lines.
+static void ImPlatform_PartsDefines(ImGuiTextBuffer& out, const char* defines)
+{
+    for (const char* p = defines; p && *p; )
+    {
+        const char* end = strchr(p, ';');
+        if (!end)
+            end = p + strlen(p);
+        const char* eq = (const char*)memchr(p, '=', (size_t)(end - p));
+        while (p < end && *p == ' ')
+            p++;
+        if (p < end)
+        {
+            if (eq)
+                out.appendf("#define %.*s %.*s\n", (int)(eq - p), p, (int)(end - eq - 1), eq + 1);
+            else
+                out.appendf("#define %.*s\n", (int)(end - p), p);
+        }
+        p = *end ? end + 1 : end;
+    }
+}
+
+static const char* ImPlatform_PartsText(const char* s) { return s ? s : ""; }
+
+// HLSL: Direct3D 9 (vs_3_0 / ps_3_0) to 12. Entry points vs_main and ps_main.
+static void ImPlatform_PartsHLSL(ImGuiTextBuffer& out, const ImPlatform_ShaderParts* parts, bool vertex,
+                                 const ImPlatform_PartsDecl* varyings, int varying_count)
+{
+    out.append(
+        "#define IMP_HLSL 1\n"
+        "#define IMP_UNROLL [unroll]\n"
+        "#define IMP_LOOP [loop]\n"
+        "#define IMP_BRANCH [branch]\n"
+        "#define IMP_SAMPLE(t, uv) t.Sample(imp_sampler, uv)\n"
+        "#define IMP_SAMPLE_LEVEL(t, uv, lod) t.SampleLevel(imp_sampler, uv, lod)\n"
+        "#define IMP_LOAD(t, xy) t.Load(int3(xy, 0))\n"
+        "#define IMP_MUL(m, v) mul(m, v)\n"
+        "#define IMP_CAST(type, x) ((type)(x))\n");
+    ImPlatform_PartsDefines(out, parts->defines);
+    out.append("cbuffer ImpVertex : register(b0) { float4x4 ProjMtx; };\n");
+    if (parts->params && parts->params[0])
+        out.appendf("cbuffer ImpParams : register(b1) {\n%s\n};\n", parts->params);
+    out.append("SamplerState imp_sampler : register(s0);\nTexture2D texture0 : register(t0);\n");
+    for (int slot = 1; slot < 9; slot++)
+        if (parts->textures[slot])
+            out.appendf("Texture2D %s : register(t%d);\n", parts->textures[slot], slot);
+    out.append("struct ImpVaryings {\n    float4 position : SV_POSITION;\n    float4 col : COLOR0;\n    float2 uv : TEXCOORD0;\n");
+    for (int i = 0; i < varying_count; i++)
+        out.appendf("    %s : TEXCOORD%d;\n", varyings[i].decl, i + 1);
+    out.appendf("};\n%s\n", ImPlatform_PartsText(parts->functions));
+    if (vertex)
+    {
+        out.append(
+            "struct ImpVertexInput { float2 pos : POSITION; float2 uv : TEXCOORD0; float4 col : COLOR0; };\n"
+            "ImpVaryings vs_main(ImpVertexInput imp_in)\n{\n"
+            "    float2 in_pos = imp_in.pos;\n    float2 in_uv = imp_in.uv;\n    float4 in_col = imp_in.col;\n"
+            "    ImpVaryings v;\n    v.col = in_col;\n    v.uv = in_uv;\n");
+        for (int i = 0; i < varying_count; i++)
+            out.appendf("    v.%s = (%s)0;\n", varyings[i].name, varyings[i].type);
+        out.appendf("    float4 position = mul(ProjMtx, float4(in_pos, 0.0, 1.0));\n    {\n%s\n    }\n"
+                    "    v.position = position;\n    return v;\n}\n", ImPlatform_PartsText(parts->vs_body));
+    }
+    else
+    {
+        out.appendf("float4 ps_main(ImpVaryings v) : SV_Target\n{\n"
+                    "    float4 col_out = v.col * texture0.Sample(imp_sampler, v.uv);\n    {\n%s\n    }\n"
+                    "    return col_out;\n}\n", ImPlatform_PartsText(parts->ps_body));
+    }
+}
+
+// GLSL 330 (OpenGL 3.3+, macOS included): HLSL names mapped by the preprocessor. Entry point main.
+static void ImPlatform_PartsGLSL(ImGuiTextBuffer& out, const ImPlatform_ShaderParts* parts, bool vertex,
+                                 const ImPlatform_PartsDecl* varyings, int varying_count)
+{
+    out.append(
+        "#version 330 core\n"
+        "#define IMP_GLSL 1\n"
+        "#define float2 vec2\n#define float3 vec3\n#define float4 vec4\n"
+        "#define int2 ivec2\n#define int3 ivec3\n#define int4 ivec4\n"
+        "#define uint2 uvec2\n#define uint3 uvec3\n#define uint4 uvec4\n"
+        "#define bool2 bvec2\n#define bool3 bvec3\n#define bool4 bvec4\n"
+        "#define float2x2 mat2\n#define float3x3 mat3\n#define float4x4 mat4\n"
+        "#define lerp mix\n#define frac fract\n#define rsqrt inversesqrt\n#define ddx dFdx\n#define ddy dFdy\n"
+        "#define saturate(x) clamp((x), 0.0, 1.0)\n#define rcp(x) (1.0 / (x))\n#define atan2(y, x) atan((y), (x))\n"
+        "#define fmod(x, y) ((x) - (y) * trunc((x) / (y)))\n#define mul(a, b) ((a) * (b))\n#define static\n"
+        "#define IMP_UNROLL\n#define IMP_LOOP\n#define IMP_BRANCH\n"
+        "#define IMP_SAMPLE(t, uv) texture(t, uv)\n"
+        "#define IMP_SAMPLE_LEVEL(t, uv, lod) textureLod(t, uv, lod)\n"
+        "#define IMP_LOAD(t, xy) texelFetch(t, ivec2(xy), 0)\n"
+        "#define IMP_MUL(m, v) ((m) * (v))\n"
+        "#define IMP_CAST(type, x) type(x)\n");
+    ImPlatform_PartsDefines(out, parts->defines);
+    // The backend binds these blocks by name to bindings 0 and 1 (the binding qualifier needs GLSL 4.20). Render passes
+    // mirror the vertices (render textures are stored bottom-up; imp_mirror.x is 1, imp_mirror.y the mirror line): in_pos
+    // is unmirrored and ProjMtx mirrors again, so the bodies work in Dear ImGui coordinates.
+    out.append("layout(binding = 0, std140) uniform ImpVertex { mat4 imp_proj; vec4 imp_mirror; };\n"
+               "#define ProjMtx (imp_proj * mat4(1.0, 0.0, 0.0, 0.0, 0.0, 1.0 - 2.0 * imp_mirror.x, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, imp_mirror.x * imp_mirror.y, 0.0, 1.0))\n");
+    if (parts->params && parts->params[0])
+        out.appendf("layout(binding = 1, std140) uniform ImpParams {\n%s\n};\n", parts->params);
+    out.append("uniform sampler2D texture0;\n");
+    for (int slot = 1; slot < 9; slot++)
+        if (parts->textures[slot])
+            out.appendf("uniform sampler2D %s;\n", parts->textures[slot]);
+    out.appendf("%s ImpVaryings {\n    vec4 col;\n    vec2 uv;\n", vertex ? "out" : "in");
+    for (int i = 0; i < varying_count; i++)
+        out.appendf("    %s;\n", varyings[i].decl);
+    out.appendf("} v;\n%s\n", ImPlatform_PartsText(parts->functions));
+    if (vertex)
+    {
+        out.append(
+            "in vec2 Position;\nin vec2 UV;\nin vec4 Color;\n"
+            "void main()\n{\n    float2 in_pos = float2(Position.x, imp_mirror.x != 0.0 ? imp_mirror.y - Position.y : Position.y);\n    float2 in_uv = UV;\n    float4 in_col = Color;\n"
+            "    v.col = in_col;\n    v.uv = in_uv;\n");
+        for (int i = 0; i < varying_count; i++)
+            out.appendf("    v.%s = %s(0);\n", varyings[i].name, varyings[i].type);
+        out.appendf("    float4 position = mul(ProjMtx, float4(in_pos, 0.0, 1.0));\n    {\n%s\n    }\n"
+                    "    gl_Position = position;\n}\n", ImPlatform_PartsText(parts->vs_body));
+    }
+    else
+    {
+        out.appendf("layout(location = 0) out vec4 imp_out;\n"
+                    "void main()\n{\n    float4 col_out = v.col * texture(texture0, v.uv);\n    {\n%s\n    }\n"
+                    "    imp_out = col_out;\n}\n", ImPlatform_PartsText(parts->ps_body));
+    }
+}
+
+// MSL (Metal): the helper functions and bodies are members of a context struct that inherits the parameter block, so
+// they reach the parameters, ProjMtx and the textures by name as in HLSL. Buffer indices are the registers plus one
+// (Dear ImGui's vertices are at buffer 0). Entry points vs_main and ps_main.
+static void ImPlatform_PartsMSL(ImGuiTextBuffer& out, const ImPlatform_ShaderParts* parts, bool vertex,
+                                const ImPlatform_PartsDecl* varyings, int varying_count)
+{
+    out.append(
+        "#include <metal_stdlib>\nusing namespace metal;\n"
+        "#define IMP_MSL 1\n"
+        "#define lerp mix\n#define frac fract\n#define ddx dfdx\n#define ddy dfdy\n"
+        "#define rcp(x) (1.0f / (x))\n#define mul(a, b) ((a) * (b))\n#define static\n"
+        "#define IMP_UNROLL\n#define IMP_LOOP\n#define IMP_BRANCH\n"
+        "#define IMP_SAMPLE(t, uv) t.sample(imp_sampler, uv)\n"
+        "#define IMP_SAMPLE_LEVEL(t, uv, lod) t.sample(imp_sampler, uv, level(lod))\n"
+        "#define IMP_LOAD(t, xy) t.read(uint2(xy))\n"
+        "#define IMP_MUL(m, v) ((m) * (v))\n"
+        "#define IMP_CAST(type, x) type(x)\n");
+    ImPlatform_PartsDefines(out, parts->defines);
+    const bool has_params = parts->params && parts->params[0];
+    // float3 is 16 bytes in MSL: packed_float3 keeps the HLSL / std140 offsets of the parameter block.
+    out.append("struct ImpVertex { float4x4 ProjMtx; };\nstruct ImpParams {\n");
+    if (has_params)
+    {
+        ImPlatform_PartsDecl params[64];
+        const int count = ImPlatform_ParseDecls(parts->params, params, IM_ARRAYSIZE(params));
+        for (int i = 0; i < count; i++)
+            out.appendf("    %s%s;\n", strcmp(params[i].type, "float3") == 0 ? "packed_" : "", params[i].decl);
+    }
+    out.append("};\nstruct ImpVaryings {\n    float4 position [[position]];\n    float4 col;\n    float2 uv;\n");
+    for (int i = 0; i < varying_count; i++)
+        out.appendf("    %s;\n", varyings[i].decl);
+    out.append("};\nstruct ImpContext : ImpVertex, ImpParams {\n    texture2d<float> texture0;\n    sampler imp_sampler;\n");
+    for (int slot = 1; slot < 9; slot++)
+        if (parts->textures[slot])
+            out.appendf("    texture2d<float> %s;\n", parts->textures[slot]);
+    out.appendf("%s\n", ImPlatform_PartsText(parts->functions));
+    if (vertex)
+    {
+        out.append("    ImpVaryings imp_vs(float2 in_pos, float2 in_uv, float4 in_col)\n    {\n"
+                   "        ImpVaryings v;\n        v.col = in_col;\n        v.uv = in_uv;\n");
+        for (int i = 0; i < varying_count; i++)
+            out.appendf("        v.%s = %s(0);\n", varyings[i].name, varyings[i].type);
+        out.appendf("        float4 position = ProjMtx * float4(in_pos, 0.0, 1.0);\n        {\n%s\n        }\n"
+                    "        v.position = position;\n        return v;\n    }\n};\n", ImPlatform_PartsText(parts->vs_body));
+        out.append("struct ImpVertexInput { float2 pos [[attribute(0)]]; float2 uv [[attribute(1)]]; float4 col [[attribute(2)]]; };\n"
+                   "vertex ImpVaryings vs_main(ImpVertexInput imp_in [[stage_in]], constant ImpVertex& imp_vertex [[buffer(1)]]");
+    }
+    else
+    {
+        out.appendf("    float4 imp_ps(ImpVaryings v)\n    {\n        float4 col_out = v.col * texture0.sample(imp_sampler, v.uv);\n"
+                    "        {\n%s\n        }\n        return col_out;\n    }\n};\n", ImPlatform_PartsText(parts->ps_body));
+        out.append("fragment float4 ps_main(ImpVaryings v [[stage_in]], constant ImpVertex& imp_vertex [[buffer(1)]]");
+    }
+    if (has_params)
+        out.append(", constant ImpParams& imp_params [[buffer(2)]]");
+    out.append(", texture2d<float> texture0 [[texture(0)]]");
+    for (int slot = 1; slot < 9; slot++)
+        if (parts->textures[slot])
+            out.appendf(", texture2d<float> %s [[texture(%d)]]", parts->textures[slot], slot);
+    // The blocks are copied member by member (array members element by element): loads from constant memory.
+    out.append(", sampler imp_sampler [[sampler(0)]])\n{\n    ImpContext ctx;\n    ctx.ProjMtx = imp_vertex.ProjMtx;\n");
+    if (has_params)
+    {
+        ImPlatform_PartsDecl params[64];
+        const int count = ImPlatform_ParseDecls(parts->params, params, IM_ARRAYSIZE(params));
+        for (int i = 0; i < count; i++)
+        {
+            const char* bracket = strchr(params[i].decl, '[');
+            if (bracket)
+                out.appendf("    for (int i = 0; i < %.*s; i++) ctx.%s[i] = imp_params.%s[i];\n",
+                            (int)strcspn(bracket + 1, "]"), bracket + 1, params[i].name, params[i].name);
+            else
+                out.appendf("    ctx.%s = imp_params.%s;\n", params[i].name, params[i].name);
+        }
+    }
+    out.append("    ctx.texture0 = texture0;\n    ctx.imp_sampler = imp_sampler;\n");
+    for (int slot = 1; slot < 9; slot++)
+        if (parts->textures[slot])
+            out.appendf("    ctx.%s = %s;\n", parts->textures[slot], parts->textures[slot]);
+    out.append(vertex ? "    return ctx.imp_vs(imp_in.pos, imp_in.uv, imp_in.col);\n}\n" : "    return ctx.imp_ps(v);\n}\n");
+}
+
+IMPLATFORM_API int ImPlatform_GenerateShaderSource(const ImPlatform_ShaderParts* parts, ImPlatform_ShaderStage stage,
+                                                   ImPlatform_ShaderFormat format, char* out, int out_size)
+{
+    if (!parts || (stage != ImPlatform_ShaderStage_Vertex && stage != ImPlatform_ShaderStage_Fragment))
+        return -1;
+    ImPlatform_PartsDecl varyings[8];
+    const int varying_count = ImPlatform_ParseDecls(parts->varyings, varyings, IM_ARRAYSIZE(varyings));
+    const bool vertex = stage == ImPlatform_ShaderStage_Vertex;
+    ImGuiTextBuffer text;
+    switch (format)
+    {
+    case ImPlatform_ShaderFormat_HLSL: ImPlatform_PartsHLSL(text, parts, vertex, varyings, varying_count); break;
+    case ImPlatform_ShaderFormat_GLSL: ImPlatform_PartsGLSL(text, parts, vertex, varyings, varying_count); break;
+    case ImPlatform_ShaderFormat_MSL:  ImPlatform_PartsMSL(text, parts, vertex, varyings, varying_count); break;
+    default: return -1;
+    }
+    if (out && out_size > 0)
+    {
+        const int n = text.size() < out_size - 1 ? text.size() : out_size - 1;
+        memcpy(out, text.c_str(), (size_t)n);
+        out[n] = 0;
+    }
+    return text.size();
+}
+
+#if IMPLATFORM_GFX_SUPPORT_SHADER_PARTS && IM_CURRENT_GFX != IM_GFX_CUSTOM
+IMPLATFORM_API ImPlatform_Shader ImPlatform_CreateShaderFromParts(const ImPlatform_ShaderParts* parts, ImPlatform_ShaderStage stage)
+{
+#if IM_CURRENT_GFX == IM_GFX_OPENGL3
+    const ImPlatform_ShaderFormat format = ImPlatform_ShaderFormat_GLSL;
+#elif IM_CURRENT_GFX == IM_GFX_METAL
+    const ImPlatform_ShaderFormat format = ImPlatform_ShaderFormat_MSL;
+#else
+    const ImPlatform_ShaderFormat format = ImPlatform_ShaderFormat_HLSL;
+#endif
+    const int size = ImPlatform_GenerateShaderSource(parts, stage, format, NULL, 0);
+    if (size < 0)
+        return NULL;
+    char* source = (char*)IM_ALLOC((size_t)size + 1);
+    ImPlatform_GenerateShaderSource(parts, stage, format, source, size + 1);
+    ImPlatform_ShaderDesc desc = {};
+    desc.stage = stage;
+    desc.format = format;
+    desc.source_code = source;
+    desc.entry_point = format == ImPlatform_ShaderFormat_GLSL ? "main" : stage == ImPlatform_ShaderStage_Vertex ? "vs_main" : "ps_main";
+    desc.cache_key = parts->cache_key;
+    ImPlatform_Shader shader = ImPlatform_CreateShader(&desc);
+    if (!shader)
+        fprintf(stderr, "[ImPlatform] shader parts: the generated %s shader did not compile:\n%s\n",
+                stage == ImPlatform_ShaderStage_Vertex ? "vertex" : "pixel", source);
+    IM_FREE(source);
+    return shader;
+}
+#endif
