@@ -297,23 +297,52 @@ IM_GFX_WGPU         // WebGPU
 IM_GFX_CUSTOM       // No built-in backend: the application provides its own
 ```
 
+### Backend Capabilities
+
+Some API groups exist only on the backends that implement them. `ImPlatform.h` sets an `IMPLATFORM_GFX_SUPPORT_*`
+macro per group for the selected backend and declares the group's functions only when it is 1, so a call that the
+backend cannot honor fails to compile instead of returning `false` at run time. Guard such calls in code shared
+between backends:
+
+```cpp
+#if IMPLATFORM_GFX_SUPPORT_RENDER_TARGETS
+    ImPlatform_PushRenderTarget(target, true);
+    ...
+#endif
+```
+
+| `IMPLATFORM_GFX_SUPPORT_` | Functions | DX9 | DX10 | DX11 | DX12 | OpenGL 3 | Vulkan | Metal | WebGPU |
+|---|---|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|
+| `SHADER_TEXTURES` | `SetShaderTexture` (t0..t8) | x | x | x | x | x | x | | x |
+| `VERTEX_BUFFERS` | vertex / index buffers, `DrawIndexed` | x | x | x | x | x | x | | x |
+| `DIRECT_DRAW` | `Push/PopShaderConstants`, `GetCurrentTargetSize` | x | | x | x | x | x | | x |
+| `RENDER_TARGETS` | `Push/PopRenderTarget`, `CopyCurrentTarget`, `DrawQuadNow` | x | | x | x | x | x | | |
+| `READBACK` | `ReadTexture` | x | x | x | x | x | x | x | |
+| `ASYNC_READBACK` | `BeginReadTexture`, `Poll/Map/ReleaseReadback` | | | x | x | | | | |
+| `COMPUTE` | `CreateStorageTexture`, `DispatchCompute` | | | x | x | 4.3+ | x | | |
+| `DEPTH_DRAW` | `CreateRenderTextureWithDepth`, `DrawMesh` | | | x | x | | | | |
+| `DEVICE_CONTROL` | `GfxDeviceLost`, `GfxRecreateDevice`, `GfxAdapterName`, testing aids | | | x | x | | | | |
+
+`ImPlatform_SupportsReadback()`, `SupportsCompute()` and `SupportsDepthDraw()` are declared on every backend and
+answer at run time (OpenGL compute needs a 4.3 context). Custom shaders (`IMPLATFORM_GFX_SUPPORT_CUSTOM_SHADER`) are on every
+built-in backend.
+
 ### Custom (or no) Graphics Backend
 
 `IM_GFX_CUSTOM` keeps ImPlatform's platform layer (window, input, DPI, title bar) and compiles
 none of its graphics backends. The application links its own implementation of the graphics
 entry points (`ImPlatform_InitGfxAPI`, `ImPlatform_GfxAPINewFrame`, `ImPlatform_GfxAPIRender`,
-`ImPlatform_GfxAPISwapBuffer`, textures, shaders, buffers, the render-target stack
-`ImPlatform_PushRenderTarget` / `PopRenderTarget` / `CopyCurrentTarget` / `GetCurrentTargetSize` /
-`DrawQuadNow`, the render passes `ImPlatform_GetRenderPassFormat` / `QueueRenderPass` / `PushPremultipliedAlpha` /
-`PopPremultipliedAlpha`, and the optional readback / compute / depth-draw functions, stubbed or real) plus:
+`ImPlatform_GfxAPISwapBuffer`, textures, shaders, the render passes `ImPlatform_GetRenderPassFormat` /
+`QueueRenderPass` / `PushPremultipliedAlpha` / `PopPremultipliedAlpha`, the `Supports*` queries, and the functions of
+every optional group above that it keeps) plus:
 
 ```cpp
 // Called by the platform layer (Win32, GLFW, SDL2, SDL3) when the window's framebuffer is resized.
 void ImPlatform_Gfx_OnResize_Custom(unsigned int uWidth, unsigned int uHeight);
 ```
 
-The `IMPLATFORM_GFX_SUPPORT_*` feature flags default to 1 and can each be predefined to 0
-to describe what the application's backend supports. With GLFW the window is created with
+The `IMPLATFORM_GFX_SUPPORT_*` feature flags and API groups default to 1 and can each be predefined to 0
+to describe what the application's backend supports (a group set to 0 is neither declared nor needed). With GLFW the window is created with
 `GLFW_NO_API`.
 
 ### Predefined Combinations

@@ -610,7 +610,6 @@ IMPLATFORM_API void ImPlatform_PopPremultipliedAlpha(ImDrawList* draw)
 
 // Readback (synchronous): render targets through a system memory copy, other textures locked directly. Rows come out
 // as stored (BGRA for D3DFMT_A8R8G8B8).
-#define IMPLATFORM_GFX_HAS_READBACK 1
 IMPLATFORM_API bool ImPlatform_SupportsReadback(void) { return g_GfxData.pDevice != NULL; }
 IMPLATFORM_API bool ImPlatform_ReadTexture(ImTextureID texture, unsigned int x, unsigned int y,
                                            unsigned int width, unsigned int height, void* out_pixels, size_t out_size)

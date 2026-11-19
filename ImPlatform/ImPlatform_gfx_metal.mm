@@ -800,29 +800,9 @@ IMPLATFORM_API void ImPlatform_DestroyTexture(ImTextureID texture_id)
 // Custom Vertex/Index Buffer Management API - Metal (Stubs)
 // ============================================================================
 
-IMPLATFORM_API ImPlatform_VertexBuffer ImPlatform_CreateVertexBuffer(const void* vertex_data, const ImPlatform_VertexBufferDesc* desc) { return NULL; }
-IMPLATFORM_API bool ImPlatform_UpdateVertexBuffer(ImPlatform_VertexBuffer vertex_buffer, const void* vertex_data, unsigned int vertex_count, unsigned int offset) { return false; }
-IMPLATFORM_API void ImPlatform_DestroyVertexBuffer(ImPlatform_VertexBuffer vertex_buffer) {}
-IMPLATFORM_API ImPlatform_IndexBuffer ImPlatform_CreateIndexBuffer(const void* index_data, const ImPlatform_IndexBufferDesc* desc) { return NULL; }
-IMPLATFORM_API bool ImPlatform_UpdateIndexBuffer(ImPlatform_IndexBuffer index_buffer, const void* index_data, unsigned int index_count, unsigned int offset) { return false; }
-IMPLATFORM_API void ImPlatform_DestroyIndexBuffer(ImPlatform_IndexBuffer index_buffer) {}
-IMPLATFORM_API void ImPlatform_BindVertexBuffer(ImPlatform_VertexBuffer vertex_buffer) {}
-IMPLATFORM_API void ImPlatform_BindIndexBuffer(ImPlatform_IndexBuffer index_buffer) {}
-IMPLATFORM_API void ImPlatform_DrawIndexed(unsigned int primitive_type, unsigned int index_count, unsigned int start_index) {}
-IMPLATFORM_API void ImPlatform_BindBuffers(ImPlatform_VertexBuffer vertex_buffer, ImPlatform_IndexBuffer index_buffer)
-{
-    ImPlatform_BindVertexBuffer(vertex_buffer);
-    ImPlatform_BindIndexBuffer(index_buffer);
-}
 
-// shortcut: no render-target stack, current-target copy or immediate quad on Metal yet (they report unsupported); add
-// them with the render command encoder of the draw callback when a Metal app needs direct draws.
-IMPLATFORM_API bool ImPlatform_PushRenderTarget(ImTextureID texture, bool clear) { (void)texture; (void)clear; return false; }
-IMPLATFORM_API void ImPlatform_PopRenderTarget(void) {}
-IMPLATFORM_API bool ImPlatform_CopyCurrentTarget(ImTextureID dst, int src_x, int src_y, int w, int h, int dst_x, int dst_y)
-{ (void)dst; (void)src_x; (void)src_y; (void)w; (void)h; (void)dst_x; (void)dst_y; return false; }
-IMPLATFORM_API void ImPlatform_DrawQuadNow(ImPlatform_ShaderProgram program, ImVec4 dst_rect, ImVec4 uv_rect) { (void)program; (void)dst_rect; (void)uv_rect; }
-IMPLATFORM_API void ImPlatform_GetCurrentTargetSize(unsigned int* width, unsigned int* height) { ImPlatform_GetBackbufferSize(width, height); }
+// shortcut: no vertex buffers, shader textures t1..t8 or direct draws on Metal yet (IMPLATFORM_GFX_SUPPORT_VERTEX_BUFFERS,
+// _SHADER_TEXTURES, _DIRECT_DRAW, _RENDER_TARGETS); add them with the render command encoder of the draw callback.
 
 // ============================================================================
 // Custom Shader System API - Metal Implementation
@@ -1132,11 +1112,6 @@ IMPLATFORM_API bool ImPlatform_SetShaderUniform(ImPlatform_ShaderProgram program
     }
 }
 
-IMPLATFORM_API bool ImPlatform_SetShaderTexture(ImPlatform_ShaderProgram /*program*/, const char* /*name*/, unsigned int /*slot*/, ImTextureID /*texture*/)
-{
-    // shortcut: only the draw's texture is bound; extra textures need per-program storage bound in the render callback.
-    return false;
-}
 
 IMPLATFORM_API void ImPlatform_BeginUniformBlock(ImPlatform_ShaderProgram program)
 {
@@ -1247,7 +1222,6 @@ static bool        g_PassClear = false;
 IMPLATFORM_API ImPlatform_PixelFormat ImPlatform_GetRenderPassFormat(void) { return ImPlatform_PixelFormat_BGRA8; }
 
 // Readback: a blit into a shared buffer on the queue, after the work already committed, waited for.
-#define IMPLATFORM_GFX_HAS_READBACK 1
 IMPLATFORM_API bool ImPlatform_SupportsReadback(void) { return true; }
 
 IMPLATFORM_API bool ImPlatform_ReadTexture(ImTextureID texture, unsigned int x, unsigned int y, unsigned int width, unsigned int height,
@@ -1484,16 +1458,7 @@ IMPLATFORM_API void ImPlatform_EndCustomShader(ImDrawList* draw)
     draw->AddCallback(ImGui::GetPlatformIO().DrawCallback_ResetRenderState, NULL);
 }
 
-IMPLATFORM_API void* ImPlatform_PushShaderConstants(const void* data, unsigned int size)
-{
-    (void)data; (void)size;
-    return nullptr;
-}
 
-IMPLATFORM_API void ImPlatform_PopShaderConstants(void* handle)
-{
-    (void)handle;
-}
 
 // ============================================================================
 // Sampler Override API - Metal

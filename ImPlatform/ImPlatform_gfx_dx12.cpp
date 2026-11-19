@@ -2644,11 +2644,6 @@ IMPLATFORM_API bool ImPlatform_CreateVertexInputLayout(ImPlatform_VertexBuffer v
 
 
 // ---- Readback ---------------------------------------------------------------------------------------------------
-#define IMPLATFORM_GFX_HAS_READBACK       1
-#define IMPLATFORM_GFX_HAS_ASYNC_READBACK 1
-#define IMPLATFORM_GFX_HAS_COMPUTE        1
-#define IMPLATFORM_GFX_HAS_DEPTH_DRAW     1
-#define IMPLATFORM_GFX_HAS_DEVICE_CONTROL 1
 IMPLATFORM_API bool ImPlatform_SupportsReadback(void) { return true; }
 
 IMPLATFORM_API bool ImPlatform_ReadTexture(ImTextureID texture, unsigned int x, unsigned int y, unsigned int width, unsigned int height,

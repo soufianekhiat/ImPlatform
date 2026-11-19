@@ -2545,8 +2545,6 @@ IMPLATFORM_API void ImPlatform_EndCustomShader(ImDrawList* draw)
 }
 
 // ------------------- Readback and compute (GL 4.3 for compute) -------------------
-#define IMPLATFORM_GFX_HAS_READBACK 1
-#define IMPLATFORM_GFX_HAS_COMPUTE  1
 
 typedef void (APIENTRYP PFNIMPGLDISPATCHCOMPUTEPROC)(GLuint, GLuint, GLuint);
 typedef void (APIENTRYP PFNIMPGLMEMORYBARRIERPROC)(GLbitfield);

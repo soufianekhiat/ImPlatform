@@ -1537,21 +1537,11 @@ IMPLATFORM_API void ImPlatform_EndCustomShader(ImDrawList* draw)
     draw->AddCallback(ImGui::GetPlatformIO().DrawCallback_ResetRenderState, NULL);
 }
 
-IMPLATFORM_API void* ImPlatform_PushShaderConstants(const void* data, unsigned int size)
-{
-    (void)data; (void)size;
-    return nullptr;
-}
 
-IMPLATFORM_API void ImPlatform_PopShaderConstants(void* handle)
-{
-    (void)handle;
-}
 
 // ============================================================================
 // Readback (no compute: cs_4_0 cannot write typed UAV textures, so storage textures stay DX11+)
 // ============================================================================
-#define IMPLATFORM_GFX_HAS_READBACK 1
 static int ImPlatform_DX10_BytesPerPixel(DXGI_FORMAT format)
 {
     switch (format)
@@ -1629,13 +1619,7 @@ IMPLATFORM_API bool ImPlatform_ReadTexture(ImTextureID texture, unsigned int x, 
     return true;
 }
 
-// shortcut: render-target stack, current-target copy and immediate quad are implemented on DX11 and
-// OpenGL3 only; here they report "unsupported" until this backend gets them (see ImPlatform_GetCaps).
-IMPLATFORM_API bool ImPlatform_PushRenderTarget(ImTextureID texture, bool clear) { (void)texture; (void)clear; return false; }
-IMPLATFORM_API void ImPlatform_PopRenderTarget(void) {}
-IMPLATFORM_API bool ImPlatform_CopyCurrentTarget(ImTextureID dst, int src_x, int src_y, int w, int h, int dst_x, int dst_y)
-{ (void)dst; (void)src_x; (void)src_y; (void)w; (void)h; (void)dst_x; (void)dst_y; return false; }
-IMPLATFORM_API void ImPlatform_GetCurrentTargetSize(unsigned int* width, unsigned int* height) { if (width) *width = 0; if (height) *height = 0; }
-IMPLATFORM_API void ImPlatform_DrawQuadNow(ImPlatform_ShaderProgram program, ImVec4 dst_rect, ImVec4 uv_rect) { (void)program; (void)dst_rect; (void)uv_rect; }
+// shortcut: no direct draws (IMPLATFORM_GFX_SUPPORT_DIRECT_DRAW, _RENDER_TARGETS) on DX10; port DX11's when a DX10
+// application needs them.
 
 #endif // IM_GFX_DIRECTX10

@@ -2386,14 +2386,9 @@ IMPLATFORM_API void ImPlatform_PopSampler(void)
     ImPlatform_PopSampler_StdCallbacks();
 }
 
-// shortcut: no render-target stack, current-target copy or immediate quad here. Dear ImGui's backend keeps drawing with
+// shortcut: no render-target stack, current-target copy or immediate quad (IMPLATFORM_GFX_SUPPORT_RENDER_TARGETS). Dear ImGui's backend keeps drawing with
 // its render pass encoder after a draw callback returns, so a callback cannot end that pass to switch targets, and what
 // the pass drew is not in the target yet to copy. Recording them would need passes split around the callbacks.
-IMPLATFORM_API bool ImPlatform_PushRenderTarget(ImTextureID texture, bool clear) { (void)texture; (void)clear; return false; }
-IMPLATFORM_API void ImPlatform_PopRenderTarget(void) {}
-IMPLATFORM_API bool ImPlatform_CopyCurrentTarget(ImTextureID dst, int src_x, int src_y, int w, int h, int dst_x, int dst_y)
-{ (void)dst; (void)src_x; (void)src_y; (void)w; (void)h; (void)dst_x; (void)dst_y; return false; }
-IMPLATFORM_API void ImPlatform_DrawQuadNow(ImPlatform_ShaderProgram program, ImVec4 dst_rect, ImVec4 uv_rect) { (void)program; (void)dst_rect; (void)uv_rect; }
 
 // The size of the target being rendered (the draw data's, in pixels), else the surface's.
 IMPLATFORM_API void ImPlatform_GetCurrentTargetSize(unsigned int* width, unsigned int* height)

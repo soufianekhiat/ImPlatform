@@ -2999,8 +2999,6 @@ IMPLATFORM_API void ImPlatform_PopSampler(void)
 // ============================================================================
 // shortcut: each call records the upload command buffer and waits for the queue to idle (like
 // ImPlatform_CreateTexture): simple and ordered with frames, at the cost of a GPU sync per call.
-#define IMPLATFORM_GFX_HAS_READBACK 1
-#define IMPLATFORM_GFX_HAS_COMPUTE  1
 enum { ImPlatform_Vulkan_MaxComputeInputs = 8, ImPlatform_Vulkan_MaxComputeOutputs = 8 };
 
 static VkCommandBuffer ImPlatform_Vulkan_BeginOneShot()

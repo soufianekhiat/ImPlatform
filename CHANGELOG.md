@@ -58,6 +58,12 @@
   hand-written MSL are now the HLSL registers plus one: projection at 1, parameters at 2 (they were at 1).
 
 ### Changed
+- Optional API groups are declared only for the backends that implement them: `IMPLATFORM_GFX_SUPPORT_SHADER_TEXTURES`,
+  `_VERTEX_BUFFERS`, `_DIRECT_DRAW`, `_RENDER_TARGETS`, `_READBACK`, `_ASYNC_READBACK`, `_COMPUTE`, `_DEPTH_DRAW` and
+  `_DEVICE_CONTROL` (see the capability table in the README). Calling a function the selected backend does not
+  implement is now a compile error instead of a stub returning `false`; guard such calls with the macro in code built
+  for several backends. `ImPlatform_SupportsReadback()`, `SupportsCompute()` and `SupportsDepthDraw()` stay on every
+  backend. The backend-internal `IMPLATFORM_GFX_HAS_*` macros are gone.
 - `ImPlatform_PlatformEvents()` returns `false` when the frame should be skipped (quit requested or window
   minimized): main loops should `continue` on `false`.
 - The `imgui` submodule follows the `LayoutDocking` fork (docking + stack layout); `imgui_stacklayout.cpp` is part of
@@ -78,8 +84,8 @@
 
 ### Fixed
 - `ImPlatform_BindBuffers()` on DirectX 9, 10, 12, Vulkan and WebGPU (only DirectX 11 bound them).
-- `ImPlatform_SetShaderTexture()` on Metal returns `false` (it bound nothing and reported success); on OpenGL it finds
-  the sampler SPIRV-Cross generates for the named HLSL texture.
+- `ImPlatform_SetShaderTexture()` on OpenGL finds the sampler SPIRV-Cross generates for the named HLSL texture (on Metal,
+  where it bound nothing and reported success, it is no longer declared).
 - DirectX 12 custom shaders: the parameters (`b1`) are bound on every activation, not only after they changed; textures
   set before `ImPlatform_BeginCustomShader_Render()` are bound again by it.
 - OpenGL: `ImPlatform_DrawQuadNow()` feeds the program's own vertex input locations (shaders declaring the color before

@@ -68,6 +68,17 @@ static void OnDpiChanged(float new_scale, void* /*user_data*/)
 #include <stb_image.h>
 #endif
 
+// ImPlatform_ReadTexture where the backend has it (IMPLATFORM_GFX_SUPPORT_READBACK); the tests skip without it.
+static bool DemoReadTexture( ImTextureID texture, unsigned int x, unsigned int y, unsigned int w, unsigned int h, void* px, size_t size )
+{
+#if IMPLATFORM_GFX_SUPPORT_READBACK
+	return ImPlatform_ReadTexture( texture, x, y, w, h, px, size );
+#else
+	(void)texture; (void)x; (void)y; (void)w; (void)h; (void)px; (void)size;
+	return false;
+#endif
+}
+
 #ifdef IMGUI_HAS_TEXTURES
 // Render passes: a draw list rendered into a render texture before the frame (ImPlatform_QueueRenderPass).
 struct RenderPassScene
@@ -189,7 +200,7 @@ static int CheckRenderPassProbes( const char* what, const unsigned char* px, int
 static int CheckRenderPassTest()
 {
 	static unsigned char px[ 128 * 128 * 4 ];
-	if ( !g_RenderPassTest.Target || !ImPlatform_ReadTexture( g_RenderPassTest.Target, 0, 0, 64, 64, px, sizeof( px ) ) )
+	if ( !g_RenderPassTest.Target || !DemoReadTexture( g_RenderPassTest.Target, 0, 0, 64, 64, px, sizeof( px ) ) )
 	{
 		printf( "SKIP: no readback of the pass target\n" );
 		return 2;
@@ -199,7 +210,7 @@ static int CheckRenderPassTest()
 	int bad = CheckRenderPassProbes( "target", px, 64, target, 4, 4 );
 	// Composite over gray (100) with premultiplied alpha: blue at half coverage is 128 + 100 * 127 / 255.
 	// At half opacity: red 128 + 100 * 127 / 255 = 178 (green, blue 50); blue at a quarter, 64 + 100 * 191 / 255 = 139.
-	if ( ImPlatform_ReadTexture( g_RenderPassComposite.Target, 0, 0, 128, 128, px, sizeof( px ) ) )
+	if ( DemoReadTexture( g_RenderPassComposite.Target, 0, 0, 128, 128, px, sizeof( px ) ) )
 	{
 		const RenderPassProbe composite[] = { { 8, 8, { 255, 0, 0, 255 } }, { 48, 8, { 50, 50, 178, 255 } }, { 8, 48, { 100, 100, 100, 255 } },
 			{ 72, 8, { 178, 50, 50, 255 } }, { 112, 8, { 75, 75, 139, 255 } }, { 72, 48, { 100, 100, 100, 255 } } };
@@ -284,7 +295,7 @@ static void DrawShaderTest( ImDrawList* dl )
 static int CheckShaderTest()
 {
 	static unsigned char px[ 64 * 64 * 4 ];
-	if ( !ImPlatform_ReadTexture( g_ShaderTest.Target, 0, 0, 64, 64, px, sizeof( px ) ) )
+	if ( !DemoReadTexture( g_ShaderTest.Target, 0, 0, 64, 64, px, sizeof( px ) ) )
 	{
 		printf( "SKIP: no readback of the pass target\n" );
 		return 2;
@@ -307,6 +318,7 @@ static bool g_DirectDrawPushed = false;
 static bool g_DirectDrawCopied = false;
 static void DirectDrawCallback( const ImDrawList*, const ImDrawCmd* )
 {
+#if IMPLATFORM_GFX_SUPPORT_RENDER_TARGETS && IMPLATFORM_GFX_SUPPORT_DIRECT_DRAW
 	if ( !ImPlatform_PushRenderTarget( g_DirectDrawTarget, true ) )
 		return;
 	g_DirectDrawPushed = true;
@@ -316,6 +328,7 @@ static void DirectDrawCallback( const ImDrawList*, const ImDrawCmd* )
 	ImPlatform_PopShaderConstants( constants );
 	g_DirectDrawCopied = ImPlatform_CopyCurrentTarget( g_DirectDrawCopy, 0, 0, 64, 64, 0, 0 );	// The backdrop copy of a blur
 	ImPlatform_PopRenderTarget();
+#endif
 }
 
 static void DrawDirectDrawTest( ImDrawList* dl )
@@ -333,7 +346,7 @@ static int CheckDirectDrawTest()
 		printf( "SKIP: no render target stack in draw callbacks on this backend\n" );
 		return 2;
 	}
-	if ( !ImPlatform_ReadTexture( g_DirectDrawTarget, 0, 0, 64, 64, px, sizeof( px ) ) )
+	if ( !DemoReadTexture( g_DirectDrawTarget, 0, 0, 64, 64, px, sizeof( px ) ) )
 	{
 		printf( "SKIP: no readback of the pushed target\n" );
 		return 2;
@@ -341,7 +354,7 @@ static int CheckDirectDrawTest()
 	const RenderPassProbe probes[] = { { 32, 0, { 253, 0, 2, 255 } }, { 32, 32, { 125, 0, 130, 255 } }, { 32, 63, { 2, 0, 253, 255 } } };
 	int bad = CheckRenderPassProbes( "direct draw", px, 64, probes, 3, 4 );
 	// Every backend with a render target stack copies the current target too
-	if ( !g_DirectDrawCopied || !ImPlatform_ReadTexture( g_DirectDrawCopy, 0, 0, 64, 64, px, sizeof( px ) ) )
+	if ( !g_DirectDrawCopied || !DemoReadTexture( g_DirectDrawCopy, 0, 0, 64, 64, px, sizeof( px ) ) )
 	{
 		printf( "FAIL: CopyCurrentTarget from the pushed target\n" );
 		++bad;
@@ -355,12 +368,14 @@ static int CheckDirectDrawTest()
 #endif
 #endif // IMPLATFORM_GFX_SUPPORT_CUSTOM_SHADER
 
+#if IMPLATFORM_GFX_SUPPORT_COMPUTE
 #if IM_CURRENT_GFX == IM_GFX_OPENGL3
 #include "shaders/compute_test.glsl.h"
 #elif IM_CURRENT_GFX == IM_GFX_VULKAN
 #include "shaders/compute_test.spv.h"
 #else
 #include "shaders/compute_test.hlsl.h"
+#endif
 #endif
 // --compute-test: storage texture + compute dispatch + readback, the same check on every backend.
 // Reads an input texture (t0), writes a storage texture (u0) with a constant from b0, reads it back.
@@ -386,13 +401,14 @@ static int ImPlatformDemo_ComputeTest()
 	if ( !ImPlatform_SupportsCompute() )
 	{
 		// Readback only: a sub-rectangle of the input comes back unchanged
-		const bool read = input && ImPlatform_ReadTexture( input, 8, 16, 32, 16, out_px, sizeof( out_px ) );
+		const bool read = input && DemoReadTexture( input, 8, 16, 32, 16, out_px, sizeof( out_px ) );
 		int bad = read ? 0 : 1;
 		for ( unsigned int y = 0; read && y < 16; ++y )
 			bad += memcmp( out_px + y * 32 * 4, in_px + ( ( y + 16 ) * N + 8 ) * 4, 32 * 4 ) != 0;
 		printf( bad ? "FAIL (readback only, %d bad rows)\n" : "PASS (readback only)\n", bad );
 		return bad ? 1 : 0;
 	}
+#if IMPLATFORM_GFX_SUPPORT_COMPUTE
 	ImTextureID output = ImPlatform_CreateStorageTexture( NULL, &desc );
 
 	ImPlatform_ShaderDesc sd = {};
@@ -416,7 +432,7 @@ static int ImPlatformDemo_ComputeTest()
 	const float params[ 4 ] = { 0.0f, 0.0f, 0.5f, 0.0f };
 	const bool dispatched = cs && input && output
 		&& ImPlatform_DispatchCompute( cs, &input, 1, &output, 1, params, sizeof( params ), N / 8, N / 8, 1 );
-	const bool read = dispatched && ImPlatform_ReadTexture( output, 0, 0, N, N, out_px, sizeof( out_px ) );
+	const bool read = dispatched && DemoReadTexture( output, 0, 0, N, N, out_px, sizeof( out_px ) );
 	printf( "shader=%d input=%d output=%d dispatched=%d read=%d\n", cs != NULL, input != (ImTextureID)0, output != (ImTextureID)0, (int)dispatched, (int)read );
 	int bad = read ? 0 : 1;
 	for ( unsigned int i = 0; read && i < N * N; ++i )
@@ -429,6 +445,9 @@ static int ImPlatformDemo_ComputeTest()
 	}
 	printf( bad ? "FAIL (%d bad pixels)\n" : "PASS\n", bad );
 	return bad ? 1 : 0;
+#else
+	return 2;	// Not reached: ImPlatform_SupportsCompute is false
+#endif
 }
 
 int main( int argc, char** argv )
