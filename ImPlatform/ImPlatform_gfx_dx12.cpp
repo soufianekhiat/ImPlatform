@@ -776,7 +776,7 @@ IMPLATFORM_API ImPlatform_TextureDesc ImPlatform_TextureDesc_Default(unsigned in
     return desc;
 }
 
-// Texture3D stub for D3D12.
+// 3D textures: ImPlatform_CreateTexture3D is with the texture resources below.
 IMPLATFORM_API ImPlatform_TextureDesc3D ImPlatform_TextureDesc3D_Default(unsigned int w, unsigned int h, unsigned int d)
 {
     ImPlatform_TextureDesc3D x; x.width = w; x.height = h; x.depth = d;
@@ -785,8 +785,7 @@ IMPLATFORM_API ImPlatform_TextureDesc3D ImPlatform_TextureDesc3D_Default(unsigne
     x.wrap_u = x.wrap_v = x.wrap_w = ImPlatform_TextureWrap_Clamp;
     return x;
 }
-IMPLATFORM_API bool ImPlatform_SupportsTexture3D(void) { return false; }
-IMPLATFORM_API ImTextureID ImPlatform_CreateTexture3D(const void*, const ImPlatform_TextureDesc3D*) { return NULL; }
+IMPLATFORM_API bool ImPlatform_SupportsTexture3D(void) { return true; }
 
 IMPLATFORM_API bool ImPlatform_CopyBackbuffer(ImTextureID dst) { (void)dst; return false; }
 IMPLATFORM_API void ImPlatform_GetBackbufferSize(unsigned int* width, unsigned int* height)
@@ -1641,6 +1640,7 @@ namespace
         ID3D12Resource* depth = NULL;
         DXGI_FORMAT format = DXGI_FORMAT_UNKNOWN;
         UINT w = 0, h = 0, bpp = 0;
+        UINT d = 1;                                         // Depth of a 3D texture (ImPlatform_CreateTexture3D)
         D3D12_RESOURCE_STATES rest = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, cur = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
         D3D12_CPU_DESCRIPTOR_HANDLE srv_vis_cpu = {};       // ImGui's shader-visible heap (the ImTextureID).
         D3D12_GPU_DESCRIPTOR_HANDLE srv_vis_gpu = {};
@@ -2095,7 +2095,8 @@ namespace
         return true;
     }
 
-    ImTextureID ImP12_CreateTexture(const ImPlatform_TextureDesc* desc, D3D12_RESOURCE_FLAGS flags, bool depth)
+    // depth3d > 0: a 3D texture of that depth (shader resource only).
+    ImTextureID ImP12_CreateTexture(const ImPlatform_TextureDesc* desc, D3D12_RESOURCE_FLAGS flags, bool depth, UINT depth3d = 0)
     {
         if (!desc || !desc->width || !desc->height || !ImP12_Init())
             return NULL;
@@ -2110,10 +2111,11 @@ namespace
         D3D12_HEAP_PROPERTIES hp = {};
         hp.Type = D3D12_HEAP_TYPE_DEFAULT;
         D3D12_RESOURCE_DESC rd = {};
-        rd.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+        t.d = depth3d ? depth3d : 1;
+        rd.Dimension = depth3d ? D3D12_RESOURCE_DIMENSION_TEXTURE3D : D3D12_RESOURCE_DIMENSION_TEXTURE2D;
         rd.Width = t.w;
         rd.Height = t.h;
-        rd.DepthOrArraySize = 1;
+        rd.DepthOrArraySize = (UINT16)t.d;
         rd.MipLevels = 1;
         rd.Format = format;
         rd.SampleDesc.Count = 1;
@@ -2122,9 +2124,9 @@ namespace
         cv.Format = format;
         if (g_P12_DebugMemoryLimit)
         {
-            UINT64 live = (UINT64)t.w * t.h * t.bpp;
+            UINT64 live = (UINT64)t.w * t.h * t.d * t.bpp;
             for (const auto& kv : g_P12.textures)
-                live += (UINT64)kv.second.w * kv.second.h * kv.second.bpp;
+                live += (UINT64)kv.second.w * kv.second.h * kv.second.d * kv.second.bpp;
             if (live > g_P12_DebugMemoryLimit)
                 return NULL;        // Simulated E_OUTOFMEMORY.
         }
@@ -2142,9 +2144,9 @@ namespace
         g_SrvDescHeapAlloc.Alloc(&t.srv_vis_cpu, &t.srv_vis_gpu);
         D3D12_SHADER_RESOURCE_VIEW_DESC sd = {};
         sd.Format = format;
-        sd.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+        sd.ViewDimension = depth3d ? D3D12_SRV_DIMENSION_TEXTURE3D : D3D12_SRV_DIMENSION_TEXTURE2D;
         sd.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-        sd.Texture2D.MipLevels = 1;
+        sd.Texture2D.MipLevels = 1;     // Texture3D.MipLevels: same offset
         g_GfxData.pDevice->CreateShaderResourceView(t.res, &sd, t.srv_vis_cpu);
         if (ImP12_StepFails(2) || !g_P12.cpu_srv.alloc(&t.srv))
             return fail();
@@ -2404,6 +2406,42 @@ IMPLATFORM_API ImTextureID ImPlatform_CreateTexture(const void* pixel_data, cons
         ImPlatform_DestroyTexture(id);      // The caller never receives the ID.
         return NULL;
     }
+    return id;
+}
+
+// A texture of ImP12_Texture::d slices, uploaded at once through the work list like the 2D ones.
+IMPLATFORM_API ImTextureID ImPlatform_CreateTexture3D(const void* voxel_data, const ImPlatform_TextureDesc3D* desc)
+{
+    if (!desc || !voxel_data || !desc->depth)
+        return NULL;
+    ImPlatform_TextureDesc d2 = ImPlatform_TextureDesc_Default(desc->width, desc->height);
+    d2.format = desc->format;
+    const ImTextureID id = ImP12_CreateTexture(&d2, D3D12_RESOURCE_FLAG_NONE, false, desc->depth);
+    ImP12_Texture* t = id ? ImP12_Find(id) : NULL;
+    ID3D12GraphicsCommandList* list = t && t->bpp ? ImP12_List() : NULL;
+    const UINT row = t ? t->w * t->bpp : 0;
+    const UINT pitch = (row + D3D12_TEXTURE_DATA_PITCH_ALIGNMENT - 1) & ~(D3D12_TEXTURE_DATA_PITCH_ALIGNMENT - 1);
+    ImP12_Upload up;
+    if (!list || !ImP12_Alloc((UINT64)pitch * t->h * t->d, D3D12_TEXTURE_DATA_PLACEMENT_ALIGNMENT, &up))
+    {
+        ImPlatform_DestroyTexture(id);
+        return NULL;
+    }
+    for (UINT r = 0; r < t->h * t->d; r++)
+        memcpy(up.cpu + (size_t)r * pitch, (const uint8_t*)voxel_data + (size_t)r * row, row);
+    D3D12_TEXTURE_COPY_LOCATION src = {}, dst = {};
+    src.pResource = up.res;
+    src.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+    src.PlacedFootprint.Offset = up.offset;
+    src.PlacedFootprint.Footprint.Format = t->format;
+    src.PlacedFootprint.Footprint.Width = t->w;
+    src.PlacedFootprint.Footprint.Height = t->h;
+    src.PlacedFootprint.Footprint.Depth = t->d;
+    src.PlacedFootprint.Footprint.RowPitch = pitch;
+    dst.pResource = t->res;
+    dst.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+    ImP12_Transition(list, *t, D3D12_RESOURCE_STATE_COPY_DEST);
+    list->CopyTextureRegion(&dst, 0, 0, 0, &src, NULL);
     return id;
 }
 

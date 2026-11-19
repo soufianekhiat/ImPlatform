@@ -899,7 +899,6 @@ IMPLATFORM_API ImPlatform_TextureDesc ImPlatform_TextureDesc_Default(unsigned in
     return desc;
 }
 
-// Texture3D stub for WebGPU.
 IMPLATFORM_API ImPlatform_TextureDesc3D ImPlatform_TextureDesc3D_Default(unsigned int w, unsigned int h, unsigned int d)
 {
     ImPlatform_TextureDesc3D x; x.width = w; x.height = h; x.depth = d;
@@ -908,8 +907,52 @@ IMPLATFORM_API ImPlatform_TextureDesc3D ImPlatform_TextureDesc3D_Default(unsigne
     x.wrap_u = x.wrap_v = x.wrap_w = ImPlatform_TextureWrap_Clamp;
     return x;
 }
-IMPLATFORM_API bool ImPlatform_SupportsTexture3D(void) { return false; }
-IMPLATFORM_API ImTextureID ImPlatform_CreateTexture3D(const void*, const ImPlatform_TextureDesc3D*) { return NULL; }
+IMPLATFORM_API bool ImPlatform_SupportsTexture3D(void) { return g_GfxData.device != NULL; }
+
+// A 3D texture view (ImTextureID like the 2D ones); a shader declaring it texture_3d gets a 3D slot in its bind group
+// layout (ImPlatform_WGPU_FindTextures3D). RGB8 has no WebGPU format and is refused.
+IMPLATFORM_API ImTextureID ImPlatform_CreateTexture3D(const void* voxel_data, const ImPlatform_TextureDesc3D* desc)
+{
+    if (!desc || !voxel_data || !g_GfxData.device || desc->format == ImPlatform_PixelFormat_RGB8)
+        return NULL;
+    int bytes_per_pixel;
+    WGPUTextureFormat format = ImPlatform_GetWebGPUFormat(desc->format, &bytes_per_pixel);
+    WGPUTextureDescriptor tex_desc = {};
+    tex_desc.label = WGPU_STR("ImPlatform Texture3D");
+    tex_desc.dimension = WGPUTextureDimension_3D;
+    tex_desc.size.width = desc->width;
+    tex_desc.size.height = desc->height;
+    tex_desc.size.depthOrArrayLayers = desc->depth;
+    tex_desc.mipLevelCount = 1;
+    tex_desc.sampleCount = 1;
+    tex_desc.format = format;
+    tex_desc.usage = WGPUTextureUsage_TextureBinding | WGPUTextureUsage_CopyDst;
+    WGPUTexture texture = wgpuDeviceCreateTexture(g_GfxData.device, &tex_desc);
+    if (!texture)
+        return NULL;
+    WGPUTexelCopyTextureInfo dst = {};
+    dst.texture = texture;
+    dst.aspect = WGPUTextureAspect_All;
+    WGPUTexelCopyBufferLayout layout = {};
+    layout.bytesPerRow = desc->width * bytes_per_pixel;
+    layout.rowsPerImage = desc->height;
+    wgpuQueueWriteTexture(g_GfxData.queue, &dst, voxel_data, (size_t)desc->width * desc->height * desc->depth * bytes_per_pixel,
+                          &layout, &tex_desc.size);
+    WGPUTextureViewDescriptor view_desc = {};
+    view_desc.format = format;
+    view_desc.dimension = WGPUTextureViewDimension_3D;
+    view_desc.mipLevelCount = 1;
+    view_desc.arrayLayerCount = 1;
+    view_desc.aspect = WGPUTextureAspect_All;
+    WGPUTextureView view = wgpuTextureCreateView(texture, &view_desc);
+    if (!view)
+    {
+        wgpuTextureRelease(texture);
+        return NULL;
+    }
+    ImPlatform_TrackTexture(texture, view, NULL, desc->width, desc->height, desc->format);
+    return (ImTextureID)view;
+}
 
 IMPLATFORM_API ImTextureID ImPlatform_CreateTexture(const void* pixel_data, const ImPlatform_TextureDesc* desc)
 {
@@ -1683,6 +1726,7 @@ struct ImPlatform_ShaderData_WebGPU
     char* entryPoint;
     int vertexLocations[3]; // Vertex stage: shader locations of position, uv, color (-1: not an input)
     bool customLayout;      // Vertex stage: inputs other than ImDrawVert's (vertex buffers, by location)
+    unsigned int textures3D; // Bit N: tN (binding 16 + N) is declared texture_3d
 };
 
 // A program's pipeline for a vertex buffer layout (ImPlatform_DrawIndexed)
@@ -1713,6 +1757,8 @@ struct ImPlatform_ShaderProgramData_WebGPU
     char* vertexEntryPoint;
     char* fragmentEntryPoint;
     WGPUTextureView textures[8];    // t1..t8 from ImPlatform_SetShaderTexture (null: the font atlas)
+    // shortcut: a texture_3d slot must be set before drawing (the 2D font atlas cannot stand in for it); add a 1x1x1
+    // fallback view if a shader ever leaves one unset.
     WGPUTextureView boundTexture;   // t0 of the last bind
     ImDrawData* boundDrawData;      // Draw data of the last bind
 };
@@ -1767,6 +1813,22 @@ static void ImPlatform_WGPU_ScanLocations(const char* b, const char* e, int locs
             *custom = true;
         p = colon;
     }
+}
+
+// Texture slots t0..t8 (bindings 16..24) a WGSL module declares as texture_3d, as bits: the bind group layout must
+// give their view dimension. Scans "@binding(N) ... ;" declarations (no reflection in WebGPU).
+static unsigned int ImPlatform_WGPU_FindTextures3D(const char* src)
+{
+    unsigned int bits = 0;
+    for (const char* p = src ? strstr(src, "@binding(") : NULL; p; p = strstr(p + 1, "@binding("))
+    {
+        const int binding = atoi(p + 9);
+        const char* end = strchr(p, ';');
+        const char* t3d = strstr(p, "texture_3d");
+        if (binding >= 16 && binding <= 24 && end && t3d && t3d < end)
+            bits |= 1u << (binding - 16);
+    }
+    return bits;
 }
 
 // Shader locations of ImDrawVert's position, uv and color for the vertex entry point of a WGSL module. WebGPU has no
@@ -1850,6 +1912,7 @@ IMPLATFORM_API ImPlatform_Shader ImPlatform_CreateShader(const ImPlatform_Shader
     shader_data->entryPoint = (char*)malloc(strlen(entry) + 1);
     strcpy(shader_data->entryPoint, entry);
     ImPlatform_WGPU_FindVertexLocations(desc->source_code, entry, shader_data->vertexLocations, &shader_data->customLayout);
+    shader_data->textures3D = ImPlatform_WGPU_FindTextures3D(desc->source_code);
 
     return shader_data;
 }
@@ -1987,10 +2050,13 @@ IMPLATFORM_API ImPlatform_ShaderProgram ImPlatform_CreateShaderProgram(ImPlatfor
     bg_layout_entries[3].visibility = visibility;
     bg_layout_entries[3].sampler.type = WGPUSamplerBindingType_Filtering;
 
+    const unsigned int textures3D = vs_data->textures3D | fs_data->textures3D;
     for (int i = 0; i < 8; i++)
     {
         bg_layout_entries[4 + i] = bg_layout_entries[2];
         bg_layout_entries[4 + i].binding = 17 + i;
+        if (textures3D & (1u << (i + 1)))
+            bg_layout_entries[4 + i].texture.viewDimension = WGPUTextureViewDimension_3D;
     }
 
     WGPUBindGroupLayoutDescriptor bg_layout_desc = {};

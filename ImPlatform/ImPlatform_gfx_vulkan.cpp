@@ -1081,7 +1081,7 @@ IMPLATFORM_API ImPlatform_TextureDesc ImPlatform_TextureDesc_Default(unsigned in
     return desc;
 }
 
-// Texture3D stub for Vulkan.
+// 3D textures: ImPlatform_CreateTexture3D shares ImPlatform_Vk_CreateTexture with the 2D ones.
 IMPLATFORM_API ImPlatform_TextureDesc3D ImPlatform_TextureDesc3D_Default(unsigned int w, unsigned int h, unsigned int d)
 {
     ImPlatform_TextureDesc3D x; x.width = w; x.height = h; x.depth = d;
@@ -1090,17 +1090,18 @@ IMPLATFORM_API ImPlatform_TextureDesc3D ImPlatform_TextureDesc3D_Default(unsigne
     x.wrap_u = x.wrap_v = x.wrap_w = ImPlatform_TextureWrap_Clamp;
     return x;
 }
-IMPLATFORM_API bool ImPlatform_SupportsTexture3D(void) { return false; }
-IMPLATFORM_API ImTextureID ImPlatform_CreateTexture3D(const void*, const ImPlatform_TextureDesc3D*) { return (ImTextureID)0; }
+IMPLATFORM_API bool ImPlatform_SupportsTexture3D(void) { return true; }
 
-IMPLATFORM_API ImTextureID ImPlatform_CreateTexture(const void* pixel_data, const ImPlatform_TextureDesc* desc)
+// 2D (depth 0) or 3D texture: an image, its view and a descriptor set registered like Dear ImGui's textures.
+static ImTextureID ImPlatform_Vk_CreateTexture(const void* pixel_data, const ImPlatform_TextureDesc* desc, unsigned int depth)
 {
     if (!desc || !pixel_data || !g_GfxData.device)
         return (ImTextureID)0;
 
     int bytes_per_pixel;
     VkFormat format = ImPlatform_GetVulkanFormat(desc->format, &bytes_per_pixel);
-    VkDeviceSize upload_size = desc->width * desc->height * bytes_per_pixel;
+    const unsigned int slices = depth ? depth : 1;
+    VkDeviceSize upload_size = (VkDeviceSize)desc->width * desc->height * slices * bytes_per_pixel;
 
     VkResult err;
 
@@ -1143,7 +1144,7 @@ IMPLATFORM_API ImTextureID ImPlatform_CreateTexture(const void* pixel_data, cons
     // Upload to staging buffer
     {
         void* map = NULL;
-        err = vkMapMemory(g_GfxData.device, staging_memory, 0, upload_size, 0, &map);
+        err = vkMapMemory(g_GfxData.device, staging_memory, 0, VK_WHOLE_SIZE, 0, &map);
         if (err != VK_SUCCESS)
         {
             vkDestroyBuffer(g_GfxData.device, staging_buffer, g_Allocator);
@@ -1154,7 +1155,7 @@ IMPLATFORM_API ImTextureID ImPlatform_CreateTexture(const void* pixel_data, cons
         VkMappedMemoryRange range[1] = {};
         range[0].sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE;
         range[0].memory = staging_memory;
-        range[0].size = upload_size;
+        range[0].size = VK_WHOLE_SIZE;     // The whole mapping: a size that is not a multiple of nonCoherentAtomSize is invalid
         err = vkFlushMappedMemoryRanges(g_GfxData.device, 1, range);
         vkUnmapMemory(g_GfxData.device, staging_memory);
         if (err != VK_SUCCESS)
@@ -1171,11 +1172,11 @@ IMPLATFORM_API ImTextureID ImPlatform_CreateTexture(const void* pixel_data, cons
     {
         VkImageCreateInfo image_info = {};
         image_info.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
-        image_info.imageType = VK_IMAGE_TYPE_2D;
+        image_info.imageType = depth ? VK_IMAGE_TYPE_3D : VK_IMAGE_TYPE_2D;
         image_info.format = format;
         image_info.extent.width = desc->width;
         image_info.extent.height = desc->height;
-        image_info.extent.depth = 1;
+        image_info.extent.depth = slices;
         image_info.mipLevels = 1;
         image_info.arrayLayers = 1;
         image_info.samples = VK_SAMPLE_COUNT_1_BIT;
@@ -1224,7 +1225,7 @@ IMPLATFORM_API ImTextureID ImPlatform_CreateTexture(const void* pixel_data, cons
         VkImageViewCreateInfo view_info = {};
         view_info.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
         view_info.image = image;
-        view_info.viewType = VK_IMAGE_VIEW_TYPE_2D;
+        view_info.viewType = depth ? VK_IMAGE_VIEW_TYPE_3D : VK_IMAGE_VIEW_TYPE_2D;
         view_info.format = format;
         view_info.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
         view_info.subresourceRange.levelCount = 1;
@@ -1316,7 +1317,7 @@ IMPLATFORM_API ImTextureID ImPlatform_CreateTexture(const void* pixel_data, cons
             region.imageSubresource.layerCount = 1;
             region.imageExtent.width = desc->width;
             region.imageExtent.height = desc->height;
-            region.imageExtent.depth = 1;
+            region.imageExtent.depth = slices;
             vkCmdCopyBufferToImage(command_buffer, staging_buffer, image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
         }
 
@@ -1355,6 +1356,20 @@ IMPLATFORM_API ImTextureID ImPlatform_CreateTexture(const void* pixel_data, cons
                                       VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, false);
 
     return (ImTextureID)descriptor_set;
+}
+
+IMPLATFORM_API ImTextureID ImPlatform_CreateTexture(const void* pixel_data, const ImPlatform_TextureDesc* desc)
+{
+    return ImPlatform_Vk_CreateTexture(pixel_data, desc, 0);
+}
+
+IMPLATFORM_API ImTextureID ImPlatform_CreateTexture3D(const void* voxel_data, const ImPlatform_TextureDesc3D* desc)
+{
+    if (!desc || !desc->depth)
+        return (ImTextureID)0;
+    ImPlatform_TextureDesc d2 = ImPlatform_TextureDesc_Default(desc->width, desc->height);
+    d2.format = desc->format;
+    return ImPlatform_Vk_CreateTexture(voxel_data, &d2, desc->depth);
 }
 
 IMPLATFORM_API bool ImPlatform_UpdateTexture(ImTextureID /*texture_id*/, const void* /*pixel_data*/,
@@ -2065,6 +2080,8 @@ IMPLATFORM_API void ImPlatform_BindBuffers(ImPlatform_VertexBuffer vertex_buffer
 //   b0 -> set 2 binding 0: the projection (float4x4, as D3D's vertex constant buffer);
 //   b1 -> set 2 binding 1: the parameters (BeginUniformBlock / SetUniform / EndUniformBlock);
 //   t1..t8 -> set 3 bindings 0..7: ImPlatform textures from ImPlatform_SetShaderTexture (a white texture when unset).
+// shortcut: the white texture is 2D, so a slot the shader declares Texture3D must be set before drawing; add a 1x1x1
+// fallback image if a shader ever leaves one unset.
 // Vertex inputs are matched by type: the 4-component input is the color, the first 2-component input (lowest location)
 // the position and the second the UV, as in ImDrawVert.
 // shortcut: no other graphics register (t9+, s1+, b2+, u) is supported; add bindings for them when a shader needs one.

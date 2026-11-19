@@ -90,6 +90,7 @@ static void ImPlatform_PartsDefines(ImGuiTextBuffer& out, const char* defines)
 
 static const char* ImPlatform_PartsText(const char* s) { return s ? s : ""; }
 static const char* ImPlatform_PartsTexture0(const ImPlatform_ShaderParts* parts) { return parts->textures[0] ? parts->textures[0] : "texture0"; }
+static bool ImPlatform_PartsIs3D(const ImPlatform_ShaderParts* parts, int slot) { return (parts->textures_3d >> slot) & 1u; }
 
 // HLSL: Direct3D 9 (vs_3_0 / ps_3_0) to 12. Entry points vs_main and ps_main.
 static void ImPlatform_PartsHLSL(ImGuiTextBuffer& out, const ImPlatform_ShaderParts* parts, bool vertex,
@@ -113,7 +114,7 @@ static void ImPlatform_PartsHLSL(ImGuiTextBuffer& out, const ImPlatform_ShaderPa
     out.appendf("SamplerState imp_sampler : register(s0);\nTexture2D %s : register(t0);\n", ImPlatform_PartsTexture0(parts));
     for (int slot = 1; slot < 9; slot++)
         if (parts->textures[slot])
-            out.appendf("Texture2D %s : register(t%d);\n", parts->textures[slot], slot);
+            out.appendf("%s %s : register(t%d);\n", ImPlatform_PartsIs3D(parts, slot) ? "Texture3D" : "Texture2D", parts->textures[slot], slot);
     out.append("struct ImpVaryings {\n    float4 position : SV_POSITION;\n    float4 col : COLOR0;\n    float2 uv : TEXCOORD0;\n");
     for (int i = 0; i < varying_count; i++)
         out.appendf("    %s : TEXCOORD%d;\n", varyings[i].decl, i + 1);
@@ -177,7 +178,7 @@ static void ImPlatform_PartsGLSL(ImGuiTextBuffer& out, const ImPlatform_ShaderPa
     out.appendf("uniform sampler2D %s;\n", ImPlatform_PartsTexture0(parts));
     for (int slot = 1; slot < 9; slot++)
         if (parts->textures[slot])
-            out.appendf("uniform sampler2D %s;\n", parts->textures[slot]);
+            out.appendf("uniform %s %s;\n", ImPlatform_PartsIs3D(parts, slot) ? "sampler3D" : "sampler2D", parts->textures[slot]);
     out.appendf("%s ImpVaryings {\n    vec4 col;\n    vec2 uv;\n", vertex ? "out" : "in");
     for (int i = 0; i < varying_count; i++)
         out.appendf("    %s;\n", varyings[i].decl);
@@ -255,7 +256,7 @@ static void ImPlatform_PartsMSL(ImGuiTextBuffer& out, const ImPlatform_ShaderPar
     out.appendf("};\nstruct ImpContext : ImpVertex, ImpParamsView {\n    texture2d<float> %s;\n    sampler imp_sampler;\n", ImPlatform_PartsTexture0(parts));
     for (int slot = 1; slot < 9; slot++)
         if (parts->textures[slot])
-            out.appendf("    texture2d<float> %s;\n", parts->textures[slot]);
+            out.appendf("    %s<float> %s;\n", ImPlatform_PartsIs3D(parts, slot) ? "texture3d" : "texture2d", parts->textures[slot]);
     out.appendf("%s\n", ImPlatform_PartsText(parts->functions));
     if (vertex)
     {
@@ -279,7 +280,7 @@ static void ImPlatform_PartsMSL(ImGuiTextBuffer& out, const ImPlatform_ShaderPar
     out.appendf(", texture2d<float> %s [[texture(0)]]", ImPlatform_PartsTexture0(parts));
     for (int slot = 1; slot < 9; slot++)
         if (parts->textures[slot])
-            out.appendf(", texture2d<float> %s [[texture(%d)]]", parts->textures[slot], slot);
+            out.appendf(", %s<float> %s [[texture(%d)]]", ImPlatform_PartsIs3D(parts, slot) ? "texture3d" : "texture2d", parts->textures[slot], slot);
     // Values are copied member by member (loads from constant memory); arrays point into the buffer.
     out.append(", sampler imp_sampler [[sampler(0)]])\n{\n    ImpContext ctx;\n    ctx.ProjMtx = imp_vertex.ProjMtx;\n");
     for (int i = 0; i < param_count; i++)
@@ -318,7 +319,7 @@ IMPLATFORM_API bool ImPlatform_ParseShaderParts(char* text, ImPlatform_ShaderPar
         }
         line = next ? next + 1 : NULL;
     }
-    // Texture lines "<slot> <name>": the names are terminated in place.
+    // Texture lines "<slot> <name>" or "<slot> <name> 3d": the names are terminated in place.
     for (char* line = textures; line && *line; )
     {
         char* next = strchr(line, '\n');
@@ -331,6 +332,13 @@ IMPLATFORM_API bool ImPlatform_ParseShaderParts(char* text, ImPlatform_ShaderPar
             const size_t len = strcspn(end, " \t\r\n");
             if (len)
             {
+                const char* kind = end + len;
+                while (*kind == ' ' || *kind == '\t')
+                    kind++;
+                if (strncmp(kind, "3d", 2) == 0)
+                    parts->textures_3d |= 1u << slot;
+                else
+                    parts->textures_3d &= ~(1u << slot);
                 parts->textures[slot] = end;
                 end[len] = 0;
             }

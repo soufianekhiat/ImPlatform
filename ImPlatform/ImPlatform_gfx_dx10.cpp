@@ -527,7 +527,6 @@ IMPLATFORM_API ImPlatform_TextureDesc ImPlatform_TextureDesc_Default(unsigned in
     return desc;
 }
 
-// Texture3D stub for D3D10.
 IMPLATFORM_API ImPlatform_TextureDesc3D ImPlatform_TextureDesc3D_Default(unsigned int w, unsigned int h, unsigned int d)
 {
     ImPlatform_TextureDesc3D x; x.width = w; x.height = h; x.depth = d;
@@ -536,8 +535,40 @@ IMPLATFORM_API ImPlatform_TextureDesc3D ImPlatform_TextureDesc3D_Default(unsigne
     x.wrap_u = x.wrap_v = x.wrap_w = ImPlatform_TextureWrap_Clamp;
     return x;
 }
-IMPLATFORM_API bool ImPlatform_SupportsTexture3D(void) { return false; }
-IMPLATFORM_API ImTextureID ImPlatform_CreateTexture3D(const void*, const ImPlatform_TextureDesc3D*) { return NULL; }
+IMPLATFORM_API bool ImPlatform_SupportsTexture3D(void) { return true; }
+// A shader resource view like the 2D textures: SetShaderTexture and DestroyTexture take either.
+IMPLATFORM_API ImTextureID ImPlatform_CreateTexture3D(const void* voxel_data, const ImPlatform_TextureDesc3D* desc)
+{
+    if (!desc || !voxel_data || !g_GfxData.pDevice)
+        return NULL;
+    int bytes_per_pixel = 0;
+    DXGI_FORMAT format = ImPlatform_GetD3D10Format(desc->format, &bytes_per_pixel);
+    D3D10_TEXTURE3D_DESC td;
+    ZeroMemory(&td, sizeof(td));
+    td.Width = desc->width;
+    td.Height = desc->height;
+    td.Depth = desc->depth;
+    td.MipLevels = 1;
+    td.Format = format;
+    td.Usage = D3D10_USAGE_DEFAULT;
+    td.BindFlags = D3D10_BIND_SHADER_RESOURCE;
+    D3D10_SUBRESOURCE_DATA sub;
+    sub.pSysMem = voxel_data;
+    sub.SysMemPitch = desc->width * bytes_per_pixel;
+    sub.SysMemSlicePitch = desc->width * desc->height * bytes_per_pixel;
+    ID3D10Texture3D* pTex = NULL;
+    if (FAILED(g_GfxData.pDevice->CreateTexture3D(&td, &sub, &pTex)) || !pTex)
+        return NULL;
+    D3D10_SHADER_RESOURCE_VIEW_DESC sv;
+    ZeroMemory(&sv, sizeof(sv));
+    sv.Format = format;
+    sv.ViewDimension = D3D10_SRV_DIMENSION_TEXTURE3D;
+    sv.Texture3D.MipLevels = 1;
+    ID3D10ShaderResourceView* pSRV = NULL;
+    HRESULT hr = g_GfxData.pDevice->CreateShaderResourceView(pTex, &sv, &pSRV);
+    pTex->Release();
+    return SUCCEEDED(hr) ? (ImTextureID)pSRV : NULL;
+}
 
 IMPLATFORM_API ImTextureID ImPlatform_CreateTexture(const void* pixel_data, const ImPlatform_TextureDesc* desc)
 {

@@ -38,9 +38,9 @@ The same registers as ImPlatform's Direct3D 11 backend:
 
 `ImPlatform_SetShaderTexture` takes any ImPlatform texture. The program keeps it for its later draws; called inside a
 draw callback while the program is bound, it also applies at once. Unset slots are a white texture on Vulkan, the
-font atlas on WebGPU, and undefined on the other backends. Metal does not support it. Slot 0 is the texture
-of the direct draws (`ImPlatform_DrawIndexed`, `ImPlatform_DrawQuadNow`); Dear ImGui's draws bind their own. On OpenGL, `name` is
-the HLSL texture name (SPIRV-Cross renames it `SPIRV_Cross_Combined<name><sampler>`, which is also found).
+font atlas on WebGPU (a slot declared `Texture3D` must be set there and on Vulkan), and undefined on the other
+backends. Slot 0 is the texture of the direct draws (`ImPlatform_DrawIndexed`, `ImPlatform_DrawQuadNow`); Dear ImGui's
+draws bind their own. On OpenGL, `name` is the HLSL texture name (SPIRV-Cross renames it `SPIRV_Cross_Combined<name><sampler>`, which is also found).
 
 Vertex inputs are `ImDrawVert`: `float2 POSITION`, `float2 TEXCOORD0`, `float4 COLOR0`, in any order (Vulkan, OpenGL
 and WebGPU tell them apart by type: the 4-component input is the color, the first 2-component input the position).

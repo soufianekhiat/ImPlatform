@@ -561,7 +561,9 @@ IMPLATFORM_API ImPlatform_TextureDesc3D ImPlatform_TextureDesc3D_Default(
 
 // Create a 3D texture from raw voxel data (tightly packed, z-major:
 // z*w*h + y*w + x order). Returns ImTextureID_Invalid on failure or if
-// the backend does not support 3D textures.
+// the backend does not support 3D textures. Bind it with ImPlatform_SetShaderTexture to a slot the shader declares
+// Texture3D (shader parts: a "<slot> <name> 3d" texture line); it is sampled with the program's sampler, so the filters
+// and wraps of the desc apply only where the texture keeps them (OpenGL). Destroy with ImPlatform_DestroyTexture.
 IMPLATFORM_API ImTextureID ImPlatform_CreateTexture3D(
     const void* voxel_data,
     const ImPlatform_TextureDesc3D* desc
@@ -1021,7 +1023,8 @@ IMPLATFORM_API void ImPlatform_DrawQuadNow(ImPlatform_ShaderProgram program, ImV
 // GLSL 330 on OpenGL, MSL on Metal). The application gives its parameter block, extra varyings, textures, helper
 // functions and the vertex / pixel bodies; ImPlatform writes the entry points, inputs, outputs and declarations.
 // The text is HLSL plus these macros, which every language maps:
-//   IMP_SAMPLE(tex, uv), IMP_SAMPLE_LEVEL(tex, uv, lod), IMP_LOAD(tex, int2 xy), IMP_MUL(matrix, vector),
+//   IMP_SAMPLE(tex, uv), IMP_SAMPLE_LEVEL(tex, uv, lod) (uv a float3 for a 3D texture), IMP_LOAD(tex, int2 xy) (2D),
+//   IMP_MUL(matrix, vector),
 //   IMP_CAST(type, x) (instead of C-style casts), IMP_OUT(type) / IMP_INOUT(type) (function parameters written by the
 //   function; MSL has no out / inout), IMP_UNROLL / IMP_LOOP / IMP_BRANCH (loop and branch attributes),
 //   IMP_HLSL / IMP_GLSL / IMP_MSL (defined for the language being generated).
@@ -1045,6 +1048,7 @@ typedef struct ImPlatform_ShaderParts {
     const char* params;         // Members of the parameter block (b1): "float4 col0; float4 col1; float2 uv_start;"
     const char* varyings;       // Extra vertex -> pixel values, floats: "float2 world; float4 extra;" (up to 7)
     const char* textures[9];    // Names of t0..t8 (index = register); t0 (the draw's texture) is texture0 unless named
+    unsigned int textures_3d;   // Bit N: tN is a 3D texture (ImPlatform_CreateTexture3D), sampled with a float3
     const char* defines;        // Preprocessor variants, ';' or new lines: "CLIP=1;MODE=2" or "#define MODE 2"
     const char* functions;      // Helper functions shared by both stages
     const char* vs_body;        // Vertex body (optional): changes position / v.* after the defaults
@@ -1059,7 +1063,8 @@ typedef struct ImPlatform_ShaderParts {
 IMPLATFORM_API int ImPlatform_GenerateShaderSource(const ImPlatform_ShaderParts* parts, ImPlatform_ShaderStage stage,
                                                    ImPlatform_ShaderFormat format, char* out, int out_size);
 // Parts from one text (a shader file): lines "//@params", "//@varyings", "//@textures", "//@defines", "//@functions",
-// "//@vs" and "//@ps" start the sections (text before the first one is ignored); texture lines are "<slot> <name>".
+// "//@vs" and "//@ps" start the sections (text before the first one is ignored); texture lines are "<slot> <name>", or
+// "<slot> <name> 3d" for a 3D texture.
 // `text` is split in place and must outlive `parts`; fields of absent sections are left as they were. Returns false
 // when the text has no section.
 IMPLATFORM_API bool ImPlatform_ParseShaderParts(char* text, ImPlatform_ShaderParts* parts);

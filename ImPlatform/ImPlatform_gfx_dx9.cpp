@@ -368,7 +368,6 @@ IMPLATFORM_API ImPlatform_TextureDesc ImPlatform_TextureDesc_Default(unsigned in
     return desc;
 }
 
-// D3D9 has no Texture3D support. Stub the API.
 IMPLATFORM_API ImPlatform_TextureDesc3D ImPlatform_TextureDesc3D_Default(unsigned int w, unsigned int h, unsigned int d)
 {
     ImPlatform_TextureDesc3D x;
@@ -379,8 +378,43 @@ IMPLATFORM_API ImPlatform_TextureDesc3D ImPlatform_TextureDesc3D_Default(unsigne
     x.wrap_u = x.wrap_v = x.wrap_w = ImPlatform_TextureWrap_Clamp;
     return x;
 }
-IMPLATFORM_API bool ImPlatform_SupportsTexture3D(void) { return false; }
-IMPLATFORM_API ImTextureID ImPlatform_CreateTexture3D(const void*, const ImPlatform_TextureDesc3D*) { return NULL; }
+IMPLATFORM_API bool ImPlatform_SupportsTexture3D(void)
+{
+    D3DCAPS9 caps;
+    return g_GfxData.pDevice && SUCCEEDED(g_GfxData.pDevice->GetDeviceCaps(&caps)) && (caps.TextureCaps & D3DPTEXTURECAPS_VOLUMEMAP);
+}
+
+// A volume texture (sampled as a Texture3D by shader model 3); RGBA8 is stored as B, G, R, A like the 2D textures.
+IMPLATFORM_API ImTextureID ImPlatform_CreateTexture3D(const void* voxel_data, const ImPlatform_TextureDesc3D* desc)
+{
+    if (!desc || !voxel_data || !ImPlatform_SupportsTexture3D())
+        return NULL;
+    int bytes_per_pixel;
+    D3DFORMAT format = ImPlatform_GetD3D9Format(desc->format, &bytes_per_pixel);
+    IDirect3DVolumeTexture9* tex = NULL;
+    if (FAILED(g_GfxData.pDevice->CreateVolumeTexture(desc->width, desc->height, desc->depth, 1, 0, format, D3DPOOL_MANAGED, &tex, NULL)) || !tex)
+        return NULL;
+    D3DLOCKED_BOX box;
+    if (FAILED(tex->LockBox(0, &box, NULL, 0)))
+    {
+        tex->Release();
+        return NULL;
+    }
+    const unsigned char* src = (const unsigned char*)voxel_data;
+    const unsigned int row = desc->width * (unsigned int)bytes_per_pixel;
+    for (unsigned int z = 0; z < desc->depth; z++)
+        for (unsigned int y = 0; y < desc->height; y++)
+        {
+            unsigned char* dst = (unsigned char*)box.pBits + z * box.SlicePitch + y * box.RowPitch;
+            const unsigned char* s = src + ((size_t)z * desc->height + y) * row;
+            if (desc->format == ImPlatform_PixelFormat_RGBA8)
+                ImP9_CopyPixels(dst, s, desc->width, true);
+            else
+                memcpy(dst, s, row);
+        }
+    tex->UnlockBox(0);
+    return (ImTextureID)tex;
+}
 
 IMPLATFORM_API ImTextureID ImPlatform_CreateTexture(const void* pixel_data, const ImPlatform_TextureDesc* desc)
 {
@@ -1000,7 +1034,7 @@ struct ImPlatform_ShaderProgramData_DX9
     ImPlatform_ShaderData_DX9* vs;
     ImPlatform_ShaderData_DX9* ps;
     ImVector<unsigned char> params; // b1
-    IDirect3DTexture9* textures[9]; // ImPlatform_SetShaderTexture: t0 for direct draws, t1..t8 for every draw (referenced)
+    IDirect3DBaseTexture9* textures[9]; // ImPlatform_SetShaderTexture: t0 for direct draws, t1..t8 for every draw (referenced)
 };
 
 // b1 of the direct draws while pushed (ImPlatform_PushShaderConstants), a stack.
@@ -1177,7 +1211,7 @@ IMPLATFORM_API void ImPlatform_DestroyShaderProgram(ImPlatform_ShaderProgram pro
         return;
     ImPlatform_DestroyShader(pd->vs);
     ImPlatform_DestroyShader(pd->ps);
-    for (IDirect3DTexture9* tex : pd->textures)
+    for (IDirect3DBaseTexture9* tex : pd->textures)
         if (tex)
             tex->Release();
     if (g_P9_Bound == pd)
@@ -1233,6 +1267,7 @@ static void ImP9_BindProgram(ImPlatform_ShaderProgramData_DX9* pd, const D3DMATR
             dev->SetSamplerState(slot, D3DSAMP_MAGFILTER, D3DTEXF_LINEAR);
             dev->SetSamplerState(slot, D3DSAMP_ADDRESSU, D3DTADDRESS_CLAMP);
             dev->SetSamplerState(slot, D3DSAMP_ADDRESSV, D3DTADDRESS_CLAMP);
+            dev->SetSamplerState(slot, D3DSAMP_ADDRESSW, D3DTADDRESS_CLAMP);
         }
     g_P9_Bound = pd;
     g_P9_BoundProjection = projection;
@@ -1265,7 +1300,7 @@ IMPLATFORM_API bool ImPlatform_SetShaderTexture(ImPlatform_ShaderProgram program
     ImPlatform_ShaderProgramData_DX9* pd = (ImPlatform_ShaderProgramData_DX9*)program;
     if (!pd || slot > 8)
         return false;
-    IDirect3DTexture9* tex = (IDirect3DTexture9*)texture;
+    IDirect3DBaseTexture9* tex = (IDirect3DBaseTexture9*)texture; // 2D or volume
     if (tex)
         tex->AddRef();
     if (pd->textures[slot])

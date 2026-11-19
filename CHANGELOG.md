@@ -53,6 +53,12 @@
   `ImPlatform_GenerateShaderSource()` gives the text of any language. Demo: `--shader-parts-test`.
   `asuint`, `asint`, `asfloat` and `f16tof32` map to GLSL and MSL (not DirectX 9: no bit operations in shader model 3);
   `//` comments in the parameter block may hold `;`.
+- **3D textures on every backend**: `ImPlatform_CreateTexture3D()` was DirectX 11 only; DirectX 9 (volume textures, when
+  the device reports them), 10, 12, OpenGL 3, Vulkan, Metal and WebGPU now create them too, bound with
+  `ImPlatform_SetShaderTexture()` to a slot the shader declares `Texture3D`. Shader parts declare one with a
+  `<slot> <name> 3d` texture line (`ImPlatform_ShaderParts::textures_3d`). Demo: `--texture3d-test`.
+- Vulkan: texture uploads map and flush the whole staging allocation (a size that was not a multiple of
+  `nonCoherentAtomSize` broke a validation rule).
 - Metal: `ImPlatform_SetShaderTexture()` slots 1..8 (both stages).
 - The custom shader parameters (`b1`) are bound to the vertex stage too on DirectX 10, 11 and 12 (vertex animation).
 - DirectX 9 custom shaders: the same HLSL, compiled for `vs_3_0` / `ps_3_0`; cbuffer members are uploaded to the

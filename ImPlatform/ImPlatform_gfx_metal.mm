@@ -552,7 +552,6 @@ IMPLATFORM_API ImPlatform_TextureDesc ImPlatform_TextureDesc_Default(unsigned in
     return desc;
 }
 
-// Texture3D stub for Metal.
 IMPLATFORM_API ImPlatform_TextureDesc3D ImPlatform_TextureDesc3D_Default(unsigned int w, unsigned int h, unsigned int d)
 {
     ImPlatform_TextureDesc3D x; x.width = w; x.height = h; x.depth = d;
@@ -561,8 +560,32 @@ IMPLATFORM_API ImPlatform_TextureDesc3D ImPlatform_TextureDesc3D_Default(unsigne
     x.wrap_u = x.wrap_v = x.wrap_w = ImPlatform_TextureWrap_Clamp;
     return x;
 }
-IMPLATFORM_API bool ImPlatform_SupportsTexture3D(void) { return false; }
-IMPLATFORM_API ImTextureID ImPlatform_CreateTexture3D(const void*, const ImPlatform_TextureDesc3D*) { return (ImTextureID)0; }
+IMPLATFORM_API bool ImPlatform_SupportsTexture3D(void) { return g_GfxData.pMetalDevice != NULL; }
+
+// An id<MTLTexture> of type 3D: SetShaderTexture binds it like the 2D ones (the shader declares texture3d<float>).
+IMPLATFORM_API ImTextureID ImPlatform_CreateTexture3D(const void* voxel_data, const ImPlatform_TextureDesc3D* desc)
+{
+    if (!desc || !voxel_data || !g_GfxData.pMetalDevice)
+        return (ImTextureID)0;
+    @autoreleasepool {
+        int bytes_per_pixel;
+        MTLTextureDescriptor* td = [[MTLTextureDescriptor alloc] init];
+        td.textureType = MTLTextureType3D;
+        td.pixelFormat = ImPlatform_GetMetalFormat(desc->format, &bytes_per_pixel);
+        td.width = desc->width;
+        td.height = desc->height;
+        td.depth = desc->depth;
+        td.usage = MTLTextureUsageShaderRead;
+        td.storageMode = MTLStorageModeManaged;
+        id<MTLTexture> texture = [(__bridge id<MTLDevice>)g_GfxData.pMetalDevice newTextureWithDescriptor:td];
+        if (!texture)
+            return (ImTextureID)0;
+        const NSUInteger row = (NSUInteger)desc->width * (NSUInteger)bytes_per_pixel;
+        [texture replaceRegion:MTLRegionMake3D(0, 0, 0, desc->width, desc->height, desc->depth) mipmapLevel:0 slice:0
+                     withBytes:voxel_data bytesPerRow:row bytesPerImage:row * desc->height];
+        return (ImTextureID)(__bridge_retained void*)texture;
+    }
+}
 
 IMPLATFORM_API ImTextureID ImPlatform_CreateTexture(const void* pixel_data, const ImPlatform_TextureDesc* desc)
 {

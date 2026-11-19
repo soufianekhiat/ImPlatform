@@ -77,7 +77,8 @@ try {
             Invoke-Tool $slangc ($common + $glShifts + @('-o', "$tmp\$stage.gl.spv"))
             Invoke-Tool $spirvCross (@("$tmp\$stage.gl.spv", '--version', '330', '--no-es') + $rename + @('--output', "$tmp\$stage.glsl"))
             Invoke-Tool $slangc (@($src.Name, '-entry', "${stage}_main", '-stage', $kind, '-target', 'wgsl') + $glShifts + @('-o', "$tmp\$stage.wgsl"))
-            Invoke-Tool $slangc @($src.Name, '-entry', "${stage}_main", '-stage', $kind, '-target', 'metal', '-line-directive-mode', 'none', '-warnings-disable', '39029', '-o', "$tmp\$stage.metal")
+            # 39001: Slang reports s0 overlapping b0, which are separate argument tables in Metal.
+            Invoke-Tool $slangc @($src.Name, '-entry', "${stage}_main", '-stage', $kind, '-target', 'metal', '-line-directive-mode', 'none', '-warnings-disable', '39029,39001', '-o', "$tmp\$stage.metal")
             $msl = [regex]::Replace([IO.File]::ReadAllText("$tmp\$stage.metal"), '\[\[buffer\((\d+)\)\]\]', { param($m) "[[buffer($([int]$m.Groups[1].Value + 1))]]" })
             [IO.File]::WriteAllText("$tmp\$stage.metal", $msl)
         }

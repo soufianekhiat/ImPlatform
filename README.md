@@ -345,7 +345,9 @@ between backends:
 
 `ImPlatform_SupportsReadback()`, `SupportsCompute()` and `SupportsDepthDraw()` are declared on every backend and
 answer at run time (OpenGL compute needs a 4.3 context). Custom shaders (`IMPLATFORM_GFX_SUPPORT_CUSTOM_SHADER`) are on every
-built-in backend.
+built-in backend. So are 3D textures: `ImPlatform_CreateTexture3D()`, bound with `SetShaderTexture()` to a slot the
+shader declares `Texture3D` (a `<slot> <name> 3d` line in shader parts); `ImPlatform_SupportsTexture3D()` answers at
+run time (DirectX 9: the device's volume texture capability).
 
 ### Custom (or no) Graphics Backend
 
@@ -467,6 +469,7 @@ ImPlatformDemo_Win32_DX12 --render-pass-test   # render pass target and premulti
 ImPlatformDemo_Win32_DX12 --shader-test        # shaders/gradient.hlsl drawn into a render pass, read back
 ImPlatformDemo_Win32_DX12 --direct-draw-test   # from a draw callback: push a render target, push constants, DrawQuadNow
 ImPlatformDemo_Win32_DX12 --shader-parts-test  # a shader written as parts: parameters in both stages, varying, texture t1
+ImPlatformDemo_Win32_DX12 --texture3d-test     # a 2x2x2 texture at t1, sampled by shaders/volume_test.hlsl and by shader parts
 ```
 
 Each prints PASS or FAIL and exits with 0 (pass), 1 (fail) or 2 (unsupported by the backend).

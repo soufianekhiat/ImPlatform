@@ -229,6 +229,12 @@ static PFNIMPGLGETUNIFORMBLOCKINDEXPROC glGetUniformBlockIndex_Ptr = NULL;
 static PFNIMPGLUNIFORMBLOCKBINDINGPROC  glUniformBlockBinding_Ptr = NULL;
 static PFNIMPGLGETACTIVEATTRIBPROC      glGetActiveAttrib_Ptr = NULL;
 static PFNIMPGLGETACTIVEATTRIBPROC      glGetActiveUniform_Ptr = NULL;     // Same signature as glGetActiveAttrib
+// 3D textures (GL 1.2), not in Dear ImGui's loader
+#define IMP_GL_TEXTURE_3D 0x806F
+#define IMP_GL_TEXTURE_WRAP_R 0x8072
+typedef void (APIENTRYP PFNIMPGLTEXIMAGE3DPROC)(GLenum target, GLint level, GLint internal_format, GLsizei width, GLsizei height, GLsizei depth, GLint border, GLenum format, GLenum type, const void* pixels);
+static PFNIMPGLTEXIMAGE3DPROC glTexImage3D_Ptr = NULL;
+static ImVector<GLuint> g_GL_Textures3D; // names created by ImPlatform_CreateTexture3D: bound to GL_TEXTURE_3D
 static PFNGLPROGRAMBINARYPROC     glProgramBinary_Ptr     = NULL;
 static PFNGLGETPROGRAMBINARYPROC  glGetProgramBinary_Ptr  = NULL;
 
@@ -540,6 +546,7 @@ IMPLATFORM_API bool ImPlatform_InitGfx(void)
     glUniformBlockBinding_Ptr  = (PFNIMPGLUNIFORMBLOCKBINDINGPROC)imgl3wGetProcAddress("glUniformBlockBinding");
     glGetActiveAttrib_Ptr      = (PFNIMPGLGETACTIVEATTRIBPROC)imgl3wGetProcAddress("glGetActiveAttrib");
     glGetActiveUniform_Ptr     = (PFNIMPGLGETACTIVEATTRIBPROC)imgl3wGetProcAddress("glGetActiveUniform");
+    glTexImage3D_Ptr           = (PFNIMPGLTEXIMAGE3DPROC)imgl3wGetProcAddress("glTexImage3D");
 
     // Program binary cache (GL 4.1+), disabled when unavailable
     glProgramBinary_Ptr    = (PFNGLPROGRAMBINARYPROC)imgl3wGetProcAddress("glProgramBinary");
@@ -1167,7 +1174,7 @@ IMPLATFORM_API ImPlatform_TextureDesc ImPlatform_TextureDesc_Default(unsigned in
     return desc;
 }
 
-// Texture3D stub for OpenGL3.
+// 3D textures: bound to GL_TEXTURE_3D by ImPlatform_SetShaderTexture (g_GL_Textures3D tells them apart).
 IMPLATFORM_API ImPlatform_TextureDesc3D ImPlatform_TextureDesc3D_Default(unsigned int w, unsigned int h, unsigned int d)
 {
     ImPlatform_TextureDesc3D x; x.width = w; x.height = h; x.depth = d;
@@ -1176,8 +1183,38 @@ IMPLATFORM_API ImPlatform_TextureDesc3D ImPlatform_TextureDesc3D_Default(unsigne
     x.wrap_u = x.wrap_v = x.wrap_w = ImPlatform_TextureWrap_Clamp;
     return x;
 }
-IMPLATFORM_API bool ImPlatform_SupportsTexture3D(void) { return false; }
-IMPLATFORM_API ImTextureID ImPlatform_CreateTexture3D(const void*, const ImPlatform_TextureDesc3D*) { return 0; }
+IMPLATFORM_API bool ImPlatform_SupportsTexture3D(void) { return glTexImage3D_Ptr != NULL; }
+
+IMPLATFORM_API ImTextureID ImPlatform_CreateTexture3D(const void* voxel_data, const ImPlatform_TextureDesc3D* desc)
+{
+    if (!desc || !voxel_data || !glTexImage3D_Ptr)
+        return 0;
+    GLint internal_format;
+    GLenum format;
+    GLenum type;
+    int channels;
+    ImPlatform_GetOpenGLFormat(desc->format, &internal_format, &format, &type, &channels);
+    static const GLint kWrap3D[3] = { GL_CLAMP_TO_EDGE, GL_REPEAT, GL_MIRRORED_REPEAT };    // ImPlatform_TextureWrap
+    GLint prev = 0;
+    glGetIntegerv(0x806A /*GL_TEXTURE_BINDING_3D*/, &prev);
+    GLuint tex = 0;
+    glGenTextures(1, &tex);
+    glBindTexture(IMP_GL_TEXTURE_3D, tex);
+    glTexParameteri(IMP_GL_TEXTURE_3D, GL_TEXTURE_MIN_FILTER, desc->min_filter == ImPlatform_TextureFilter_Nearest ? GL_NEAREST : GL_LINEAR);
+    glTexParameteri(IMP_GL_TEXTURE_3D, GL_TEXTURE_MAG_FILTER, desc->mag_filter == ImPlatform_TextureFilter_Nearest ? GL_NEAREST : GL_LINEAR);
+    glTexParameteri(IMP_GL_TEXTURE_3D, GL_TEXTURE_WRAP_S, kWrap3D[(int)desc->wrap_u % 3]);
+    glTexParameteri(IMP_GL_TEXTURE_3D, GL_TEXTURE_WRAP_T, kWrap3D[(int)desc->wrap_v % 3]);
+    glTexParameteri(IMP_GL_TEXTURE_3D, IMP_GL_TEXTURE_WRAP_R, kWrap3D[(int)desc->wrap_w % 3]);
+    glTexParameteri(IMP_GL_TEXTURE_3D, 0x813D /*GL_TEXTURE_MAX_LEVEL*/, 0);
+#if defined(GL_UNPACK_ROW_LENGTH) && !defined(__EMSCRIPTEN__)
+    glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
+#endif
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+    glTexImage3D_Ptr(IMP_GL_TEXTURE_3D, 0, internal_format, (GLsizei)desc->width, (GLsizei)desc->height, (GLsizei)desc->depth, 0, format, type, voxel_data);
+    glBindTexture(IMP_GL_TEXTURE_3D, (GLuint)prev);
+    g_GL_Textures3D.push_back(tex);
+    return (ImTextureID)(intptr_t)tex;
+}
 
 IMPLATFORM_API ImTextureID ImPlatform_CreateTexture(const void* pixel_data, const ImPlatform_TextureDesc* desc)
 {
@@ -1484,6 +1521,7 @@ IMPLATFORM_API void ImPlatform_DestroyTexture(ImTextureID texture_id)
         return;
 
     GLuint tex = (GLuint)(intptr_t)texture_id;
+    g_GL_Textures3D.find_erase_unsorted(tex);
     glDeleteTextures(1, &tex);
 }
 
@@ -2370,7 +2408,8 @@ IMPLATFORM_API bool ImPlatform_SetShaderTexture(ImPlatform_ShaderProgram program
     // Shaders using explicit layout(binding=N) qualifiers don't need a uniform set,
     // but still require the texture to be bound to the correct texture unit.
     glActiveTexture(GL_TEXTURE0 + slot);
-    glBindTexture(GL_TEXTURE_2D, (GLuint)(intptr_t)texture);
+    const GLuint tex = (GLuint)(intptr_t)texture;
+    glBindTexture(g_GL_Textures3D.contains(tex) ? IMP_GL_TEXTURE_3D : GL_TEXTURE_2D, tex);
 
     // For shaders without explicit binding (legacy sampler uniforms), set the unit.
     // Slang-generated GLSL suffixes resource names with "_0".

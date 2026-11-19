@@ -67,7 +67,8 @@ for src in *.hlsl; do
         "$SLANGC" "$src" -entry ${stage}_main -stage $kind -target spirv -profile spirv_1_3 -O3 $GL_SHIFTS -o "$TMP/$stage.gl.spv"
         "$SPIRV_CROSS" "$TMP/$stage.gl.spv" --version 330 --no-es $rename --output "$TMP/$stage.glsl"
         "$SLANGC" "$src" -entry ${stage}_main -stage $kind -target wgsl $GL_SHIFTS -o "$TMP/$stage.wgsl"
-        "$SLANGC" "$src" -entry ${stage}_main -stage $kind -target metal -line-directive-mode none -warnings-disable 39029 -o "$TMP/$stage.msl"
+        # 39001: Slang reports s0 overlapping b0, which are separate argument tables in Metal.
+        "$SLANGC" "$src" -entry ${stage}_main -stage $kind -target metal -line-directive-mode none -warnings-disable 39029,39001 -o "$TMP/$stage.msl"
         perl -pe 's/\[\[buffer\((\d+)\)\]\]/"[[buffer(" . ($1 + 1) . ")]]"/ge' "$TMP/$stage.msl" > "$TMP/$stage.metal"
     done
 

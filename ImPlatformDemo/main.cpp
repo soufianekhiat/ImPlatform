@@ -232,22 +232,27 @@ static int CheckRenderPassTest()
 #if (IM_CURRENT_GFX == IM_GFX_VULKAN)
 #include "shaders/arrow_sdf.spv.h"
 #include "shaders/gradient.spv.h"
+#include "shaders/volume_test.spv.h"
 #define DEMO_SHADER_PROGRAM( name, shaders ) CreateDemoProgram( ImPlatform_ShaderFormat_SPIRV, name##_vs_spv, sizeof( name##_vs_spv ), name##_ps_spv, sizeof( name##_ps_spv ), "main", "main", shaders )
 #elif (IM_CURRENT_GFX == IM_GFX_OPENGL3)
 #include "shaders/arrow_sdf.glsl.h"
 #include "shaders/gradient.glsl.h"
+#include "shaders/volume_test.glsl.h"
 #define DEMO_SHADER_PROGRAM( name, shaders ) CreateDemoProgram( ImPlatform_ShaderFormat_GLSL, name##_vs_glsl, 0, name##_ps_glsl, 0, "main", "main", shaders )
 #elif (IM_CURRENT_GFX == IM_GFX_DIRECTX9) || (IM_CURRENT_GFX == IM_GFX_DIRECTX10) || (IM_CURRENT_GFX == IM_GFX_DIRECTX11) || (IM_CURRENT_GFX == IM_GFX_DIRECTX12)
 #include "shaders/arrow_sdf.hlsl.h"
 #include "shaders/gradient.hlsl.h"
+#include "shaders/volume_test.hlsl.h"
 #define DEMO_SHADER_PROGRAM( name, shaders ) CreateDemoProgram( ImPlatform_ShaderFormat_HLSL, name##_hlsl, 0, name##_hlsl, 0, "vs_main", "ps_main", shaders )
 #elif (IM_CURRENT_GFX == IM_GFX_WGPU)
 #include "shaders/arrow_sdf.wgsl.h"
 #include "shaders/gradient.wgsl.h"
+#include "shaders/volume_test.wgsl.h"
 #define DEMO_SHADER_PROGRAM( name, shaders ) CreateDemoProgram( ImPlatform_ShaderFormat_WGSL, name##_vs_wgsl, 0, name##_ps_wgsl, 0, "vs_main", "ps_main", shaders )
 #elif (IM_CURRENT_GFX == IM_GFX_METAL)
 #include "shaders/arrow_sdf.metal.h"
 #include "shaders/gradient.metal.h"
+#include "shaders/volume_test.metal.h"
 #define DEMO_SHADER_PROGRAM( name, shaders ) CreateDemoProgram( ImPlatform_ShaderFormat_MSL, name##_vs_metal, 0, name##_ps_metal, 0, "vs_main", "ps_main", shaders )
 #else
 #define DEMO_SHADER_NONE	// No demo shader for this backend
@@ -404,6 +409,90 @@ static void DestroyPartsTest()
 		ImPlatform_DestroyTexture( g_PartsTint );
 }
 
+// --texture3d-test: a 2x2x2 texture (voxel x, y, z colored (255 x, 255 y, 255 z)) at t1, drawn into a render pass by
+// shaders/volume_test.hlsl (left 64 pixels) and, with shader parts, by the same sampling written as parts with a
+// "1 volume 3d" texture line (right 64 pixels): each quad shows voxel (0, 1, 1) on its left half, (1, 0, 0) on its right.
+static RenderPassScene g_Texture3DTest;
+static ImPlatform_ShaderProgram g_Texture3DPrograms[ 2 ] = {};
+static ImPlatform_Shader g_Texture3DShaders[ 4 ] = {};
+static ImTextureID g_Texture3D = 0;
+static void DrawTexture3DTest( ImDrawList* dl )
+{
+	for ( int i = 0; i < 2; i++ )
+		if ( g_Texture3DPrograms[ i ] )
+		{
+			ImPlatform_BeginCustomShader( dl, g_Texture3DPrograms[ i ] );
+			dl->AddImage( ImGui::GetIO().Fonts->TexRef, ImVec2( 64.0f * i, 0 ), ImVec2( 64.0f * i + 64.0f, 64 ) );
+			ImPlatform_EndCustomShader( dl );
+		}
+}
+
+static bool CreateTexture3DTest()
+{
+#if !defined( DEMO_SHADER_NONE ) && IMPLATFORM_GFX_SUPPORT_SHADER_TEXTURES
+	unsigned char voxels[ 2 * 2 * 2 * 4 ];
+	for ( int i = 0; i < 8; i++ )
+	{
+		voxels[ i * 4 + 0 ] = ( i & 1 ) ? 255 : 0;			// x
+		voxels[ i * 4 + 1 ] = ( i & 2 ) ? 255 : 0;			// y
+		voxels[ i * 4 + 2 ] = ( i & 4 ) ? 255 : 0;			// z
+		voxels[ i * 4 + 3 ] = 255;
+	}
+	ImPlatform_TextureDesc3D desc = ImPlatform_TextureDesc3D_Default( 2, 2, 2 );
+	g_Texture3D = ImPlatform_SupportsTexture3D() ? ImPlatform_CreateTexture3D( voxels, &desc ) : 0;
+	g_Texture3DPrograms[ 0 ] = DEMO_SHADER_PROGRAM( volume_test, g_Texture3DShaders );
+#if IMPLATFORM_GFX_SUPPORT_SHADER_PARTS
+	ImPlatform_ShaderParts parts = {};
+	parts.textures[ 1 ] = "volume";
+	parts.textures_3d = 1u << 1;
+	parts.ps_body = "float3 uvw = v.uv.x < 0.5 ? float3(0.25, 0.75, 0.75) : float3(0.75, 0.25, 0.25);\n"
+					"col_out = IMP_SAMPLE_LEVEL(volume, uvw, 0.0);\n";
+	g_Texture3DShaders[ 2 ] = ImPlatform_CreateShaderFromParts( &parts, ImPlatform_ShaderStage_Vertex );
+	g_Texture3DShaders[ 3 ] = ImPlatform_CreateShaderFromParts( &parts, ImPlatform_ShaderStage_Fragment );
+	if ( g_Texture3DShaders[ 2 ] && g_Texture3DShaders[ 3 ] )
+		g_Texture3DPrograms[ 1 ] = ImPlatform_CreateShaderProgram( g_Texture3DShaders[ 2 ], g_Texture3DShaders[ 3 ] );
+	if ( !g_Texture3DPrograms[ 1 ] )
+		return false;
+#endif
+	if ( !g_Texture3D || !g_Texture3DPrograms[ 0 ] )
+		return false;
+	for ( ImPlatform_ShaderProgram program : g_Texture3DPrograms )
+		if ( program )
+			ImPlatform_SetShaderTexture( program, "volume", 1, g_Texture3D );
+	return QueueRenderPassScene( g_Texture3DTest, 128, DrawTexture3DTest );
+#else
+	return false;
+#endif
+}
+
+static int CheckTexture3DTest()
+{
+	static unsigned char px[ 128 * 64 * 4 ];
+	if ( !DemoReadTexture( g_Texture3DTest.Target, 0, 0, 128, 64, px, sizeof( px ) ) )
+	{
+		printf( "SKIP: no readback of the pass target\n" );
+		return 2;
+	}
+	const RenderPassProbe probes[] = { { 16, 32, { 0, 255, 255, 255 } }, { 48, 32, { 255, 0, 0, 255 } },
+									   { 80, 32, { 0, 255, 255, 255 } }, { 112, 32, { 255, 0, 0, 255 } } };
+	const int bad = CheckRenderPassProbes( "texture 3D", px, 128, probes, g_Texture3DPrograms[ 1 ] ? 4 : 2, 4 );
+	if ( !bad )
+		printf( "PASS\n" );
+	return bad ? 1 : 0;
+}
+
+static void DestroyTexture3DTest()
+{
+	for ( ImPlatform_ShaderProgram program : g_Texture3DPrograms )
+		if ( program )
+			ImPlatform_DestroyShaderProgram( program );
+	for ( ImPlatform_Shader shader : g_Texture3DShaders )
+		if ( shader )
+			ImPlatform_DestroyShader( shader );
+	if ( g_Texture3D )
+		ImPlatform_DestroyTexture( g_Texture3D );
+}
+
 // --direct-draw-test: from a draw callback inside a render pass, the same gradient drawn by ImPlatform_DrawQuadNow into a
 // pushed render target, its colors from ImPlatform_PushShaderConstants, copied by ImPlatform_CopyCurrentTarget, then both
 // read back: the direct draws a backdrop effect makes (copy, push a target, draw a quad, pop).
@@ -553,7 +642,8 @@ int main( int argc, char** argv )
 	const bool shaderTest = argc > 1 && strcmp( argv[ 1 ], "--shader-test" ) == 0;
 	const bool directDrawTest = argc > 1 && strcmp( argv[ 1 ], "--direct-draw-test" ) == 0;
 	const bool partsTest = argc > 1 && strcmp( argv[ 1 ], "--shader-parts-test" ) == 0;
-	const bool passTest = renderPassTest || shaderTest || directDrawTest || partsTest;	// Tests read back a render pass
+	const bool texture3DTest = argc > 1 && strcmp( argv[ 1 ], "--texture3d-test" ) == 0;
+	const bool passTest = renderPassTest || shaderTest || directDrawTest || partsTest || texture3DTest;	// Tests read back a render pass
 	int exitCode = 0;
 #ifndef __EMSCRIPTEN__
 	int renderPassFrame = 0;
@@ -778,6 +868,12 @@ int main( int argc, char** argv )
 				break;
 			}
 		}
+		if ( texture3DTest && renderPassFrame == 0 && !CreateTexture3DTest() )
+		{
+			printf( "SKIP: no 3D texture, custom shader or render pass on this backend\n" );
+			exitCode = 2;
+			break;
+		}
 		if ( partsTest && renderPassFrame == 0 && !CreatePartsTest() )
 		{
 			printf( "SKIP: no shader parts on this backend\n" );
@@ -964,7 +1060,8 @@ int main( int argc, char** argv )
 		if ( passTest && ++renderPassFrame == 3 )
 		{
 #if IMPLATFORM_GFX_SUPPORT_CUSTOM_SHADER
-			exitCode = shaderTest ? CheckShaderTest() : directDrawTest ? CheckDirectDrawTest() : partsTest ? CheckPartsTest() : CheckRenderPassTest();
+			exitCode = shaderTest ? CheckShaderTest() : directDrawTest ? CheckDirectDrawTest() : partsTest ? CheckPartsTest()
+					 : texture3DTest ? CheckTexture3DTest() : CheckRenderPassTest();
 #else
 			exitCode = CheckRenderPassTest();
 #endif
@@ -1008,6 +1105,8 @@ int main( int argc, char** argv )
 	DestroyRenderPassScene( g_ShaderTest );
 	DestroyRenderPassScene( g_PartsTest );
 	DestroyPartsTest();
+	DestroyRenderPassScene( g_Texture3DTest );
+	DestroyTexture3DTest();
 	DestroyRenderPassScene( g_DirectDrawPass );
 	if ( g_DirectDrawTarget )
 		ImPlatform_DestroyTexture( g_DirectDrawTarget );
