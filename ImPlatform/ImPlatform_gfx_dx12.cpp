@@ -1293,6 +1293,7 @@ IMPLATFORM_API bool ImPlatform_SetShaderUniform(ImPlatform_ShaderProgram program
 
 static void ImP12_BindProgram(ID3D12GraphicsCommandList* list, ImPlatform_ShaderProgramData_DX12* program_data, ImDrawData* draw_data,
                               UINT64 texture0);
+static UINT64 ImP12_FrameConstants(const void* data, size_t size);
 
 // Sets register(t<slot>) of the program, kept for its later binds: slots 1..8, and slot 0 for the direct draws
 // (ImPlatform_DrawQuadNow, ImPlatform_DrawIndexed; Dear ImGui's draws bind their own t0). Inside a draw callback the
@@ -1410,9 +1411,12 @@ static void ImP12_BindProgram(ID3D12GraphicsCommandList* list, ImPlatform_Shader
         list->SetGraphicsRootDescriptorTable(1, handle);
     }
 
-    // shortcut: the parameters live in one upload buffer written by the CPU, so a draw recorded with older values than
-    // the last ones set reads the last ones; ImPlatform_PushShaderConstants gives a draw its own copy.
-    if (program_data->pPixelConstantBuffer && program_data->pixelConstantDataDirty && program_data->pPixelConstantData)
+    // Each bind gets its own copy of the parameters in the frame's upload memory, so every draw reads the values set
+    // when it was recorded (one buffer per program would give all the frame's draws the last values). The program's
+    // upload buffer remains for a failed allocation.
+    const UINT64 frame_constants = !g_P12_PushedConstants && program_data->pPixelConstantData
+        ? ImP12_FrameConstants(program_data->pPixelConstantData, program_data->pixelConstantDataSize) : 0;
+    if (!frame_constants && program_data->pPixelConstantBuffer && program_data->pixelConstantDataDirty && program_data->pPixelConstantData)
     {
         void* mapped = nullptr;
         D3D12_RANGE read_range = { 0, 0 };
@@ -1423,8 +1427,8 @@ static void ImP12_BindProgram(ID3D12GraphicsCommandList* list, ImPlatform_Shader
             program_data->pixelConstantDataDirty = false;
         }
     }
-    if (g_P12_PushedConstants)
-        list->SetGraphicsRootConstantBufferView(2, g_P12_PushedConstants);
+    if (g_P12_PushedConstants || frame_constants)
+        list->SetGraphicsRootConstantBufferView(2, g_P12_PushedConstants ? g_P12_PushedConstants : frame_constants);
     else if (program_data->pPixelConstantBuffer)
         list->SetGraphicsRootConstantBufferView(2, program_data->pPixelConstantBuffer->GetGPUVirtualAddress());
 
@@ -3349,6 +3353,16 @@ IMPLATFORM_API void ImPlatform_GetCurrentTargetSize(unsigned int* width, unsigne
     const bool ok = ImP12_CurrentTarget(&t);
     if (width) *width = ok ? t.w : 0;
     if (height) *height = ok ? t.h : 0;
+}
+
+// A copy of a program's parameters for one bind, in upload memory kept until the frame completes (0 when out of memory).
+static UINT64 ImP12_FrameConstants(const void* data, size_t size)
+{
+    ImP12_Upload up = {};
+    if (!data || size == 0 || !ImP12_Alloc((std::max)((UINT64)256, ((UINT64)size + 255) & ~(UINT64)255), 256, &up, true))
+        return 0;
+    memcpy(up.cpu, data, size);
+    return up.gpu;
 }
 
 // b1 for the draws that follow in this draw callback, and for Dear ImGui's draws after it until a program is bound again

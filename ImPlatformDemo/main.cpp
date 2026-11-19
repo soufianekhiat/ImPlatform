@@ -286,15 +286,26 @@ static ImPlatform_ShaderProgram CreateDemoProgram( ImPlatform_ShaderFormat forma
 #endif // DEMO_SHADER_NONE
 
 #if defined( IMGUI_HAS_TEXTURES ) && !defined( __EMSCRIPTEN__ )
-// --shader-test: the gradient shader (shaders/gradient.hlsl, red to blue) drawn into a render pass target, read back.
-// Checks the custom shader path of each backend: compilation, b0 projection, b1 parameters. Exit code as above.
+// --shader-test: the gradient shader (shaders/gradient.hlsl) drawn into a render pass target, read back: red to blue on
+// the left half, blue to red on the right, the colors set from a draw callback before each half (one program drawn twice
+// in a frame keeps each draw's parameters). Checks the custom shader path of each backend: compilation, b0 projection,
+// b1 parameters. Exit code as above.
 static RenderPassScene g_ShaderTest;
 static ImPlatform_ShaderProgram g_ShaderTestProgram = nullptr;
+static void SetShaderTestColors( const ImDrawList*, const ImDrawCmd* cmd )
+{
+	ImPlatform_SetShaderUniform( g_ShaderTestProgram, "pixelBuffer", cmd->UserCallbackData, sizeof( ImVec4 ) * 2 );
+}
 static void DrawShaderTest( ImDrawList* dl )
 {
-	ImPlatform_BeginCustomShader( dl, g_ShaderTestProgram );
-	dl->AddImage( ImGui::GetIO().Fonts->TexRef, ImVec2( 0, 0 ), ImVec2( 64, 64 ) );
-	ImPlatform_EndCustomShader( dl );
+	static const ImVec4 colors[ 2 ][ 2 ] = { { ImVec4( 1, 0, 0, 1 ), ImVec4( 0, 0, 1, 1 ) }, { ImVec4( 0, 0, 1, 1 ), ImVec4( 1, 0, 0, 1 ) } };
+	for ( int i = 0; i < 2; i++ )
+	{
+		dl->AddCallback( SetShaderTestColors, (void*)colors[ i ] );
+		ImPlatform_BeginCustomShader( dl, g_ShaderTestProgram );
+		dl->AddImage( ImGui::GetIO().Fonts->TexRef, ImVec2( 32.0f * i, 0 ), ImVec2( 32.0f * i + 32.0f, 64 ) );
+		ImPlatform_EndCustomShader( dl );
+	}
 }
 
 static int CheckShaderTest()
@@ -306,8 +317,9 @@ static int CheckShaderTest()
 		return 2;
 	}
 	// uv.y at the centers of rows 0, 32 and 63: 0.008, 0.508, 0.992
-	const RenderPassProbe probes[] = { { 32, 0, { 253, 0, 2, 255 } }, { 32, 32, { 125, 0, 130, 255 } }, { 32, 63, { 2, 0, 253, 255 } } };
-	const int bad = CheckRenderPassProbes( "gradient", px, 64, probes, 3, 4 );
+	const RenderPassProbe probes[] = { { 16, 0, { 253, 0, 2, 255 } }, { 16, 32, { 125, 0, 130, 255 } }, { 16, 63, { 2, 0, 253, 255 } },
+									   { 48, 0, { 2, 0, 253, 255 } }, { 48, 63, { 253, 0, 2, 255 } } };
+	const int bad = CheckRenderPassProbes( "gradient", px, 64, probes, 5, 4 );
 	if ( !bad )
 		printf( "PASS\n" );
 	return bad ? 1 : 0;

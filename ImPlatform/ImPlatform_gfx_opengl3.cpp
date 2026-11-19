@@ -2676,6 +2676,8 @@ IMPLATFORM_API bool ImPlatform_ReadTexture(ImTextureID texture, unsigned int x, 
     if (x + width > (unsigned int)tw || y + height > (unsigned int)th || out_size < (size_t)width * height * bpp)
         return false;
 
+    // The result is this read's own GL errors: clear any an earlier call left pending (glGetError is sticky).
+    for (int i = 0; i < 16 && glGetError() != 0; i++) {}
     GLint readFbo = 0, packAlign = 4;
     glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING, &readFbo);
     glGetIntegerv(GL_PACK_ALIGNMENT, &packAlign);

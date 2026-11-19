@@ -63,6 +63,12 @@
 - `ImPlatform_CreateVertexInputLayout()` is in the `VERTEX_BUFFERS` group and implemented by every backend in it: a
   vertex declaration on DirectX 9 and an input layout on DirectX 10 (custom vertex buffers drew without one there),
   a check of its arguments where the layout is built at draw time. DirectX 11 maps `UByte4N` vertex attributes.
+- DirectX 12: each bind of a custom shader takes its own copy of the program's parameters (frame upload memory), so a
+  program drawn several times in a frame keeps each draw's values; before, every draw read the last ones set. The demo's
+  `--shader-test` draws one program twice with different parameters set from draw callbacks.
+- Shader parts: `ddx` / `ddy` in a helper function compile in the vertex stage too (a zero there; GLSL and MSL have
+  derivatives in fragment shaders only).
+- OpenGL: `ImPlatform_ReadTexture()` reports its own GL errors only (an error left pending by an earlier call failed it).
 - Vulkan: texture uploads map and flush the whole staging allocation (a size that was not a multiple of
   `nonCoherentAtomSize` broke a validation rule).
 - Metal: `ImPlatform_SetShaderTexture()` slots 1..8 (both stages).

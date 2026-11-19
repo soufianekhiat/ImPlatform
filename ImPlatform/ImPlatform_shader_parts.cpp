@@ -181,7 +181,7 @@ static void ImPlatform_PartsGLSL(ImGuiTextBuffer& out, const ImPlatform_ShaderPa
         "#define uint2 uvec2\n#define uint3 uvec3\n#define uint4 uvec4\n"
         "#define bool2 bvec2\n#define bool3 bvec3\n#define bool4 bvec4\n"
         "#define float2x2 mat2\n#define float3x3 mat3\n#define float4x4 mat4\n"
-        "#define lerp mix\n#define frac fract\n#define rsqrt inversesqrt\n#define ddx dFdx\n#define ddy dFdy\n"
+        "#define lerp mix\n#define frac fract\n#define rsqrt inversesqrt\n"
         "#define saturate(x) clamp((x), 0.0, 1.0)\n#define rcp(x) (1.0 / (x))\n#define atan2(y, x) atan((y), (x))\n"
         "#define fmod(x, y) ((x) - (y) * trunc((x) / (y)))\n#define mul(a, b) ((a) * (b))\n#define static\n"
         "#define mad(a, b, c) ((a) * (b) + (c))\n#define clip(x) if ((x) < 0.0) discard\n"
@@ -197,6 +197,9 @@ static void ImPlatform_PartsGLSL(ImGuiTextBuffer& out, const ImPlatform_ShaderPa
         "#define IMP_MUL(m, v) ((m) * (v))\n"
         "#define IMP_CAST(type, x) type(x)\n"
         "#define IMP_OUT(type) out type\n#define IMP_INOUT(type) inout type\n");
+    // Derivatives exist in fragment shaders only; the helper functions are compiled in both stages, so the vertex stage
+    // gets a zero of the argument's type.
+    out.append(vertex ? "#define ddx(x) ((x) - (x))\n#define ddy(x) ((x) - (x))\n" : "#define ddx dFdx\n#define ddy dFdy\n");
     ImPlatform_PartsDefines(out, parts->defines);
     // The backend binds these blocks by name to bindings 0 and 1 (the binding qualifier needs GLSL 4.20). Render passes
     // mirror the vertices (render textures are stored bottom-up; imp_mirror.x is 1, imp_mirror.y the mirror line): in_pos
@@ -255,7 +258,7 @@ static void ImPlatform_PartsMSL(ImGuiTextBuffer& out, const ImPlatform_ShaderPar
     out.append(
         "#include <metal_stdlib>\nusing namespace metal;\n"
         "#define IMP_MSL 1\n"
-        "#define lerp mix\n#define frac fract\n#define ddx dfdx\n#define ddy dfdy\n"
+        "#define lerp mix\n#define frac fract\n"
         "#define rcp(x) (1.0f / (x))\n#define mul(a, b) ((a) * (b))\n#define static\n"
         "#define mad(a, b, c) ((a) * (b) + (c))\n#define discard discard_fragment()\n#define clip(x) if ((x) < 0.0) discard_fragment()\n"
         "uint asuint(float x) { return as_type<uint>(x); }\nuint2 asuint(float2 x) { return as_type<uint2>(x); }\nuint4 asuint(float4 x) { return as_type<uint4>(x); }\n"
@@ -277,6 +280,8 @@ static void ImPlatform_PartsMSL(ImGuiTextBuffer& out, const ImPlatform_ShaderPar
         "template<typename T, int N, typename S, typename = enable_if_t<is_scalar<S>::value>> vec<T, N> step(S e, vec<T, N> x) { return step(vec<T, N>(T(e)), x); }\n"
         "template<typename T, int N, typename S, typename = enable_if_t<is_scalar<S>::value>> vec<T, N> smoothstep(S a, S b, vec<T, N> x) { return smoothstep(vec<T, N>(T(a)), vec<T, N>(T(b)), x); }\n"
         "template<typename T, int N, typename S, typename = enable_if_t<is_scalar<S>::value>> vec<T, N> pow(vec<T, N> x, S y) { return pow(x, vec<T, N>(T(y))); }\n");
+    // Derivatives exist in fragment functions only (as in GLSL): a zero of the argument's type in the vertex stage.
+    out.append(vertex ? "#define ddx(x) ((x) - (x))\n#define ddy(x) ((x) - (x))\n" : "#define ddx dfdx\n#define ddy dfdy\n");
     ImPlatform_PartsDefines(out, parts->defines);
     const bool has_params = parts->params && parts->params[0];
     // ImpParams is the buffer layout (float3 is 16 bytes in MSL: packed_float3 keeps the HLSL / std140 offsets);
