@@ -475,6 +475,10 @@ ImPlatformDemo_Win32_DX12 --vertex-inputs-test  # shader parts with their own ve
 
 Each prints PASS or FAIL and exits with 0 (pass), 1 (fail) or 2 (unsupported by the backend).
 
+`--dump-msl <shader_parts|texture3d|vertex_inputs> <vs|ps>` prints the MSL generated from those tests' shader parts,
+without a window or device, in any configuration. CI compiles it with the offline Metal compiler (`xcrun metal -c`),
+since the hosted macOS runners have no GPU to run the Metal tests.
+
 ## Project Structure
 
 ```

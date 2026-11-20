@@ -536,6 +536,28 @@ jobs:
             xcodebuild -workspace ImPlatform_xcode_macOS.xcworkspace -scheme ImPlatformDemo_xcode_macOS_$config -configuration $config build -quiet
           done
 
+      # Without a GPU the Metal tests do not run: the MSL generated from the demo's shader parts is at least compiled
+      # by the offline Metal compiler (newer Xcode installs it as a separate component).
+      - name: Compile generated MSL (offline Metal compiler)
+        run: |
+          xcrun -sdk macosx metal -v > /dev/null 2>&1 || xcodebuild -downloadComponent MetalToolchain
+          demo=$(find bin -name "ImPlatformDemo_GLFW_Metal" -type f -perm +111 | head -n 1)
+          status=0
+          for parts in shader_parts texture3d vertex_inputs; do
+            for stage in vs ps; do
+              "$demo" --dump-msl $parts $stage > $parts.$stage.metal
+              if xcrun -sdk macosx metal -c $parts.$stage.metal -o /dev/null 2> metal.log; then
+                echo "$parts $stage: compiled"
+              else
+                status=1
+                cat -n $parts.$stage.metal
+                echo "::error title=MSL $parts $stage::$(sed 's/%/%25/g' metal.log | awk '{printf "%s%%0A", $0}')"
+              fi
+              cat metal.log
+            done
+          done
+          exit $status
+
       # Exit 2 means unsupported by the backend; perl's alarm stands in for timeout, which macOS lacks.
       - name: Self-tests (Sharpmake builds)
         run: |

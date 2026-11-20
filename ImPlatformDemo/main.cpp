@@ -342,10 +342,10 @@ static void DrawPartsTest( ImDrawList* dl )
 }
 #endif
 
-static bool CreatePartsTest()
+// The demo's shader parts, shared by the tests and --dump-msl.
+static bool GetPartsTestParts( ImPlatform_ShaderParts* parts )
 {
-#if IMPLATFORM_GFX_SUPPORT_SHADER_PARTS && IMPLATFORM_GFX_SUPPORT_SHADER_TEXTURES
-	// The parts as one text, as a shader file would hold them (ImPlatform_ParseShaderParts splits it in place).
+	// The parts as one text, as a shader file would hold them (ImPlatform_ParseShaderParts splits it in place, once).
 	static char text[] =
 		"// Gradient moved by Offset in the vertex stage, tinted by t1.\n"
 		"//@params\n"
@@ -371,12 +371,71 @@ static bool CreatePartsTest()
 		"sum *= asfloat(asuint(1.0)) * f16tof32(0x3C00u);\n"	// both 1.0
 		"#endif\n"
 		"col_out = Gradient(v.world.y / 64.0) * Tint(v.uv) * IMP_CAST(float, IMP_CAST(int, sum + 0.5));\n";
-	ImPlatform_ShaderParts parts = {};
-	if ( !ImPlatform_ParseShaderParts( text, &parts ) )
-		return false;
+	static ImPlatform_ShaderParts parsed = {};
+	static const bool ok = ImPlatform_ParseShaderParts( text, &parsed );
+	*parts = parsed;
 #if IM_CURRENT_GFX == IM_GFX_DIRECTX9
-	parts.defines = "TINT_SCALE=1.0";	// Shader model 3 has no bit operations: no BITS
+	parts->defines = "TINT_SCALE=1.0";	// Shader model 3 has no bit operations: no BITS
 #endif
+	return ok;
+}
+
+static void GetTexture3DParts( ImPlatform_ShaderParts* parts )
+{
+	*parts = {};
+	parts->textures[ 1 ] = "volume";
+	parts->textures_3d = 1u << 1;
+	parts->ps_body = "float3 uvw = v.uv.x < 0.5 ? float3(0.25, 0.75, 0.75) : float3(0.75, 0.25, 0.25);\n"
+					 "col_out = IMP_SAMPLE_LEVEL(volume, uvw, 0.0);\n";
+}
+
+static void GetVertexInputsParts( ImPlatform_ShaderParts* parts )
+{
+	*parts = {};
+	parts->vertex_inputs = "float4 pos : POSITION; float4 data : TEXCOORD0;";
+#if IM_CURRENT_GFX == IM_GFX_DIRECTX9
+	parts->varyings = "float4 id;";	// Shader model 3: no integer or flat varyings
+#else
+	parts->varyings = "nointerpolation int4 id;";
+#endif
+	parts->vs_body = "float4 p = float4(in_pos.xy, 0.0, 1.0);\n"
+					 "position = float4(dot(IMP_MUL(float4(1.0, 0.0, 0.0, 0.0), ProjMtx), p), dot(IMP_MUL(float4(0.0, 1.0, 0.0, 0.0), ProjMtx), p),\n"
+					 "                  dot(IMP_MUL(float4(0.0, 0.0, 1.0, 0.0), ProjMtx), p), dot(IMP_MUL(float4(0.0, 0.0, 0.0, 1.0), ProjMtx), p));\n"
+					 "v.id = int4(IMP_CAST(int, in_data.x + 0.5), 0, 0, 0);\n";
+	parts->ps_body = "col_out = v.id.x == 1 ? float4(0.0, 1.0, 0.0, 1.0) : v.id.x == 2 ? float4(0.0, 0.0, 1.0, 1.0) : float4(1.0, 0.0, 0.0, 1.0);\n";
+}
+
+// --dump-msl <shader_parts|texture3d|vertex_inputs> <vs|ps>: prints the MSL generated from those parts, without a window
+// or device, for the offline Metal compiler (CI: the hosted macOS runners have no GPU to run the Metal tests).
+static int DumpMSL( const char* name, const char* stage )
+{
+	ImPlatform_ShaderParts parts = {};
+	if ( strcmp( name, "shader_parts" ) == 0 )
+	{
+		if ( !GetPartsTestParts( &parts ) )
+			return 1;
+	}
+	else if ( strcmp( name, "texture3d" ) == 0 )
+		GetTexture3DParts( &parts );
+	else if ( strcmp( name, "vertex_inputs" ) == 0 )
+		GetVertexInputsParts( &parts );
+	else
+		return 1;
+	static char source[ 1 << 16 ];
+	const ImPlatform_ShaderStage st = strcmp( stage, "vs" ) == 0 ? ImPlatform_ShaderStage_Vertex : ImPlatform_ShaderStage_Fragment;
+	const int len = ImPlatform_GenerateShaderSource( &parts, st, ImPlatform_ShaderFormat_MSL, source, (int)sizeof( source ) );
+	if ( len < 0 || len >= (int)sizeof( source ) )
+		return 1;
+	fwrite( source, 1, (size_t)len, stdout );
+	return 0;
+}
+
+static bool CreatePartsTest()
+{
+#if IMPLATFORM_GFX_SUPPORT_SHADER_PARTS && IMPLATFORM_GFX_SUPPORT_SHADER_TEXTURES
+	ImPlatform_ShaderParts parts = {};
+	if ( !GetPartsTestParts( &parts ) )
+		return false;
 	g_PartsShaders[ 0 ] = ImPlatform_CreateShaderFromParts( &parts, ImPlatform_ShaderStage_Vertex );
 	g_PartsShaders[ 1 ] = ImPlatform_CreateShaderFromParts( &parts, ImPlatform_ShaderStage_Fragment );
 	if ( g_PartsShaders[ 0 ] && g_PartsShaders[ 1 ] )
@@ -454,11 +513,8 @@ static bool CreateTexture3DTest()
 	g_Texture3D = ImPlatform_SupportsTexture3D() ? ImPlatform_CreateTexture3D( voxels, &desc ) : 0;
 	g_Texture3DPrograms[ 0 ] = DEMO_SHADER_PROGRAM( volume_test, g_Texture3DShaders );
 #if IMPLATFORM_GFX_SUPPORT_SHADER_PARTS
-	ImPlatform_ShaderParts parts = {};
-	parts.textures[ 1 ] = "volume";
-	parts.textures_3d = 1u << 1;
-	parts.ps_body = "float3 uvw = v.uv.x < 0.5 ? float3(0.25, 0.75, 0.75) : float3(0.75, 0.25, 0.25);\n"
-					"col_out = IMP_SAMPLE_LEVEL(volume, uvw, 0.0);\n";
+	ImPlatform_ShaderParts parts;
+	GetTexture3DParts( &parts );
 	g_Texture3DShaders[ 2 ] = ImPlatform_CreateShaderFromParts( &parts, ImPlatform_ShaderStage_Vertex );
 	g_Texture3DShaders[ 3 ] = ImPlatform_CreateShaderFromParts( &parts, ImPlatform_ShaderStage_Fragment );
 	if ( g_Texture3DShaders[ 2 ] && g_Texture3DShaders[ 3 ] )
@@ -523,18 +579,8 @@ static void DrawVertexInputsTest( ImDrawList* dl )
 static bool CreateVertexInputsTest()
 {
 #if IMPLATFORM_GFX_SUPPORT_SHADER_PARTS && IMPLATFORM_GFX_SUPPORT_VERTEX_BUFFERS
-	ImPlatform_ShaderParts parts = {};
-	parts.vertex_inputs = "float4 pos : POSITION; float4 data : TEXCOORD0;";
-#if IM_CURRENT_GFX == IM_GFX_DIRECTX9
-	parts.varyings = "float4 id;";	// Shader model 3: no integer or flat varyings
-#else
-	parts.varyings = "nointerpolation int4 id;";
-#endif
-	parts.vs_body = "float4 p = float4(in_pos.xy, 0.0, 1.0);\n"
-					"position = float4(dot(IMP_MUL(float4(1.0, 0.0, 0.0, 0.0), ProjMtx), p), dot(IMP_MUL(float4(0.0, 1.0, 0.0, 0.0), ProjMtx), p),\n"
-					"                  dot(IMP_MUL(float4(0.0, 0.0, 1.0, 0.0), ProjMtx), p), dot(IMP_MUL(float4(0.0, 0.0, 0.0, 1.0), ProjMtx), p));\n"
-					"v.id = int4(IMP_CAST(int, in_data.x + 0.5), 0, 0, 0);\n";
-	parts.ps_body = "col_out = v.id.x == 1 ? float4(0.0, 1.0, 0.0, 1.0) : v.id.x == 2 ? float4(0.0, 0.0, 1.0, 1.0) : float4(1.0, 0.0, 0.0, 1.0);\n";
+	ImPlatform_ShaderParts parts;
+	GetVertexInputsParts( &parts );
 	g_VertexInputsShaders[ 0 ] = ImPlatform_CreateShaderFromParts( &parts, ImPlatform_ShaderStage_Vertex );
 	g_VertexInputsShaders[ 1 ] = ImPlatform_CreateShaderFromParts( &parts, ImPlatform_ShaderStage_Fragment );
 	if ( g_VertexInputsShaders[ 0 ] && g_VertexInputsShaders[ 1 ] )
@@ -754,6 +800,8 @@ static int ImPlatformDemo_ComputeTest()
 
 int main( int argc, char** argv )
 {
+	if ( argc > 3 && strcmp( argv[ 1 ], "--dump-msl" ) == 0 )
+		return DumpMSL( argv[ 2 ], argv[ 3 ] );
 	const bool computeTest = argc > 1 && strcmp( argv[ 1 ], "--compute-test" ) == 0;
 	const bool renderPassTest = argc > 1 && strcmp( argv[ 1 ], "--render-pass-test" ) == 0;
 	const bool shaderTest = argc > 1 && strcmp( argv[ 1 ], "--shader-test" ) == 0;

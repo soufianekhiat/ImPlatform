@@ -59,7 +59,8 @@
   `<slot> <name> 3d` texture line (`ImPlatform_ShaderParts::textures_3d`). Demo: `--texture3d-test`.
 - **Shader parts with their own vertex inputs** (`vertex_inputs`, `//@inputs`: `float4 pos : POSITION; ...` in the
   vertex buffer's attribute order, `in_<name>` in the vertex body) for `ImPlatform_DrawIndexed`, and flat varyings
-  (`nointerpolation int4 id;`: `flat` in GLSL, `[[flat]]` in MSL; not on DirectX 9). Demo: `--vertex-inputs-test`.
+  (`nointerpolation int4 id;`: `flat` in GLSL, `[[flat]]` in MSL; not on DirectX 9). Demo: `--vertex-inputs-test`; `--dump-msl` prints the MSL generated from the tests' parts, compiled
+  in CI by the offline Metal compiler.
 - Metal: vertex and index buffers (`IMPLATFORM_GFX_SUPPORT_VERTEX_BUFFERS`): shared storage buffers drawn by
   `ImPlatform_DrawIndexed()` from a draw callback, with a pipeline per vertex buffer layout (attribute i at location i);
   a program whose inputs are not Dear ImGui's vertex draws vertex buffers only.
