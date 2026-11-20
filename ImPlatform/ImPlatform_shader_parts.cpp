@@ -6,6 +6,7 @@
 #include "ImPlatform_Internal.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 // One declaration of a ';' separated list ("float4 col0; float2 uv[2];"): its type and name (the array suffix kept in
