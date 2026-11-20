@@ -117,6 +117,8 @@
   and the vertex attributes are found by name or type instead of relying on Dear ImGui's locations.
 
 ### Fixed
+- Vulkan: the render-complete semaphore is chosen per swapchain image, not per frame (the validation layer reported a semaphore
+  signaled again while a present could still wait on it, VUID-vkQueueSubmit-pSignalSemaphores-00067).
 - Draw callbacks after `ImPlatform_BeginCustomShader()` that draw by themselves (`ImPlatform_DrawIndexed()`) ran with the
   previous list's scissor, or none at the start of a render pass, when no regular draw preceded them: the backends set
   the scissor for regular draws only. `BeginCustomShader` now adds a zero-area transparent triangle so they do.
