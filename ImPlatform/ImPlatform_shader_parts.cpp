@@ -285,20 +285,13 @@ static void ImPlatform_PartsMSL(ImGuiTextBuffer& out, const ImPlatform_ShaderPar
     ImPlatform_PartsDefines(out, parts->defines);
     const bool has_params = parts->params && parts->params[0];
     // ImpParams is the buffer layout (float3 is 16 bytes in MSL: packed_float3 keeps the HLSL / std140 offsets);
-    // ImpParamsView is what the bodies see: the values, and the arrays as pointers into the buffer (not copied).
+    // ImpContext holds what the bodies see (MSL has no derived classes): ProjMtx, the parameter values, and the arrays
+    // as pointers into the buffer (not copied).
     ImPlatform_PartsDecl params[64];
     const int param_count = has_params ? ImPlatform_ParseDecls(parts->params, params, IM_ARRAYSIZE(params)) : 0;
     out.append("struct ImpVertex { float4x4 ProjMtx; };\nstruct ImpParams {\n");
     for (int i = 0; i < param_count; i++)
         out.appendf("    %s%s;\n", strcmp(params[i].type, "float3") == 0 ? "packed_" : "", params[i].decl);
-    out.append("};\nstruct ImpParamsView {\n");
-    for (int i = 0; i < param_count; i++)
-    {
-        if (strchr(params[i].decl, '['))
-            out.appendf("    constant %s%s* %s;\n", strcmp(params[i].type, "float3") == 0 ? "packed_" : "", params[i].type, params[i].name);
-        else
-            out.appendf("    %s;\n", params[i].decl);
-    }
     out.append("};\nstruct ImpVaryings {\n    float4 position [[position]];\n    float4 col;\n    float2 uv;\n");
     for (int i = 0; i < varying_count; i++)
         out.appendf("    %s%s;\n", varyings[i].decl, varyings[i].flat ? " [[flat]]" : "");
@@ -312,7 +305,15 @@ static void ImPlatform_PartsMSL(ImGuiTextBuffer& out, const ImPlatform_ShaderPar
     }
     else if (vertex)
         out.append("struct ImpVertexInput { float2 pos [[attribute(0)]]; float2 uv [[attribute(1)]]; float4 col [[attribute(2)]]; };\n");
-    out.appendf("struct ImpContext : ImpVertex, ImpParamsView {\n    texture2d<float> %s;\n    sampler imp_sampler;\n", ImPlatform_PartsTexture0(parts));
+    out.append("struct ImpContext {\n    float4x4 ProjMtx;\n");
+    for (int i = 0; i < param_count; i++)
+    {
+        if (strchr(params[i].decl, '['))
+            out.appendf("    constant %s%s* %s;\n", strcmp(params[i].type, "float3") == 0 ? "packed_" : "", params[i].type, params[i].name);
+        else
+            out.appendf("    %s;\n", params[i].decl);
+    }
+    out.appendf("    texture2d<float> %s;\n    sampler imp_sampler;\n", ImPlatform_PartsTexture0(parts));
     for (int slot = 1; slot < 9; slot++)
         if (parts->textures[slot])
             out.appendf("    %s<float> %s;\n", ImPlatform_PartsIs3D(parts, slot) ? "texture3d" : "texture2d", parts->textures[slot]);
