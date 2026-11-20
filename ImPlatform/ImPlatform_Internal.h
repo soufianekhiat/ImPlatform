@@ -506,6 +506,19 @@ static inline void ImPlatform_PopSampler_StdCallbacks(void)
     if (callback)
         ImGui::GetWindowDrawList()->AddCallback(callback);
 }
+
+// The ImGui backends set the scissor for regular draws only: a callback that draws by itself (ImPlatform_DrawIndexed,
+// DrawQuadNow) would run with the previous list's scissor, or none at the start of a render pass. One zero-area,
+// transparent triangle in the current command makes the backend set its clip rect, the one of the callbacks that follow
+// (no extra draw call when that command already has geometry).
+static inline void ImPlatform_ScissorBeforeCallbacks(ImDrawList* draw)
+{
+    const ImDrawIdx idx = (ImDrawIdx)draw->_VtxCurrentIdx;
+    draw->PrimReserve(3, 1);
+    for (int i = 0; i < 3; i++)
+        draw->PrimWriteIdx(idx);
+    draw->PrimWriteVtx(ImVec2(draw->_CmdHeader.ClipRect.x, draw->_CmdHeader.ClipRect.y), ImVec2(0.0f, 0.0f), 0);
+}
 #endif
 
 // ============================================================================

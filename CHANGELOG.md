@@ -117,6 +117,9 @@
   and the vertex attributes are found by name or type instead of relying on Dear ImGui's locations.
 
 ### Fixed
+- Draw callbacks after `ImPlatform_BeginCustomShader()` that draw by themselves (`ImPlatform_DrawIndexed()`) ran with the
+  previous list's scissor, or none at the start of a render pass, when no regular draw preceded them: the backends set
+  the scissor for regular draws only. `BeginCustomShader` now adds a zero-area transparent triangle so they do.
 - DirectX 9: RGBA8 textures had red and blue swapped (the bytes were copied into `D3DFMT_A8R8G8B8`); uploads and
   readbacks now swizzle them.
 - OpenGL render passes: shaders reading vertex positions saw them mirrored (render textures are stored bottom-up);

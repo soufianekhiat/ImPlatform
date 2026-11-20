@@ -568,8 +568,7 @@ static void DrawVertexInputsQuads( const ImDrawList*, const ImDrawCmd* )
 }
 static void DrawVertexInputsTest( ImDrawList* dl )
 {
-	// The backends set the scissor for regular draws only: a draw first, so the callback does not run with a stale one.
-	dl->AddRectFilled( ImVec2( 0, 63 ), ImVec2( 1, 64 ), IM_COL32( 0, 0, 0, 255 ) );
+	// Only callbacks in this list: BeginCustomShader makes the backend set the scissor they run with.
 	ImPlatform_BeginCustomShader( dl, g_VertexInputsProgram );
 	dl->AddCallback( DrawVertexInputsQuads, nullptr );
 	ImPlatform_EndCustomShader( dl );
