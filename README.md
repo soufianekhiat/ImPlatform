@@ -521,7 +521,7 @@ The library has been tested with the following configurations:
 - **Windows 10/11** (GLFW) - Tested
 - **Windows 10/11** (SDL2) - Tested (self-tests)
 - **Windows 10/11** (SDL3) - Tested (self-tests)
-- **macOS** - Not tested (contributions welcome!)
+- **macOS** (GLFW, SDL2, SDL3) - Builds in CI; not run on a Mac with a GPU yet (contributions welcome!)
 - **Linux** (GLFW, SDL2, SDL3) - Tested (self-tests, Ubuntu 24.04 with Mesa)
 
 ### Graphics APIs Tested
@@ -531,7 +531,7 @@ The library has been tested with the following configurations:
 - **DirectX 12** - Tested (Win32 only)
 - **OpenGL 3** - Tested (Win32, GLFW)
 - **Vulkan** - Basic testing (GLFW, SDL2, SDL3)
-- **Metal** - Not tested (macOS/iOS only, contributions welcome!)
+- **Metal** - Builds in CI and the generated MSL compiles with the offline Metal compiler; not run on hardware yet
 - **WebGPU** - Basic testing (Emscripten + GLFW in Chrome)
 
 ### Dear ImGui Version

@@ -2,6 +2,8 @@
 
 ## 2.0.0
 
+Changes since 0.5.0 (the `main` branch).
+
 ### Added
 - **Render passes** on every backend (DirectX 9, 10, 11, 12, OpenGL 3, Vulkan, WebGPU, Metal):
   `ImPlatform_QueueRenderPass()` renders Dear ImGui draw data into a render texture before the frame, with the backend's
@@ -30,8 +32,6 @@
 - DirectX 12, Vulkan and WebGPU: custom shader programs bind textures t1..t8 (`ImPlatform_SetShaderTexture()`, any
   ImPlatform texture, kept by the program); DirectX 12 static vertex and index buffers live in device memory.
 - `ImPlatform_IsMaximized()` is public.
-- Optional capabilities a backend does not implement are stubbed (`false` / no-op), selected by
-  `IMPLATFORM_GFX_HAS_READBACK`, `_ASYNC_READBACK`, `_COMPUTE`, `_DEPTH_DRAW` and `_DEVICE_CONTROL`.
 - Demo self-tests: `--compute-test`, `--render-pass-test`, `--shader-test` (custom shader drawn into a render pass
   and read back) and `--direct-draw-test` (from a draw callback: a pushed render target, pushed constants and
   `ImPlatform_DrawQuadNow`, read back); exit code 0 pass, 1 fail, 2 unsupported.
@@ -68,17 +68,11 @@
 - `ImPlatform_CreateVertexInputLayout()` is in the `VERTEX_BUFFERS` group and implemented by every backend in it: a
   vertex declaration on DirectX 9 and an input layout on DirectX 10 (custom vertex buffers drew without one there),
   a check of its arguments where the layout is built at draw time. DirectX 11 maps `UByte4N` vertex attributes.
-- DirectX 12: each bind of a custom shader takes its own copy of the program's parameters (frame upload memory), so a
-  program drawn several times in a frame keeps each draw's values; before, every draw read the last ones set. The demo's
-  `--shader-test` draws one program twice with different parameters set from draw callbacks.
 - Shader parts on DirectX 9 define `IMP_SM3` (shader model 3: 224 pixel constant registers, no integer or bit
   operations, no texel loads, no flat varyings), so a shader can take another path there; `nointerpolation` varyings
   are interpolated there.
 - Shader parts: `ddx` / `ddy` in a helper function compile in the vertex stage too (a zero there; GLSL and MSL have
   derivatives in fragment shaders only).
-- OpenGL: `ImPlatform_ReadTexture()` reports its own GL errors only (an error left pending by an earlier call failed it).
-- Vulkan: texture uploads map and flush the whole staging allocation (a size that was not a multiple of
-  `nonCoherentAtomSize` broke a validation rule).
 - Metal: `ImPlatform_SetShaderTexture()` slots 1..8 (both stages).
 - The custom shader parameters (`b1`) are bound to the vertex stage too on DirectX 10, 11 and 12 (vertex animation).
 - DirectX 9 custom shaders: the same HLSL, compiled for `vs_3_0` / `ps_3_0`; cbuffer members are uploaded to the
@@ -117,6 +111,12 @@
   and the vertex attributes are found by name or type instead of relying on Dear ImGui's locations.
 
 ### Fixed
+- DirectX 12: each bind of a custom shader takes its own copy of the program's parameters (frame upload memory), so a
+  program drawn several times in a frame keeps each draw's values; before, every draw read the last ones set. The demo's
+  `--shader-test` draws one program twice with different parameters set from draw callbacks.
+- OpenGL: `ImPlatform_ReadTexture()` reports its own GL errors only (an error left pending by an earlier call failed it).
+- Vulkan: texture uploads map and flush the whole staging allocation (a size that was not a multiple of
+  `nonCoherentAtomSize` broke a validation rule).
 - DirectX 9: the regular draws after a callback that called `ImPlatform_DrawIndexed()` used its vertex and index buffers
   (Dear ImGui's DX9 backend binds its own once per draw data). `DrawIndexed` now binds the buffers for its draw only.
 - Vulkan: the render-complete semaphore is chosen per swapchain image, not per frame (the validation layer reported a semaphore
@@ -129,7 +129,8 @@
 - OpenGL render passes: shaders reading vertex positions saw them mirrored (render textures are stored bottom-up);
   shader parts undo the mirror through the projection block.
 - DirectX 10 and 11: a custom shader's parameters were bound only when they had changed, so a program could draw
-  with another program's parameters.- `ImPlatform_BindBuffers()` on DirectX 9, 10, 12, Vulkan and WebGPU (only DirectX 11 bound them).
+  with another program's parameters.
+- `ImPlatform_BindBuffers()` on DirectX 9, 10, 12, Vulkan and WebGPU (only DirectX 11 bound them).
 - `ImPlatform_SetShaderTexture()` on OpenGL finds the sampler SPIRV-Cross generates for the named HLSL texture (on Metal,
   where it bound nothing and reported success, it is no longer declared).
 - DirectX 12 custom shaders: the parameters (`b1`) are bound on every activation, not only after they changed; textures
