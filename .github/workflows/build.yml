@@ -548,6 +548,11 @@ jobs:
               set -e
               cat test.log
               echo "$demo --$test: exit $code"
+              # The hosted macOS runners are virtual machines without a GPU: no Metal device, no OpenGL pixel format.
+              if grep -q -e "Cannot initialize the Graphics API" -e "Cannot create window" test.log; then
+                echo "::warning title=$demo --$test::not run: no GPU on this runner"
+                continue
+              fi
               if [ $code -ne 0 ] && [ $code -ne 2 ]; then
                 status=1
                 echo "::error title=$demo --$test (exit $code)::$(tail -n 40 test.log | sed 's/%/%25/g' | awk '{printf "%s%%0A", $0}')"
