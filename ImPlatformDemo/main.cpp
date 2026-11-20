@@ -552,7 +552,8 @@ static int CheckTexture3DTest()
 // --vertex-inputs-test: shader parts with their own vertex inputs (a float4 position and a float4 of data), drawn by
 // ImPlatform_DrawIndexed from a draw callback into a render pass: two quads over the top half, the left one with id 1
 // (green), the right one with id 2 (blue), the id passed in an integer flat varying. The position is the projection
-// applied row by row (IMP_MUL(float4(1, 0, 0, 0), ProjMtx)...), so a wrong row shows; the bottom half stays clear.
+// applied row by row (IMP_MUL(float4(1, 0, 0, 0), ProjMtx)...), so a wrong row shows. Below, the left quarter stays
+// clear and the right one is a regular rect drawn after the callback (it must not use the buffers DrawIndexed bound).
 static RenderPassScene g_VertexInputsTest;
 static ImPlatform_ShaderProgram g_VertexInputsProgram = nullptr;
 static ImPlatform_Shader g_VertexInputsShaders[ 2 ] = {};
@@ -572,6 +573,8 @@ static void DrawVertexInputsTest( ImDrawList* dl )
 	ImPlatform_BeginCustomShader( dl, g_VertexInputsProgram );
 	dl->AddCallback( DrawVertexInputsQuads, nullptr );
 	ImPlatform_EndCustomShader( dl );
+	// A regular draw after the callback: it must use Dear ImGui's buffers again, not the ones DrawIndexed bound.
+	dl->AddRectFilled( ImVec2( 32, 32 ), ImVec2( 64, 64 ), IM_COL32( 255, 255, 255, 255 ) );
 }
 #endif
 
@@ -621,8 +624,9 @@ static int CheckVertexInputsTest()
 		printf( "SKIP: no readback of the pass target\n" );
 		return 2;
 	}
-	const RenderPassProbe probes[] = { { 16, 16, { 0, 255, 0, 255 } }, { 48, 16, { 0, 0, 255, 255 } }, { 16, 48, { 0, 0, 0, 0 } } };
-	const int bad = CheckRenderPassProbes( "vertex inputs", px, 64, probes, 3, 4 );
+	const RenderPassProbe probes[] = { { 16, 16, { 0, 255, 0, 255 } }, { 48, 16, { 0, 0, 255, 255 } }, { 16, 48, { 0, 0, 0, 0 } },
+									   { 48, 48, { 255, 255, 255, 255 } } };
+	const int bad = CheckRenderPassProbes( "vertex inputs", px, 64, probes, 4, 4 );
 	if ( !bad )
 		printf( "PASS\n" );
 	return bad ? 1 : 0;

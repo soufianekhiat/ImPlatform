@@ -117,6 +117,8 @@
   and the vertex attributes are found by name or type instead of relying on Dear ImGui's locations.
 
 ### Fixed
+- DirectX 9: the regular draws after a callback that called `ImPlatform_DrawIndexed()` used its vertex and index buffers
+  (Dear ImGui's DX9 backend binds its own once per draw data). `DrawIndexed` now binds the buffers for its draw only.
 - Vulkan: the render-complete semaphore is chosen per swapchain image, not per frame (the validation layer reported a semaphore
   signaled again while a present could still wait on it, VUID-vkQueueSubmit-pSignalSemaphores-00067).
 - Draw callbacks after `ImPlatform_BeginCustomShader()` that draw by themselves (`ImPlatform_DrawIndexed()`) ran with the

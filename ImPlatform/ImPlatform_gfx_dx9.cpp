@@ -904,12 +904,20 @@ IMPLATFORM_API bool ImPlatform_UpdateVertexBuffer(ImPlatform_VertexBuffer vertex
     return true;
 }
 
+// Dear ImGui's DX9 backend binds its vertex / index buffers and FVF once per RenderDrawData, not when it resets the
+// render state: binding ours on the device would leave them to the draws that follow the callback. The buffers are
+// recorded here, and DrawIndexed binds them for its draw and restores the previous ones.
+static ImPlatform_BufferData_DX9* g_P9_VB = NULL;
+static ImPlatform_BufferData_DX9* g_P9_IB = NULL;
+
 IMPLATFORM_API void ImPlatform_DestroyVertexBuffer(ImPlatform_VertexBuffer vertex_buffer)
 {
     if (!vertex_buffer)
         return;
 
     ImPlatform_BufferData_DX9* buffer = (ImPlatform_BufferData_DX9*)vertex_buffer;
+    if (g_P9_VB == buffer)
+        g_P9_VB = NULL;
     if (buffer->pVertexBuffer) buffer->pVertexBuffer->Release();
     if (buffer->pVertexDeclaration) buffer->pVertexDeclaration->Release();
     delete[] buffer->attributes;
@@ -980,28 +988,22 @@ IMPLATFORM_API void ImPlatform_DestroyIndexBuffer(ImPlatform_IndexBuffer index_b
         return;
 
     ImPlatform_BufferData_DX9* buffer = (ImPlatform_BufferData_DX9*)index_buffer;
+    if (g_P9_IB == buffer)
+        g_P9_IB = NULL;
     if (buffer->pIndexBuffer) buffer->pIndexBuffer->Release();
     delete buffer;
 }
 
 IMPLATFORM_API void ImPlatform_BindVertexBuffer(ImPlatform_VertexBuffer vertex_buffer)
 {
-    if (!vertex_buffer)
-        return;
-
-    ImPlatform_BufferData_DX9* buffer = (ImPlatform_BufferData_DX9*)vertex_buffer;
-    g_GfxData.pDevice->SetStreamSource(0, buffer->pVertexBuffer, 0, buffer->vb_desc.vertex_stride);
-    if (buffer->pVertexDeclaration)
-        g_GfxData.pDevice->SetVertexDeclaration(buffer->pVertexDeclaration);
+    if (vertex_buffer)
+        g_P9_VB = (ImPlatform_BufferData_DX9*)vertex_buffer;
 }
 
 IMPLATFORM_API void ImPlatform_BindIndexBuffer(ImPlatform_IndexBuffer index_buffer)
 {
-    if (!index_buffer)
-        return;
-
-    ImPlatform_BufferData_DX9* buffer = (ImPlatform_BufferData_DX9*)index_buffer;
-    g_GfxData.pDevice->SetIndices(buffer->pIndexBuffer);
+    if (index_buffer)
+        g_P9_IB = (ImPlatform_BufferData_DX9*)index_buffer;
 }
 
 IMPLATFORM_API void ImPlatform_BindBuffers(ImPlatform_VertexBuffer vertex_buffer, ImPlatform_IndexBuffer index_buffer)
@@ -1035,7 +1037,34 @@ IMPLATFORM_API void ImPlatform_DrawIndexed(unsigned int primitive_type, unsigned
         break;
     }
 
-    g_GfxData.pDevice->DrawIndexedPrimitive(d3d_prim, 0, 0, index_count, start_index, prim_count);
+    if (!g_P9_VB || !g_P9_IB)
+        return;
+    LPDIRECT3DDEVICE9 dev = g_GfxData.pDevice;
+    IDirect3DVertexBuffer9* prev_vb = NULL;
+    UINT prev_offset = 0, prev_stride = 0;
+    IDirect3DIndexBuffer9* prev_ib = NULL;
+    IDirect3DVertexDeclaration9* prev_decl = NULL;
+    DWORD prev_fvf = 0;
+    dev->GetStreamSource(0, &prev_vb, &prev_offset, &prev_stride);
+    dev->GetIndices(&prev_ib);
+    dev->GetVertexDeclaration(&prev_decl);
+    dev->GetFVF(&prev_fvf);
+
+    dev->SetStreamSource(0, g_P9_VB->pVertexBuffer, 0, g_P9_VB->vb_desc.vertex_stride);
+    if (g_P9_VB->pVertexDeclaration)
+        dev->SetVertexDeclaration(g_P9_VB->pVertexDeclaration);
+    dev->SetIndices(g_P9_IB->pIndexBuffer);
+    dev->DrawIndexedPrimitive(d3d_prim, 0, 0, g_P9_VB->vb_desc.vertex_count, start_index, prim_count);
+
+    dev->SetStreamSource(0, prev_vb, prev_offset, prev_stride);
+    dev->SetIndices(prev_ib);
+    if (prev_fvf)
+        dev->SetFVF(prev_fvf);
+    else
+        dev->SetVertexDeclaration(prev_decl);
+    if (prev_vb) prev_vb->Release();
+    if (prev_ib) prev_ib->Release();
+    if (prev_decl) prev_decl->Release();
 }
 
 // ============================================================================
