@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(ImPlatform VERSION 0.5.0 LANGUAGES CXX C)
+project(ImPlatform VERSION 2.0.0 LANGUAGES CXX C)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -105,6 +105,7 @@ add_library(imgui STATIC
     ${IMGUI_DIR}/imgui_draw.cpp
     ${IMGUI_DIR}/imgui_tables.cpp
     ${IMGUI_DIR}/imgui_widgets.cpp
+    ${IMGUI_DIR}/imgui_stacklayout.cpp
 )
 target_include_directories(imgui PUBLIC ${IMGUI_DIR})
 # Propagate DearWidgets' imconfig overrides to every consumer of the imgui target.
@@ -126,6 +127,7 @@ set(IMPLATFORM_HEADERS
 
 set(IMPLATFORM_COMMON_SOURCES
     ${IMPLATFORM_DIR}/ImPlatform_titlebar.cpp
+    ${IMPLATFORM_DIR}/ImPlatform_shader_parts.cpp
 )
 
 # Platform-specific sources
@@ -169,6 +171,8 @@ if(APPLE)
             LANGUAGE OBJCXX
             COMPILE_FLAGS "-fobjc-arc -x objective-c++"
     )
+    # imgui_impl_wgpu.cpp surface helper includes Cocoa headers on macOS
+    set_source_files_properties(${IMGUI_BACKEND_WGPU} PROPERTIES COMPILE_FLAGS "-x objective-c++")
 endif()
 
 # =============================================================================
@@ -268,8 +272,11 @@ function(implatform_add_config TARGET_NAME PLATFORM GFX)
         endif()
     elseif(PLATFORM STREQUAL "SDL2")
         target_link_libraries(${TARGET_NAME} PUBLIC SDL2::SDL2)
+        # The demo provides its own main() (same as the MSBuild project)
+        target_compile_definitions(${TARGET_NAME} PUBLIC SDL_MAIN_HANDLED)
     elseif(PLATFORM STREQUAL "SDL3")
         target_link_libraries(${TARGET_NAME} PUBLIC SDL3::SDL3)
+        target_compile_definitions(${TARGET_NAME} PUBLIC SDL_MAIN_HANDLED)
     endif()
 
     # Graphics-specific dependencies
@@ -306,6 +313,11 @@ function(implatform_add_config TARGET_NAME PLATFORM GFX)
         elseif(TARGET wgpu_native)
             target_link_libraries(${TARGET_NAME} PUBLIC wgpu_native)
             target_compile_definitions(${TARGET_NAME} PUBLIC IMGUI_IMPL_WEBGPU_BACKEND_WGPU)
+        endif()
+        if(APPLE)
+            find_library(QUARTZCORE_FRAMEWORK QuartzCore REQUIRED)
+            find_library(METAL_FRAMEWORK Metal REQUIRED)
+            target_link_libraries(${TARGET_NAME} PUBLIC ${QUARTZCORE_FRAMEWORK} ${METAL_FRAMEWORK})
         endif()
     endif()
 
@@ -355,6 +367,8 @@ endfunction()
 
 # =============================================================================
 # Build configurations based on available dependencies
+# Mirrors the Sharpmake configurations (buildsystem/sharpmake/src/common.cs),
+# which are the default build: keep both lists in sync.
 # =============================================================================
 
 # Windows-only configurations (DirectX)

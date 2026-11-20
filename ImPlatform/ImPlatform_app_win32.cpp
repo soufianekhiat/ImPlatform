@@ -20,14 +20,54 @@ extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg
 
 // Forward declarations from internal header are already included
 
-#if IMPLATFORM_APP_SUPPORT_CUSTOM_TITLEBAR
-// Forward declaration - defined in ImPlatform_titlebar.cpp
-bool ImPlatform_IsMaximized(void);
-#endif
+// Windows Ink pen samples: every hardware sample since the previous message (history is newest first).
+static void ImPlatform_Win32_PenMessage(HWND hWnd, WPARAM wParam)
+{
+    const UINT32 id = GET_POINTERID_WPARAM(wParam);
+    POINTER_INPUT_TYPE type = PT_POINTER;
+    POINTER_PEN_INFO pen = {};
+    if (!::GetPointerType(id, &type) || type != PT_PEN || !::GetPointerPenInfo(id, &pen))
+        return;
+    POINTER_PEN_INFO history[64];
+    UINT32 count = pen.pointerInfo.historyCount;
+    if (count > 64)
+        count = 64;     // Older samples beyond the buffer are skipped (rare: the queue is read every message).
+    if (count <= 1 || !::GetPointerPenInfoHistory(id, &count, history))
+    {
+        history[0] = pen;
+        count = 1;
+    }
+    LARGE_INTEGER freq;
+    ::QueryPerformanceFrequency(&freq);
+    for (UINT32 k = count; k-- > 0;)
+    {
+        const POINTER_PEN_INFO& h = history[k];
+        POINT pt = h.pointerInfo.ptPixelLocation;
+        ::ScreenToClient(hWnd, &pt);
+        ImPlatform_PenSample s = {};
+        s.x = (float)pt.x;
+        s.y = (float)pt.y;
+        s.pressure = (h.penMask & PEN_MASK_PRESSURE) ? (float)h.pressure / 1024.0f : -1.0f;
+        s.has_tilt = (h.penMask & (PEN_MASK_TILT_X | PEN_MASK_TILT_Y)) != 0;
+        s.tilt_x = (float)h.tiltX;
+        s.tilt_y = (float)h.tiltY;
+        s.time = (double)h.pointerInfo.PerformanceCount / (double)freq.QuadPart;
+        s.in_contact = (h.pointerInfo.pointerFlags & POINTER_FLAG_INCONTACT) != 0;
+        s.eraser = (h.penFlags & (PEN_FLAG_INVERTED | PEN_FLAG_ERASER)) != 0;
+        s.has_rotation = (h.penMask & PEN_MASK_ROTATION) != 0;
+        s.rotation = (float)h.rotation;
+        ImPlatform_Pen_Push(&s);
+    }
+}
 
 // Win32 message handler
 static LRESULT WINAPI WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
 {
+    if (msg == WM_POINTERDOWN || msg == WM_POINTERUPDATE || msg == WM_POINTERUP)
+        ImPlatform_Win32_PenMessage(hWnd, wParam);     // Observed only: the messages still reach ImGui and DefWindowProc.
+    else if (msg == WM_POINTERLEAVE || msg == WM_POINTERCAPTURECHANGED)
+        ImPlatform_Pen_Leave();
+
     if (ImGui_ImplWin32_WndProcHandler(hWnd, msg, wParam, lParam))
         return true;
 
@@ -51,6 +91,8 @@ static LRESULT WINAPI WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
             ImPlatform_Gfx_OnResize_DX12(ImPlatform_Gfx_GetData_DX12(), uWidth, uHeight);
 #elif defined(IM_CURRENT_GFX) && (IM_CURRENT_GFX == IM_GFX_OPENGL3)
             ImPlatform_Gfx_SetSize_OpenGL3(uWidth, uHeight);
+#elif defined(IM_CURRENT_GFX) && (IM_CURRENT_GFX == IM_GFX_CUSTOM)
+            ImPlatform_Gfx_OnResize_Custom(uWidth, uHeight);
 #endif
         }
         return 0;
@@ -64,12 +106,17 @@ static LRESULT WINAPI WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
         {
             UINT dpi = HIWORD(wParam);
             g_AppData.fDpiScale = (float)dpi / 96.0f;
-            RECT* const prcNewWindow = (RECT*)lParam;
-            ::SetWindowPos(hWnd, NULL,
-                prcNewWindow->left, prcNewWindow->top,
-                prcNewWindow->right - prcNewWindow->left,
-                prcNewWindow->bottom - prcNewWindow->top,
-                SWP_NOZORDER | SWP_NOACTIVATE);
+            // The Win32 backend already applies the suggested rectangle when io.ConfigDpiScaleViewports is enabled
+            bool backend_resizes = ImGui::GetCurrentContext() != NULL && ImGui::GetIO().ConfigDpiScaleViewports;
+            if (!backend_resizes)
+            {
+                RECT* const prcNewWindow = (RECT*)lParam;
+                ::SetWindowPos(hWnd, NULL,
+                    prcNewWindow->left, prcNewWindow->top,
+                    prcNewWindow->right - prcNewWindow->left,
+                    prcNewWindow->bottom - prcNewWindow->top,
+                    SWP_NOZORDER | SWP_NOACTIVATE);
+            }
             ImPlatform_NotifyDpiChange(g_AppData.fDpiScale);
         }
         return 0;
@@ -256,7 +303,7 @@ IMPLATFORM_API bool ImPlatform_CreateWindow(char const* pWindowsName, ImVec2 con
     g_AppData.wc.hCursor = NULL;
     g_AppData.wc.hbrBackground = NULL;
     g_AppData.wc.lpszMenuName = NULL;
-    g_AppData.wc.lpszClassName = wName;
+    g_AppData.wc.lpszClassName = L"ImPlatform"; // Static string: must outlive the window for UnregisterClassW()
     g_AppData.wc.hIconSm = NULL;
     ::RegisterClassExW(&g_AppData.wc);
 

@@ -5,6 +5,38 @@
 
 #include "ImPlatform.h"
 
+// Renders a render pass one draw list at a time (immediate backends: DX9, DX10, DX11, OpenGL): their vertex and index
+// buffers grow to the largest list instead of the whole pass, and are remapped whole each frame (a pass of millions of
+// vertices made every later frame stall on that remap). The frame's texture updates go with the first list.
+template <typename RenderFn>
+static inline void ImPlatform_RenderPassLists(ImDrawData* draw_data, RenderFn render)
+{
+    if (draw_data->CmdLists.Size <= 1)
+    {
+        render(draw_data);
+        return;
+    }
+    ImDrawData one;
+    one.Valid = true;
+    one.DisplayPos = draw_data->DisplayPos;
+    one.DisplaySize = draw_data->DisplaySize;
+    one.FramebufferScale = draw_data->FramebufferScale;
+    one.OwnerViewport = draw_data->OwnerViewport;
+    one.Textures = draw_data->Textures;
+    one.CmdLists.resize(1);
+#ifndef IMGUI_DISABLE_OBSOLETE_FUNCTIONS
+    one.CmdListsCount = 1;
+#endif
+    for (ImDrawList* list : draw_data->CmdLists)
+    {
+        one.CmdLists[0] = list;
+        one.TotalVtxCount = list->VtxBuffer.Size;
+        one.TotalIdxCount = list->IdxBuffer.Size;
+        render(&one);
+        one.Textures = NULL;
+    }
+}
+
 // Platform-specific includes
 #if defined(IM_CURRENT_PLATFORM) && (IM_CURRENT_PLATFORM == IM_PLATFORM_WIN32)
     #include <windows.h>
@@ -53,7 +85,7 @@
 
 #if defined(IM_CURRENT_GFX) && (IM_CURRENT_GFX == IM_GFX_DIRECTX12)
     #include <d3d12.h>
-    #include <dxgi1_4.h>
+    #include <dxgi1_5.h>
 #endif
 
 #if defined(IM_CURRENT_GFX) && (IM_CURRENT_GFX == IM_GFX_OPENGL3)
@@ -223,6 +255,7 @@ struct ImPlatform_GfxData_DX12 {
     HANDLE hFenceEvent;
     UINT64 uFenceLastSignaledValue;
     IDXGISwapChain3* pSwapChain;
+    bool bSwapChainTearingSupport;
     bool bSwapChainOccluded;
     HANDLE hSwapChainWaitableObject;
     ID3D12Resource* pRenderTargetResource[IM_DX12_NUM_BACK_BUFFERS];
@@ -235,9 +268,9 @@ struct ImPlatform_GfxData_OpenGL3 {
 #if defined(IM_CURRENT_PLATFORM) && (IM_CURRENT_PLATFORM == IM_PLATFORM_WIN32)
     HDC hDC;
     HGLRC hRC;
-#elif defined(IM_CURRENT_PLATFORM) && (IM_CURRENT_PLATFORM == IM_PLATFORM_GLFW)
-    // GLFW manages the GL context
-    int unused; // Avoid empty struct
+#else
+    // GLFW and SDL manage the GL context
+    int unused; // An empty struct is size 0 in C, 1 in C++ (-Wextern-c-compat)
 #endif
 };
 #endif
@@ -262,10 +295,6 @@ struct ImPlatform_GfxData_Vulkan {
     uint32_t imageCount;
     uint32_t currentFrameIndex;
     int minImageCount;
-    VkSampler defaultSampler;        // Default sampler for custom shaders
-    VkImageView defaultImageView;    // Default white 1x1 texture for custom shaders
-    VkImage defaultImage;            // Default white 1x1 image
-    VkDeviceMemory defaultImageMemory; // Memory for default image
 };
 #endif
 
@@ -285,10 +314,8 @@ struct ImPlatform_GfxData_WebGPU {
     WGPUDevice device;
     WGPUQueue queue;
     WGPUSurface surface;
-#if !(defined(__EMSCRIPTEN__) && defined(IMGUI_IMPL_WEBGPU_BACKEND_DAWN))
-    WGPUSwapChain swapChain;
-#endif
-    WGPUTextureFormat swapChainFormat;
+    WGPUSurfaceTexture surfaceTexture;  // Surface texture acquired for the current frame (in ImPlatform_GfxCheck)
+    WGPUTextureFormat swapChainFormat;  // Configured surface format
     unsigned int uSurfaceWidth;
     unsigned int uSurfaceHeight;
 };
@@ -373,11 +400,20 @@ void ImPlatform_Gfx_OnResize_DX10(struct ImPlatform_GfxData_DX10* pData, unsigne
 struct ImPlatform_GfxData_DX10* ImPlatform_Gfx_GetData_DX10(void);
 #endif
 
+// Pen input queue (ImPlatform.h implementation), fed by platform backends (every graphics API).
+void ImPlatform_Pen_Push(const struct ImPlatform_PenSample* sample);
+void ImPlatform_Pen_Leave(void);
+
 #if defined(IM_CURRENT_GFX) && (IM_CURRENT_GFX == IM_GFX_DIRECTX11)
 bool ImPlatform_Gfx_CreateDevice_DX11(void* hWnd, struct ImPlatform_GfxData_DX11* pData);
 void ImPlatform_Gfx_CleanupDevice_DX11(struct ImPlatform_GfxData_DX11* pData);
 void ImPlatform_Gfx_OnResize_DX11(struct ImPlatform_GfxData_DX11* pData, unsigned int uWidth, unsigned int uHeight);
 struct ImPlatform_GfxData_DX11* ImPlatform_Gfx_GetData_DX11(void);
+#endif
+
+#if defined(IM_CURRENT_GFX) && (IM_CURRENT_GFX == IM_GFX_CUSTOM)
+// Provided by the application's graphics backend: the window's client area changed size.
+void ImPlatform_Gfx_OnResize_Custom(unsigned int uWidth, unsigned int uHeight);
 #endif
 
 #if defined(IM_CURRENT_GFX) && (IM_CURRENT_GFX == IM_GFX_DIRECTX12)
@@ -431,6 +467,57 @@ struct ImPlatform_GfxData_WebGPU* ImPlatform_Gfx_GetData_WebGPU(void);
 #endif
 
 #ifdef __cplusplus
+}
+#endif
+
+// ============================================================================
+// Sampler override using standard backend draw callbacks
+// ============================================================================
+// Since Dear ImGui 1.92.8 renderer backends provide backend-agnostic draw callbacks
+// in ImGuiPlatformIO (DrawCallback_SetSamplerLinear / DrawCallback_SetSamplerNearest).
+// Backends that cannot swap arbitrary sampler states mid-frame (DX12, Vulkan, WebGPU)
+// use them to implement ImPlatform_PushSampler()/ImPlatform_PopSampler():
+// the filter is honored, the wrap mode stays at the backend default (clamp).
+// The stack is resolved at submission time, restoring Linear (backend default) when empty.
+
+#ifdef __cplusplus
+static inline ImVector<ImDrawCallback>& ImPlatform_StdSamplerStack()
+{
+    static ImVector<ImDrawCallback> stack;
+    return stack;
+}
+
+static inline void ImPlatform_PushSampler_StdCallbacks(ImPlatform_TextureFilter filter)
+{
+    ImGuiPlatformIO& platform_io = ImGui::GetPlatformIO();
+    ImDrawCallback callback = (filter == ImPlatform_TextureFilter_Nearest) ? platform_io.DrawCallback_SetSamplerNearest : platform_io.DrawCallback_SetSamplerLinear;
+    ImPlatform_StdSamplerStack().push_back(callback);
+    if (callback)
+        ImGui::GetWindowDrawList()->AddCallback(callback);
+}
+
+static inline void ImPlatform_PopSampler_StdCallbacks(void)
+{
+    ImVector<ImDrawCallback>& stack = ImPlatform_StdSamplerStack();
+    if (stack.Size == 0)
+        return;
+    stack.pop_back();
+    ImDrawCallback callback = (stack.Size > 0) ? stack.back() : ImGui::GetPlatformIO().DrawCallback_SetSamplerLinear;
+    if (callback)
+        ImGui::GetWindowDrawList()->AddCallback(callback);
+}
+
+// The ImGui backends set the scissor for regular draws only: a callback that draws by itself (ImPlatform_DrawIndexed,
+// DrawQuadNow) would run with the previous list's scissor, or none at the start of a render pass. One zero-area,
+// transparent triangle in the current command makes the backend set its clip rect, the one of the callbacks that follow
+// (no extra draw call when that command already has geometry).
+static inline void ImPlatform_ScissorBeforeCallbacks(ImDrawList* draw)
+{
+    const ImDrawIdx idx = (ImDrawIdx)draw->_VtxCurrentIdx;
+    draw->PrimReserve(3, 1);
+    for (int i = 0; i < 3; i++)
+        draw->PrimWriteIdx(idx);
+    draw->PrimWriteVtx(ImVec2(draw->_CmdHeader.ClipRect.x, draw->_CmdHeader.ClipRect.y), ImVec2(0.0f, 0.0f), 0);
 }
 #endif
 

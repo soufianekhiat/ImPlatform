@@ -9,6 +9,12 @@
 //   IM_PLATFORM_WIN32, IM_PLATFORM_GLFW, IM_PLATFORM_APPLE
 // Available graphics APIs:
 //   IM_GFX_OPENGL3, IM_GFX_DIRECTX11, IM_GFX_DIRECTX12, IM_GFX_VULKAN, IM_GFX_METAL, IM_GFX_WGPU
+//   IM_GFX_CUSTOM: the APPLICATION provides the graphics backend. ImPlatform compiles no
+//     graphics backend; the application links its own implementation of the ImPlatform_*
+//     graphics entry points (InitGfxAPI, GfxAPINewFrame/Render/SwapBuffer, textures, shaders,
+//     buffers...) and of ImPlatform_Gfx_OnResize_Custom, which the platform layer calls when
+//     the window is resized. The platform layer (window, input, DPI, title bar) is ImPlatform's
+//     as usual. Feature flags below default to "supported" and can be predefined to 0.
 //
 // Or use predefined combinations:
 //   IM_TARGET_WIN32_DX11, IM_TARGET_WIN32_DX12, IM_TARGET_WIN32_OPENGL3
@@ -24,7 +30,7 @@
 //   6. Main loop:
 //      while (ImPlatform_PlatformContinue())
 //      {
-//          ImPlatform_PlatformEvents();
+//          if (!ImPlatform_PlatformEvents()) continue; // false: quit requested or minimized
 //          if (!ImPlatform_GfxCheck()) continue;
 //
 //          ImPlatform_GfxAPINewFrame();
@@ -49,11 +55,11 @@
 #pragma once
 
 // ImPlatform version
-// (Integer encoded as XYYZZ for use in #if preprocessor conditionals, e.g. '#if IMPLATFORM_VERSION_NUM >= 500')
-#define IMPLATFORM_VERSION          "0.5.0"
-#define IMPLATFORM_VERSION_NUM      500
-#define IMPLATFORM_VERSION_MAJOR    0
-#define IMPLATFORM_VERSION_MINOR    5
+// (Integer encoded as XYYZZ for use in #if preprocessor conditionals, e.g. '#if IMPLATFORM_VERSION_NUM >= 20000')
+#define IMPLATFORM_VERSION          "2.0.0"
+#define IMPLATFORM_VERSION_NUM      20000
+#define IMPLATFORM_VERSION_MAJOR    2
+#define IMPLATFORM_VERSION_MINOR    0
 #define IMPLATFORM_VERSION_PATCH    0
 
 #ifndef IMPLATFORM_API
@@ -74,12 +80,39 @@
 #define IM_GFX_VULKAN       ( 1u << 5u )
 #define IM_GFX_METAL        ( 1u << 6u )
 #define IM_GFX_WGPU         ( 1u << 7u )
+#define IM_GFX_CUSTOM       ( 1u << 8u )
 
 #define IM_GFX_MASK         0x0000FFFFu
 
 // Graphics API feature support flags
 // These indicate which features are supported by each backend
-#if defined(IM_CURRENT_GFX)
+#if defined(IM_CURRENT_GFX) && (IM_CURRENT_GFX == IM_GFX_CUSTOM)
+    // The application's backend declares what it supports; everything by default.
+    #ifndef IMPLATFORM_GFX_SUPPORT_CUSTOM_SHADER
+        #define IMPLATFORM_GFX_SUPPORT_CUSTOM_SHADER 1
+    #endif
+    #ifndef IMPLATFORM_GFX_SUPPORT_BGRA_FORMATS
+        #define IMPLATFORM_GFX_SUPPORT_BGRA_FORMATS 1
+    #endif
+    #ifndef IMPLATFORM_GFX_SUPPORT_HALF_FLOAT_FORMATS
+        #define IMPLATFORM_GFX_SUPPORT_HALF_FLOAT_FORMATS 1
+    #endif
+    #ifndef IMPLATFORM_GFX_SUPPORT_RGB_EXTENDED
+        #define IMPLATFORM_GFX_SUPPORT_RGB_EXTENDED 1
+    #endif
+    #ifndef IMPLATFORM_GFX_SUPPORT_SRGB_FORMATS
+        #define IMPLATFORM_GFX_SUPPORT_SRGB_FORMATS 1
+    #endif
+    #ifndef IMPLATFORM_GFX_SUPPORT_PACKED_FORMATS
+        #define IMPLATFORM_GFX_SUPPORT_PACKED_FORMATS 1
+    #endif
+    #ifndef IMPLATFORM_GFX_SUPPORT_DEPTH_FORMATS
+        #define IMPLATFORM_GFX_SUPPORT_DEPTH_FORMATS 1
+    #endif
+    #ifndef IMPLATFORM_GFX_SUPPORT_INTEGER_FORMATS
+        #define IMPLATFORM_GFX_SUPPORT_INTEGER_FORMATS 1
+    #endif
+#elif defined(IM_CURRENT_GFX)
     #if (IM_CURRENT_GFX == IM_GFX_OPENGL3) || \
         (IM_CURRENT_GFX == IM_GFX_DIRECTX9) || \
         (IM_CURRENT_GFX == IM_GFX_DIRECTX10) || \
@@ -181,6 +214,55 @@
         #define IMPLATFORM_GFX_SUPPORT_INTEGER_FORMATS 1
     #else
         #define IMPLATFORM_GFX_SUPPORT_INTEGER_FORMATS 0
+    #endif
+#endif
+
+// Optional API groups. The functions of a group the selected backend does not implement are not declared, so code
+// calling them does not compile for that backend; the run-time queries (ImPlatform_SupportsReadback, ...) stay and
+// report false. Under IM_GFX_CUSTOM every group defaults to 1 and may be predefined to 0: the application implements
+// the groups it keeps.
+#if defined(IM_CURRENT_GFX)
+    #define IMPLATFORM_GFX_IN(gfx_set) ((((IM_CURRENT_GFX) & (IM_GFX_CUSTOM | (gfx_set))) != 0) ? 1 : 0)
+    // ImPlatform_SetShaderTexture: textures t0..t8 of custom shaders
+    #ifndef IMPLATFORM_GFX_SUPPORT_SHADER_TEXTURES
+        #define IMPLATFORM_GFX_SUPPORT_SHADER_TEXTURES IMPLATFORM_GFX_IN(IM_GFX_DIRECTX9 | IM_GFX_DIRECTX10 | IM_GFX_DIRECTX11 | IM_GFX_DIRECTX12 | IM_GFX_OPENGL3 | IM_GFX_VULKAN | IM_GFX_METAL | IM_GFX_WGPU)
+    #endif
+    // ImPlatform_CreateShaderFromParts: shaders written once as parts, compiled at run time
+    #ifndef IMPLATFORM_GFX_SUPPORT_SHADER_PARTS
+        #define IMPLATFORM_GFX_SUPPORT_SHADER_PARTS IMPLATFORM_GFX_IN(IM_GFX_DIRECTX9 | IM_GFX_DIRECTX10 | IM_GFX_DIRECTX11 | IM_GFX_DIRECTX12 | IM_GFX_OPENGL3 | IM_GFX_METAL)
+    #endif
+    // Vertex / index buffers and ImPlatform_DrawIndexed
+    #ifndef IMPLATFORM_GFX_SUPPORT_VERTEX_BUFFERS
+        #define IMPLATFORM_GFX_SUPPORT_VERTEX_BUFFERS IMPLATFORM_GFX_IN(IM_GFX_DIRECTX9 | IM_GFX_DIRECTX10 | IM_GFX_DIRECTX11 | IM_GFX_DIRECTX12 | IM_GFX_OPENGL3 | IM_GFX_VULKAN | IM_GFX_WGPU | IM_GFX_METAL)
+    #endif
+    // Direct draws from draw callbacks: ImPlatform_PushShaderConstants / PopShaderConstants, ImPlatform_GetCurrentTargetSize
+    #ifndef IMPLATFORM_GFX_SUPPORT_DIRECT_DRAW
+        #define IMPLATFORM_GFX_SUPPORT_DIRECT_DRAW IMPLATFORM_GFX_IN(IM_GFX_DIRECTX9 | IM_GFX_DIRECTX11 | IM_GFX_DIRECTX12 | IM_GFX_OPENGL3 | IM_GFX_VULKAN | IM_GFX_WGPU)
+    #endif
+    // Render-target stack in draw callbacks: ImPlatform_PushRenderTarget / PopRenderTarget, ImPlatform_CopyCurrentTarget,
+    // ImPlatform_DrawQuadNow
+    #ifndef IMPLATFORM_GFX_SUPPORT_RENDER_TARGETS
+        #define IMPLATFORM_GFX_SUPPORT_RENDER_TARGETS IMPLATFORM_GFX_IN(IM_GFX_DIRECTX9 | IM_GFX_DIRECTX11 | IM_GFX_DIRECTX12 | IM_GFX_OPENGL3 | IM_GFX_VULKAN)
+    #endif
+    // ImPlatform_ReadTexture
+    #ifndef IMPLATFORM_GFX_SUPPORT_READBACK
+        #define IMPLATFORM_GFX_SUPPORT_READBACK IMPLATFORM_GFX_IN(IM_GFX_DIRECTX9 | IM_GFX_DIRECTX10 | IM_GFX_DIRECTX11 | IM_GFX_DIRECTX12 | IM_GFX_OPENGL3 | IM_GFX_VULKAN | IM_GFX_METAL)
+    #endif
+    // ImPlatform_BeginReadTexture / PollReadback / MapReadback / ReleaseReadback
+    #ifndef IMPLATFORM_GFX_SUPPORT_ASYNC_READBACK
+        #define IMPLATFORM_GFX_SUPPORT_ASYNC_READBACK IMPLATFORM_GFX_IN(IM_GFX_DIRECTX11 | IM_GFX_DIRECTX12)
+    #endif
+    // ImPlatform_CreateStorageTexture, ImPlatform_DispatchCompute (OpenGL: 4.3+, ImPlatform_SupportsCompute at run time)
+    #ifndef IMPLATFORM_GFX_SUPPORT_COMPUTE
+        #define IMPLATFORM_GFX_SUPPORT_COMPUTE IMPLATFORM_GFX_IN(IM_GFX_DIRECTX11 | IM_GFX_DIRECTX12 | IM_GFX_OPENGL3 | IM_GFX_VULKAN)
+    #endif
+    // ImPlatform_CreateRenderTextureWithDepth, ImPlatform_DrawMesh
+    #ifndef IMPLATFORM_GFX_SUPPORT_DEPTH_DRAW
+        #define IMPLATFORM_GFX_SUPPORT_DEPTH_DRAW IMPLATFORM_GFX_IN(IM_GFX_DIRECTX11 | IM_GFX_DIRECTX12)
+    #endif
+    // Device loss, recreation, adapter name and testing aids: ImPlatform_GfxDeviceLost ... ImPlatform_GfxDebugGpuTimings
+    #ifndef IMPLATFORM_GFX_SUPPORT_DEVICE_CONTROL
+        #define IMPLATFORM_GFX_SUPPORT_DEVICE_CONTROL IMPLATFORM_GFX_IN(IM_GFX_DIRECTX11 | IM_GFX_DIRECTX12)
     #endif
 #endif
 
@@ -479,7 +561,9 @@ IMPLATFORM_API ImPlatform_TextureDesc3D ImPlatform_TextureDesc3D_Default(
 
 // Create a 3D texture from raw voxel data (tightly packed, z-major:
 // z*w*h + y*w + x order). Returns ImTextureID_Invalid on failure or if
-// the backend does not support 3D textures.
+// the backend does not support 3D textures. Bind it with ImPlatform_SetShaderTexture to a slot the shader declares
+// Texture3D (shader parts: a "<slot> <name> 3d" texture line); it is sampled with the program's sampler, so the filters
+// and wraps of the desc apply only where the texture keeps them (OpenGL). Destroy with ImPlatform_DestroyTexture.
 IMPLATFORM_API ImTextureID ImPlatform_CreateTexture3D(
     const void* voxel_data,
     const ImPlatform_TextureDesc3D* desc
@@ -536,6 +620,43 @@ IMPLATFORM_API bool ImPlatform_BeginRenderToTexture(ImTextureID texture);
 // Restore the backbuffer as the active render target.
 IMPLATFORM_API void ImPlatform_EndRenderToTexture(void);
 
+// Render-target stack, usable from inside an ImDrawCallback (multi-pass effects such as a bloom
+// or blur cascade). Push makes `texture` (from ImPlatform_CreateRenderTexture) the current target
+// with a full-size viewport and scissor, clearing it to transparent when `clear` is true; Pop
+// restores the previous target. Nests up to 8 deep. Begin/EndRenderToTexture = Push(t, true)/Pop.
+#if IMPLATFORM_GFX_SUPPORT_RENDER_TARGETS
+IMPLATFORM_API bool ImPlatform_PushRenderTarget(ImTextureID texture, bool clear);
+IMPLATFORM_API void ImPlatform_PopRenderTarget(void);
+
+// Copy a rectangle of the current render target (the viewport being rendered, main or secondary,
+// or the pushed render texture) into `dst`, from inside an ImDrawCallback. Coordinates are in
+// pixels, top-left origin; the rectangle is clipped to both surfaces and MSAA is resolved.
+// Returns false when nothing was copied.
+IMPLATFORM_API bool ImPlatform_CopyCurrentTarget(ImTextureID dst, int src_x, int src_y, int w, int h, int dst_x, int dst_y);
+#endif
+#if IMPLATFORM_GFX_SUPPORT_DIRECT_DRAW
+// Size in pixels of the current render target.
+IMPLATFORM_API void ImPlatform_GetCurrentTargetSize(unsigned int* width, unsigned int* height);
+#endif
+
+// Render passes: Dear ImGui draw data rendered into a render texture before the frame, by the backend's own ImGui
+// renderer (draw callbacks included), e.g. to cache vector drawings as images.
+// The pixel format of pass targets (the format the backend's ImGui pipeline renders to).
+IMPLATFORM_API ImPlatform_PixelFormat ImPlatform_GetRenderPassFormat(void);
+// Queues `draw_data` to be rendered into `target` (ImPlatform_CreateRenderTexture() in ImPlatform_GetRenderPassFormat())
+// at the start of the next ImPlatform_GfxAPIRender(), before the frame: draw_data->DisplayPos / DisplaySize map to the
+// whole target (FramebufferScale 1). `clear`: the target is cleared to transparent first. One pass per frame (a later
+// call replaces the queued one); `draw_data` must stay valid until then, and pending texture updates of the frame
+// (ImGui's ImTextureData) are processed by the pass. On OpenGL its vertices and clip rectangles are flipped in place
+// (render textures are stored bottom-up). Colors rendered over transparent come out premultiplied by alpha: draw them
+// between ImPlatform_PushPremultipliedAlpha() and ImPlatform_PopPremultipliedAlpha(). False when unsupported.
+IMPLATFORM_API bool ImPlatform_QueueRenderPass(ImTextureID target, ImDrawData* draw_data, bool clear);
+// Draw commands of the window draw list (or `draw`) between them blend as premultiplied alpha (ONE, ONE_MINUS_SRC_ALPHA
+// for color and alpha): texel times vertex color, both premultiplied (fading by a: color (a, a, a, a)). Through draw
+// callbacks, like ImPlatform_PushSampler().
+IMPLATFORM_API void ImPlatform_PushPremultipliedAlpha(ImDrawList* draw);
+IMPLATFORM_API void ImPlatform_PopPremultipliedAlpha(ImDrawList* draw);
+
 // Destroy a texture and free its resources
 // texture_id: Texture to destroy
 IMPLATFORM_API void ImPlatform_DestroyTexture(
@@ -544,8 +665,8 @@ IMPLATFORM_API void ImPlatform_DestroyTexture(
 
 // Override the sampler used by ImGui::Image() (and similar) for one or more draw calls.
 // Call ImPlatform_PushSampler() before the image call and ImPlatform_PopSampler() after.
-// Calls may be nested. Safe no-op on backends that don't support dynamic sampler override
-// (DX12, Vulkan, WGPU — where the sampler is baked into the pipeline/descriptor set).
+// Calls may be nested. On DX12, Vulkan and WGPU this relies on the standard backend draw callbacks
+// (ImGuiPlatformIO::DrawCallback_SetSamplerLinear/Nearest): the filter is honored but the wrap mode stays clamp.
 //
 // Example:
 //   ImPlatform_PushSampler(ImPlatform_TextureFilter_Nearest, ImPlatform_TextureWrap_Clamp);
@@ -613,6 +734,7 @@ typedef void* ImPlatform_IndexBuffer;
 // desc: Vertex buffer descriptor
 // Returns: Vertex buffer handle or NULL on failure
 // Note: The vertex data can be freed after this call returns (for Static usage)
+#if IMPLATFORM_GFX_SUPPORT_VERTEX_BUFFERS
 IMPLATFORM_API ImPlatform_VertexBuffer ImPlatform_CreateVertexBuffer(
     const void* vertex_data,
     const ImPlatform_VertexBufferDesc* desc
@@ -683,6 +805,7 @@ IMPLATFORM_API void ImPlatform_DrawIndexed(
     unsigned int index_count,
     unsigned int start_index
 );
+#endif // IMPLATFORM_GFX_SUPPORT_VERTEX_BUFFERS
 
 // ============================================================================
 // Custom Shader System API
@@ -770,16 +893,18 @@ IMPLATFORM_API void ImPlatform_DestroyShaderProgram(
     ImPlatform_ShaderProgram program
 );
 
-// Create a vertex input layout for a vertex buffer using the VS bytecode from a shader program.
-// Must be called after both ImPlatform_CreateVertexBuffer and ImPlatform_CreateShaderProgram.
-// The layout is derived from the vertex buffer's ImPlatform_VertexAttribute array.
-// Duplicate semantic names are disambiguated by auto-incrementing SemanticIndex.
-// After this call, ImPlatform_BindBuffers will activate the custom layout automatically.
-// Returns: true on success, false on failure
+#if IMPLATFORM_GFX_SUPPORT_VERTEX_BUFFERS
+// Create a vertex input layout for a vertex buffer and the program that draws it: call it once after
+// ImPlatform_CreateVertexBuffer and ImPlatform_CreateShaderProgram, on every backend (where the layout is built at draw
+// time, it only checks its arguments). The layout is derived from the vertex buffer's ImPlatform_VertexAttribute array;
+// duplicate semantic names take indices 0, 1, ... in order (TEXCOORD, TEXCOORD -> TEXCOORD0, TEXCOORD1). Direct3D
+// matches them to the vertex shader's semantics (Direct3D 9 by usage), the other APIs take attribute i at location i.
+// After this call, ImPlatform_BindBuffers activates the layout. Returns true on success.
 IMPLATFORM_API bool ImPlatform_CreateVertexInputLayout(
     ImPlatform_VertexBuffer vertex_buffer,
     ImPlatform_ShaderProgram program
 );
+#endif
 
 // Bind a shader program for rendering
 // program: Shader program to bind (or NULL to unbind)
@@ -830,18 +955,23 @@ IMPLATFORM_API void ImPlatform_EndUniformBlock(
     ImPlatform_ShaderProgram program
 );
 
-// Set shader texture binding
+// Set a texture of a custom shader: HLSL register t<slot>.
+// Slots 1..8: the program keeps the texture for its later draws; inside a draw callback with the program bound it also
+// applies at once. Slot 0 is the texture of the direct draws that follow (ImPlatform_DrawIndexed, ImPlatform_DrawQuadNow);
+// Dear ImGui's draws bind their own.
 // program: Shader program
-// name: Texture uniform name (e.g., "u_Texture")
-// slot: Texture slot/unit (0-15 typically)
-// texture: Texture ID to bind
-// Returns: true on success, false if uniform not found
+// name: HLSL texture name (used by OpenGL)
+// slot: Texture register
+// texture: An ImPlatform texture; it must stay alive while set
+// Returns: false when the arguments are invalid
+#if IMPLATFORM_GFX_SUPPORT_SHADER_TEXTURES
 IMPLATFORM_API bool ImPlatform_SetShaderTexture(
     ImPlatform_ShaderProgram program,
     const char* name,
     unsigned int slot,
     ImTextureID texture
 );
+#endif
 
 // Begin using a custom shader for ImDrawList rendering
 // Adds a callback to the drawlist to switch to the custom shader
@@ -858,8 +988,10 @@ IMPLATFORM_API void ImPlatform_BeginCustomShader_Render(ImPlatform_ShaderProgram
 // data: Pointer to constant data
 // size: Size of constant data in bytes
 // Returns an opaque handle that must be freed with ImPlatform_PopShaderConstants.
+#if IMPLATFORM_GFX_SUPPORT_DIRECT_DRAW
 IMPLATFORM_API void* ImPlatform_PushShaderConstants(const void* data, unsigned int size);
 IMPLATFORM_API void  ImPlatform_PopShaderConstants(void* handle);
+#endif
 
 // End custom shader usage and restore default ImGui rendering state
 // Adds a callback to reset render state to ImGui defaults
@@ -878,6 +1010,214 @@ IMPLATFORM_API void ImPlatform_EndCustomShader(
 IMPLATFORM_API void ImPlatform_DrawCustomShaderQuad(
     ImPlatform_ShaderProgram program
 );
+
+// Draw a quad now (not queued in a draw list) with `program` and its pending uniforms / textures,
+// e.g. one pass of a blur cascade inside an ImDrawCallback:
+// dst_rect = (x0, y0, x1, y1) in pixels of the current target, uv_rect = (u0, v0, u1, v1).
+// Changes vertex / index buffers and shaders: follow it with ImDrawCallback_ResetRenderState
+// (ImPlatform_EndCustomShader adds one) before Dear ImGui draws again.
+#if IMPLATFORM_GFX_SUPPORT_RENDER_TARGETS
+IMPLATFORM_API void ImPlatform_DrawQuadNow(ImPlatform_ShaderProgram program, ImVec4 dst_rect, ImVec4 uv_rect);
+#endif
+
+// ----------------------------------------------------------------------------
+// Shader parts: a custom shader written once, completed per shading language at run time (HLSL on Direct3D 9 to 12,
+// GLSL 330 on OpenGL, MSL on Metal). The application gives its parameter block, extra varyings, textures, helper
+// functions and the vertex / pixel bodies; ImPlatform writes the entry points, inputs, outputs and declarations.
+// The text is HLSL plus these macros, which every language maps:
+//   IMP_SAMPLE(tex, uv), IMP_SAMPLE_LEVEL(tex, uv, lod) (uv a float3 for a 3D texture), IMP_LOAD(tex, int2 xy) (2D),
+//   IMP_MUL(matrix, vector),
+//   IMP_CAST(type, x) (instead of C-style casts), IMP_OUT(type) / IMP_INOUT(type) (function parameters written by the
+//   function; MSL has no out / inout), IMP_UNROLL / IMP_LOOP / IMP_BRANCH (loop and branch attributes),
+//   IMP_HLSL / IMP_GLSL / IMP_MSL (defined for the language being generated), IMP_SM3 (Direct3D 9, shader model 3:
+//   224 pixel constant registers, no integer or bit operations, no texel loads, no flat varyings: nointerpolation is
+//   ignored there; a shader can take another path).
+// lerp, frac, saturate, rcp, rsqrt, atan2, fmod, mad, ddx, ddy, mul, clip (scalar) and discard are available
+// everywhere; asuint, asint, asfloat (of a uint) and f16tof32 everywhere but Direct3D 9 (shader model 3 has no bit
+// operations). Write float literals (1.0, not 1), construct vectors fully (float2(x, x), not x.xx), give pow a vector
+// exponent with a vector base, compare vectors component by component, do not index matrices, keep 'static const' data
+// in functions, do not name functions or variables after GLSL / MSL built-ins (cross, distance, step...), write uint
+// literals with u (GLSL 330 does not convert int to uint), fill arrays element by element (no {...} initializers), and
+// do not 'return' from a body (assign col_out / position).
+// Names in scope:
+//   both stages  ProjMtx (b0), the parameters by member name (b1), texture0 (t0: the draw's texture) and the named
+//                textures (pixel stage), the helper functions
+//   vertex body  in_pos, in_uv, in_col (Dear ImGui's vertex); v.col, v.uv and v.<varying> to write; position (clip
+//                space, preset to mul(ProjMtx, float4(in_pos, 0, 1))). With vertex_inputs: in_<name> for each input
+//                instead, v.col / v.uv preset to 0 and position to float4(0, 0, 0, 1) (the body sets it). A row of
+//                ProjMtx is IMP_MUL(float4(1.0, 0.0, 0.0, 0.0), ProjMtx) (matrices are not indexed).
+//   pixel body   v.col, v.uv, v.<varying>; col_out (preset to v.col * texture0 at v.uv)
+// Parameter block layout, identical in HLSL cbuffers, GLSL std140 and MSL: float, float2, float4, int / uint vectors
+// and float4x4 members; arrays of 16-byte types only; a float3 starts a 16-byte row (a scalar may follow it); no bool.
+// Set it with ImPlatform_SetShaderUniform / ImPlatform_PushShaderConstants and the same C struct.
+typedef struct ImPlatform_ShaderParts {
+    const char* params;         // Members of the parameter block (b1): "float4 col0; float4 col1; float2 uv_start;"
+    const char* varyings;       // Extra vertex -> pixel values: "float2 world; nointerpolation int4 id;" (up to 7;
+                                // integer ones need nointerpolation, which Direct3D 9 does not have)
+    const char* vertex_inputs;  // Vertex inputs other than Dear ImGui's (optional, for ImPlatform_DrawIndexed):
+                                // "float4 pos : POSITION; float4 tex : TEXCOORD0;", in the vertex buffer's attribute order
+    const char* textures[9];    // Names of t0..t8 (index = register); t0 (the draw's texture) is texture0 unless named
+    unsigned int textures_3d;   // Bit N: tN is a 3D texture (ImPlatform_CreateTexture3D), sampled with a float3
+    const char* defines;        // Preprocessor variants, ';' or new lines: "CLIP=1;MODE=2" or "#define MODE 2"
+    const char* functions;      // Helper functions shared by both stages
+    const char* vs_body;        // Vertex body (optional): changes position / v.* after the defaults
+    const char* ps_body;        // Pixel body (optional): writes col_out
+    const char* cache_key;      // As ImPlatform_ShaderDesc::cache_key (optional)
+    unsigned int compile_flags; // As ImPlatform_ShaderDesc::compile_flags (IMPLATFORM_SHADER_COMPILE_*)
+} ImPlatform_ShaderParts;
+
+// The complete source of one stage in `format` (HLSL, GLSL or MSL), whatever the backend: for inspection, or for an
+// IM_GFX_CUSTOM backend. Writes up to out_size - 1 characters plus a terminator; returns the full length, -1 for an
+// unsupported format or stage.
+IMPLATFORM_API int ImPlatform_GenerateShaderSource(const ImPlatform_ShaderParts* parts, ImPlatform_ShaderStage stage,
+                                                   ImPlatform_ShaderFormat format, char* out, int out_size);
+// Parts from one text (a shader file): lines "//@params", "//@inputs" (vertex_inputs), "//@varyings", "//@textures",
+// "//@defines", "//@functions", "//@vs" and "//@ps" start the sections (text before the first one is ignored); texture lines are "<slot> <name>", or
+// "<slot> <name> 3d" for a 3D texture.
+// `text` is split in place and must outlive `parts`; fields of absent sections are left as they were. Returns false
+// when the text has no section.
+IMPLATFORM_API bool ImPlatform_ParseShaderParts(char* text, ImPlatform_ShaderParts* parts);
+#if IMPLATFORM_GFX_SUPPORT_SHADER_PARTS
+// Generates and compiles one stage for the backend (entry points vs_main / ps_main, or main in GLSL). Destroy with
+// ImPlatform_DestroyShader; link two stages with ImPlatform_CreateShaderProgram. NULL when the generated source does
+// not compile (the source and the compiler messages are printed).
+IMPLATFORM_API ImPlatform_Shader ImPlatform_CreateShaderFromParts(const ImPlatform_ShaderParts* parts, ImPlatform_ShaderStage stage);
+#endif
+
+// ============================================================================
+// Readback and Compute API (optional capabilities)
+// ============================================================================
+// Declared where the backend implements them (IMPLATFORM_GFX_SUPPORT_READBACK, _ASYNC_READBACK, _COMPUTE); the
+// Supports queries exist everywhere (OpenGL checks 4.3 for compute at run time).
+
+IMPLATFORM_API bool ImPlatform_SupportsReadback(void);
+
+#if IMPLATFORM_GFX_SUPPORT_READBACK
+// Copy a width x height region of a 2D texture (from ImPlatform_CreateTexture, ImPlatform_CreateRenderTexture or
+// ImPlatform_CreateStorageTexture) to CPU memory: rows tightly packed, in the texture's pixel format.
+// Synchronous: returns once the GPU work writing the texture has completed (it doubles as a fence).
+// out_size must be at least width * height * bytes per pixel.
+IMPLATFORM_API bool ImPlatform_ReadTexture(ImTextureID texture, unsigned int x, unsigned int y,
+                                           unsigned int width, unsigned int height, void* out_pixels, size_t out_size);
+#endif
+
+// Non-blocking readback: the copy is queued (and submitted) now; poll until it reports ready, typically one or two
+// frames later. Poll returns 1 when out_pixels was filled, 0 while the GPU is still working, -1 on failure.
+// Release every readback (also after a successful poll). Same pixel layout as ImPlatform_ReadTexture.
+typedef struct ImPlatform_Readback_t* ImPlatform_Readback;
+#if IMPLATFORM_GFX_SUPPORT_ASYNC_READBACK
+IMPLATFORM_API ImPlatform_Readback ImPlatform_BeginReadTexture(ImTextureID texture, unsigned int x, unsigned int y,
+                                                               unsigned int width, unsigned int height);
+IMPLATFORM_API int  ImPlatform_PollReadback(ImPlatform_Readback readback, void* out_pixels, size_t out_size);
+// As PollReadback without the copy: when ready (1), *pixels points at the rows (*row_pitch bytes apart, at least
+// width * bytes per pixel) until the readback is released. Reading them needs no further API calls, so worker threads
+// may consume them (convert or copy in parallel).
+IMPLATFORM_API int  ImPlatform_MapReadback(ImPlatform_Readback readback, const void** pixels, size_t* row_pitch);
+IMPLATFORM_API void ImPlatform_ReleaseReadback(ImPlatform_Readback readback);
+#endif
+
+IMPLATFORM_API bool ImPlatform_SupportsCompute(void);
+
+#if IMPLATFORM_GFX_SUPPORT_COMPUTE
+// Create a texture that compute shaders can write (UAV / storage image) and that ImGui can draw.
+// pixel_data may be NULL (the texture starts zeroed). Destroy with ImPlatform_DestroyTexture.
+IMPLATFORM_API ImTextureID ImPlatform_CreateStorageTexture(const void* pixel_data, const ImPlatform_TextureDesc* desc);
+
+// Run a compute shader (ImPlatform_CreateShader with ImPlatform_ShaderStage_Compute).
+// HLSL bindings: inputs -> t0.. (read-only), outputs -> u0.. (storage textures), constants -> b0 (may be NULL),
+// s0 = linear clamp sampler. Bindings are cleared afterwards so outputs can be drawn or read back.
+// GLSL (OpenGL 4.3): inputs -> sampler2D at binding 0.., outputs -> image2D at binding 0.. (format qualifier
+// matching the texture, e.g. rgba8), constants -> std140 uniform block at binding 0.
+// SPIR-V (Vulkan), all in set 0: constants -> uniform buffer at binding 0, inputs -> combined image samplers at
+// bindings 1..8 (linear clamp), outputs -> storage images at bindings 9..16; entry point "main".
+// Call outside the ImGui render callbacks (e.g. before ImGui::Render); work is ordered with later drawing.
+// DirectX 12 and Vulkan wait for the dispatch to complete before returning.
+IMPLATFORM_API bool ImPlatform_DispatchCompute(ImPlatform_Shader compute_shader,
+                                               const ImTextureID* inputs, unsigned int input_count,
+                                               const ImTextureID* outputs, unsigned int output_count,
+                                               const void* constants, unsigned int constants_size,
+                                               unsigned int groups_x, unsigned int groups_y, unsigned int groups_z);
+#endif
+
+// ============================================================================
+// Device loss (IMPLATFORM_GFX_SUPPORT_DEVICE_CONTROL: DirectX 11 and DirectX 12)
+// ============================================================================
+#if IMPLATFORM_GFX_SUPPORT_DEVICE_CONTROL
+// True once the graphics device has been removed or reset (driver update, TDR, unplugged adapter): every GPU
+// resource is gone and further rendering fails. The application keeps its CPU data and must recreate the device
+// (or restart) to draw again.
+IMPLATFORM_API bool ImPlatform_GfxDeviceLost(void);
+// True while a device can be used: after ImPlatform_InitGfx succeeded, and neither removed, being recreated, nor shut
+// down (ImPlatform_ShutdownGfxAPI / ImPlatform_ShutdownWindow). False before initialization, unlike
+// !ImPlatform_GfxDeviceLost(). ImPlatform_SupportsCompute / ImPlatform_SupportsReadback report features of the
+// backend, not this state. DirectX 11/12; other backends report false.
+IMPLATFORM_API bool ImPlatform_GfxDeviceReady(void);
+// Testing aid: removes the device on purpose where the API allows it (DirectX 12: ID3D12Device5::RemoveDevice);
+// returns false when unsupported.
+IMPLATFORM_API bool ImPlatform_GfxDebugRemoveDevice(void);
+// Recreates the device, swap chain and ImGui renderer backend on the same window (DirectX 12; other backends return
+// false). Call between frames, after destroying every texture, shader, program and buffer created on the old device:
+// they are all invalid afterwards and their IDs may be handed out again. Outstanding asynchronous readbacks are released
+// by the recreation itself (their handles then report -1 when polled; release them as usual). Returns false when no
+// device could be created.
+IMPLATFORM_API bool ImPlatform_GfxRecreateDevice(void);
+// Testing aid: texture creation fails, as on device memory exhaustion, once the textures created through ImPlatform
+// would exceed `bytes` (0 removes the limit). DirectX 12; ignored elsewhere.
+IMPLATFORM_API void ImPlatform_GfxDebugSetMemoryLimit(size_t bytes);
+// Testing aids for allocation rollback (DirectX 12; ignored elsewhere, counts 0). FailTextureStep: the next texture
+// creation fails at allocation step `step` (0 resource, 1 ImGui-visible SRV, 2 CPU SRV, 3 UAV, 4 RTV, 5 depth resource,
+// 6 DSV, 7 initial upload; -1 none). LiveCounts drains the GPU, processes deferred releases, then reports the live
+// texture resources and allocated descriptors. All testing aids: call on the graphics thread (the one creating textures
+// and rendering); disabled by default; an injected failure is consumed by the next texture creation and must be reset
+// step leaves it armed: reset it with -1). LiveCounts waits for the GPU to go idle: for tests and diagnostics, never
+// for routine per-frame use.
+IMPLATFORM_API void ImPlatform_GfxDebugFailTextureStep(int step);
+IMPLATFORM_API void ImPlatform_GfxDebugLiveCounts(size_t* resources, size_t* descriptors);
+// Name of the graphics adapter the device runs on (UTF-8; "" when unknown). DirectX 12 prefers the high-performance
+// adapter on hybrid systems (environment IMPLATFORM_GPU=default keeps the system default).
+IMPLATFORM_API const char* ImPlatform_GfxAdapterName(void);
+// Testing aid (DirectX 12; elsewhere no timings): GpuTimer(true) starts timestamping every compute dispatch (a GPU timestamp
+// pair around it, up to 32768 dispatches); GpuTimings resolves them (waits for the GPU: diagnostics only, never per
+// frame), fills up to `max` entries in dispatch order and starts over. Labels are "<cache_key>/<entry>" and stay valid
+// until the next call of either function.
+typedef struct ImPlatform_GpuTiming { const char* label; double ms; } ImPlatform_GpuTiming;
+IMPLATFORM_API void ImPlatform_GfxDebugGpuTimer(bool enable);
+IMPLATFORM_API size_t ImPlatform_GfxDebugGpuTimings(ImPlatform_GpuTiming* out, size_t max);
+#endif // IMPLATFORM_GFX_SUPPORT_DEVICE_CONTROL
+
+// ============================================================================
+// Depth-tested immediate drawing (IMPLATFORM_GFX_SUPPORT_DEPTH_DRAW: DirectX 11 and DirectX 12)
+// ============================================================================
+// Meshes drawn into a render texture with a depth buffer, outside the ImGui render callbacks (e.g. a 3D viewport
+// rendered before ImGui::Render and shown with ImGui::Image).
+
+IMPLATFORM_API bool ImPlatform_SupportsDepthDraw(void);
+
+#if IMPLATFORM_GFX_SUPPORT_DEPTH_DRAW
+// Like ImPlatform_CreateRenderTexture, plus a 32-bit depth buffer that ImPlatform_BeginRenderToTexture binds and
+// clears to 1 (far). Destroy with ImPlatform_DestroyTexture.
+IMPLATFORM_API ImTextureID ImPlatform_CreateRenderTextureWithDepth(const ImPlatform_TextureDesc* desc);
+#endif
+
+typedef struct ImPlatform_DrawMeshDesc {
+    ImPlatform_ShaderProgram program;       // Vertex + fragment program; HLSL constants at b0 in each stage.
+    ImPlatform_VertexBuffer  vertices;      // With an input layout (ImPlatform_CreateVertexInputLayout).
+    ImPlatform_IndexBuffer   indices;
+    unsigned int index_count;
+    const void*  vs_constants;  unsigned int vs_constants_size;
+    const void*  ps_constants;  unsigned int ps_constants_size;
+    const ImTextureID* textures; unsigned int texture_count;   // Pixel stage t0..; s0 = linear clamp sampler.
+    bool depth_test;        // Less-equal against the bound depth buffer.
+    bool depth_write;
+    bool alpha_blend;       // Straight alpha "over"; otherwise opaque.
+    bool cull_back;         // Counterclockwise front faces are kept.
+} ImPlatform_DrawMeshDesc;
+
+// One indexed triangle-list draw into the current render target (call between ImPlatform_BeginRenderToTexture and
+// ImPlatform_EndRenderToTexture). Returns false on invalid input.
+#if IMPLATFORM_GFX_SUPPORT_DEPTH_DRAW
+IMPLATFORM_API bool ImPlatform_DrawMesh(const ImPlatform_DrawMeshDesc* desc);
+#endif
 
 // ============================================================================
 // Core API Functions
@@ -912,7 +1252,7 @@ IMPLATFORM_API bool ImPlatform_InitGfx(void);
 IMPLATFORM_API bool ImPlatform_PlatformContinue(void);
 
 // Process platform events (input, window messages, etc.)
-// Returns true on success
+// Returns false when the frame should be skipped (quit requested, window minimized)
 IMPLATFORM_API bool ImPlatform_PlatformEvents(void);
 
 // Check graphics state (device lost, window occluded, etc.)
@@ -970,6 +1310,7 @@ IMPLATFORM_API void ImPlatform_DrawCustomMenuBarDefault(void);
 // Window control functions
 IMPLATFORM_API void ImPlatform_MinimizeApp(void);
 IMPLATFORM_API void ImPlatform_MaximizeApp(void);
+IMPLATFORM_API bool ImPlatform_IsMaximized(void);
 IMPLATFORM_API void ImPlatform_CloseApp(void);
 
 // Custom titlebar rendering
@@ -1018,6 +1359,38 @@ typedef void (*ImPlatform_DropFileCallback)(const char* path, ImVec2 pos, void* 
 IMPLATFORM_API void ImPlatform_SetDropFileCallback(ImPlatform_DropFileCallback callback, void* user_data);
 
 #endif // IMPLATFORM_APP_SUPPORT_DROP_FILE
+
+// ============================================================================
+// Pen / Stylus Input API
+// ============================================================================
+// Pressure and tilt from pen digitizers (Dear ImGui carries no pressure axis). Pen moves still reach ImGui as mouse
+// events; this adds the pen-only axes and every hardware sample between frames (coalesced history).
+// Implemented on Win32 (Windows Ink pointer messages: WM_POINTER*, GetPointerPenInfoHistory); other platforms
+// report ImPlatform_SupportsPen() == false.
+
+typedef struct ImPlatform_PenSample {
+    float  x, y;            // Client-area pixels (same space as ImGui::GetMousePos()).
+    float  pressure;        // [0, 1]; -1 when the device reports none.
+    float  tilt_x, tilt_y;  // Degrees in [-90, 90] (+x right, +y toward the user); valid when has_tilt.
+    double time;            // Seconds on ImPlatform_GetPenClock()'s clock.
+    bool   has_tilt;
+    bool   in_contact;      // Tip touching the surface (false while hovering).
+    bool   eraser;          // Inverted pen / eraser end.
+    bool   has_rotation;
+    float  rotation;        // Barrel rotation, degrees clockwise in [0, 360); valid when has_rotation.
+} ImPlatform_PenSample;
+
+IMPLATFORM_API bool ImPlatform_SupportsPen(void);
+
+// Latest pen state. Returns false when no pen is in range (out is left unchanged).
+IMPLATFORM_API bool ImPlatform_GetPenState(ImPlatform_PenSample* out);
+
+// Copies the pen samples received since the previous call, oldest first, and removes them. Returns the count written.
+// Samples beyond max_count stay queued; the queue keeps the most recent 1024 when nobody consumes it.
+IMPLATFORM_API int ImPlatform_ConsumePenSamples(ImPlatform_PenSample* out, int max_count);
+
+// Current time on the clock of ImPlatform_PenSample::time (e.g. to compute a sample's age).
+IMPLATFORM_API double ImPlatform_GetPenClock(void);
 
 // ============================================================================
 // DPI / High-DPI Support
@@ -1133,8 +1506,25 @@ ImPlatform_BorderlessParams g_BorderlessParams = { 5, 100, 100, true, true };
     #include "ImPlatform_gfx_metal.mm"
 #elif IM_CURRENT_GFX == IM_GFX_WGPU
     #include "ImPlatform_gfx_wgpu.cpp"
+#elif IM_CURRENT_GFX == IM_GFX_CUSTOM
+    // No backend here: the application links its own implementation of the
+    // graphics entry points (see IM_GFX_CUSTOM at the top of this file).
 #else
     #error "Unknown or unsupported IM_CURRENT_GFX backend"
+#endif
+
+// The run-time queries of the optional groups the backend does not implement (IMPLATFORM_GFX_SUPPORT_*); their other
+// functions are not declared. IM_GFX_CUSTOM applications provide their own.
+#if IM_CURRENT_GFX != IM_GFX_CUSTOM
+#if !IMPLATFORM_GFX_SUPPORT_READBACK
+IMPLATFORM_API bool ImPlatform_SupportsReadback(void) { return false; }
+#endif
+#if !IMPLATFORM_GFX_SUPPORT_COMPUTE
+IMPLATFORM_API bool ImPlatform_SupportsCompute(void) { return false; }
+#endif
+#if !IMPLATFORM_GFX_SUPPORT_DEPTH_DRAW
+IMPLATFORM_API bool ImPlatform_SupportsDepthDraw(void) { return false; }
+#endif
 #endif
 
 // Include platform backend implementation
@@ -1156,6 +1546,9 @@ ImPlatform_BorderlessParams g_BorderlessParams = { 5, 100, 100, true, true };
 #if IMPLATFORM_APP_SUPPORT_CUSTOM_TITLEBAR
     #include "ImPlatform_titlebar.cpp"
 #endif
+
+// Shader parts generator (ImPlatform_GenerateShaderSource, ImPlatform_CreateShaderFromParts)
+#include "ImPlatform_shader_parts.cpp"
 
 // ============================================================================
 // Borderless Params Implementation
@@ -1321,6 +1714,74 @@ void ImPlatform_NotifyFileDrop(const char* utf8_path, ImVec2 client_pos)
         g_DropFileCallback(utf8_path, client_pos, g_DropFileCallbackUserData);
 }
 #endif // IMPLATFORM_APP_SUPPORT_DROP_FILE
+
+// ============================================================================
+// Pen Input Implementation (platform backends feed it through ImPlatform_Pen_* in ImPlatform_Internal.h)
+// ============================================================================
+
+#define IMPLATFORM_PEN_QUEUE 1024
+static ImPlatform_PenSample g_PenQueue[IMPLATFORM_PEN_QUEUE];
+static int                  g_PenQueueFirst = 0, g_PenQueueCount = 0;
+static ImPlatform_PenSample g_PenState;
+static bool                 g_PenInRange = false;
+
+void ImPlatform_Pen_Push(const ImPlatform_PenSample* sample)
+{
+    g_PenState = *sample;
+    g_PenInRange = true;
+    if (g_PenQueueCount == IMPLATFORM_PEN_QUEUE)
+    {
+        g_PenQueueFirst = (g_PenQueueFirst + 1) % IMPLATFORM_PEN_QUEUE;     // Drop the oldest.
+        g_PenQueueCount--;
+    }
+    g_PenQueue[(g_PenQueueFirst + g_PenQueueCount++) % IMPLATFORM_PEN_QUEUE] = *sample;
+}
+
+void ImPlatform_Pen_Leave(void)
+{
+    g_PenInRange = false;
+}
+
+IMPLATFORM_API bool ImPlatform_SupportsPen(void)
+{
+#if IM_CURRENT_PLATFORM == IM_PLATFORM_WIN32
+    return true;
+#else
+    return false;
+#endif
+}
+
+IMPLATFORM_API bool ImPlatform_GetPenState(ImPlatform_PenSample* out)
+{
+    if (!out || !g_PenInRange)
+        return false;
+    *out = g_PenState;
+    return true;
+}
+
+IMPLATFORM_API int ImPlatform_ConsumePenSamples(ImPlatform_PenSample* out, int max_count)
+{
+    int n = 0;
+    while (out && n < max_count && g_PenQueueCount > 0)
+    {
+        out[n++] = g_PenQueue[g_PenQueueFirst];
+        g_PenQueueFirst = (g_PenQueueFirst + 1) % IMPLATFORM_PEN_QUEUE;
+        g_PenQueueCount--;
+    }
+    return n;
+}
+
+IMPLATFORM_API double ImPlatform_GetPenClock(void)
+{
+#if IM_CURRENT_PLATFORM == IM_PLATFORM_WIN32
+    LARGE_INTEGER now, freq;
+    ::QueryPerformanceCounter(&now);
+    ::QueryPerformanceFrequency(&freq);
+    return (double)now.QuadPart / (double)freq.QuadPart;
+#else
+    return ImGui::GetTime();
+#endif
+}
 
 // ============================================================================
 // Common Helper Functions (C++ inline implementations)

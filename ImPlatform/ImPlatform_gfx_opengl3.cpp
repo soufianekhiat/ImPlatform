@@ -167,9 +167,15 @@
 #ifndef GL_TEXTURE_HEIGHT
 #define GL_TEXTURE_HEIGHT                 0x1001
 #endif
-// Framebuffer objects
+// Framebuffer objects (render-to-texture, texture copy)
 #ifndef GL_FRAMEBUFFER
 #define GL_FRAMEBUFFER                    0x8D40
+#endif
+#ifndef GL_READ_FRAMEBUFFER
+#define GL_READ_FRAMEBUFFER               0x8CA8
+#endif
+#ifndef GL_DRAW_FRAMEBUFFER
+#define GL_DRAW_FRAMEBUFFER               0x8CA9
 #endif
 #ifndef GL_FRAMEBUFFER_BINDING
 #define GL_FRAMEBUFFER_BINDING            0x8CA6
@@ -208,6 +214,27 @@ static PFNGLGENSAMPLERSPROC       glGenSamplers_Ptr       = NULL;
 static PFNGLDELETESAMPLERSPROC    glDeleteSamplers_Ptr    = NULL;
 static PFNGLBINDSAMPLERPROC       glBindSampler_Ptr       = NULL;
 static PFNGLSAMPLERPARAMETERIPROC glSamplerParameteri_Ptr = NULL;
+// Uniform buffers (GL 3.1): Slang emits every HLSL cbuffer as a std140 uniform
+// block, at the binding of its register (b0 = vertexBuffer, b1 = parameters).
+#ifndef GL_UNIFORM_BUFFER
+#define GL_UNIFORM_BUFFER 0x8A11
+#endif
+typedef void (APIENTRYP PFNIMPGLBINDBUFFERBASEPROC)(GLenum target, GLuint index, GLuint buffer);
+static PFNIMPGLBINDBUFFERBASEPROC glBindBufferBase_Ptr = NULL;
+// Uniform blocks bound by name (GL 3.1) and attribute introspection (GL 2.0), not in Dear ImGui's loader
+typedef GLuint (APIENTRYP PFNIMPGLGETUNIFORMBLOCKINDEXPROC)(GLuint program, const char* name);
+typedef void (APIENTRYP PFNIMPGLUNIFORMBLOCKBINDINGPROC)(GLuint program, GLuint index, GLuint binding);
+typedef void (APIENTRYP PFNIMPGLGETACTIVEATTRIBPROC)(GLuint program, GLuint index, GLsizei buf_size, GLsizei* length, GLint* size, GLenum* type, char* name);
+static PFNIMPGLGETUNIFORMBLOCKINDEXPROC glGetUniformBlockIndex_Ptr = NULL;
+static PFNIMPGLUNIFORMBLOCKBINDINGPROC  glUniformBlockBinding_Ptr = NULL;
+static PFNIMPGLGETACTIVEATTRIBPROC      glGetActiveAttrib_Ptr = NULL;
+static PFNIMPGLGETACTIVEATTRIBPROC      glGetActiveUniform_Ptr = NULL;     // Same signature as glGetActiveAttrib
+// 3D textures (GL 1.2), not in Dear ImGui's loader
+#define IMP_GL_TEXTURE_3D 0x806F
+#define IMP_GL_TEXTURE_WRAP_R 0x8072
+typedef void (APIENTRYP PFNIMPGLTEXIMAGE3DPROC)(GLenum target, GLint level, GLint internal_format, GLsizei width, GLsizei height, GLsizei depth, GLint border, GLenum format, GLenum type, const void* pixels);
+static PFNIMPGLTEXIMAGE3DPROC glTexImage3D_Ptr = NULL;
+static ImVector<GLuint> g_GL_Textures3D; // names created by ImPlatform_CreateTexture3D: bound to GL_TEXTURE_3D
 static PFNGLPROGRAMBINARYPROC     glProgramBinary_Ptr     = NULL;
 static PFNGLGETPROGRAMBINARYPROC  glGetProgramBinary_Ptr  = NULL;
 
@@ -238,9 +265,51 @@ struct ImPlatform_RTTracking_GL {
 static ImPlatform_RTTracking_GL* g_RTTrackingHead = nullptr;
 
 // Saved GL state for Begin/EndRenderToTexture
-static GLint g_SavedFBO      = 0;
-static GLint g_SavedViewport[4] = {};
-static GLuint g_RTFbo        = 0;
+// Render-target stack (Push/PopRenderTarget; Begin/EndRenderToTexture use it too).
+struct ImPlatform_SavedTarget_GL { GLint fbo; GLint viewport[4]; GLint scissor[4]; GLboolean scissorOn; GLuint ownFbo; };
+static ImPlatform_SavedTarget_GL g_TargetStack[8] = {};
+static int                       g_TargetDepth = 0;
+
+// Framebuffer entry points (not in Dear ImGui's stripped loader), loaded on first use.
+#ifndef GL_READ_FRAMEBUFFER
+#define GL_READ_FRAMEBUFFER          0x8CA8
+#endif
+#ifndef GL_DRAW_FRAMEBUFFER
+#define GL_DRAW_FRAMEBUFFER          0x8CA9
+#endif
+#ifndef GL_READ_FRAMEBUFFER_BINDING
+#define GL_READ_FRAMEBUFFER_BINDING  0x8CAA
+#endif
+#ifndef GL_DRAW_FRAMEBUFFER_BINDING
+#define GL_DRAW_FRAMEBUFFER_BINDING  0x8CA6
+#endif
+struct ImPlatform_FboFns_GL
+{
+    void (APIENTRYP Gen)(GLsizei, GLuint*);
+    void (APIENTRYP Delete)(GLsizei, const GLuint*);
+    void (APIENTRYP Bind)(GLenum, GLuint);
+    void (APIENTRYP Texture2D)(GLenum, GLenum, GLenum, GLuint, GLint);
+    void (APIENTRYP Blit)(GLint, GLint, GLint, GLint, GLint, GLint, GLint, GLint, GLbitfield, GLenum);
+};
+static const ImPlatform_FboFns_GL* ImPlatform_GL_Fbo()
+{
+    static ImPlatform_FboFns_GL fns = {};
+    static bool loaded = false;
+    if (!loaded)
+    {
+        loaded = true;
+        *(void**)&fns.Gen       = (void*)imgl3wGetProcAddress("glGenFramebuffers");
+        *(void**)&fns.Delete    = (void*)imgl3wGetProcAddress("glDeleteFramebuffers");
+        *(void**)&fns.Bind      = (void*)imgl3wGetProcAddress("glBindFramebuffer");
+        *(void**)&fns.Texture2D = (void*)imgl3wGetProcAddress("glFramebufferTexture2D");
+        *(void**)&fns.Blit      = (void*)imgl3wGetProcAddress("glBlitFramebuffer");
+    }
+    return (fns.Gen && fns.Delete && fns.Bind && fns.Texture2D && fns.Blit) ? &fns : NULL;
+}
+
+// ImPlatform_DrawQuadNow resources (created on first use)
+static GLuint g_QuadVAO = 0, g_QuadVBO = 0, g_QuadIBO = 0;
+static GLuint g_CopyFbo = 0;
 
 // Cached draw data for custom shader callbacks (needed for multi-viewport support)
 static ImDrawData* g_CurrentDrawData = nullptr;
@@ -290,7 +359,70 @@ bool ImPlatform_Gfx_CreateDevice_OpenGL3(void* hWnd, ImPlatform_GfxData_OpenGL3*
 
     pData->hDC = ::GetDC(hwnd);
     if (!g_hRC)
-        g_hRC = wglCreateContext(pData->hDC);
+    {
+        // Create legacy context (same approach as upstream example_win32_opengl3, see #9427)
+        HGLRC tempRC = wglCreateContext(pData->hDC);
+        if (!tempRC) { ::ReleaseDC(hwnd, pData->hDC); return false; }
+        if (!wglMakeCurrent(pData->hDC, tempRC))
+        {
+            wglDeleteContext(tempRC);
+            ::ReleaseDC(hwnd, pData->hDC);
+            return false;
+        }
+
+        // Get context version.
+        // Query GL 1.1 entry points directly from opengl32.dll: ImGui's GL loader is not initialized yet at this point.
+        typedef void (WINAPI* GetIntegervFn)(GLenum, GLint*);
+        typedef const GLubyte* (WINAPI* GetStringFn)(GLenum);
+        HMODULE opengl32 = ::GetModuleHandleA("opengl32.dll");
+        GetIntegervFn get_integerv = opengl32 ? (GetIntegervFn)(void*)::GetProcAddress(opengl32, "glGetIntegerv") : NULL;
+        GetStringFn get_string = opengl32 ? (GetStringFn)(void*)::GetProcAddress(opengl32, "glGetString") : NULL;
+        GLint major = 0, minor = 0;
+        if (get_integerv)
+        {
+            get_integerv(0x821B, &major); // GL_MAJOR_VERSION
+            get_integerv(0x821C, &minor); // GL_MINOR_VERSION
+        }
+        const char* gl_version_str = get_string ? (const char*)get_string(0x1F02 /*GL_VERSION*/) : NULL;
+        if (major == 0 && minor == 0 && gl_version_str)
+        {
+            // Query GL_VERSION in desktop GL 2.x, the string will start with "<major>.<minor>"
+#ifdef _MSC_VER
+            sscanf_s(gl_version_str, "%d.%d", &major, &minor);
+#else
+            sscanf(gl_version_str, "%d.%d", &major, &minor);
+#endif
+        }
+        const GLuint gl_version = (GLuint)(major * 100 + minor * 10);
+
+        // Keep temporary context: already OpenGL 3.0+.
+        g_hRC = tempRC;
+        if (gl_version < 300)
+        {
+            typedef HGLRC (WINAPI* PFNWGLCREATECONTEXTATTRIBSARBPROC)(HDC, HGLRC, const int*);
+            const PFNWGLCREATECONTEXTATTRIBSARBPROC wglCreateContextAttribsARB = (PFNWGLCREATECONTEXTATTRIBSARBPROC)(void*)wglGetProcAddress("wglCreateContextAttribsARB");
+
+            // GL 3.0
+            const int attribs[] =
+            {
+                0x2091, 3,      // WGL_CONTEXT_MAJOR_VERSION_ARB
+                0x2092, 0,      // WGL_CONTEXT_MINOR_VERSION_ARB
+                0x9126, 0x0001, // WGL_CONTEXT_PROFILE_MASK_ARB, WGL_CONTEXT_CORE_PROFILE_BIT_ARB
+                0
+            };
+            HGLRC newRC = NULL;
+            if (wglCreateContextAttribsARB)
+                newRC = wglCreateContextAttribsARB(pData->hDC, 0, attribs);
+
+            // If we managed to create 3.0+ context: use that one and destroy the temporary OpenGL 2.x compatibility context.
+            if (newRC)
+            {
+                wglMakeCurrent(NULL, NULL);
+                wglDeleteContext(tempRC);
+                g_hRC = newRC;
+            }
+        }
+    }
     pData->hRC = g_hRC;
 
     wglMakeCurrent(pData->hDC, pData->hRC);
@@ -390,23 +522,9 @@ IMPLATFORM_API bool ImPlatform_InitGfxAPI(void)
 // ImPlatform API - InitGfx
 IMPLATFORM_API bool ImPlatform_InitGfx(void)
 {
-    // Decide GL+GLSL versions
-#if defined(IM_CURRENT_PLATFORM) && (IM_CURRENT_PLATFORM == IM_PLATFORM_WIN32)
-    const char* glsl_version = "#version 130";
-#elif defined(IM_CURRENT_PLATFORM) && (IM_CURRENT_PLATFORM == IM_PLATFORM_GLFW)
-    const char* glsl_version = "#version 130";
-#elif defined(IM_CURRENT_PLATFORM) && ((IM_CURRENT_PLATFORM == IM_PLATFORM_SDL2) || (IM_CURRENT_PLATFORM == IM_PLATFORM_SDL3))
-    // Use same versioning as SDL examples
-#if defined(IMGUI_IMPL_OPENGL_ES2)
-    const char* glsl_version = "#version 100";
-#elif defined(IMGUI_IMPL_OPENGL_ES3)
-    const char* glsl_version = "#version 300 es";
-#elif defined(__APPLE__)
-    const char* glsl_version = "#version 150";
-#else
-    const char* glsl_version = "#version 130";
-#endif
-#endif
+    // The GL version is selected by the platform backend when creating the context.
+    // Let the renderer backend select a GLSL version matching the context it gets (same as upstream examples, see #9427).
+    const char* glsl_version = nullptr;
 
     if (!ImGui_ImplOpenGL3_Init(glsl_version))
         return false;
@@ -423,7 +541,14 @@ IMPLATFORM_API bool ImPlatform_InitGfx(void)
     glDeleteSamplers_Ptr    = (PFNGLDELETESAMPLERSPROC)imgl3wGetProcAddress("glDeleteSamplers");
     glBindSampler_Ptr       = (PFNGLBINDSAMPLERPROC)imgl3wGetProcAddress("glBindSampler");
     glSamplerParameteri_Ptr = (PFNGLSAMPLERPARAMETERIPROC)imgl3wGetProcAddress("glSamplerParameteri");
+    glBindBufferBase_Ptr    = (PFNIMPGLBINDBUFFERBASEPROC)imgl3wGetProcAddress("glBindBufferBase");
+    glGetUniformBlockIndex_Ptr = (PFNIMPGLGETUNIFORMBLOCKINDEXPROC)imgl3wGetProcAddress("glGetUniformBlockIndex");
+    glUniformBlockBinding_Ptr  = (PFNIMPGLUNIFORMBLOCKBINDINGPROC)imgl3wGetProcAddress("glUniformBlockBinding");
+    glGetActiveAttrib_Ptr      = (PFNIMPGLGETACTIVEATTRIBPROC)imgl3wGetProcAddress("glGetActiveAttrib");
+    glGetActiveUniform_Ptr     = (PFNIMPGLGETACTIVEATTRIBPROC)imgl3wGetProcAddress("glGetActiveUniform");
+    glTexImage3D_Ptr           = (PFNIMPGLTEXIMAGE3DPROC)imgl3wGetProcAddress("glTexImage3D");
 
+    // Program binary cache (GL 4.1+), disabled when unavailable
     glProgramBinary_Ptr    = (PFNGLPROGRAMBINARYPROC)imgl3wGetProcAddress("glProgramBinary");
     glGetProgramBinary_Ptr = (PFNGLGETPROGRAMBINARYPROC)imgl3wGetProcAddress("glGetProgramBinary");
 
@@ -466,7 +591,14 @@ IMPLATFORM_API bool ImPlatform_InitGfx(void)
 // ImPlatform API - GfxCheck
 IMPLATFORM_API bool ImPlatform_GfxCheck(void)
 {
-    // No special checks needed for OpenGL
+#if defined(IM_CURRENT_PLATFORM) && (IM_CURRENT_PLATFORM == IM_PLATFORM_WIN32)
+    // Skip rendering while minimized (same as upstream example_win32_opengl3)
+    if (::IsIconic(ImPlatform_App_GetHWND()))
+    {
+        ::Sleep(10);
+        return false;
+    }
+#endif
     return true;
 }
 
@@ -492,15 +624,26 @@ IMPLATFORM_API bool ImPlatform_GfxAPIClear(ImVec4 const vClearColor)
     glViewport(0, 0, (int)io.DisplaySize.x, (int)io.DisplaySize.y);
 #endif
 
+#if defined(IM_CURRENT_PLATFORM) && (IM_CURRENT_PLATFORM == IM_PLATFORM_WIN32)
     glClearColor(vClearColor.x, vClearColor.y, vClearColor.z, vClearColor.w);
+#else
+    glClearColor(vClearColor.x * vClearColor.w, vClearColor.y * vClearColor.w, vClearColor.z * vClearColor.w, vClearColor.w);
+#endif
     glClear(GL_COLOR_BUFFER_BIT);
     return true;
 }
 
 // ImPlatform API - GfxAPIRender
+// Render pass queued by ImPlatform_QueueRenderPass(), run at the start of ImPlatform_GfxAPIRender()
+static ImTextureID g_PassTarget = 0;
+static ImDrawData* g_PassDrawData = NULL;
+static bool        g_PassClear = false;
+static void        ImPlatform_RunRenderPass();
+
 IMPLATFORM_API bool ImPlatform_GfxAPIRender(ImVec4 const vClearColor)
 {
     (void)vClearColor; // Not used for OpenGL
+    ImPlatform_RunRenderPass();     // Queued by ImPlatform_QueueRenderPass(): before the frame.
     ImDrawData* draw_data = ImGui::GetDrawData();
 
     // Cache draw data for custom shader callbacks
@@ -508,6 +651,82 @@ IMPLATFORM_API bool ImPlatform_GfxAPIRender(ImVec4 const vClearColor)
 
     ImGui_ImplOpenGL3_RenderDrawData(draw_data);
     return true;
+}
+
+IMPLATFORM_API ImPlatform_PixelFormat ImPlatform_GetRenderPassFormat(void) { return ImPlatform_PixelFormat_RGBA8; }
+
+IMPLATFORM_API bool ImPlatform_QueueRenderPass(ImTextureID target, ImDrawData* draw_data, bool clear)
+{
+    ImPlatform_RTTracking_GL* entry = g_RTTrackingHead;
+    while (entry && entry->tex != (GLuint)(intptr_t)target)
+        entry = entry->next;
+    if (!entry || !draw_data || !ImPlatform_GL_Fbo())
+        return false;
+    g_PassTarget = target;
+    g_PassDrawData = draw_data;
+    g_PassClear = clear;
+    return true;
+}
+
+static float g_PassMirror[2] = {};     // Mirror of the render pass being drawn (see ImPlatform_GL_SetProjectionBlock)
+
+static void ImPlatform_RunRenderPass()
+{
+    ImDrawData* draw_data = g_PassDrawData;
+    g_PassDrawData = NULL;
+    if (!draw_data || !ImPlatform_PushRenderTarget(g_PassTarget, g_PassClear))     // Destroyed since it was queued.
+        return;
+    // Render textures are stored bottom-up: mirrored within the display rectangle, rows land top-down.
+    const float mirror = draw_data->DisplayPos.y * 2.0f + draw_data->DisplaySize.y;
+    for (ImDrawList* list : draw_data->CmdLists)
+    {
+        for (ImDrawVert& v : list->VtxBuffer)
+            v.pos.y = mirror - v.pos.y;
+        for (ImDrawCmd& cmd : list->CmdBuffer)
+        {
+            const float y0 = mirror - cmd.ClipRect.w, y1 = mirror - cmd.ClipRect.y;
+            cmd.ClipRect.y = y0;
+            cmd.ClipRect.w = y1;
+        }
+    }
+    if (draw_data->Textures == NULL)
+        draw_data->Textures = &ImGui::GetPlatformIO().Textures;     // The frame's texture updates, before they are drawn.
+    g_CurrentDrawData = draw_data;
+    g_PassMirror[0] = 1.0f;
+    g_PassMirror[1] = mirror;
+    ImPlatform_RenderPassLists(draw_data, [](ImDrawData* d) { ImGui_ImplOpenGL3_RenderDrawData(d); });  // Viewport and projection from the draw data.
+    g_PassMirror[0] = g_PassMirror[1] = 0.0f;
+    ImPlatform_PopRenderTarget();
+}
+
+static GLint g_BlendStack[8][4] = {};
+static int   g_BlendDepth = 0;
+
+IMPLATFORM_API void ImPlatform_PushPremultipliedAlpha(ImDrawList* draw)
+{
+    (draw ? draw : ImGui::GetWindowDrawList())->AddCallback([](const ImDrawList*, const ImDrawCmd*)
+    {
+        if (g_BlendDepth < IM_ARRAYSIZE(g_BlendStack))
+        {
+            GLint* saved = g_BlendStack[g_BlendDepth++];
+            glGetIntegerv(GL_BLEND_SRC_RGB, &saved[0]);
+            glGetIntegerv(GL_BLEND_DST_RGB, &saved[1]);
+            glGetIntegerv(GL_BLEND_SRC_ALPHA, &saved[2]);
+            glGetIntegerv(GL_BLEND_DST_ALPHA, &saved[3]);
+        }
+        glBlendFuncSeparate(GL_ONE, GL_ONE_MINUS_SRC_ALPHA, GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
+    }, NULL);
+}
+
+IMPLATFORM_API void ImPlatform_PopPremultipliedAlpha(ImDrawList* draw)
+{
+    (draw ? draw : ImGui::GetWindowDrawList())->AddCallback([](const ImDrawList*, const ImDrawCmd*)
+    {
+        if (g_BlendDepth <= 0)
+            return;
+        const GLint* saved = g_BlendStack[--g_BlendDepth];
+        glBlendFuncSeparate((GLenum)saved[0], (GLenum)saved[1], (GLenum)saved[2], (GLenum)saved[3]);
+    }, NULL);
 }
 
 // ImPlatform API - GfxViewportPre
@@ -557,15 +776,11 @@ IMPLATFORM_API void ImPlatform_GfxViewportPost(void)
         // GLFW backend handles context switching automatically
         glfwMakeContextCurrent(ImPlatform_App_GetGLFWWindow());
 #elif defined(IM_CURRENT_PLATFORM) && (IM_CURRENT_PLATFORM == IM_PLATFORM_SDL2)
-        // Restore the SDL2 context
-        SDL_Window* backup_current_window = SDL_GL_GetCurrentWindow();
-        SDL_GLContext backup_current_context = SDL_GL_GetCurrentContext();
-        SDL_GL_MakeCurrent(backup_current_window, backup_current_context);
+        // Restore the main window context (platform windows rendering may have changed it)
+        SDL_GL_MakeCurrent(ImPlatform_App_GetSDL2Window(), ImPlatform_App_GetData_SDL2()->glContext);
 #elif defined(IM_CURRENT_PLATFORM) && (IM_CURRENT_PLATFORM == IM_PLATFORM_SDL3)
-        // Restore the SDL3 context
-        SDL_Window* backup_current_window = SDL_GL_GetCurrentWindow();
-        SDL_GLContext backup_current_context = SDL_GL_GetCurrentContext();
-        SDL_GL_MakeCurrent(backup_current_window, backup_current_context);
+        // Restore the main window context (platform windows rendering may have changed it)
+        SDL_GL_MakeCurrent(ImPlatform_App_GetSDL3Window(), ImPlatform_App_GetData_SDL3()->glContext);
 #endif
     }
 }
@@ -601,10 +816,14 @@ IMPLATFORM_API void ImPlatform_ShutdownWindow(void)
             if (g_Samplers[f][w]) { glDeleteSamplers_Ptr(1, &g_Samplers[f][w]); g_Samplers[f][w] = 0; }
 
     ImGui_ImplOpenGL3_Shutdown();
+#ifdef IMGUI_HAS_VIEWPORT
+    g_OriginalRendererRenderWindow = nullptr;
+#endif
 
 #if defined(IM_CURRENT_PLATFORM) && (IM_CURRENT_PLATFORM == IM_PLATFORM_WIN32)
     HWND hWnd = ImPlatform_App_GetHWND();
     ImPlatform_Gfx_CleanupDevice_OpenGL3(hWnd, &g_GfxData);
+    g_MainWindow.hDC = NULL;
     if (g_hRC)
     {
         wglDeleteContext(g_hRC);
@@ -955,7 +1174,7 @@ IMPLATFORM_API ImPlatform_TextureDesc ImPlatform_TextureDesc_Default(unsigned in
     return desc;
 }
 
-// Texture3D stub for OpenGL3.
+// 3D textures: bound to GL_TEXTURE_3D by ImPlatform_SetShaderTexture (g_GL_Textures3D tells them apart).
 IMPLATFORM_API ImPlatform_TextureDesc3D ImPlatform_TextureDesc3D_Default(unsigned int w, unsigned int h, unsigned int d)
 {
     ImPlatform_TextureDesc3D x; x.width = w; x.height = h; x.depth = d;
@@ -964,8 +1183,38 @@ IMPLATFORM_API ImPlatform_TextureDesc3D ImPlatform_TextureDesc3D_Default(unsigne
     x.wrap_u = x.wrap_v = x.wrap_w = ImPlatform_TextureWrap_Clamp;
     return x;
 }
-IMPLATFORM_API bool ImPlatform_SupportsTexture3D(void) { return false; }
-IMPLATFORM_API ImTextureID ImPlatform_CreateTexture3D(const void*, const ImPlatform_TextureDesc3D*) { return 0; }
+IMPLATFORM_API bool ImPlatform_SupportsTexture3D(void) { return glTexImage3D_Ptr != NULL; }
+
+IMPLATFORM_API ImTextureID ImPlatform_CreateTexture3D(const void* voxel_data, const ImPlatform_TextureDesc3D* desc)
+{
+    if (!desc || !voxel_data || !glTexImage3D_Ptr)
+        return 0;
+    GLint internal_format;
+    GLenum format;
+    GLenum type;
+    int channels;
+    ImPlatform_GetOpenGLFormat(desc->format, &internal_format, &format, &type, &channels);
+    static const GLint kWrap3D[3] = { GL_CLAMP_TO_EDGE, GL_REPEAT, GL_MIRRORED_REPEAT };    // ImPlatform_TextureWrap
+    GLint prev = 0;
+    glGetIntegerv(0x806A /*GL_TEXTURE_BINDING_3D*/, &prev);
+    GLuint tex = 0;
+    glGenTextures(1, &tex);
+    glBindTexture(IMP_GL_TEXTURE_3D, tex);
+    glTexParameteri(IMP_GL_TEXTURE_3D, GL_TEXTURE_MIN_FILTER, desc->min_filter == ImPlatform_TextureFilter_Nearest ? GL_NEAREST : GL_LINEAR);
+    glTexParameteri(IMP_GL_TEXTURE_3D, GL_TEXTURE_MAG_FILTER, desc->mag_filter == ImPlatform_TextureFilter_Nearest ? GL_NEAREST : GL_LINEAR);
+    glTexParameteri(IMP_GL_TEXTURE_3D, GL_TEXTURE_WRAP_S, kWrap3D[(int)desc->wrap_u % 3]);
+    glTexParameteri(IMP_GL_TEXTURE_3D, GL_TEXTURE_WRAP_T, kWrap3D[(int)desc->wrap_v % 3]);
+    glTexParameteri(IMP_GL_TEXTURE_3D, IMP_GL_TEXTURE_WRAP_R, kWrap3D[(int)desc->wrap_w % 3]);
+    glTexParameteri(IMP_GL_TEXTURE_3D, 0x813D /*GL_TEXTURE_MAX_LEVEL*/, 0);
+#if defined(GL_UNPACK_ROW_LENGTH) && !defined(__EMSCRIPTEN__)
+    glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
+#endif
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+    glTexImage3D_Ptr(IMP_GL_TEXTURE_3D, 0, internal_format, (GLsizei)desc->width, (GLsizei)desc->height, (GLsizei)desc->depth, 0, format, type, voxel_data);
+    glBindTexture(IMP_GL_TEXTURE_3D, (GLuint)prev);
+    g_GL_Textures3D.push_back(tex);
+    return (ImTextureID)(intptr_t)tex;
+}
 
 IMPLATFORM_API ImTextureID ImPlatform_CreateTexture(const void* pixel_data, const ImPlatform_TextureDesc* desc)
 {
@@ -1062,7 +1311,7 @@ IMPLATFORM_API bool ImPlatform_UpdateTexture(ImTextureID texture_id, const void*
 IMPLATFORM_API ImTextureID ImPlatform_CreateRenderTexture(const ImPlatform_TextureDesc* desc)
 {
     if (!desc)
-        return NULL;
+        return (ImTextureID)0;
 
     GLint internal_format;
     GLenum format;
@@ -1090,65 +1339,122 @@ IMPLATFORM_API ImTextureID ImPlatform_CreateRenderTexture(const ImPlatform_Textu
     return (ImTextureID)(intptr_t)tex;
 }
 
-IMPLATFORM_API bool ImPlatform_BeginRenderToTexture(ImTextureID texture)
+IMPLATFORM_API bool ImPlatform_PushRenderTarget(ImTextureID texture, bool clear)
 {
-    if (!texture)
+    const ImPlatform_FboFns_GL* fbo = ImPlatform_GL_Fbo();
+    if (!texture || !fbo || g_TargetDepth >= IM_ARRAYSIZE(g_TargetStack))
         return false;
-
     GLuint tex = (GLuint)(intptr_t)texture;
-
     ImPlatform_RTTracking_GL* entry = g_RTTrackingHead;
     while (entry) { if (entry->tex == tex) break; entry = entry->next; }
     if (!entry) return false;
 
-    // Load FBO functions via proc address (same pattern as CopyTexture)
-    typedef void (APIENTRYP PFNGLGENFRAMEBUFFERSPROC_LOCAL)(GLsizei, GLuint*);
-    typedef void (APIENTRYP PFNGLBINDFRAMEBUFFERPROC_LOCAL)(GLenum, GLuint);
-    typedef void (APIENTRYP PFNGLFRAMEBUFFERTEXTURE2DPROC_LOCAL)(GLenum, GLenum, GLenum, GLuint, GLint);
-    static PFNGLGENFRAMEBUFFERSPROC_LOCAL     glGenFramebuffers_fn     = (PFNGLGENFRAMEBUFFERSPROC_LOCAL)imgl3wGetProcAddress("glGenFramebuffers");
-    static PFNGLBINDFRAMEBUFFERPROC_LOCAL     glBindFramebuffer_fn     = (PFNGLBINDFRAMEBUFFERPROC_LOCAL)imgl3wGetProcAddress("glBindFramebuffer");
-    static PFNGLFRAMEBUFFERTEXTURE2DPROC_LOCAL glFramebufferTexture2D_fn = (PFNGLFRAMEBUFFERTEXTURE2DPROC_LOCAL)imgl3wGetProcAddress("glFramebufferTexture2D");
-    if (!glGenFramebuffers_fn || !glBindFramebuffer_fn || !glFramebufferTexture2D_fn)
-        return false;
+    ImPlatform_SavedTarget_GL& saved = g_TargetStack[g_TargetDepth++];
+    glGetIntegerv(GL_FRAMEBUFFER_BINDING, &saved.fbo);
+    glGetIntegerv(GL_VIEWPORT, saved.viewport);
+    glGetIntegerv(GL_SCISSOR_BOX, saved.scissor);
+    saved.scissorOn = glIsEnabled(GL_SCISSOR_TEST);
 
-    // Save current state
-    glGetIntegerv(GL_FRAMEBUFFER_BINDING, &g_SavedFBO);
-    glGetIntegerv(GL_VIEWPORT, g_SavedViewport);
-
-    // Create and bind FBO targeting the render texture
-    glGenFramebuffers_fn(1, &g_RTFbo);
-    glBindFramebuffer_fn(GL_FRAMEBUFFER, g_RTFbo);
-    glFramebufferTexture2D_fn(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, tex, 0);
-
+    fbo->Gen(1, &saved.ownFbo);
+    fbo->Bind(GL_FRAMEBUFFER, saved.ownFbo);
+    fbo->Texture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, tex, 0);
     glViewport(0, 0, (GLsizei)entry->width, (GLsizei)entry->height);
-
-    glClearColor(0.f, 0.f, 0.f, 0.f);
-    glClear(GL_COLOR_BUFFER_BIT);
-
+    glScissor(0, 0, (GLsizei)entry->width, (GLsizei)entry->height);
+    if (clear)
+    {
+        glClearColor(0.f, 0.f, 0.f, 0.f);
+        glClear(GL_COLOR_BUFFER_BIT);
+    }
     return true;
 }
 
-IMPLATFORM_API void ImPlatform_EndRenderToTexture(void)
+IMPLATFORM_API void ImPlatform_PopRenderTarget(void)
 {
-    if (!g_RTFbo)
+    const ImPlatform_FboFns_GL* fbo = ImPlatform_GL_Fbo();
+    if (!fbo || g_TargetDepth <= 0)
         return;
+    ImPlatform_SavedTarget_GL& saved = g_TargetStack[--g_TargetDepth];
+    fbo->Bind(GL_FRAMEBUFFER, (GLuint)saved.fbo);
+    fbo->Delete(1, &saved.ownFbo);
+    saved.ownFbo = 0;
+    glViewport(saved.viewport[0], saved.viewport[1], saved.viewport[2], saved.viewport[3]);
+    glScissor(saved.scissor[0], saved.scissor[1], saved.scissor[2], saved.scissor[3]);
+    if (saved.scissorOn) glEnable(GL_SCISSOR_TEST); else glDisable(GL_SCISSOR_TEST);
+}
 
-    typedef void (APIENTRYP PFNGLBINDFRAMEBUFFERPROC_LOCAL)(GLenum, GLuint);
-    typedef void (APIENTRYP PFNGLDELETEFRAMEBUFFERSPROC_LOCAL)(GLsizei, const GLuint*);
-    static PFNGLBINDFRAMEBUFFERPROC_LOCAL   glBindFramebuffer_fn   = (PFNGLBINDFRAMEBUFFERPROC_LOCAL)imgl3wGetProcAddress("glBindFramebuffer");
-    static PFNGLDELETEFRAMEBUFFERSPROC_LOCAL glDeleteFramebuffers_fn = (PFNGLDELETEFRAMEBUFFERSPROC_LOCAL)imgl3wGetProcAddress("glDeleteFramebuffers");
+IMPLATFORM_API bool ImPlatform_BeginRenderToTexture(ImTextureID texture) { return ImPlatform_PushRenderTarget(texture, true); }
+IMPLATFORM_API void ImPlatform_EndRenderToTexture(void)                  { ImPlatform_PopRenderTarget(); }
 
-    if (glDeleteFramebuffers_fn) glDeleteFramebuffers_fn(1, &g_RTFbo);
-    g_RTFbo = 0;
+// The viewport is the full target while Dear ImGui renders a viewport and after a push.
+IMPLATFORM_API void ImPlatform_GetCurrentTargetSize(unsigned int* width, unsigned int* height)
+{
+    GLint vp[4] = {};
+    glGetIntegerv(GL_VIEWPORT, vp);
+    if (width)  *width  = (unsigned int)vp[2];
+    if (height) *height = (unsigned int)vp[3];
+}
 
-    if (glBindFramebuffer_fn) glBindFramebuffer_fn(GL_FRAMEBUFFER, (GLuint)g_SavedFBO);
+// Window framebuffers are stored bottom-up: copies from them are flipped so `dst` reads top-down
+// like any texture. Pushed render textures drawn by ImPlatform_DrawQuadNow are already top-down.
+// shortcut: textures filled by Dear ImGui itself inside Begin/EndRenderToTexture stay bottom-up on GL,
+// so a copy from them comes out flipped; a flipped projection while rendering into them would fix it.
+static inline int ImPlatform_Min3(int a, int b, int c) { int m = a < b ? a : b; return m < c ? m : c; }
 
-    glViewport(g_SavedViewport[0], g_SavedViewport[1], g_SavedViewport[2], g_SavedViewport[3]);
+IMPLATFORM_API bool ImPlatform_CopyCurrentTarget(ImTextureID dst, int src_x, int src_y, int w, int h, int dst_x, int dst_y)
+{
+    const ImPlatform_FboFns_GL* fbo = ImPlatform_GL_Fbo();
+    if (!dst || !fbo || !glGetTexLevelParameteriv_Ptr)
+        return false;
+    GLuint dstTex = (GLuint)(intptr_t)dst;
+    GLint dw = 0, dh = 0, prevTex = 0;
+    glGetIntegerv(GL_TEXTURE_BINDING_2D, &prevTex);
+    glBindTexture(GL_TEXTURE_2D, dstTex);
+    glGetTexLevelParameteriv_Ptr(GL_TEXTURE_2D, 0, GL_TEXTURE_WIDTH, &dw);
+    glGetTexLevelParameteriv_Ptr(GL_TEXTURE_2D, 0, GL_TEXTURE_HEIGHT, &dh);
+    glBindTexture(GL_TEXTURE_2D, (GLuint)prevTex);
+    unsigned int tw = 0, th = 0;
+    ImPlatform_GetCurrentTargetSize(&tw, &th);
+
+    if (src_x < 0) { w += src_x; dst_x -= src_x; src_x = 0; }
+    if (src_y < 0) { h += src_y; dst_y -= src_y; src_y = 0; }
+    if (dst_x < 0) { w += dst_x; src_x -= dst_x; dst_x = 0; }
+    if (dst_y < 0) { h += dst_y; src_y -= dst_y; dst_y = 0; }
+    w = ImPlatform_Min3(w, (int)tw - src_x, dw - dst_x);
+    h = ImPlatform_Min3(h, (int)th - src_y, dh - dst_y);
+    if (w <= 0 || h <= 0)
+        return false;
+
+    GLint drawFbo = 0, readFbo = 0;
+    glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &drawFbo);
+    glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING, &readFbo);
+    const GLboolean scissorOn = glIsEnabled(GL_SCISSOR_TEST);
+    glDisable(GL_SCISSOR_TEST); // blits honour the scissor box
+
+    if (!g_CopyFbo)
+        fbo->Gen(1, &g_CopyFbo);
+    fbo->Bind(GL_DRAW_FRAMEBUFFER, g_CopyFbo);
+    fbo->Texture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, dstTex, 0);
+    fbo->Bind(GL_READ_FRAMEBUFFER, (GLuint)drawFbo);
+    const bool flip = (drawFbo == 0);
+    const GLint sy0 = flip ? (GLint)th - (src_y + h) : src_y;
+    // A blit to a multisampled source resolves it (same size, flip allowed on the destination side).
+    fbo->Blit(src_x, sy0, src_x + w, sy0 + h,
+              dst_x, flip ? dst_y + h : dst_y, dst_x + w, flip ? dst_y : dst_y + h,
+              GL_COLOR_BUFFER_BIT, GL_NEAREST);
+
+    fbo->Bind(GL_DRAW_FRAMEBUFFER, (GLuint)drawFbo);
+    fbo->Bind(GL_READ_FRAMEBUFFER, (GLuint)readFbo);
+    if (scissorOn) glEnable(GL_SCISSOR_TEST);
+    return true;
 }
 
 IMPLATFORM_API bool ImPlatform_CopyBackbuffer(ImTextureID dst) { (void)dst; return false; }
 IMPLATFORM_API void ImPlatform_GetBackbufferSize(unsigned int* width, unsigned int* height)
 {
+    // No swap-chain object on GL: the main window's framebuffer is the display size in pixels.
+    const ImGuiIO& io = ImGui::GetIO();
+    g_ImPlatform_BackbufferW = (unsigned int)(io.DisplaySize.x * io.DisplayFramebufferScale.x);
+    g_ImPlatform_BackbufferH = (unsigned int)(io.DisplaySize.y * io.DisplayFramebufferScale.y);
     if (width)  *width  = g_ImPlatform_BackbufferW;
     if (height) *height = g_ImPlatform_BackbufferH;
 }
@@ -1166,6 +1472,8 @@ IMPLATFORM_API bool ImPlatform_CopyTexture(ImTextureID dst, ImTextureID src)
 
     // Get source texture dimensions
     GLint width = 0, height = 0;
+    if (!glGetTexLevelParameteriv_Ptr)
+        return false;
     glBindTexture(GL_TEXTURE_2D, srcTex);
     glGetTexLevelParameteriv_Ptr(GL_TEXTURE_2D, 0, GL_TEXTURE_WIDTH, &width);
     glGetTexLevelParameteriv_Ptr(GL_TEXTURE_2D, 0, GL_TEXTURE_HEIGHT, &height);
@@ -1175,22 +1483,6 @@ IMPLATFORM_API bool ImPlatform_CopyTexture(ImTextureID dst, ImTextureID src)
         return false;
 
     // Use FBO blit: attach src to READ, dst to DRAW, then blit
-#ifndef GL_FRAMEBUFFER
-#define GL_FRAMEBUFFER 0x8D40
-#endif
-#ifndef GL_READ_FRAMEBUFFER
-#define GL_READ_FRAMEBUFFER 0x8CA8
-#endif
-#ifndef GL_DRAW_FRAMEBUFFER
-#define GL_DRAW_FRAMEBUFFER 0x8CA9
-#endif
-#ifndef GL_COLOR_ATTACHMENT0
-#define GL_COLOR_ATTACHMENT0 0x8CE0
-#endif
-#ifndef GL_COLOR_BUFFER_BIT
-#define GL_COLOR_BUFFER_BIT 0x00004000
-#endif
-
     typedef void (APIENTRYP PFNGLGENFRAMEBUFFERSPROC)(GLsizei n, GLuint* framebuffers);
     typedef void (APIENTRYP PFNGLBINDFRAMEBUFFERPROC)(GLenum target, GLuint framebuffer);
     typedef void (APIENTRYP PFNGLFRAMEBUFFERTEXTURE2DPROC)(GLenum target, GLenum attachment, GLenum textarget, GLuint texture, GLint level);
@@ -1229,6 +1521,7 @@ IMPLATFORM_API void ImPlatform_DestroyTexture(ImTextureID texture_id)
         return;
 
     GLuint tex = (GLuint)(intptr_t)texture_id;
+    g_GL_Textures3D.find_erase_unsorted(tex);
     glDeleteTextures(1, &tex);
 }
 
@@ -1459,6 +1752,12 @@ IMPLATFORM_API void ImPlatform_BindBuffers(ImPlatform_VertexBuffer vertex_buffer
     }
 }
 
+// The layout comes from the vertex buffer's attributes at draw time (attribute i at shader location i).
+IMPLATFORM_API bool ImPlatform_CreateVertexInputLayout(ImPlatform_VertexBuffer vertex_buffer, ImPlatform_ShaderProgram program)
+{
+    return vertex_buffer && program;
+}
+
 IMPLATFORM_API void ImPlatform_DrawIndexed(unsigned int primitive_type, unsigned int index_count, unsigned int start_index)
 {
     if (!g_BoundVertexBuffer || !g_BoundIndexBuffer)
@@ -1491,6 +1790,7 @@ IMPLATFORM_API void ImPlatform_DrawIndexed(unsigned int primitive_type, unsigned
 struct ImPlatform_ShaderData_GL
 {
     GLuint shader_id;
+    GLuint compute_program;   // compute stage: program linked on first dispatch
     ImPlatform_ShaderStage stage;
     // Cache-enabled path: source/entry/cache_key are stashed so CreateShaderProgram
     // can hash them and look up a pre-linked program binary. source_code owns its
@@ -1499,6 +1799,10 @@ struct ImPlatform_ShaderData_GL
     char*        entry_point;     // NULL if not using cache
     char*        cache_key;       // NULL if not using cache
     unsigned int compile_flags;
+    // Uniform blocks whose binding qualifier was removed from the source, bound by name once linked
+    int          block_count;
+    char         block_names[4][64];
+    GLuint       block_bindings[4];
 };
 
 // Internal shader program structure
@@ -1517,7 +1821,57 @@ struct ImPlatform_ShaderProgramData_GL
     GLuint fragment_shader;
     ImPlatform_UniformData_GL uniforms[8];  // Support up to 8 uniforms
     int uniform_count;
+    int attrib_locations[3];                // ImDrawVert's pos, uv, col in this program, -1 when not read
+    // Raw parameter block, as on D3D11 (pixel constant buffer b1): uploaded to a
+    // uniform buffer at binding 1 when the shader is activated.
+    void*        cb_data;
+    unsigned int cb_size;
+    GLuint       cb_ubo;
 };
+
+// Projection matrix block (binding 0, HLSL `cbuffer vertexBuffer : register(b0)`),
+// same bytes as the D3D11 backend's vertex constant buffer, followed by the render pass mirror (x: 1 while the vertices
+// are mirrored for a render texture, y: the mirror line), which shader parts undo (Slang shaders read the matrix only).
+static GLuint g_ProjectionUBO = 0;
+
+// Upload an orthographic projection (D3D11 vertex-constant layout) to the block at binding 0.
+static void ImPlatform_GL_SetProjectionBlock(float L, float R, float T, float B, bool mirrored = false)
+{
+    if (!glBindBufferBase_Ptr)
+        return;
+    const float mvp[5][4] = {
+        { 2.0f / (R - L),     0.0f,              0.0f, 0.0f },
+        { 0.0f,               2.0f / (T - B),    0.0f, 0.0f },
+        { 0.0f,               0.0f,              0.5f, 0.0f },
+        { (R + L) / (L - R),  (T + B) / (B - T), 0.5f, 1.0f },
+        { mirrored ? g_PassMirror[0] : 0.0f, mirrored ? g_PassMirror[1] : 0.0f, 0.0f, 0.0f },
+    };
+    if (!g_ProjectionUBO)
+        glGenBuffers(1, &g_ProjectionUBO);
+    glBindBuffer(GL_UNIFORM_BUFFER, g_ProjectionUBO);
+    glBufferData(GL_UNIFORM_BUFFER, sizeof(mvp), mvp, GL_DYNAMIC_DRAW);
+    glBindBufferBase_Ptr(GL_UNIFORM_BUFFER, 0, g_ProjectionUBO);
+    glBindBuffer(GL_UNIFORM_BUFFER, 0);
+}
+
+static void ImPlatform_GL_BindUniformBlocks(ImPlatform_ShaderProgramData_GL* program_data, const ImDrawData* draw_data)
+{
+    if (!glBindBufferBase_Ptr)
+        return;
+    if (draw_data)
+        ImPlatform_GL_SetProjectionBlock(draw_data->DisplayPos.x, draw_data->DisplayPos.x + draw_data->DisplaySize.x,
+                                         draw_data->DisplayPos.y, draw_data->DisplayPos.y + draw_data->DisplaySize.y, true);
+    if (program_data->cb_data && program_data->cb_size)
+    {
+        if (!program_data->cb_ubo)
+            glGenBuffers(1, &program_data->cb_ubo);
+        glBindBuffer(GL_UNIFORM_BUFFER, program_data->cb_ubo);
+        glBufferData(GL_UNIFORM_BUFFER, (program_data->cb_size + 15) & ~15u, NULL, GL_DYNAMIC_DRAW);
+        glBufferSubData(GL_UNIFORM_BUFFER, 0, program_data->cb_size, program_data->cb_data);
+        glBindBufferBase_Ptr(GL_UNIFORM_BUFFER, 1, program_data->cb_ubo);
+    }
+    glBindBuffer(GL_UNIFORM_BUFFER, 0);
+}
 
 // Global state for uniform block batching
 static ImPlatform_ShaderProgram g_CurrentUniformBlockProgram = nullptr;
@@ -1553,6 +1907,99 @@ static GLuint ImPlatform_CompileShader_GL(GLenum shader_type, const char* source
     return shader;
 }
 
+// SPIRV-Cross writes HLSL cbuffers as "layout(binding = N, std140) uniform Name". Binding qualifiers need GLSL 4.20
+// (macOS stops at 4.10), so they are removed and the blocks bound by name once the program is linked.
+static void ImPlatform_GL_StripBlockBindings(const char* source, ImGuiTextBuffer* out, ImPlatform_ShaderData_GL* shader_data)
+{
+    static const char prefix[] = "layout(binding = ";
+    static const char middle[] = ", std140) uniform ";
+    const char* p = source;
+    for (const char* hit = strstr(p, prefix); hit; hit = strstr(p, prefix))
+    {
+        char* end = NULL;
+        const long binding = strtol(hit + sizeof(prefix) - 1, &end, 10);
+        if (end == hit + sizeof(prefix) - 1 || strncmp(end, middle, sizeof(middle) - 1) != 0)
+        {
+            out->append(p, hit + sizeof(prefix) - 1);     // Another layout: kept as is
+            p = hit + sizeof(prefix) - 1;
+            continue;
+        }
+        const char* name = end + sizeof(middle) - 1;
+        const size_t len = strcspn(name, " \t\r\n{");
+        if (shader_data->block_count < 4 && len < sizeof(shader_data->block_names[0]))
+        {
+            memcpy(shader_data->block_names[shader_data->block_count], name, len);
+            shader_data->block_names[shader_data->block_count][len] = 0;
+            shader_data->block_bindings[shader_data->block_count++] = (GLuint)binding;
+        }
+        out->append(p, hit);
+        out->append("layout(std140) uniform ");
+        p = name;
+    }
+    out->append(p);
+}
+
+static void ImPlatform_GL_BindBlocksByName(GLuint program, const ImPlatform_ShaderData_GL* shader_data)
+{
+    if (!glGetUniformBlockIndex_Ptr || !glUniformBlockBinding_Ptr)
+        return;
+    for (int i = 0; i < shader_data->block_count; i++)
+    {
+        const GLuint index = glGetUniformBlockIndex_Ptr(program, shader_data->block_names[i]);
+        if (index != 0xFFFFFFFFu)     // GL_INVALID_INDEX: optimized out
+            glUniformBlockBinding_Ptr(program, index, shader_data->block_bindings[i]);
+    }
+}
+
+// Custom programs draw with Dear ImGui's vertex array, so its attributes are pointed at the program's own locations.
+// Found by Dear ImGui's names (Position, UV, Color), else by type: the vec4 is the color, the first vec2 (lowest
+// location) the position and the second the UV.
+static void ImPlatform_GL_FindAttributes(GLuint program, int locations[3])
+{
+    locations[0] = glGetAttribLocation(program, "Position");
+    locations[1] = glGetAttribLocation(program, "UV");
+    locations[2] = glGetAttribLocation(program, "Color");
+    if (locations[0] >= 0 || !glGetActiveAttrib_Ptr)
+        return;
+    GLint count = 0;
+    glGetProgramiv(program, 0x8B89 /*GL_ACTIVE_ATTRIBUTES*/, &count);
+    GLenum type_at[16] = {};
+    for (GLint i = 0; i < count; i++)
+    {
+        char name[64];
+        GLint size = 0;
+        GLenum type = 0;
+        glGetActiveAttrib_Ptr(program, (GLuint)i, sizeof(name), NULL, &size, &type, name);
+        const GLint location = glGetAttribLocation(program, name);
+        if (location >= 0 && location < 16)
+            type_at[location] = type;
+    }
+    for (int location = 0; location < 16; location++)
+    {
+        if (type_at[location] == 0x8B52 /*GL_FLOAT_VEC4*/ && locations[2] < 0)
+            locations[2] = location;
+        else if (type_at[location] == 0x8B50 /*GL_FLOAT_VEC2*/ && locations[0] < 0)
+            locations[0] = location;
+        else if (type_at[location] == 0x8B50 && locations[1] < 0)
+            locations[1] = location;
+    }
+}
+
+static void ImPlatform_GL_PointAttributes(const ImPlatform_ShaderProgramData_GL* program_data)
+{
+    const GLint    sizes[3]   = { 2, 2, 4 };
+    const GLenum   types[3]   = { GL_FLOAT, GL_FLOAT, GL_UNSIGNED_BYTE };
+    const size_t   offsets[3] = { offsetof(ImDrawVert, pos), offsetof(ImDrawVert, uv), offsetof(ImDrawVert, col) };
+    for (int i = 0; i < 3; i++)
+    {
+        const int location = program_data->attrib_locations[i];
+        if (location < 0)
+            continue;
+        glEnableVertexAttribArray((GLuint)location);
+        glVertexAttribPointer((GLuint)location, sizes[i], types[i], i == 2 ? GL_TRUE : GL_FALSE, sizeof(ImDrawVert), (void*)offsets[i]);
+    }
+}
+
 // Tiny string dup helper (malloc-based so DestroyShader can use free()).
 static char* ImPlatform_StrDup_GL(const char* s)
 {
@@ -1582,22 +2029,26 @@ IMPLATFORM_API ImPlatform_Shader ImPlatform_CreateShader(const ImPlatform_Shader
         shader_type = GL_FRAGMENT_SHADER;
         break;
     case ImPlatform_ShaderStage_Compute:
-#ifdef GL_COMPUTE_SHADER
-        shader_type = GL_COMPUTE_SHADER;
-#else
-        return NULL; // Compute shaders not supported
-#endif
+        shader_type = 0x91B9; // GL_COMPUTE_SHADER (GL 4.3; not in Dear ImGui's loader)
         break;
     default:
         return NULL;
     }
 
-    GLuint shader_id = ImPlatform_CompileShader_GL(shader_type, desc->source_code);
-    if (shader_id == 0)
-        return NULL;
-
     ImPlatform_ShaderData_GL* shader_data = new ImPlatform_ShaderData_GL();
+    shader_data->block_count = 0;
+    ImGuiTextBuffer source;
+    ImPlatform_GL_StripBlockBindings(desc->source_code, &source, shader_data);
+
+    GLuint shader_id = ImPlatform_CompileShader_GL(shader_type, source.c_str());
+    if (shader_id == 0)
+    {
+        delete shader_data;
+        return NULL;
+    }
+
     shader_data->shader_id   = shader_id;
+    shader_data->compute_program = 0;
     shader_data->stage       = desc->stage;
     shader_data->compile_flags = desc->compile_flags;
 
@@ -1625,6 +2076,8 @@ IMPLATFORM_API void ImPlatform_DestroyShader(ImPlatform_Shader shader)
         return;
 
     ImPlatform_ShaderData_GL* shader_data = (ImPlatform_ShaderData_GL*)shader;
+    if (shader_data->compute_program)
+        glDeleteProgram(shader_data->compute_program);
     if (shader_data->shader_id)
         glDeleteShader(shader_data->shader_id);
     if (shader_data->source_code) free(shader_data->source_code);
@@ -1661,7 +2114,7 @@ static bool ImPlatform_GL_TryLoadCachedProgram(
 {
     out_cache_path[0] = '\0';
     if (!vs_data->cache_key || !fs_data->cache_key) return false;
-    if (!glProgramBinary_Ptr) return false; // No GL 4.1 / ARB_get_program_binary
+    if (!glProgramBinary_Ptr || !glGetProgramBinary_Ptr) return false; // No GL 4.1 / ARB_get_program_binary
 
     // Combined cache key: hash both sources + both entry points.
     unsigned long long vs_hash = ImPlatform_ShaderCacheHashSource(
@@ -1798,11 +2251,15 @@ IMPLATFORM_API ImPlatform_ShaderProgram ImPlatform_CreateShaderProgram(ImPlatfor
             ImPlatform_GL_SaveProgramBinary(program, cache_path, vs_data->cache_key);
     }
 
+    ImPlatform_GL_BindBlocksByName(program, vs_data);
+    ImPlatform_GL_BindBlocksByName(program, fs_data);
+
     ImPlatform_ShaderProgramData_GL* program_data = new ImPlatform_ShaderProgramData_GL();
     program_data->program_id = program;
     program_data->vertex_shader = vs_data->shader_id;
     program_data->fragment_shader = fs_data->shader_id;
     program_data->uniform_count = 0;
+    ImPlatform_GL_FindAttributes(program, program_data->attrib_locations);
 
     return (ImPlatform_ShaderProgram)program_data;
 }
@@ -1824,6 +2281,9 @@ IMPLATFORM_API void ImPlatform_DestroyShaderProgram(ImPlatform_ShaderProgram pro
 
         glDeleteProgram(program_data->program_id);
     }
+    if (program_data->cb_ubo)
+        glDeleteBuffers(1, &program_data->cb_ubo);
+    free(program_data->cb_data);
 
     delete program_data;
 }
@@ -1840,12 +2300,27 @@ IMPLATFORM_API void ImPlatform_BindShaderProgram(ImPlatform_ShaderProgram progra
     glUseProgram(program_data->program_id);
 }
 
+// Raw block for the uniform buffer at binding 1 (whole cbuffer struct, as D3D11).
+static void ImPlatform_GL_StoreBlock(ImPlatform_ShaderProgramData_GL* program_data, const void* data, unsigned int size)
+{
+    if (program_data->cb_size < size || !program_data->cb_data)
+    {
+        free(program_data->cb_data);
+        program_data->cb_data = malloc(size);
+    }
+    memcpy(program_data->cb_data, data, size);
+    program_data->cb_size = size;
+}
+
 IMPLATFORM_API bool ImPlatform_SetShaderUniform(ImPlatform_ShaderProgram program, const char* name, const void* data, unsigned int size)
 {
-    if (!program || !name || !data || size > sizeof(float) * 16)
+    if (!program || !name || !data || size == 0)
         return false;
 
     ImPlatform_ShaderProgramData_GL* program_data = (ImPlatform_ShaderProgramData_GL*)program;
+    ImPlatform_GL_StoreBlock(program_data, data, size);
+    if (size > sizeof(float) * 16)
+        return true; // a whole cbuffer: only the uniform block can take it
 
     // Find existing uniform or add new one
     int uniform_index = -1;
@@ -1876,21 +2351,45 @@ IMPLATFORM_API bool ImPlatform_SetShaderUniform(ImPlatform_ShaderProgram program
     return true;
 }
 
+static ImVector<char> g_UniformBlockBytes; // accumulated block (D3D11 packing: back to back)
+
 IMPLATFORM_API void ImPlatform_BeginUniformBlock(ImPlatform_ShaderProgram program)
 {
     if (!program)
         return;
 
     g_CurrentUniformBlockProgram = program;
+    g_UniformBlockBytes.resize(0);
 }
 
 IMPLATFORM_API bool ImPlatform_SetUniform(const char* name, const void* data, unsigned int size)
 {
-    if (!g_CurrentUniformBlockProgram)
+    if (!g_CurrentUniformBlockProgram || !data || size == 0)
         return false; // BeginUniformBlock not called
 
-    // Delegate to existing SetShaderUniform which handles storage
-    return ImPlatform_SetShaderUniform(g_CurrentUniformBlockProgram, name, data, size);
+    const int at = g_UniformBlockBytes.Size;
+    g_UniformBlockBytes.resize(at + (int)size);
+    memcpy(g_UniformBlockBytes.Data + at, data, size);
+    // Named uniform too, for GLSL written with plain (non-block) uniforms.
+    if (name && size <= sizeof(float) * 16)
+    {
+        ImPlatform_ShaderProgramData_GL* program_data = (ImPlatform_ShaderProgramData_GL*)g_CurrentUniformBlockProgram;
+        int idx = -1;
+        for (int i = 0; i < program_data->uniform_count; i++)
+            if (strcmp(program_data->uniforms[i].name, name) == 0) { idx = i; break; }
+        if (idx == -1 && program_data->uniform_count < 8)
+        {
+            idx = program_data->uniform_count++;
+            strncpy(program_data->uniforms[idx].name, name, 63);
+            program_data->uniforms[idx].name[63] = '\0';
+        }
+        if (idx != -1)
+        {
+            program_data->uniforms[idx].size = size;
+            memcpy(program_data->uniforms[idx].data, data, size);
+        }
+    }
+    return true;
 }
 
 IMPLATFORM_API void ImPlatform_EndUniformBlock(ImPlatform_ShaderProgram program)
@@ -1898,10 +2397,9 @@ IMPLATFORM_API void ImPlatform_EndUniformBlock(ImPlatform_ShaderProgram program)
     if (!program || program != g_CurrentUniformBlockProgram)
         return;
 
-    // For OpenGL3, uniforms are already stored and will be applied
-    // in the callback when the shader is activated
-    // Nothing more to do here
-
+    if (g_UniformBlockBytes.Size > 0)
+        ImPlatform_GL_StoreBlock((ImPlatform_ShaderProgramData_GL*)program, g_UniformBlockBytes.Data, (unsigned int)g_UniformBlockBytes.Size);
+    g_UniformBlockBytes.resize(0);
     g_CurrentUniformBlockProgram = nullptr;
 }
 
@@ -1916,13 +2414,45 @@ IMPLATFORM_API bool ImPlatform_SetShaderTexture(ImPlatform_ShaderProgram program
     // Shaders using explicit layout(binding=N) qualifiers don't need a uniform set,
     // but still require the texture to be bound to the correct texture unit.
     glActiveTexture(GL_TEXTURE0 + slot);
-    glBindTexture(GL_TEXTURE_2D, (GLuint)(intptr_t)texture);
+    const GLuint tex = (GLuint)(intptr_t)texture;
+    glBindTexture(g_GL_Textures3D.contains(tex) ? IMP_GL_TEXTURE_3D : GL_TEXTURE_2D, tex);
 
     // For shaders without explicit binding (legacy sampler uniforms), set the unit.
+    // Slang-generated GLSL suffixes resource names with "_0".
+    GLint prev_program = 0;
+    glGetIntegerv(GL_CURRENT_PROGRAM, &prev_program);
+    glUseProgram(program_data->program_id);
     GLint location = glGetUniformLocation(program_data->program_id, name);
+    if (location == -1)
+    {
+        char suffixed[96];
+        snprintf(suffixed, sizeof(suffixed), "%s_0", name);
+        location = glGetUniformLocation(program_data->program_id, suffixed);
+    }
+    if (location == -1 && glGetActiveUniform_Ptr)
+    {
+        // SPIRV-Cross combines an HLSL texture and the sampler it is read with: SPIRV_Cross_Combined<texture><sampler>
+        char prefix[96];
+        const int prefix_len = snprintf(prefix, sizeof(prefix), "SPIRV_Cross_Combined%s", name);
+        GLint count = 0;
+        glGetProgramiv(program_data->program_id, 0x8B86 /*GL_ACTIVE_UNIFORMS*/, &count);
+        for (GLint i = 0; i < count && location == -1; i++)
+        {
+            char uniform[128];
+            GLint size = 0;
+            GLenum type = 0;
+            glGetActiveUniform_Ptr(program_data->program_id, (GLuint)i, sizeof(uniform), NULL, &size, &type, uniform);
+            if (strncmp(uniform, prefix, (size_t)prefix_len) == 0)
+                location = glGetUniformLocation(program_data->program_id, uniform);
+        }
+    }
     if (location != -1)
         glUniform1i(location, slot);
+    glUseProgram((GLuint)prev_program);
 
+    // ImGui's renderer binds each draw command's texture to the ACTIVE unit:
+    // leave unit 0 active so it does not land on this slot.
+    glActiveTexture(GL_TEXTURE0);
     return true;
 }
 
@@ -1933,6 +2463,7 @@ IMPLATFORM_API bool ImPlatform_SetShaderTexture(ImPlatform_ShaderProgram program
 // ImDrawCallback handler to activate a custom shader
 static void ImPlatform_SetCustomShader(const ImDrawList* parent_list, const ImDrawCmd* cmd)
 {
+    (void)parent_list;
     ImPlatform_ShaderProgram program = (ImPlatform_ShaderProgram)cmd->UserCallbackData;
     if (!program) return;
 
@@ -1940,9 +2471,11 @@ static void ImPlatform_SetCustomShader(const ImDrawList* parent_list, const ImDr
 
     // Bind the shader program
     ImPlatform_BindShaderProgram(program);
+    ImPlatform_GL_PointAttributes(program_data);
 
     // Use cached draw data for correct viewport projection in multi-viewport mode
     ImDrawData* draw_data = g_CurrentDrawData;
+    ImPlatform_GL_BindUniformBlocks(program_data, draw_data);
     if (!draw_data) return;
 
     float L = draw_data->DisplayPos.x;
@@ -1995,11 +2528,13 @@ IMPLATFORM_API void ImPlatform_BeginCustomShader_Render(ImPlatform_ShaderProgram
 
     // Bind the shader program
     ImPlatform_BindShaderProgram(program);
+    ImPlatform_GL_PointAttributes(program_data);
 
     // Use cached draw data for correct viewport projection in multi-viewport mode
     ImDrawData* draw_data = g_CurrentDrawData;
     if (!draw_data)
         draw_data = ImGui::GetDrawData();
+    ImPlatform_GL_BindUniformBlocks(program_data, draw_data);
     if (!draw_data) return;
 
     float L = draw_data->DisplayPos.x;
@@ -2049,6 +2584,7 @@ IMPLATFORM_API void ImPlatform_BeginCustomShader(ImDrawList* draw, ImPlatform_Sh
     if (!draw || !shader)
         return;
 
+    ImPlatform_ScissorBeforeCallbacks(draw);
     // Just pass the shader program - we'll get viewport info in the callback
     draw->AddCallback(&ImPlatform_SetCustomShader, shader);
 }
@@ -2058,18 +2594,302 @@ IMPLATFORM_API void ImPlatform_EndCustomShader(ImDrawList* draw)
     if (!draw)
         return;
 
-    draw->AddCallback(ImDrawCallback_ResetRenderState, NULL);
+    draw->AddCallback(ImGui::GetPlatformIO().DrawCallback_ResetRenderState, NULL);
 }
+
+// ------------------- Readback and compute (GL 4.3 for compute) -------------------
+
+typedef void (APIENTRYP PFNIMPGLDISPATCHCOMPUTEPROC)(GLuint, GLuint, GLuint);
+typedef void (APIENTRYP PFNIMPGLMEMORYBARRIERPROC)(GLbitfield);
+typedef void (APIENTRYP PFNIMPGLBINDIMAGETEXTUREPROC)(GLuint, GLuint, GLint, GLboolean, GLint, GLenum, GLenum);
+static PFNIMPGLDISPATCHCOMPUTEPROC   glDispatchCompute_Ptr   = NULL;
+static PFNIMPGLMEMORYBARRIERPROC     glMemoryBarrier_Ptr     = NULL;
+static PFNIMPGLBINDIMAGETEXTUREPROC  glBindImageTexture_Ptr  = NULL;
+static GLuint                        g_ComputeUBO     = 0;
+static GLuint                        g_ComputeSampler = 0;
+
+static bool ImPlatform_GL_LoadCompute()
+{
+    static int state = -1; // -1 unknown, 0 no, 1 yes
+    if (state < 0)
+    {
+        GLint major = 0, minor = 0;
+        glGetIntegerv(0x821B /* GL_MAJOR_VERSION */, &major);
+        glGetIntegerv(0x821C /* GL_MINOR_VERSION */, &minor);
+        glDispatchCompute_Ptr  = (PFNIMPGLDISPATCHCOMPUTEPROC)imgl3wGetProcAddress("glDispatchCompute");
+        glMemoryBarrier_Ptr    = (PFNIMPGLMEMORYBARRIERPROC)imgl3wGetProcAddress("glMemoryBarrier");
+        glBindImageTexture_Ptr = (PFNIMPGLBINDIMAGETEXTUREPROC)imgl3wGetProcAddress("glBindImageTexture");
+        state = (major > 4 || (major == 4 && minor >= 3)) && glDispatchCompute_Ptr && glMemoryBarrier_Ptr
+             && glBindImageTexture_Ptr && glBindBufferBase_Ptr ? 1 : 0;
+    }
+    return state == 1;
+}
+
+// Client format / type / bytes per pixel to read a texture of this sized internal format.
+static bool ImPlatform_GL_ReadFormat(GLint internal_format, GLenum* format, GLenum* type, int* bpp)
+{
+    switch (internal_format)
+    {
+    case 0x8229: *format = 0x1903; *type = GL_UNSIGNED_BYTE;  *bpp = 1;  return true; // R8 -> RED
+    case 0x822B: *format = 0x8227; *type = GL_UNSIGNED_BYTE;  *bpp = 2;  return true; // RG8 -> RG
+    case 0x8058:                                                                        // RGBA8
+    case 0x8C43: *format = GL_RGBA; *type = GL_UNSIGNED_BYTE; *bpp = 4;  return true; // SRGB8_ALPHA8
+    case 0x822A: *format = 0x1903; *type = GL_UNSIGNED_SHORT; *bpp = 2;  return true; // R16
+    case 0x822C: *format = 0x8227; *type = GL_UNSIGNED_SHORT; *bpp = 4;  return true; // RG16
+    case 0x805B: *format = GL_RGBA; *type = GL_UNSIGNED_SHORT; *bpp = 8; return true; // RGBA16
+    case 0x822D: *format = 0x1903; *type = 0x140B;            *bpp = 2;  return true; // R16F (HALF_FLOAT)
+    case 0x822F: *format = 0x8227; *type = 0x140B;            *bpp = 4;  return true; // RG16F
+    case 0x881A: *format = GL_RGBA; *type = 0x140B;           *bpp = 8;  return true; // RGBA16F
+    case 0x822E: *format = 0x1903; *type = GL_FLOAT;          *bpp = 4;  return true; // R32F
+    case 0x8230: *format = 0x8227; *type = GL_FLOAT;          *bpp = 8;  return true; // RG32F
+    case 0x8814: *format = GL_RGBA; *type = GL_FLOAT;         *bpp = 16; return true; // RGBA32F
+    default: return false;
+    }
+}
+
+static GLint ImPlatform_GL_TextureInternalFormat(GLuint tex, GLint* w, GLint* h)
+{
+    GLint prev = 0, internal_format = 0;
+    glGetIntegerv(GL_TEXTURE_BINDING_2D, &prev);
+    glBindTexture(GL_TEXTURE_2D, tex);
+    glGetTexLevelParameteriv_Ptr(GL_TEXTURE_2D, 0, 0x1003 /* GL_TEXTURE_INTERNAL_FORMAT */, &internal_format);
+    if (w) glGetTexLevelParameteriv_Ptr(GL_TEXTURE_2D, 0, GL_TEXTURE_WIDTH, w);
+    if (h) glGetTexLevelParameteriv_Ptr(GL_TEXTURE_2D, 0, GL_TEXTURE_HEIGHT, h);
+    glBindTexture(GL_TEXTURE_2D, (GLuint)prev);
+    return internal_format;
+}
+
+IMPLATFORM_API bool ImPlatform_SupportsReadback(void) { return ImPlatform_GL_Fbo() && glGetTexLevelParameteriv_Ptr; }
+
+// Rows come out top-down like the uploaded pixels: GL texture row 0 is the first row given to
+// ImPlatform_CreateTexture and the row compute shaders address as y = 0.
+IMPLATFORM_API bool ImPlatform_ReadTexture(ImTextureID texture, unsigned int x, unsigned int y,
+                                           unsigned int width, unsigned int height, void* out_pixels, size_t out_size)
+{
+    const ImPlatform_FboFns_GL* fbo = ImPlatform_GL_Fbo();
+    if (!texture || !out_pixels || !width || !height || !fbo || !glGetTexLevelParameteriv_Ptr)
+        return false;
+    GLuint tex = (GLuint)(intptr_t)texture;
+    GLint tw = 0, th = 0;
+    GLenum format, type; int bpp;
+    if (!ImPlatform_GL_ReadFormat(ImPlatform_GL_TextureInternalFormat(tex, &tw, &th), &format, &type, &bpp))
+        return false;
+    if (x + width > (unsigned int)tw || y + height > (unsigned int)th || out_size < (size_t)width * height * bpp)
+        return false;
+
+    // The result is this read's own GL errors: clear any an earlier call left pending (glGetError is sticky).
+    for (int i = 0; i < 16 && glGetError() != 0; i++) {}
+    GLint readFbo = 0, packAlign = 4;
+    glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING, &readFbo);
+    glGetIntegerv(GL_PACK_ALIGNMENT, &packAlign);
+    if (!g_CopyFbo)
+        fbo->Gen(1, &g_CopyFbo);
+    fbo->Bind(GL_READ_FRAMEBUFFER, g_CopyFbo);
+    fbo->Texture2D(GL_READ_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, tex, 0);
+    glPixelStorei(GL_PACK_ALIGNMENT, 1);
+    glReadPixels((GLint)x, (GLint)y, (GLsizei)width, (GLsizei)height, format, type, out_pixels); // synchronous
+    glPixelStorei(GL_PACK_ALIGNMENT, packAlign);
+    fbo->Bind(GL_READ_FRAMEBUFFER, (GLuint)readFbo);
+    return glGetError() == 0; // GL_NO_ERROR
+}
+
+IMPLATFORM_API bool ImPlatform_SupportsCompute(void) { return ImPlatform_GL_LoadCompute(); }
+
+IMPLATFORM_API ImTextureID ImPlatform_CreateStorageTexture(const void* pixel_data, const ImPlatform_TextureDesc* desc)
+{
+    if (!desc || !desc->width || !desc->height || !ImPlatform_GL_LoadCompute())
+        return (ImTextureID)0;
+    GLint internal_format; GLenum format, type; int channels;
+    ImPlatform_GetOpenGLFormat(desc->format, &internal_format, &format, &type, &channels);
+    GLint prev = 0;
+    glGetIntegerv(GL_TEXTURE_BINDING_2D, &prev);
+    GLuint tex = 0;
+    glGenTextures(1, &tex);
+    glBindTexture(GL_TEXTURE_2D, tex);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+#if defined(GL_UNPACK_ROW_LENGTH) && !defined(__EMSCRIPTEN__)
+    glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
+#endif
+    // Start zeroed when no pixels are given, as on DX11 (a NULL upload leaves GL contents undefined).
+    void* zeros = pixel_data ? NULL : calloc((size_t)desc->width * desc->height, 16); // 16 = largest texel
+    glTexImage2D(GL_TEXTURE_2D, 0, internal_format, (GLsizei)desc->width, (GLsizei)desc->height, 0, format, type, pixel_data ? pixel_data : zeros);
+    free(zeros);
+    glBindTexture(GL_TEXTURE_2D, (GLuint)prev);
+    return (ImTextureID)(intptr_t)tex;
+}
+
+IMPLATFORM_API bool ImPlatform_DispatchCompute(ImPlatform_Shader compute_shader,
+                                               const ImTextureID* inputs, unsigned int input_count,
+                                               const ImTextureID* outputs, unsigned int output_count,
+                                               const void* constants, unsigned int constants_size,
+                                               unsigned int groups_x, unsigned int groups_y, unsigned int groups_z)
+{
+    ImPlatform_ShaderData_GL* cs = (ImPlatform_ShaderData_GL*)compute_shader;
+    if (!cs || cs->stage != ImPlatform_ShaderStage_Compute || !ImPlatform_GL_LoadCompute()
+        || input_count > 16 || output_count > 8
+        || (input_count && !inputs) || (output_count && !outputs) || (constants_size && !constants))
+        return false;
+    if (!cs->compute_program)
+    {
+        GLuint prog = glCreateProgram();
+        glAttachShader(prog, cs->shader_id);
+        glLinkProgram(prog);
+        GLint linked = 0;
+        glGetProgramiv(prog, GL_LINK_STATUS, &linked);
+        if (!linked)
+        {
+            char log[1024] = {};
+            glGetProgramInfoLog(prog, sizeof(log), NULL, log);
+            fprintf(stderr, "[ImPlatform] compute program link failed: %s\n", log);
+            glDeleteProgram(prog);
+            return false;
+        }
+        cs->compute_program = prog;
+    }
+    if (!g_ComputeSampler && glGenSamplers_Ptr)
+    {
+        // s0 = linear clamp, as on DX11
+        glGenSamplers_Ptr(1, &g_ComputeSampler);
+        glSamplerParameteri_Ptr(g_ComputeSampler, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glSamplerParameteri_Ptr(g_ComputeSampler, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glSamplerParameteri_Ptr(g_ComputeSampler, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glSamplerParameteri_Ptr(g_ComputeSampler, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    }
+
+    GLint prevProgram = 0, prevActive = 0;
+    glGetIntegerv(GL_CURRENT_PROGRAM, &prevProgram);
+    glGetIntegerv(GL_ACTIVE_TEXTURE, &prevActive);
+    glUseProgram(cs->compute_program);
+    for (unsigned int i = 0; i < input_count; i++)
+    {
+        glActiveTexture(GL_TEXTURE0 + i);
+        glBindTexture(GL_TEXTURE_2D, (GLuint)(intptr_t)inputs[i]);
+        if (g_ComputeSampler) glBindSampler_Ptr(i, g_ComputeSampler);
+    }
+    for (unsigned int i = 0; i < output_count; i++)
+    {
+        GLuint tex = (GLuint)(intptr_t)outputs[i];
+        glBindImageTexture_Ptr(i, tex, 0, GL_FALSE, 0, 0x88BA /* GL_READ_WRITE */, (GLenum)ImPlatform_GL_TextureInternalFormat(tex, NULL, NULL));
+    }
+    if (constants_size)
+    {
+        if (!g_ComputeUBO) glGenBuffers(1, &g_ComputeUBO);
+        glBindBuffer(GL_UNIFORM_BUFFER, g_ComputeUBO);
+        glBufferData(GL_UNIFORM_BUFFER, (constants_size + 15) & ~15u, NULL, GL_STREAM_DRAW);
+        glBufferSubData(GL_UNIFORM_BUFFER, 0, constants_size, constants);
+        glBindBuffer(GL_UNIFORM_BUFFER, 0);
+        glBindBufferBase_Ptr(GL_UNIFORM_BUFFER, 0, g_ComputeUBO);
+    }
+    glDispatchCompute_Ptr(groups_x, groups_y, groups_z);
+    glMemoryBarrier_Ptr(0xFFFFFFFF); // GL_ALL_BARRIER_BITS: outputs visible to sampling, readback and drawing
+
+    // Clear bindings so outputs can be drawn or read back
+    for (unsigned int i = 0; i < output_count; i++)
+        glBindImageTexture_Ptr(i, 0, 0, GL_FALSE, 0, 0x88BA, 0x8058 /* GL_RGBA8 */);
+    for (unsigned int i = 0; i < input_count; i++)
+    {
+        glActiveTexture(GL_TEXTURE0 + i);
+        glBindTexture(GL_TEXTURE_2D, 0);
+        if (g_ComputeSampler) glBindSampler_Ptr(i, 0);
+    }
+    glActiveTexture((GLenum)prevActive);
+    glUseProgram((GLuint)prevProgram);
+    return true;
+}
+
+IMPLATFORM_API void ImPlatform_DrawQuadNow(ImPlatform_ShaderProgram program, ImVec4 dst_rect, ImVec4 uv_rect)
+{
+    if (!program)
+        return;
+    if (!g_QuadVAO)
+    {
+        // ImDrawVert; each draw points its attributes at the program's locations
+        const unsigned short idx[6] = { 0, 1, 2, 0, 2, 3 };
+        glGenVertexArrays(1, &g_QuadVAO);
+        glGenBuffers(1, &g_QuadVBO);
+        glGenBuffers(1, &g_QuadIBO);
+        glBindVertexArray(g_QuadVAO);
+        glBindBuffer(GL_ARRAY_BUFFER, g_QuadVBO);
+        glBufferData(GL_ARRAY_BUFFER, 4 * sizeof(ImDrawVert), NULL, GL_STREAM_DRAW);
+        glEnableVertexAttribArray(0);
+        glEnableVertexAttribArray(1);
+        glEnableVertexAttribArray(2);
+        glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, sizeof(ImDrawVert), (void*)offsetof(ImDrawVert, pos));
+        glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, sizeof(ImDrawVert), (void*)offsetof(ImDrawVert, uv));
+        glVertexAttribPointer(2, 4, GL_UNSIGNED_BYTE, GL_TRUE, sizeof(ImDrawVert), (void*)offsetof(ImDrawVert, col));
+        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, g_QuadIBO);
+        glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(idx), idx, GL_STATIC_DRAW);
+        glBindVertexArray(0);
+    }
+
+    // Program, its named uniforms and parameter block
+    ImPlatform_BeginCustomShader_Render(program);
+
+    // Projection for the current target in its pixels. Render textures are flipped so they
+    // store top-down, like every other texture (see ImPlatform_CopyCurrentTarget).
+    unsigned int tw = 0, th = 0;
+    ImPlatform_GetCurrentTargetSize(&tw, &th);
+    if (tw == 0 || th == 0)
+        return;
+    GLint fb = 0;
+    glGetIntegerv(GL_FRAMEBUFFER_BINDING, &fb);
+    const float T = fb ? (float)th : 0.0f, B = fb ? 0.0f : (float)th;
+    ImPlatform_GL_SetProjectionBlock(0.0f, (float)tw, T, B);
+    ImPlatform_ShaderProgramData_GL* program_data = (ImPlatform_ShaderProgramData_GL*)program;
+    GLint proj_loc = glGetUniformLocation(program_data->program_id, "ProjMtx");
+    if (proj_loc != -1)
+    {
+        const float R = (float)tw;
+        const float ortho[4][4] = {
+            { 2.0f / R, 0.0f,            0.0f, 0.0f },
+            { 0.0f,     2.0f / (T - B),  0.0f, 0.0f },
+            { 0.0f,     0.0f,           -1.0f, 0.0f },
+            { -1.0f,    (T + B) / (B - T), 0.0f, 1.0f },
+        };
+        glUniformMatrix4fv(proj_loc, 1, GL_FALSE, &ortho[0][0]);
+    }
+
+    const ImU32 white = IM_COL32_WHITE;
+    ImDrawVert v[4];
+    v[0].pos = ImVec2(dst_rect.x, dst_rect.y); v[0].uv = ImVec2(uv_rect.x, uv_rect.y); v[0].col = white;
+    v[1].pos = ImVec2(dst_rect.z, dst_rect.y); v[1].uv = ImVec2(uv_rect.z, uv_rect.y); v[1].col = white;
+    v[2].pos = ImVec2(dst_rect.z, dst_rect.w); v[2].uv = ImVec2(uv_rect.z, uv_rect.w); v[2].col = white;
+    v[3].pos = ImVec2(dst_rect.x, dst_rect.w); v[3].uv = ImVec2(uv_rect.x, uv_rect.w); v[3].col = white;
+    glBindVertexArray(g_QuadVAO);
+    glBindBuffer(GL_ARRAY_BUFFER, g_QuadVBO);
+    glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(v), v);
+    for (GLuint i = 0; i < 3; i++)      // The program's own input locations, as for Dear ImGui's draws
+        glDisableVertexAttribArray(i);
+    ImPlatform_GL_PointAttributes(program_data);
+    glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_SHORT, (void*)0);
+    glBindVertexArray(0);
+}
+
+// One buffer, re-specified per push: callers may pop before drawing (as on D3D11, where the bound
+// buffer stays alive), and deleting a GL buffer would unbind it. Re-specifying orphans the old
+// storage, so draws already issued keep their data.
+static GLuint g_PushConstantsUBO = 0;
 
 IMPLATFORM_API void* ImPlatform_PushShaderConstants(const void* data, unsigned int size)
 {
-    (void)data; (void)size;
-    return nullptr;
+    if (!data || size == 0 || !glBindBufferBase_Ptr)
+        return nullptr;
+    if (!g_PushConstantsUBO)
+        glGenBuffers(1, &g_PushConstantsUBO);
+    glBindBuffer(GL_UNIFORM_BUFFER, g_PushConstantsUBO);
+    glBufferData(GL_UNIFORM_BUFFER, (size + 15) & ~15u, NULL, GL_STREAM_DRAW);
+    glBufferSubData(GL_UNIFORM_BUFFER, 0, size, data);
+    glBindBuffer(GL_UNIFORM_BUFFER, 0);
+    glBindBufferBase_Ptr(GL_UNIFORM_BUFFER, 1, g_PushConstantsUBO);
+    return (void*)(intptr_t)g_PushConstantsUBO;
 }
 
 IMPLATFORM_API void ImPlatform_PopShaderConstants(void* handle)
 {
-    (void)handle;
+    (void)handle; // the buffer is reused by the next push
 }
 
 // ============================================================================

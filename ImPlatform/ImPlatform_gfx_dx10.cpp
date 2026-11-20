@@ -44,6 +44,13 @@ static void CreateRenderTarget()
     if (pBackBuffer)
     {
         g_GfxData.pDevice->CreateRenderTargetView(pBackBuffer, NULL, &g_GfxData.pRenderTargetView);
+
+        // Update stored backbuffer size
+        D3D10_TEXTURE2D_DESC bbDesc;
+        pBackBuffer->GetDesc(&bbDesc);
+        g_ImPlatform_BackbufferW = bbDesc.Width;
+        g_ImPlatform_BackbufferH = bbDesc.Height;
+
         pBackBuffer->Release();
     }
 }
@@ -90,8 +97,30 @@ bool ImPlatform_Gfx_CreateDevice_DX10(HWND hWnd, ImPlatform_GfxData_DX10* pData)
         &pData->pSwapChain,
         &pData->pDevice);
 
+    // Try high-performance WARP software driver if hardware is not available
+    if (res == DXGI_ERROR_UNSUPPORTED)
+        res = D3D10CreateDeviceAndSwapChain(
+            NULL,
+            D3D10_DRIVER_TYPE_WARP,
+            NULL,
+            createDeviceFlags,
+            D3D10_SDK_VERSION,
+            &sd,
+            &pData->pSwapChain,
+            &pData->pDevice);
+
     if (res != S_OK)
         return false;
+
+    // Disable DXGI's default Alt+Enter fullscreen behavior.
+    // - It does not work properly with multiple viewports.
+    // - This must be done for all windows associated to the device. The DX10 backend does this automatically for secondary viewports that it creates.
+    IDXGIFactory* pSwapChainFactory;
+    if (SUCCEEDED(pData->pSwapChain->GetParent(IID_PPV_ARGS(&pSwapChainFactory))))
+    {
+        pSwapChainFactory->MakeWindowAssociation(hWnd, DXGI_MWA_NO_ALT_ENTER);
+        pSwapChainFactory->Release();
+    }
 
     pData->bSwapChainOccluded = false;
     pData->uResizeWidth = 0;
@@ -216,9 +245,105 @@ IMPLATFORM_API bool ImPlatform_GfxAPIClear(ImVec4 const vClearColor)
 }
 
 // ImPlatform API - GfxAPIRender
+// Render pass queued by ImPlatform_QueueRenderPass(), run at the start of ImPlatform_GfxAPIRender()
+static ImTextureID g_PassTarget = NULL;
+static ImDrawData* g_PassDrawData = NULL;
+static bool        g_PassClear = false;
+
+static ImPlatform_RTTracking_DX10* ImPlatform_FindRT_DX10(ImTextureID texture)
+{
+    ImPlatform_RTTracking_DX10* entry = g_RTTrackingHead;
+    while (entry && entry->pSRV != (ID3D10ShaderResourceView*)texture)
+        entry = entry->next;
+    return entry;
+}
+
+IMPLATFORM_API ImPlatform_PixelFormat ImPlatform_GetRenderPassFormat(void) { return ImPlatform_PixelFormat_RGBA8; }
+
+IMPLATFORM_API bool ImPlatform_QueueRenderPass(ImTextureID target, ImDrawData* draw_data, bool clear)
+{
+    if (!ImPlatform_FindRT_DX10(target) || !draw_data)
+        return false;
+    g_PassTarget = target;
+    g_PassDrawData = draw_data;
+    g_PassClear = clear;
+    return true;
+}
+
+static void ImPlatform_RunRenderPass()
+{
+    ImDrawData* draw_data = g_PassDrawData;
+    g_PassDrawData = NULL;
+    ImPlatform_RTTracking_DX10* entry = ImPlatform_FindRT_DX10(g_PassTarget);
+    if (!draw_data || !entry)       // Destroyed since it was queued.
+        return;
+    ID3D10Device* dev = g_GfxData.pDevice;
+    ID3D10ShaderResourceView* nullSRV = NULL;
+    dev->PSSetShaderResources(0, 1, &nullSRV);      // Not bound as an input while it is the target.
+    dev->OMSetRenderTargets(1, &entry->pRTV, NULL);
+    if (g_PassClear)
+    {
+        const float transparent[4] = { 0, 0, 0, 0 };
+        dev->ClearRenderTargetView(entry->pRTV, transparent);
+    }
+    if (draw_data->Textures == NULL)
+        draw_data->Textures = &ImGui::GetPlatformIO().Textures;     // The frame's texture updates, before they are drawn.
+    ImPlatform_RenderPassLists(draw_data, [](ImDrawData* d) { ImGui_ImplDX10_RenderDrawData(d); });     // Viewport and projection from the draw data.
+    dev->OMSetRenderTargets(1, &g_GfxData.pRenderTargetView, NULL);
+}
+
+static ID3D10BlendState* g_PremultipliedBlend = NULL;
+static ID3D10BlendState* g_BlendStack[8] = {};
+static int               g_BlendDepth = 0;
+
+IMPLATFORM_API void ImPlatform_PushPremultipliedAlpha(ImDrawList* draw)
+{
+    if (!g_PremultipliedBlend && g_GfxData.pDevice)
+    {
+        D3D10_BLEND_DESC desc = {};
+        desc.BlendEnable[0] = TRUE;
+        desc.SrcBlend = D3D10_BLEND_ONE;
+        desc.DestBlend = D3D10_BLEND_INV_SRC_ALPHA;
+        desc.BlendOp = D3D10_BLEND_OP_ADD;
+        desc.SrcBlendAlpha = D3D10_BLEND_ONE;
+        desc.DestBlendAlpha = D3D10_BLEND_INV_SRC_ALPHA;
+        desc.BlendOpAlpha = D3D10_BLEND_OP_ADD;
+        desc.RenderTargetWriteMask[0] = D3D10_COLOR_WRITE_ENABLE_ALL;
+        g_GfxData.pDevice->CreateBlendState(&desc, &g_PremultipliedBlend);
+    }
+    (draw ? draw : ImGui::GetWindowDrawList())->AddCallback([](const ImDrawList*, const ImDrawCmd*)
+    {
+        ID3D10BlendState* old = NULL;
+        FLOAT factor[4];
+        UINT mask;
+        g_GfxData.pDevice->OMGetBlendState(&old, factor, &mask);      // Adds a reference.
+        if (g_BlendDepth < IM_ARRAYSIZE(g_BlendStack))
+            g_BlendStack[g_BlendDepth++] = old;
+        else if (old)
+            old->Release();
+        const float zero[4] = { 0, 0, 0, 0 };
+        g_GfxData.pDevice->OMSetBlendState(g_PremultipliedBlend, zero, 0xffffffff);
+    }, NULL);
+}
+
+IMPLATFORM_API void ImPlatform_PopPremultipliedAlpha(ImDrawList* draw)
+{
+    (draw ? draw : ImGui::GetWindowDrawList())->AddCallback([](const ImDrawList*, const ImDrawCmd*)
+    {
+        if (g_BlendDepth <= 0)
+            return;
+        ID3D10BlendState* saved = g_BlendStack[--g_BlendDepth];
+        const float zero[4] = { 0, 0, 0, 0 };
+        g_GfxData.pDevice->OMSetBlendState(saved, zero, 0xffffffff);
+        if (saved)
+            saved->Release();
+    }, NULL);
+}
+
 IMPLATFORM_API bool ImPlatform_GfxAPIRender(ImVec4 const vClearColor)
 {
     (void)vClearColor; // Not used for DX10
+    ImPlatform_RunRenderPass();
     ImGui_ImplDX10_RenderDrawData(ImGui::GetDrawData());
     return true;
 }
@@ -402,7 +527,6 @@ IMPLATFORM_API ImPlatform_TextureDesc ImPlatform_TextureDesc_Default(unsigned in
     return desc;
 }
 
-// Texture3D stub for D3D10.
 IMPLATFORM_API ImPlatform_TextureDesc3D ImPlatform_TextureDesc3D_Default(unsigned int w, unsigned int h, unsigned int d)
 {
     ImPlatform_TextureDesc3D x; x.width = w; x.height = h; x.depth = d;
@@ -411,8 +535,40 @@ IMPLATFORM_API ImPlatform_TextureDesc3D ImPlatform_TextureDesc3D_Default(unsigne
     x.wrap_u = x.wrap_v = x.wrap_w = ImPlatform_TextureWrap_Clamp;
     return x;
 }
-IMPLATFORM_API bool ImPlatform_SupportsTexture3D(void) { return false; }
-IMPLATFORM_API ImTextureID ImPlatform_CreateTexture3D(const void*, const ImPlatform_TextureDesc3D*) { return NULL; }
+IMPLATFORM_API bool ImPlatform_SupportsTexture3D(void) { return true; }
+// A shader resource view like the 2D textures: SetShaderTexture and DestroyTexture take either.
+IMPLATFORM_API ImTextureID ImPlatform_CreateTexture3D(const void* voxel_data, const ImPlatform_TextureDesc3D* desc)
+{
+    if (!desc || !voxel_data || !g_GfxData.pDevice)
+        return NULL;
+    int bytes_per_pixel = 0;
+    DXGI_FORMAT format = ImPlatform_GetD3D10Format(desc->format, &bytes_per_pixel);
+    D3D10_TEXTURE3D_DESC td;
+    ZeroMemory(&td, sizeof(td));
+    td.Width = desc->width;
+    td.Height = desc->height;
+    td.Depth = desc->depth;
+    td.MipLevels = 1;
+    td.Format = format;
+    td.Usage = D3D10_USAGE_DEFAULT;
+    td.BindFlags = D3D10_BIND_SHADER_RESOURCE;
+    D3D10_SUBRESOURCE_DATA sub;
+    sub.pSysMem = voxel_data;
+    sub.SysMemPitch = desc->width * bytes_per_pixel;
+    sub.SysMemSlicePitch = desc->width * desc->height * bytes_per_pixel;
+    ID3D10Texture3D* pTex = NULL;
+    if (FAILED(g_GfxData.pDevice->CreateTexture3D(&td, &sub, &pTex)) || !pTex)
+        return NULL;
+    D3D10_SHADER_RESOURCE_VIEW_DESC sv;
+    ZeroMemory(&sv, sizeof(sv));
+    sv.Format = format;
+    sv.ViewDimension = D3D10_SRV_DIMENSION_TEXTURE3D;
+    sv.Texture3D.MipLevels = 1;
+    ID3D10ShaderResourceView* pSRV = NULL;
+    HRESULT hr = g_GfxData.pDevice->CreateShaderResourceView(pTex, &sv, &pSRV);
+    pTex->Release();
+    return SUCCEEDED(hr) ? (ImTextureID)pSRV : NULL;
+}
 
 IMPLATFORM_API ImTextureID ImPlatform_CreateTexture(const void* pixel_data, const ImPlatform_TextureDesc* desc)
 {
@@ -897,6 +1053,12 @@ IMPLATFORM_API void ImPlatform_BindIndexBuffer(ImPlatform_IndexBuffer index_buff
     g_GfxData.pDevice->IASetIndexBuffer(buffer->pIndexBuffer, format, 0);
 }
 
+IMPLATFORM_API void ImPlatform_BindBuffers(ImPlatform_VertexBuffer vertex_buffer, ImPlatform_IndexBuffer index_buffer)
+{
+    ImPlatform_BindVertexBuffer(vertex_buffer);
+    ImPlatform_BindIndexBuffer(index_buffer);
+}
+
 IMPLATFORM_API void ImPlatform_DrawIndexed(unsigned int primitive_type, unsigned int index_count, unsigned int start_index)
 {
     D3D10_PRIMITIVE_TOPOLOGY topology;
@@ -939,6 +1101,40 @@ struct ImPlatform_ShaderProgramData_DX10
     size_t pixelConstantDataSize;
     bool pixelConstantDataDirty;
 };
+
+// The vertex buffer's input layout, matched against the program's vertex shader: attributes sharing a semantic name
+// take indices 0, 1, ... in order. ImPlatform_BindBuffers sets it.
+IMPLATFORM_API bool ImPlatform_CreateVertexInputLayout(ImPlatform_VertexBuffer vertex_buffer, ImPlatform_ShaderProgram program)
+{
+    ImPlatform_BufferData_DX10* vb = (ImPlatform_BufferData_DX10*)vertex_buffer;
+    ImPlatform_ShaderProgramData_DX10* prog = (ImPlatform_ShaderProgramData_DX10*)program;
+    if (!vb || !prog || !prog->pVSBlob || !vb->vb_desc.attributes || vb->vb_desc.attribute_count == 0)
+        return false;
+    ImVector<D3D10_INPUT_ELEMENT_DESC> layout;
+    layout.resize((int)vb->vb_desc.attribute_count);
+    for (int i = 0; i < layout.Size; i++)
+    {
+        const ImPlatform_VertexAttribute& attr = vb->vb_desc.attributes[i];
+        UINT semantic_index = 0;
+        for (int j = 0; j < i; j++)
+            semantic_index += strcmp(vb->vb_desc.attributes[j].semantic_name, attr.semantic_name) == 0 ? 1 : 0;
+        static const DXGI_FORMAT formats[] = { DXGI_FORMAT_R32_FLOAT, DXGI_FORMAT_R32G32_FLOAT, DXGI_FORMAT_R32G32B32_FLOAT,
+                                               DXGI_FORMAT_R32G32B32A32_FLOAT, DXGI_FORMAT_R8G8B8A8_UINT, DXGI_FORMAT_R8G8B8A8_UNORM };
+        D3D10_INPUT_ELEMENT_DESC& e = layout[i];
+        e.SemanticName = attr.semantic_name;
+        e.SemanticIndex = semantic_index;
+        e.Format = formats[(int)attr.format < IM_ARRAYSIZE(formats) ? (int)attr.format : 3];
+        e.InputSlot = 0;
+        e.AlignedByteOffset = attr.offset;
+        e.InputSlotClass = D3D10_INPUT_PER_VERTEX_DATA;
+        e.InstanceDataStepRate = 0;
+    }
+    if (vb->pInputLayout)
+        vb->pInputLayout->Release();
+    vb->pInputLayout = NULL;
+    return SUCCEEDED(g_GfxData.pDevice->CreateInputLayout(layout.Data, (UINT)layout.Size, prog->pVSBlob->GetBufferPointer(),
+                                                          prog->pVSBlob->GetBufferSize(), &vb->pInputLayout));
+}
 
 // Global state for uniform block batching
 static ImPlatform_ShaderProgram g_CurrentUniformBlockProgram = nullptr;
@@ -1317,39 +1513,10 @@ IMPLATFORM_API bool ImPlatform_SetShaderTexture(ImPlatform_ShaderProgram program
 // ============================================================================
 
 // ImDrawCallback handler to activate a custom shader
+IMPLATFORM_API void ImPlatform_BeginCustomShader_Render(ImPlatform_ShaderProgram program);
 static void ImPlatform_SetCustomShader(const ImDrawList* /*parent_list*/, const ImDrawCmd* cmd)
 {
-    ImPlatform_ShaderProgram program = (ImPlatform_ShaderProgram)cmd->UserCallbackData;
-    if (program)
-    {
-        ImPlatform_ShaderProgramData_DX10* program_data = (ImPlatform_ShaderProgramData_DX10*)program;
-
-        // Set custom shaders
-        ImPlatform_UseShaderProgram(program);
-
-        // Set the input layout for the custom shader
-        if (program_data->pInputLayout)
-        {
-            g_GfxData.pDevice->IASetInputLayout(program_data->pInputLayout);
-        }
-
-        // Note: Vertex constant buffer (b0) is already set by ImGui's backend with projection matrix
-
-        // Update pixel shader constant buffer if dirty
-        if (program_data->pPixelConstantBuffer && program_data->pixelConstantDataDirty && program_data->pPixelConstantData)
-        {
-            void* mapped_resource = nullptr;
-            if (program_data->pPixelConstantBuffer->Map(D3D10_MAP_WRITE_DISCARD, 0, &mapped_resource) == S_OK)
-            {
-                memcpy(mapped_resource, program_data->pPixelConstantData, program_data->pixelConstantDataSize);
-                program_data->pPixelConstantBuffer->Unmap();
-                program_data->pixelConstantDataDirty = false;
-            }
-
-            // Bind pixel shader constant buffer to register b1 (b0 is used by vertex shader for projection matrix)
-            g_GfxData.pDevice->PSSetConstantBuffers(1, 1, &program_data->pPixelConstantBuffer);
-        }
-    }
+    ImPlatform_BeginCustomShader_Render((ImPlatform_ShaderProgram)cmd->UserCallbackData);
 }
 
 // Activate a custom shader immediately (for use inside draw callbacks).
@@ -1382,11 +1549,13 @@ IMPLATFORM_API void ImPlatform_BeginCustomShader_Render(ImPlatform_ShaderProgram
 
         // Bind pixel shader constant buffer to register b1 (b0 is used by vertex shader for projection matrix)
         g_GfxData.pDevice->PSSetConstantBuffers(1, 1, &program_data->pPixelConstantBuffer);
+        g_GfxData.pDevice->VSSetConstantBuffers(1, 1, &program_data->pPixelConstantBuffer);     // b1 in both stages
     }
     else if (program_data->pPixelConstantBuffer)
     {
         // Even if not dirty, ensure the constant buffer is bound
         g_GfxData.pDevice->PSSetConstantBuffers(1, 1, &program_data->pPixelConstantBuffer);
+        g_GfxData.pDevice->VSSetConstantBuffers(1, 1, &program_data->pPixelConstantBuffer);     // b1 in both stages
     }
 }
 
@@ -1395,6 +1564,7 @@ IMPLATFORM_API void ImPlatform_BeginCustomShader(ImDrawList* draw, ImPlatform_Sh
     if (!draw || !shader)
         return;
 
+    ImPlatform_ScissorBeforeCallbacks(draw);
     draw->AddCallback(&ImPlatform_SetCustomShader, shader);
 }
 
@@ -1403,18 +1573,92 @@ IMPLATFORM_API void ImPlatform_EndCustomShader(ImDrawList* draw)
     if (!draw)
         return;
 
-    draw->AddCallback(ImDrawCallback_ResetRenderState, NULL);
+    draw->AddCallback(ImGui::GetPlatformIO().DrawCallback_ResetRenderState, NULL);
 }
 
-IMPLATFORM_API void* ImPlatform_PushShaderConstants(const void* data, unsigned int size)
+
+
+// ============================================================================
+// Readback (no compute: cs_4_0 cannot write typed UAV textures, so storage textures stay DX11+)
+// ============================================================================
+static int ImPlatform_DX10_BytesPerPixel(DXGI_FORMAT format)
 {
-    (void)data; (void)size;
-    return nullptr;
+    switch (format)
+    {
+    case DXGI_FORMAT_R8_UNORM: return 1;
+    case DXGI_FORMAT_R8G8_UNORM: case DXGI_FORMAT_R16_UNORM: case DXGI_FORMAT_R16_FLOAT: return 2;
+    case DXGI_FORMAT_R8G8B8A8_UNORM: case DXGI_FORMAT_B8G8R8A8_UNORM: case DXGI_FORMAT_R16G16_UNORM:
+    case DXGI_FORMAT_R16G16_FLOAT: case DXGI_FORMAT_R32_FLOAT: return 4;
+    case DXGI_FORMAT_R16G16B16A16_UNORM: case DXGI_FORMAT_R16G16B16A16_FLOAT: case DXGI_FORMAT_R32G32_FLOAT: return 8;
+    case DXGI_FORMAT_R32G32B32A32_FLOAT: return 16;
+    default: return 0;
+    }
 }
 
-IMPLATFORM_API void ImPlatform_PopShaderConstants(void* handle)
+IMPLATFORM_API bool ImPlatform_SupportsReadback(void) { return true; }
+
+IMPLATFORM_API bool ImPlatform_ReadTexture(ImTextureID texture, unsigned int x, unsigned int y,
+                                           unsigned int width, unsigned int height, void* out_pixels, size_t out_size)
 {
-    (void)handle;
+    if (!texture || !out_pixels || !width || !height || !g_GfxData.pDevice)
+        return false;
+
+    ID3D10Resource* pResource = NULL;
+    ((ID3D10ShaderResourceView*)texture)->GetResource(&pResource);
+    if (!pResource)
+        return false;
+    ID3D10Texture2D* pTexture = NULL;
+    HRESULT hr = pResource->QueryInterface(__uuidof(ID3D10Texture2D), (void**)&pTexture);
+    pResource->Release();
+    if (FAILED(hr) || !pTexture)
+        return false;
+
+    D3D10_TEXTURE2D_DESC desc;
+    pTexture->GetDesc(&desc);
+    const size_t bpp = (size_t)ImPlatform_DX10_BytesPerPixel(desc.Format);
+    if (!bpp || x + width > desc.Width || y + height > desc.Height || out_size < (size_t)width * height * bpp)
+    {
+        pTexture->Release();
+        return false;
+    }
+
+    // Copy the region to a staging texture, then map it (Map waits for the copy: the GPU work is complete).
+    D3D10_TEXTURE2D_DESC sd = {};
+    sd.Width = width;
+    sd.Height = height;
+    sd.MipLevels = 1;
+    sd.ArraySize = 1;
+    sd.Format = desc.Format;
+    sd.SampleDesc.Count = 1;
+    sd.Usage = D3D10_USAGE_STAGING;
+    sd.CPUAccessFlags = D3D10_CPU_ACCESS_READ;
+    ID3D10Texture2D* pStaging = NULL;
+    hr = g_GfxData.pDevice->CreateTexture2D(&sd, NULL, &pStaging);
+    if (FAILED(hr) || !pStaging)
+    {
+        pTexture->Release();
+        return false;
+    }
+    D3D10_BOX box = { x, y, 0, x + width, y + height, 1 };
+    g_GfxData.pDevice->CopySubresourceRegion(pStaging, 0, 0, 0, 0, pTexture, 0, &box);
+    pTexture->Release();
+
+    D3D10_MAPPED_TEXTURE2D mapped;
+    hr = pStaging->Map(0, D3D10_MAP_READ, 0, &mapped);
+    if (FAILED(hr))
+    {
+        pStaging->Release();
+        return false;
+    }
+    const size_t row = (size_t)width * bpp;
+    for (unsigned int r = 0; r < height; r++)
+        memcpy((unsigned char*)out_pixels + r * row, (const unsigned char*)mapped.pData + (size_t)r * mapped.RowPitch, row);
+    pStaging->Unmap(0);
+    pStaging->Release();
+    return true;
 }
+
+// shortcut: no direct draws (IMPLATFORM_GFX_SUPPORT_DIRECT_DRAW, _RENDER_TARGETS) on DX10; port DX11's when a DX10
+// application needs them.
 
 #endif // IM_GFX_DIRECTX10

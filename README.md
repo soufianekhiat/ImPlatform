@@ -11,6 +11,11 @@ ImPlatform is a platform abstraction layer that simplifies multiplatform develop
 - **Multi-Viewport Support**: Built-in support for ImGui's multi-viewport and docking features
 - **Custom Shader Support**: Render custom shaders with ImGui's vertex/index buffers
 - **Texture Creation API**: Platform-agnostic texture loading and management
+- **Render Targets and Render Passes**: Nestable render-target stack, and Dear ImGui draw data rendered into a texture before the frame on every backend, with premultiplied alpha
+- **Direct Draws from Draw Callbacks**: switch to a render texture, copy the current target, draw a quad or your own vertex buffers with a custom shader and pushed constants (DirectX 9/11/12, OpenGL 3, Vulkan; DirectX 10 and WebGPU without target switches or copies)
+- **Readback and Compute**: Texture readback (synchronous, and asynchronous on DirectX 11/12) and compute dispatch on DirectX 11/12, Vulkan and OpenGL 4.3+
+- **Pen Input**: Pressure, tilt, barrel rotation, eraser and coalesced samples (Win32)
+- **Custom Graphics Backend**: `IM_GFX_CUSTOM` keeps the platform layer and lets the application provide the renderer
 - **Custom Title Bar**: Optional borderless window with custom titlebar rendering (Win32, GLFW*)
 - **Flexible Configuration**: Define platform and graphics API at compile time with feature flags
 
@@ -24,20 +29,20 @@ You can check the ImPlatform version at both compile-time and runtime:
 // Compile-time version checking
 #include <ImPlatform.h>
 
-#if IMPLATFORM_VERSION_NUM >= 500
-    // Features available in version 0.5.0+
+#if IMPLATFORM_VERSION_NUM >= 20000
+    // Features available in version 2.0.0+
 #endif
 
 // Runtime version checking
-const char* version = ImPlatform_GetVersion();  // Returns "0.5.0"
-int version_num = ImPlatform_GetVersionNum();   // Returns 500
+const char* version = ImPlatform_GetVersion();  // Returns "2.0.0"
+int version_num = ImPlatform_GetVersionNum();   // Returns 20000
 
 printf("ImPlatform version: %s (numeric: %d)\n", version, version_num);
 ```
 
 Version encoding: `XYYZZ` where `X` = major, `YY` = minor, `ZZ` = patch
 - Version 0.5.0 = 500
-- Version 1.2.3 = 10203
+- Version 2.0.0 = 20000
 
 ### Basic Usage
 
@@ -89,7 +94,8 @@ int main()
     ImVec4 clear_color = ImVec4(0.45f, 0.55f, 0.60f, 1.00f);
     while (ImPlatform_PlatformContinue())
     {
-        ImPlatform_PlatformEvents();
+        if (!ImPlatform_PlatformEvents()) // false: quit requested or window minimized
+            continue;
 
         if (!ImPlatform_GfxCheck())
             continue;
@@ -136,7 +142,7 @@ int main()
 ### Main Loop Functions
 
 - `ImPlatform_PlatformContinue()` - Check if application should continue running
-- `ImPlatform_PlatformEvents()` - Process platform events
+- `ImPlatform_PlatformEvents()` - Process platform events, returns false when the frame should be skipped (quit requested, window minimized)
 - `ImPlatform_GfxCheck()` - Check if graphics are ready to render
 - `ImPlatform_GfxAPINewFrame()` - Begin new graphics frame
 - `ImPlatform_PlatformNewFrame()` - Begin new platform frame
@@ -158,27 +164,46 @@ int main()
 #### Custom Shaders (when `IMPLATFORM_GFX_SUPPORT_CUSTOM_SHADER` is enabled)
 
 ```cpp
-// Create custom shader
-ImPlatform_ShaderDesc vs_desc = ImPlatform_ShaderDesc_Default();
-vs_desc.shader_type = ImPlatform_ShaderType_Vertex;
-vs_desc.format = ImPlatform_ShaderFormat_GLSL; // or HLSL, MSL, SPIRV
+// One stage from source (HLSL on Direct3D, GLSL on OpenGL, MSL on Metal) or bytecode (SPIR-V on Vulkan)
+ImPlatform_ShaderDesc vs_desc = {};
+vs_desc.stage = ImPlatform_ShaderStage_Vertex;
+vs_desc.format = ImPlatform_ShaderFormat_HLSL;
 vs_desc.source_code = vertex_shader_source;
-vs_desc.entry_point = "main";
+vs_desc.entry_point = "vs_main";
 ImPlatform_Shader vs = ImPlatform_CreateShader(&vs_desc);
 
-// Create shader program
 ImPlatform_ShaderProgram program = ImPlatform_CreateShaderProgram(vs, ps);
 
-// Set uniform parameters
-ImPlatform_BeginUniformBlock(program);
-ImPlatform_SetUniform("ColorStart", &color1, sizeof(ImVec4));
-ImPlatform_SetUniform("ColorEnd", &color2, sizeof(ImVec4));
-ImPlatform_EndUniformBlock(program);
-
-// Draw with custom shader
-ImPlatform_DrawCustomShaderQuad(program);
+// Parameters (register b1), then draw list commands drawn with the program
+ImPlatform_SetShaderUniform(program, "params", &params, sizeof(params));
+ImPlatform_BeginCustomShader(draw_list, program);
+draw_list->AddImage(...);
+ImPlatform_EndCustomShader(draw_list);
 ```
 
+Plain HLSL files can be compiled offline for every backend with Slang (see `ImPlatformDemo/shaders/README.md`).
+
+#### Shader Parts (when `IMPLATFORM_GFX_SUPPORT_SHADER_PARTS` is enabled)
+
+A custom shader written once and completed at run time for the backend: HLSL on Direct3D 9 to 12, GLSL 330 on
+OpenGL, MSL on Metal. The application gives its parameter block, extra varyings, textures, helper functions and the
+vertex / pixel bodies; ImPlatform writes the entry points, inputs, outputs and declarations. Bodies are HLSL plus a few
+macros (`IMP_SAMPLE`, `IMP_LOAD`, `IMP_MUL`, `IMP_CAST`, `IMP_UNROLL`); the rules are in `ImPlatform.h`.
+
+```cpp
+ImPlatform_ShaderParts parts = {};
+parts.params    = "float4 ColorStart; float4 ColorEnd; float4 Offset;";   // b1, same layout as the C struct
+parts.varyings  = "float2 world;";
+parts.textures[1] = "tint";                                                // t1, ImPlatform_SetShaderTexture(..., 1, ...)
+parts.functions = "float4 Gradient(float t) { return lerp(ColorStart, ColorEnd, saturate(t)); }";
+parts.vs_body   = "position = mul(ProjMtx, float4(in_pos + Offset.xy, 0.0, 1.0)); v.world = in_pos;";   // vertex animation
+parts.ps_body   = "col_out = Gradient(v.world.y / 64.0) * IMP_SAMPLE(tint, v.uv);";
+ImPlatform_Shader vs = ImPlatform_CreateShaderFromParts(&parts, ImPlatform_ShaderStage_Vertex);
+ImPlatform_Shader ps = ImPlatform_CreateShaderFromParts(&parts, ImPlatform_ShaderStage_Fragment);
+ImPlatform_ShaderProgram program = ImPlatform_CreateShaderProgram(vs, ps);
+```
+
+`ImPlatform_GenerateShaderSource()` returns the generated text of any language, whatever the backend.
 #### Texture Creation (when `IMGUI_HAS_TEXTURES` is defined)
 
 ```cpp
@@ -192,6 +217,54 @@ ImGui::Image(texture, ImVec2(256, 256));
 // Cleanup
 ImPlatform_DestroyTexture(texture);
 ```
+
+#### Readback and Compute (optional capabilities)
+
+```cpp
+if (ImPlatform_SupportsCompute())
+{
+    ImTextureID out = ImPlatform_CreateStorageTexture(NULL, &tex_desc);       // zeroed, drawable by ImGui
+    ImPlatform_DispatchCompute(cs, &in, 1, &out, 1, &params, sizeof(params), w / 8, h / 8, 1);
+}
+if (ImPlatform_SupportsReadback())
+    ImPlatform_ReadTexture(out, 0, 0, w, h, pixels, sizeof(pixels));        // synchronous
+```
+
+| Backend | Readback | Compute |
+|---|---|---|
+| DirectX 11, DirectX 12, Vulkan | yes | yes |
+| OpenGL 3 | yes | OpenGL 4.3+ (checked at runtime) |
+| DirectX 10 | yes | no (cs_4_0 cannot write textures) |
+| DirectX 9 | yes | no |
+| Metal, WebGPU | no | no |
+
+Shader bindings per backend are listed above `ImPlatform_DispatchCompute` in `ImPlatform.h`.
+`ImPlatformDemo --compute-test` runs the same dispatch + readback check on any backend (exit code 0 pass, 1 fail, 2 unsupported).
+
+#### Render passes
+
+Dear ImGui draw data rendered into a render texture before the frame, by the backend's own ImGui renderer (draw
+callbacks included): to cache vector drawings as images, for instance.
+
+```cpp
+ImPlatform_TextureDesc desc = ImPlatform_TextureDesc_Default(w, h);
+desc.format = ImPlatform_GetRenderPassFormat();              // The ImGui pipeline's format (BGRA8 on some backends)
+ImTextureID target = ImPlatform_CreateRenderTexture(&desc);
+
+// Each frame that needs it (one pass per frame): draw_data maps DisplayPos / DisplaySize to the whole target.
+ImPlatform_QueueRenderPass(target, &draw_data, true);       // true: cleared to transparent first
+
+// Rendered over transparent, its colors are premultiplied: draw it with premultiplied alpha.
+ImPlatform_PushPremultipliedAlpha(draw_list);
+draw_list->AddImage(target, p_min, p_max);
+ImPlatform_PopPremultipliedAlpha(draw_list);
+```
+
+The pass runs at the start of `ImPlatform_GfxAPIRender()` (in `ImPlatform_GfxAPIClear()` on Vulkan, outside the
+frame's render pass); the draw data must stay valid until then. Every backend: DirectX 9, 10, 11, 12, OpenGL 3, Vulkan,
+WebGPU and Metal (premultiplied alpha through blend states, or a copy of ImGui's pipeline where blending is part of it).
+`ImPlatformDemo --render-pass-test` checks a pass target and a premultiplied composite by readback (exit code 0 pass,
+1 fail, 2 unsupported).
 
 #### Custom Title Bar (when `IMPLATFORM_APP_SUPPORT_CUSTOM_TITLEBAR` is enabled)
 
@@ -240,7 +313,59 @@ IM_GFX_DIRECTX12    // DirectX 12
 IM_GFX_VULKAN       // Vulkan
 IM_GFX_METAL        // Metal (macOS/iOS)
 IM_GFX_WGPU         // WebGPU
+IM_GFX_CUSTOM       // No built-in backend: the application provides its own
 ```
+
+### Backend Capabilities
+
+Some API groups exist only on the backends that implement them. `ImPlatform.h` sets an `IMPLATFORM_GFX_SUPPORT_*`
+macro per group for the selected backend and declares the group's functions only when it is 1, so a call that the
+backend cannot honor fails to compile instead of returning `false` at run time. Guard such calls in code shared
+between backends:
+
+```cpp
+#if IMPLATFORM_GFX_SUPPORT_RENDER_TARGETS
+    ImPlatform_PushRenderTarget(target, true);
+    ...
+#endif
+```
+
+| `IMPLATFORM_GFX_SUPPORT_` | Functions | DX9 | DX10 | DX11 | DX12 | OpenGL 3 | Vulkan | Metal | WebGPU |
+|---|---|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|
+| `SHADER_TEXTURES` | `SetShaderTexture` (t0..t8) | x | x | x | x | x | x | x | x |
+| `SHADER_PARTS` | `CreateShaderFromParts` (shaders written once, compiled at run time) | x | x | x | x | x | | x | |
+| `VERTEX_BUFFERS` | vertex / index buffers, `DrawIndexed` | x | x | x | x | x | x | x | x |
+| `DIRECT_DRAW` | `Push/PopShaderConstants`, `GetCurrentTargetSize` | x | | x | x | x | x | | x |
+| `RENDER_TARGETS` | `Push/PopRenderTarget`, `CopyCurrentTarget`, `DrawQuadNow` | x | | x | x | x | x | | |
+| `READBACK` | `ReadTexture` | x | x | x | x | x | x | x | |
+| `ASYNC_READBACK` | `BeginReadTexture`, `Poll/Map/ReleaseReadback` | | | x | x | | | | |
+| `COMPUTE` | `CreateStorageTexture`, `DispatchCompute` | | | x | x | 4.3+ | x | | |
+| `DEPTH_DRAW` | `CreateRenderTextureWithDepth`, `DrawMesh` | | | x | x | | | | |
+| `DEVICE_CONTROL` | `GfxDeviceLost`, `GfxRecreateDevice`, `GfxAdapterName`, testing aids | | | x | x | | | | |
+
+`ImPlatform_SupportsReadback()`, `SupportsCompute()` and `SupportsDepthDraw()` are declared on every backend and
+answer at run time (OpenGL compute needs a 4.3 context). Custom shaders (`IMPLATFORM_GFX_SUPPORT_CUSTOM_SHADER`) are on every
+built-in backend. So are 3D textures: `ImPlatform_CreateTexture3D()`, bound with `SetShaderTexture()` to a slot the
+shader declares `Texture3D` (a `<slot> <name> 3d` line in shader parts); `ImPlatform_SupportsTexture3D()` answers at
+run time (DirectX 9: the device's volume texture capability).
+
+### Custom (or no) Graphics Backend
+
+`IM_GFX_CUSTOM` keeps ImPlatform's platform layer (window, input, DPI, title bar) and compiles
+none of its graphics backends. The application links its own implementation of the graphics
+entry points (`ImPlatform_InitGfxAPI`, `ImPlatform_GfxAPINewFrame`, `ImPlatform_GfxAPIRender`,
+`ImPlatform_GfxAPISwapBuffer`, textures, shaders, the render passes `ImPlatform_GetRenderPassFormat` /
+`QueueRenderPass` / `PushPremultipliedAlpha` / `PopPremultipliedAlpha`, the `Supports*` queries, and the functions of
+every optional group above that it keeps) plus:
+
+```cpp
+// Called by the platform layer (Win32, GLFW, SDL2, SDL3) when the window's framebuffer is resized.
+void ImPlatform_Gfx_OnResize_Custom(unsigned int uWidth, unsigned int uHeight);
+```
+
+The `IMPLATFORM_GFX_SUPPORT_*` feature flags and API groups default to 1 and can each be predefined to 0
+to describe what the application's backend supports (a group set to 0 is neither declared nor needed). With GLFW the window is created with
+`GLFW_NO_API`.
 
 ### Predefined Combinations
 
@@ -282,50 +407,77 @@ Legend: ✅ Implemented | ⚠️ Partial | ❌ Not Implemented
 ## Building the Demo
 
 The ImPlatformDemo project demonstrates basic usage and supports multiple platform/graphics API configurations.
+Clone with submodules (`git clone --recursive`, or `git submodule update --init --recursive`).
 
-### Using Visual Studio
+### Sharpmake (default)
 
-1. Open `ImPlatformDemo.sln` in Visual Studio
-2. Select your desired configuration from the dropdown (e.g., Win32_DX11, Win32_OpenGL3, etc.)
-3. Build and run (F5)
-
-Available configurations in the dropdown:
-- **Win32_DX9** - Windows + DirectX 9
-- **Win32_DX10** - Windows + DirectX 10
-- **Win32_DX11** - Windows + DirectX 11
-- **Win32_DX12** - Windows + DirectX 12
-- **Win32_OpenGL3** - Windows + OpenGL 3
-- **GLFW_OpenGL3** - GLFW + OpenGL 3
-- **GLFW_Vulkan** - GLFW + Vulkan
-
-### Command Line Build
+The projects are generated by [Sharpmake](https://github.com/ubisoft/Sharpmake) (the `extern/Sharpmake` submodule,
+built on first use; requires the .NET 8 SDK or later). Each OS generates its own projects at the repository root:
 
 ```bash
-cd ImPlatformDemo
+buildsystem\generate_projects.bat      # Windows: ImPlatform_vs2022_Win64.sln
+./buildsystem/generate_projects.sh     # Linux: ImPlatform_make_Linux.make, macOS: ImPlatform_xcode_macOS.xcworkspace
+```
 
-# Build Win32 + OpenGL3
-msbuild ImPlatformDemo.sln /p:Configuration=Win32_OpenGL3 /p:Platform=x64
+Executables are written to `bin/<platform>/ImPlatformDemo_<Platform>_<Gfx>`. One configuration per platform/graphics pair:
 
-# Build Win32 + DirectX 11
-msbuild ImPlatformDemo.sln /p:Configuration=Win32_DX11 /p:Platform=x64
+| OS | Configurations |
+|----|----------------|
+| Windows | `Win32_DX9`, `Win32_DX10`, `Win32_DX11`, `Win32_DX12`, `Win32_OpenGL3`, `GLFW_OpenGL3`, `GLFW_Vulkan`, `SDL2_DX11`, `SDL2_OpenGL3`, `SDL2_Vulkan`, `SDL3_DX11`, `SDL3_OpenGL3`, `SDL3_Vulkan` |
+| Linux | `GLFW_OpenGL3`, `GLFW_Vulkan`, `SDL2_OpenGL3`, `SDL2_Vulkan`, `SDL3_OpenGL3`, `SDL3_Vulkan` |
+| macOS | `GLFW_OpenGL3`, `GLFW_Metal`, `SDL2_OpenGL3`, `SDL2_Metal`, `SDL3_OpenGL3`, `SDL3_Metal` |
 
-# Build Win32 + DirectX 12
-msbuild ImPlatformDemo.sln /p:Configuration=Win32_DX12 /p:Platform=x64
+```bash
+# Windows (or open the solution in Visual Studio 2022)
+msbuild ImPlatform_vs2022_Win64.sln /p:Configuration=Win32_DX11 /p:Platform=x64
 
-# Build GLFW + OpenGL3
-msbuild ImPlatformDemo.sln /p:Configuration=GLFW_OpenGL3 /p:Platform=x64
+# Linux (configuration names in lower case)
+make -f ImPlatform_make_Linux.make config=glfw_opengl3
+
+# macOS
+xcodebuild -workspace ImPlatform_xcode_macOS.xcworkspace -scheme ImPlatformDemo_xcode_macOS_GLFW_Metal -configuration GLFW_Metal build
+```
+
+Edit the scripts in `buildsystem/sharpmake/src/` and regenerate; the generated files are not versioned.
+
+### CMake
+
+`CMakeLists.txt` mirrors the Sharpmake configurations (one `ImPlatformDemo_<Platform>_<Gfx>` target per pair whose
+dependencies are found, plus WebGPU when a Dawn or wgpu-native target is provided):
+
+```bash
+cmake -B build -DCMAKE_BUILD_TYPE=Release -DIMPLATFORM_FETCH_DEPENDENCIES=ON
+cmake --build build --config Release --parallel
 ```
 
 ### Requirements
-- Dear ImGui (docking branch recommended for multi-viewport support)
+- Dear ImGui: the `imgui` submodule (docking branch with stack layout)
 - Platform-specific dependencies:
   - **Win32**: Windows SDK (included with Visual Studio)
-  - **GLFW**: GLFW library at `../imgui/examples/libs/glfw/lib-vc2010-64/glfw3.lib` (for GLFW configurations)
-  - **Vulkan**: Vulkan SDK (for Vulkan configurations)
-  - **SDL2/SDL3**: SDL library
+  - **GLFW**: on Windows the prebuilt `imgui/examples/libs/glfw/lib-vc2010-64/glfw3.lib`; elsewhere the system package (`libglfw3-dev`, `brew install glfw`)
+  - **Vulkan**: Vulkan SDK (`VULKAN_SDK` environment variable on Windows)
+  - **SDL2/SDL3**: SDL development package; on Windows set `SDL2_INCLUDE` / `SDL2_LIB` / `SDL3_INCLUDE` / `SDL3_LIB` (environment variables or MSBuild `/p:` properties) and copy the DLL next to the executable
   - **Apple**: Xcode
 
-**Note**: The GLFW library should be available in the Dear ImGui examples folder. The project is configured to use the relative path from the Dear ImGui repository.
+### Self-tests
+
+The demo checks the readback/compute, render pass and custom shader paths of whichever backend it was built with:
+
+```bash
+ImPlatformDemo_Win32_DX12 --compute-test       # dispatch + readback
+ImPlatformDemo_Win32_DX12 --render-pass-test   # render pass target and premultiplied composite
+ImPlatformDemo_Win32_DX12 --shader-test        # shaders/gradient.hlsl drawn into a render pass, read back
+ImPlatformDemo_Win32_DX12 --direct-draw-test   # from a draw callback: push a render target, push constants, DrawQuadNow
+ImPlatformDemo_Win32_DX12 --shader-parts-test  # a shader written as parts: parameters in both stages, varying, texture t1
+ImPlatformDemo_Win32_DX12 --texture3d-test     # a 2x2x2 texture at t1, sampled by shaders/volume_test.hlsl and by shader parts
+ImPlatformDemo_Win32_DX12 --vertex-inputs-test  # shader parts with their own vertex inputs and a flat int varying, DrawIndexed
+```
+
+Each prints PASS or FAIL and exits with 0 (pass), 1 (fail) or 2 (unsupported by the backend).
+
+`--dump-msl <shader_parts|texture3d|vertex_inputs> <vs|ps>` prints the MSL generated from those tests' shader parts,
+without a window or device, in any configuration. CI compiles it with the offline Metal compiler (`xcrun metal -c`),
+since the hosted macOS runners have no GPU to run the Metal tests.
 
 ## Project Structure
 
@@ -338,6 +490,12 @@ ImPlatform/
 │   └── ImPlatform_gfx_*.cpp     # Graphics API backends (DX, OpenGL, Vulkan, etc.)
 ├── ImPlatformDemo/
 │   └── main.cpp                  # Example application
+├── buildsystem/
+│   ├── generate_projects.*       # Runs Sharpmake
+│   └── sharpmake/src/            # Project definitions (main.cs, common.cs, ImPlatformDemo.cs)
+├── extern/Sharpmake/             # Sharpmake (submodule)
+├── imgui/                        # Dear ImGui (submodule)
+├── CMakeLists.txt                # CMake mirror of the Sharpmake configurations
 └── README.md
 ```
 
@@ -361,10 +519,10 @@ The library has been tested with the following configurations:
 ### Platforms Tested
 - **Windows 10/11** (Win32 API) - Tested
 - **Windows 10/11** (GLFW) - Tested
-- **Windows 10/11** (SDL2) - Not tested (contributions welcome!)
-- **Windows 10/11** (SDL3) - Not tested (contributions welcome!)
-- **macOS** - Not tested (contributions welcome!)
-- **Linux** - Not tested (contributions welcome!)
+- **Windows 10/11** (SDL2) - Tested (self-tests)
+- **Windows 10/11** (SDL3) - Tested (self-tests)
+- **macOS** (GLFW, SDL2, SDL3) - Builds in CI; not run on a Mac with a GPU yet (contributions welcome!)
+- **Linux** (GLFW, SDL2, SDL3) - Tested (self-tests, Ubuntu 24.04 with Mesa)
 
 ### Graphics APIs Tested
 - **DirectX 9** - Tested (Win32 only)
@@ -373,8 +531,8 @@ The library has been tested with the following configurations:
 - **DirectX 12** - Tested (Win32 only)
 - **OpenGL 3** - Tested (Win32, GLFW)
 - **Vulkan** - Basic testing (GLFW, SDL2, SDL3)
-- **Metal** - Not tested (macOS/iOS only, contributions welcome!)
-- **WebGPU** - Not tested (contributions welcome!)
+- **Metal** - Builds in CI and the generated MSL compiles with the offline Metal compiler; not run on hardware yet
+- **WebGPU** - Basic testing (Emscripten + GLFW in Chrome)
 
 ### Dear ImGui Version
 - **Tested with**: Dear ImGui v1.92.x (docking branch)
@@ -384,7 +542,6 @@ The library has been tested with the following configurations:
 ## Known Limitations
 
 - Apple (macOS/iOS) platform implementation needs testing
-- WebGPU backend is not yet implemented
 - OpenGL3 multi-viewport with custom shaders may have minor offset issues in some edge cases
 - Custom titlebar on GLFW requires TheCherno's fork
 
@@ -401,7 +558,6 @@ Contributions are welcome! The author primarily develops and tests on **Windows 
 - iOS/mobile platform testing
 
 **Feature Contributors:**
-- WebGPU backend implementation
 - Apple Metal backend improvements
 - SDL platform feature parity (custom titlebar, etc.)
 - Platform-specific bug fixes and optimizations

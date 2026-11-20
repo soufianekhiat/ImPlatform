@@ -2,18 +2,18 @@ name: Build
 
 on:
   push:
-    branches: [ main, master, develop ]
+    branches: [ main, master, develop, v2 ]
   pull_request:
-    branches: [ main, master, develop ]
+    branches: [ main, master, develop, v2 ]
   workflow_dispatch:
 
 jobs:
   # ===========================================
-  # Windows Builds - MSBuild (existing .sln)
+  # Windows Builds - MSBuild (Sharpmake-generated .sln)
   # ===========================================
   Build-Windows-MSBuild:
     runs-on: windows-2022
-    name: Windows MSBuild - ${{ matrix.config }}
+    name: Windows Sharpmake - ${{ matrix.config }}
 
     strategy:
       fail-fast: false
@@ -53,14 +53,14 @@ jobs:
             & "$vcpkgRoot\vcpkg.exe" install sdl2:x64-windows
             echo "SDL2_INCLUDE=$vcpkgRoot\installed\x64-windows\include\SDL2" >> $env:GITHUB_ENV
             echo "SDL2_LIB=$vcpkgRoot\installed\x64-windows\lib" >> $env:GITHUB_ENV
-            New-Item -ItemType Directory -Force -Path "ImPlatformDemo/x64/${{ matrix.config }}"
-            Copy-Item "$vcpkgRoot\installed\x64-windows\bin\SDL2.dll" "ImPlatformDemo/x64/${{ matrix.config }}/"
+            New-Item -ItemType Directory -Force -Path "bin/win64"
+            Copy-Item "$vcpkgRoot\installed\x64-windows\bin\SDL2.dll" "bin/win64/"
           } else {
             & "$vcpkgRoot\vcpkg.exe" install sdl3:x64-windows
             echo "SDL3_INCLUDE=$vcpkgRoot\installed\x64-windows\include" >> $env:GITHUB_ENV
             echo "SDL3_LIB=$vcpkgRoot\installed\x64-windows\lib" >> $env:GITHUB_ENV
-            New-Item -ItemType Directory -Force -Path "ImPlatformDemo/x64/${{ matrix.config }}"
-            Copy-Item "$vcpkgRoot\installed\x64-windows\bin\SDL3.dll" "ImPlatformDemo/x64/${{ matrix.config }}/"
+            New-Item -ItemType Directory -Force -Path "bin/win64"
+            Copy-Item "$vcpkgRoot\installed\x64-windows\bin\SDL3.dll" "bin/win64/"
           }
 
       - name: Install Vulkan SDK
@@ -98,21 +98,20 @@ jobs:
           Write-Host "SwiftShader ICD: $icdJson"
           echo "VK_ICD_FILENAMES=$icdJson" >> $env:GITHUB_ENV
 
-      - name: Fix Project Files
-        shell: powershell
-        run: |
-          Get-ChildItem -Recurse -Filter "*.vcxproj" | ForEach-Object {
-            $content = Get-Content $_.FullName
-            $content = $content -Replace "<PlatformToolset>v\d{3}</PlatformToolset>", "<PlatformToolset>v143</PlatformToolset>"
-            $content = $content -Replace "<WindowsTargetPlatformVersion>[\d\.]+</WindowsTargetPlatformVersion>", '<WindowsTargetPlatformVersion>$(LatestTargetPlatformVersion)</WindowsTargetPlatformVersion>'
-            Set-Content -Path $_.FullName -Value $content
-          }
+      - name: Setup .NET (Sharpmake)
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Generate projects (Sharpmake)
+        shell: cmd
+        run: buildsystem\generate_projects.bat
 
       - name: Build ${{ matrix.config }}
         shell: powershell
         run: |
           $msbuildArgs = @(
-            "ImPlatformDemo/ImPlatformDemo.sln",
+            "ImPlatform_vs2022_Win64.sln",
             "/p:Configuration=${{ matrix.config }}",
             "/p:Platform=x64",
             "/m",
@@ -139,8 +138,8 @@ jobs:
       - name: Run Demo and Capture Screenshot
         shell: powershell
         run: |
-          $exePath = "ImPlatformDemo/x64/${{ matrix.config }}/ImPlatformDemo.exe"
-          $exeDir = "ImPlatformDemo/x64/${{ matrix.config }}"
+          $exePath = "bin/win64/ImPlatformDemo_${{ matrix.config }}.exe"
+          $exeDir = "bin/win64"
           $screenshotDir = "screenshots"
           New-Item -ItemType Directory -Force -Path $screenshotDir
 
@@ -194,7 +193,7 @@ jobs:
         if: success()
         with:
           name: ImPlatformDemo-MSBuild-${{ matrix.config }}
-          path: ImPlatformDemo/x64/${{ matrix.config }}/*.exe
+          path: bin/win64/ImPlatformDemo_${{ matrix.config }}.exe
           retention-days: 7
 
       - name: Upload Screenshot
@@ -332,7 +331,7 @@ jobs:
   # ===========================================
   Build-Linux-CMake:
     runs-on: ubuntu-latest
-    name: Linux CMake
+    name: Linux (CMake + Sharpmake)
 
     steps:
       - name: Checkout
@@ -366,6 +365,8 @@ jobs:
             libdrm-dev \
             libgbm-dev \
             libegl1-mesa-dev \
+            mesa-vulkan-drivers \
+            vulkan-validationlayers \
             xvfb \
             x11-utils \
             imagemagick
@@ -384,6 +385,43 @@ jobs:
 
       - name: Build
         run: cmake --build build --parallel $(nproc)
+
+      - name: Setup .NET (Sharpmake)
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Generate projects (Sharpmake)
+        run: sh buildsystem/generate_projects.sh
+
+      # Unlike CMake, every configuration is required: a failed SDL3 install fails here.
+      - name: Build (Sharpmake makefiles)
+        run: |
+          for config in glfw_opengl3 glfw_vulkan sdl2_opengl3 sdl2_vulkan sdl3_opengl3 sdl3_vulkan; do
+            make -f ImPlatform_make_Linux.make config=$config -j$(nproc)
+          done
+
+      # Software rendering (Mesa llvmpipe / lavapipe) under Xvfb; exit 2 means unsupported by the backend. A failing
+      # test's last output lines become an error annotation (shown on the run's summary page).
+      - name: Self-tests (Sharpmake builds)
+        run: |
+          cd bin/Linux
+          status=0
+          for demo in ImPlatformDemo_*; do
+            for test in compute-test render-pass-test shader-test direct-draw-test shader-parts-test texture3d-test vertex-inputs-test; do
+              set +e
+              timeout 120 xvfb-run -a -s "-screen 0 1280x800x24" ./$demo --$test > test.log 2>&1
+              code=$?
+              set -e
+              cat test.log
+              echo "$demo --$test: exit $code"
+              if [ $code -ne 0 ] && [ $code -ne 2 ]; then
+                status=1
+                echo "::error title=$demo --$test (exit $code)::$(tail -n 40 test.log | sed 's/%/%25/g' | awk '{printf "%s%%0A", $0}')"
+              fi
+            done
+          done
+          exit $status
 
       - name: Run Demo and Capture Screenshot
         run: |
@@ -451,7 +489,7 @@ jobs:
   # ===========================================
   Build-MacOS-CMake:
     runs-on: macos-latest
-    name: macOS CMake
+    name: macOS (CMake + Sharpmake)
 
     steps:
       - name: Checkout
@@ -482,6 +520,68 @@ jobs:
 
       - name: Build
         run: cmake --build build --parallel $(sysctl -n hw.ncpu)
+
+      - name: Setup .NET (Sharpmake)
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Generate projects (Sharpmake)
+        run: sh buildsystem/generate_projects.sh
+
+      # Unlike CMake, every configuration is required: a failed SDL3 install fails here.
+      - name: Build (Sharpmake Xcode)
+        run: |
+          for config in GLFW_OpenGL3 GLFW_Metal SDL2_OpenGL3 SDL2_Metal SDL3_OpenGL3 SDL3_Metal; do
+            xcodebuild -workspace ImPlatform_xcode_macOS.xcworkspace -scheme ImPlatformDemo_xcode_macOS_$config -configuration $config build -quiet
+          done
+
+      # Without a GPU the Metal tests do not run: the MSL generated from the demo's shader parts is at least compiled
+      # by the offline Metal compiler (newer Xcode installs it as a separate component).
+      - name: Compile generated MSL (offline Metal compiler)
+        run: |
+          xcrun -sdk macosx metal -v > /dev/null 2>&1 || xcodebuild -downloadComponent MetalToolchain
+          demo=$(find bin -name "ImPlatformDemo_GLFW_Metal" -type f -perm +111 | head -n 1)
+          status=0
+          for parts in shader_parts texture3d vertex_inputs; do
+            for stage in vs ps; do
+              "$demo" --dump-msl $parts $stage > $parts.$stage.metal
+              if xcrun -sdk macosx metal -c $parts.$stage.metal -o /dev/null 2> metal.log; then
+                echo "$parts $stage: compiled"
+              else
+                status=1
+                cat -n $parts.$stage.metal
+                echo "::error title=MSL $parts $stage::$(sed 's/%/%25/g' metal.log | awk '{printf "%s%%0A", $0}')"
+              fi
+              cat metal.log
+            done
+          done
+          exit $status
+
+      # Exit 2 means unsupported by the backend; perl's alarm stands in for timeout, which macOS lacks.
+      - name: Self-tests (Sharpmake builds)
+        run: |
+          status=0
+          for demo in $(find bin -name "ImPlatformDemo_GLFW_*" -type f -perm +111); do
+            for test in compute-test render-pass-test shader-test direct-draw-test shader-parts-test texture3d-test vertex-inputs-test; do
+              set +e
+              (cd "$(dirname "$demo")" && perl -e 'alarm 120; exec @ARGV' "./$(basename "$demo")" --$test) > test.log 2>&1
+              code=$?
+              set -e
+              cat test.log
+              echo "$demo --$test: exit $code"
+              # The hosted macOS runners are virtual machines without a GPU: no Metal device, no OpenGL pixel format.
+              if grep -q -e "Cannot initialize the Graphics API" -e "Cannot create window" test.log; then
+                echo "::warning title=$demo --$test::not run: no GPU on this runner"
+                continue
+              fi
+              if [ $code -ne 0 ] && [ $code -ne 2 ]; then
+                status=1
+                echo "::error title=$demo --$test (exit $code)::$(tail -n 40 test.log | sed 's/%/%25/g' | awk '{printf "%s%%0A", $0}')"
+              fi
+            done
+          done
+          exit $status
 
       - name: Run Demo and Capture Screenshot
         run: |
