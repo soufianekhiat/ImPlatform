@@ -9,11 +9,13 @@ ImPlatform is a platform abstraction layer that simplifies multiplatform develop
 - **Multiple Graphics API Support**: OpenGL 3, DirectX 9/10/11/12, Vulkan, Metal, WebGPU
 - **Header-Only Implementation**: Single header include with implementation macro
 - **Multi-Viewport Support**: Built-in support for ImGui's multi-viewport and docking features
-- **Custom Shader Support**: Render custom shaders with ImGui's vertex/index buffers
-- **Texture Creation API**: Platform-agnostic texture loading and management
+- **Custom Shader Support**: Render custom shaders with ImGui's vertex/index buffers, written once in HLSL and compiled offline for every backend
+- **Shader Parts**: Shaders written once and generated at run time as HLSL, GLSL or MSL (Direct3D 9 to 12, OpenGL 3, Metal), with their own vertex inputs, varyings and textures
+- **Texture Creation API**: Platform-agnostic texture loading and management, 3D textures on every backend
 - **Render Targets and Render Passes**: Nestable render-target stack, and Dear ImGui draw data rendered into a texture before the frame on every backend, with premultiplied alpha
-- **Direct Draws from Draw Callbacks**: switch to a render texture, copy the current target, draw a quad or your own vertex buffers with a custom shader and pushed constants (DirectX 9/11/12, OpenGL 3, Vulkan; DirectX 10 and WebGPU without target switches or copies)
-- **Readback and Compute**: Texture readback (synchronous, and asynchronous on DirectX 11/12) and compute dispatch on DirectX 11/12, Vulkan and OpenGL 4.3+
+- **Direct Draws from Draw Callbacks**: switch to a render texture, copy the current target, draw a quad or your own vertex buffers with a custom shader and pushed constants (DirectX 9/11/12, OpenGL 3, Vulkan; DirectX 10 and WebGPU without target switches or copies; Metal draws vertex buffers)
+- **Readback and Compute**: Texture readback (synchronous on every backend but WebGPU, asynchronous on DirectX 11/12) and compute dispatch on DirectX 11/12, Vulkan and OpenGL 4.3+
+- **Depth-Tested Meshes and Device Control**: Depth render textures, meshes with depth / blend / cull states, device loss and recreation (DirectX 11/12)
 - **Pen Input**: Pressure, tilt, barrel rotation, eraser and coalesced samples (Win32)
 - **Custom Graphics Backend**: `IM_GFX_CUSTOM` keeps the platform layer and lets the application provide the renderer
 - **Custom Title Bar**: Optional borderless window with custom titlebar rendering (Win32, GLFW*)
@@ -164,7 +166,7 @@ int main()
 #### Custom Shaders (when `IMPLATFORM_GFX_SUPPORT_CUSTOM_SHADER` is enabled)
 
 ```cpp
-// One stage from source (HLSL on Direct3D, GLSL on OpenGL, MSL on Metal) or bytecode (SPIR-V on Vulkan)
+// One stage from source (HLSL on Direct3D, GLSL on OpenGL, MSL on Metal, WGSL on WebGPU) or bytecode (SPIR-V on Vulkan)
 ImPlatform_ShaderDesc vs_desc = {};
 vs_desc.stage = ImPlatform_ShaderStage_Vertex;
 vs_desc.format = ImPlatform_ShaderFormat_HLSL;
@@ -203,7 +205,13 @@ ImPlatform_Shader ps = ImPlatform_CreateShaderFromParts(&parts, ImPlatform_Shade
 ImPlatform_ShaderProgram program = ImPlatform_CreateShaderProgram(vs, ps);
 ```
 
+The same parts can come from one text with `//@params`, `//@inputs`, `//@varyings`, `//@textures`, `//@defines`,
+`//@functions`, `//@vs` and `//@ps` sections (`ImPlatform_ParseShaderParts()`). `vertex_inputs` gives a shader its own
+vertex buffer layout for `ImPlatform_DrawIndexed()`; a `<slot> <name> 3d` texture line declares a 3D texture. DirectX 9
+defines `IMP_SM3` (shader model 3 limits) so a shader can take another path there.
+
 `ImPlatform_GenerateShaderSource()` returns the generated text of any language, whatever the backend.
+
 #### Texture Creation (when `IMGUI_HAS_TEXTURES` is defined)
 
 ```cpp
@@ -235,8 +243,8 @@ if (ImPlatform_SupportsReadback())
 | DirectX 11, DirectX 12, Vulkan | yes | yes |
 | OpenGL 3 | yes | OpenGL 4.3+ (checked at runtime) |
 | DirectX 10 | yes | no (cs_4_0 cannot write textures) |
-| DirectX 9 | yes | no |
-| Metal, WebGPU | no | no |
+| DirectX 9, Metal | yes | no |
+| WebGPU | no | no |
 
 Shader bindings per backend are listed above `ImPlatform_DispatchCompute` in `ImPlatform.h`.
 `ImPlatformDemo --compute-test` runs the same dispatch + readback check on any backend (exit code 0 pass, 1 fail, 2 unsupported).
@@ -397,12 +405,12 @@ Usage example with predefined target:
 | Platform/API | OpenGL 3 | DX9 | DX10 | DX11 | DX12 | Vulkan | Metal | WebGPU |
 |--------------|----------|-----|------|------|------|--------|-------|--------|
 | Win32        | ✅       | ✅  | ✅   | ✅   | ✅   | ⚠️     | ❌    | ❌     |
-| GLFW         | ✅       | ❌  | ❌   | ❌   | ❌   | ✅     | ✅    | ❌     |
-| SDL2         | ✅       | ❌  | ❌   | ❌   | ❌   | ✅     | ❌    | ❌     |
-| SDL3         | ✅       | ❌  | ❌   | ❌   | ❌   | ✅     | ❌    | ❌     |
+| GLFW         | ✅       | ❌  | ❌   | ❌   | ❌   | ✅     | ✅    | ✅     |
+| SDL2         | ✅       | ❌  | ❌   | ✅   | ❌   | ✅     | ✅    | ❌     |
+| SDL3         | ✅       | ❌  | ❌   | ✅   | ❌   | ✅     | ✅    | ❌     |
 | Apple        | ❌       | ❌  | ❌   | ❌   | ❌   | ❌     | ✅    | ❌     |
 
-Legend: ✅ Implemented | ⚠️ Partial | ❌ Not Implemented
+Legend: ✅ Implemented | ⚠️ Partial (no build configuration) | ❌ Not Implemented. GLFW + WebGPU is the Emscripten build.
 
 ## Building the Demo
 
@@ -487,21 +495,28 @@ ImPlatform/
 │   ├── ImPlatform.h              # Main header with API declarations
 │   ├── ImPlatform_Internal.h    # Internal data structures and helpers
 │   ├── ImPlatform_app_*.cpp     # Platform backends (Win32, GLFW, SDL, Apple)
-│   └── ImPlatform_gfx_*.cpp     # Graphics API backends (DX, OpenGL, Vulkan, etc.)
+│   ├── ImPlatform_gfx_*.cpp     # Graphics API backends (DX, OpenGL, Vulkan, etc.)
+│   ├── ImPlatform_shader_parts.cpp  # HLSL / GLSL / MSL generation from shader parts
+│   └── ImPlatform_titlebar.cpp  # Custom titlebar drawing
 ├── ImPlatformDemo/
-│   └── main.cpp                  # Example application
+│   ├── main.cpp                  # Example application and self-tests
+│   └── shaders/                  # Demo HLSL shaders, compiled headers and compile_shaders.*
 ├── buildsystem/
 │   ├── generate_projects.*       # Runs Sharpmake
 │   └── sharpmake/src/            # Project definitions (main.cs, common.cs, ImPlatformDemo.cs)
 ├── extern/Sharpmake/             # Sharpmake (submodule)
 ├── imgui/                        # Dear ImGui (submodule)
 ├── CMakeLists.txt                # CMake mirror of the Sharpmake configurations
+├── CHANGELOG.md / RELEASE_NOTES.md
 └── README.md
 ```
 
 ## Migration from Old API
 
-The library has been refactored from a C++ namespace API to a clean C API. Key changes:
+Upgrading from 0.5.0 to 2.0.0: see [RELEASE_NOTES.md](RELEASE_NOTES.md) (main loop, compile-time optional functions,
+shader register convention, build).
+
+Before 0.5.0, the library was refactored from a C++ namespace API to a clean C API. Key changes:
 
 | Old API (C++)                    | New API (C)                      |
 |----------------------------------|----------------------------------|
@@ -517,20 +532,20 @@ The library has been refactored from a C++ namespace API to a clean C API. Key c
 The library has been tested with the following configurations:
 
 ### Platforms Tested
-- **Windows 10/11** (Win32 API) - Tested
-- **Windows 10/11** (GLFW) - Tested
+- **Windows 10/11** (Win32 API) - Tested (self-tests)
+- **Windows 10/11** (GLFW) - Tested (self-tests)
 - **Windows 10/11** (SDL2) - Tested (self-tests)
 - **Windows 10/11** (SDL3) - Tested (self-tests)
 - **macOS** (GLFW, SDL2, SDL3) - Builds in CI; not run on a Mac with a GPU yet (contributions welcome!)
 - **Linux** (GLFW, SDL2, SDL3) - Tested (self-tests, Ubuntu 24.04 with Mesa)
 
 ### Graphics APIs Tested
-- **DirectX 9** - Tested (Win32 only)
-- **DirectX 10** - Tested (Win32 only)
-- **DirectX 11** - Tested (Win32 only)
-- **DirectX 12** - Tested (Win32 only)
-- **OpenGL 3** - Tested (Win32, GLFW)
-- **Vulkan** - Basic testing (GLFW, SDL2, SDL3)
+- **DirectX 9** - Tested (self-tests, Win32)
+- **DirectX 10** - Tested (self-tests, Win32)
+- **DirectX 11** - Tested (self-tests, Win32, SDL2, SDL3)
+- **DirectX 12** - Tested (self-tests, Win32)
+- **OpenGL 3** - Tested (self-tests, Windows and Linux)
+- **Vulkan** - Tested (self-tests, Windows and Linux, GLFW, SDL2, SDL3)
 - **Metal** - Builds in CI and the generated MSL compiles with the offline Metal compiler; not run on hardware yet
 - **WebGPU** - Basic testing (Emscripten + GLFW in Chrome)
 
@@ -541,7 +556,9 @@ The library has been tested with the following configurations:
 
 ## Known Limitations
 
-- Apple (macOS/iOS) platform implementation needs testing
+- macOS and Metal build and compile in CI but have not run on a Mac with a GPU
+- WebGPU: no readback, and no render-target switch or copy (its render pass encoder belongs to Dear ImGui's backend)
+- DirectX 9 shaders are shader model 3: no integer or bit operations, no texel loads, `nointerpolation` varyings are interpolated
 - OpenGL3 multi-viewport with custom shaders may have minor offset issues in some edge cases
 - Custom titlebar on GLFW requires TheCherno's fork
 

@@ -329,7 +329,7 @@ extern "C" {
 // Version Information
 // ============================================================================
 
-// Get ImPlatform version string (e.g., "0.5.0")
+// Get ImPlatform version string (e.g., "2.0.0")
 // Returns: Version string (compile-time constant, do not free)
 IMPLATFORM_API const char* ImPlatform_GetVersion(void);
 
