@@ -397,12 +397,12 @@ Usage example with predefined target:
 | Platform/API | OpenGL 3 | DX9 | DX10 | DX11 | DX12 | Vulkan | Metal | WebGPU |
 |--------------|----------|-----|------|------|------|--------|-------|--------|
 | Win32        | ✅       | ✅  | ✅   | ✅   | ✅   | ⚠️     | ❌    | ❌     |
-| GLFW         | ✅       | ❌  | ❌   | ❌   | ❌   | ✅     | ✅    | ❌     |
-| SDL2         | ✅       | ❌  | ❌   | ❌   | ❌   | ✅     | ❌    | ❌     |
-| SDL3         | ✅       | ❌  | ❌   | ❌   | ❌   | ✅     | ❌    | ❌     |
+| GLFW         | ✅       | ❌  | ❌   | ❌   | ❌   | ✅     | ✅    | ✅     |
+| SDL2         | ✅       | ❌  | ❌   | ✅   | ❌   | ✅     | ✅    | ❌     |
+| SDL3         | ✅       | ❌  | ❌   | ✅   | ❌   | ✅     | ✅    | ❌     |
 | Apple        | ❌       | ❌  | ❌   | ❌   | ❌   | ❌     | ✅    | ❌     |
 
-Legend: ✅ Implemented | ⚠️ Partial | ❌ Not Implemented
+Legend: ✅ Implemented | ⚠️ Partial (no build configuration) | ❌ Not Implemented. GLFW + WebGPU is the Emscripten build.
 
 ## Building the Demo
 
