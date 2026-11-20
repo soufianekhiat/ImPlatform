@@ -334,7 +334,7 @@ between backends:
 |---|---|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|
 | `SHADER_TEXTURES` | `SetShaderTexture` (t0..t8) | x | x | x | x | x | x | x | x |
 | `SHADER_PARTS` | `CreateShaderFromParts` (shaders written once, compiled at run time) | x | x | x | x | x | | x | |
-| `VERTEX_BUFFERS` | vertex / index buffers, `DrawIndexed` | x | x | x | x | x | x | | x |
+| `VERTEX_BUFFERS` | vertex / index buffers, `DrawIndexed` | x | x | x | x | x | x | x | x |
 | `DIRECT_DRAW` | `Push/PopShaderConstants`, `GetCurrentTargetSize` | x | | x | x | x | x | | x |
 | `RENDER_TARGETS` | `Push/PopRenderTarget`, `CopyCurrentTarget`, `DrawQuadNow` | x | | x | x | x | x | | |
 | `READBACK` | `ReadTexture` | x | x | x | x | x | x | x | |

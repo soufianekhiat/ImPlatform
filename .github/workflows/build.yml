@@ -401,7 +401,8 @@ jobs:
             make -f ImPlatform_make_Linux.make config=$config -j$(nproc)
           done
 
-      # Software rendering (Mesa llvmpipe / lavapipe) under Xvfb; exit 2 means unsupported by the backend.
+      # Software rendering (Mesa llvmpipe / lavapipe) under Xvfb; exit 2 means unsupported by the backend. A failing
+      # test's last output lines become an error annotation (shown on the run's summary page).
       - name: Self-tests (Sharpmake builds)
         run: |
           cd bin/Linux
@@ -409,11 +410,15 @@ jobs:
           for demo in ImPlatformDemo_*; do
             for test in compute-test render-pass-test shader-test direct-draw-test shader-parts-test texture3d-test vertex-inputs-test; do
               set +e
-              timeout 120 xvfb-run -a -s "-screen 0 1280x800x24" ./$demo --$test
+              timeout 120 xvfb-run -a -s "-screen 0 1280x800x24" ./$demo --$test > test.log 2>&1
               code=$?
               set -e
+              cat test.log
               echo "$demo --$test: exit $code"
-              if [ $code -ne 0 ] && [ $code -ne 2 ]; then status=1; fi
+              if [ $code -ne 0 ] && [ $code -ne 2 ]; then
+                status=1
+                echo "::error title=$demo --$test (exit $code)::$(tail -n 40 test.log | sed 's/%/%25/g' | awk '{printf "%s%%0A", $0}')"
+              fi
             done
           done
           exit $status
@@ -538,11 +543,15 @@ jobs:
           for demo in $(find bin -name "ImPlatformDemo_GLFW_*" -type f -perm +111); do
             for test in compute-test render-pass-test shader-test direct-draw-test shader-parts-test texture3d-test vertex-inputs-test; do
               set +e
-              (cd "$(dirname "$demo")" && perl -e 'alarm 120; exec @ARGV' "./$(basename "$demo")" --$test)
+              (cd "$(dirname "$demo")" && perl -e 'alarm 120; exec @ARGV' "./$(basename "$demo")" --$test) > test.log 2>&1
               code=$?
               set -e
+              cat test.log
               echo "$demo --$test: exit $code"
-              if [ $code -ne 0 ] && [ $code -ne 2 ]; then status=1; fi
+              if [ $code -ne 0 ] && [ $code -ne 2 ]; then
+                status=1
+                echo "::error title=$demo --$test (exit $code)::$(tail -n 40 test.log | sed 's/%/%25/g' | awk '{printf "%s%%0A", $0}')"
+              fi
             done
           done
           exit $status

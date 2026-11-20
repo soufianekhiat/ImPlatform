@@ -60,6 +60,10 @@
 - **Shader parts with their own vertex inputs** (`vertex_inputs`, `//@inputs`: `float4 pos : POSITION; ...` in the
   vertex buffer's attribute order, `in_<name>` in the vertex body) for `ImPlatform_DrawIndexed`, and flat varyings
   (`nointerpolation int4 id;`: `flat` in GLSL, `[[flat]]` in MSL; not on DirectX 9). Demo: `--vertex-inputs-test`.
+- Metal: vertex and index buffers (`IMPLATFORM_GFX_SUPPORT_VERTEX_BUFFERS`): shared storage buffers drawn by
+  `ImPlatform_DrawIndexed()` from a draw callback, with a pipeline per vertex buffer layout (attribute i at location i);
+  a program whose inputs are not Dear ImGui's vertex draws vertex buffers only.
+- CI: a failing self-test's output becomes an error annotation of the run.
 - `ImPlatform_CreateVertexInputLayout()` is in the `VERTEX_BUFFERS` group and implemented by every backend in it: a
   vertex declaration on DirectX 9 and an input layout on DirectX 10 (custom vertex buffers drew without one there),
   a check of its arguments where the layout is built at draw time. DirectX 11 maps `UByte4N` vertex attributes.

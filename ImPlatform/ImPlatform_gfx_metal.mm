@@ -824,8 +824,9 @@ IMPLATFORM_API void ImPlatform_DestroyTexture(ImTextureID texture_id)
 // ============================================================================
 
 
-// shortcut: no vertex buffers or direct draws on Metal yet (IMPLATFORM_GFX_SUPPORT_VERTEX_BUFFERS, _DIRECT_DRAW,
-// _RENDER_TARGETS); add them with the render command encoder of the draw callback.
+// Vertex buffers are with the custom shaders below (they draw on the render encoder of the draw callback).
+// shortcut: no direct draws or render target stack on Metal yet (IMPLATFORM_GFX_SUPPORT_DIRECT_DRAW, _RENDER_TARGETS);
+// add them with the render command encoder of the draw callback.
 
 // ============================================================================
 // Custom Shader System API - Metal Implementation
@@ -848,6 +849,8 @@ struct ImPlatform_ShaderProgramData_Metal
     size_t uniformDataSize;
     bool uniformDataDirty;
     void* textures[9];          // ImPlatform_SetShaderTexture: id<MTLTexture> of t1..t8 (retained; slot 0 unused)
+    struct { ImGuiID layout; void* pipeline; } layoutPipelines[8];  // ImPlatform_DrawIndexed: id<MTLRenderPipelineState> per layout
+    int layoutPipelineCount;
 };
 
 // Current draw data for custom shader rendering (needed for multi-viewport)
@@ -934,6 +937,9 @@ IMPLATFORM_API void ImPlatform_DestroyShader(ImPlatform_Shader shader)
     }
 }
 
+static id<MTLRenderPipelineState> ImPlatform_Metal_CreatePipeline(id<MTLFunction> vertexFunction, id<MTLFunction> fragmentFunction,
+                                                                  MTLVertexDescriptor* vertexDescriptor);
+
 IMPLATFORM_API ImPlatform_ShaderProgram ImPlatform_CreateShaderProgram(ImPlatform_Shader vertex_shader, ImPlatform_Shader fragment_shader)
 {
     if (!vertex_shader || !fragment_shader || !g_GfxData.pMetalDevice)
@@ -943,7 +949,6 @@ IMPLATFORM_API ImPlatform_ShaderProgram ImPlatform_CreateShaderProgram(ImPlatfor
         ImPlatform_ShaderData_Metal* vs_data = (ImPlatform_ShaderData_Metal*)vertex_shader;
         ImPlatform_ShaderData_Metal* fs_data = (ImPlatform_ShaderData_Metal*)fragment_shader;
 
-        id<MTLDevice> device = (__bridge id<MTLDevice>)g_GfxData.pMetalDevice;
         id<MTLFunction> vertexFunction = (__bridge id<MTLFunction>)vs_data->mtlFunction;
         id<MTLFunction> fragmentFunction = (__bridge id<MTLFunction>)fs_data->mtlFunction;
 
@@ -952,6 +957,7 @@ IMPLATFORM_API ImPlatform_ShaderProgram ImPlatform_CreateShaderProgram(ImPlatfor
         // UV. HLSL compiled by Slang numbers them in declaration order; shaders without attributes get 0 pos, 1 uv, 2 col.
         MTLVertexDescriptor* vertexDescriptor = [[MTLVertexDescriptor alloc] init];
         int locPos = 0, locUV = 1, locCol = 2;
+        bool customLayout = false;      // An input ImDrawVert does not fill: the program's own vertex buffers
         if (vertexFunction.vertexAttributes.count > 0)
         {
             locPos = locUV = locCol = -1;
@@ -964,6 +970,7 @@ IMPLATFORM_API ImPlatform_ShaderProgram ImPlatform_CreateShaderProgram(ImPlatfor
                 if (!two && locCol < 0)         locCol = index;
                 else if (two && locPos < 0)     locPos = index;
                 else if (two && locUV < 0)      locUV = index;
+                else                            customLayout = true;
             }
         }
         if (locPos >= 0)
@@ -990,7 +997,32 @@ IMPLATFORM_API ImPlatform_ShaderProgram ImPlatform_CreateShaderProgram(ImPlatfor
         vertexDescriptor.layouts[0].stepRate = 1;
         vertexDescriptor.layouts[0].stepFunction = MTLVertexStepFunctionPerVertex;
 
-        // Create render pipeline descriptor
+        // A program whose vertex inputs are not ImDrawVert's draws vertex buffers only (ImPlatform_DrawIndexed builds
+        // its pipeline per vertex buffer layout).
+        id<MTLRenderPipelineState> pipelineState = nil;
+        if (!customLayout && !(pipelineState = ImPlatform_Metal_CreatePipeline(vertexFunction, fragmentFunction, vertexDescriptor)))
+            return NULL;
+
+        // Create program data
+        ImPlatform_ShaderProgramData_Metal* program_data = new ImPlatform_ShaderProgramData_Metal();
+        program_data->mtlVertexFunction = (__bridge_retained void*)vertexFunction;
+        program_data->mtlFragmentFunction = (__bridge_retained void*)fragmentFunction;
+        program_data->mtlRenderPipelineState = pipelineState ? (__bridge_retained void*)pipelineState : nullptr;
+        program_data->mtlUniformBuffer = nullptr;
+        program_data->uniformData = nullptr;
+        program_data->uniformDataSize = 0;
+        program_data->uniformDataDirty = false;
+
+        return program_data;
+    }
+}
+
+// The pipeline of a program for a vertex layout: Dear ImGui's blending and target format, through the binary archive.
+static id<MTLRenderPipelineState> ImPlatform_Metal_CreatePipeline(id<MTLFunction> vertexFunction, id<MTLFunction> fragmentFunction,
+                                                                  MTLVertexDescriptor* vertexDescriptor)
+{
+    @autoreleasepool {
+        id<MTLDevice> device = (__bridge id<MTLDevice>)g_GfxData.pMetalDevice;
         MTLRenderPipelineDescriptor* pipelineDescriptor = [[MTLRenderPipelineDescriptor alloc] init];
         pipelineDescriptor.vertexFunction = vertexFunction;
         pipelineDescriptor.fragmentFunction = fragmentFunction;
@@ -1024,7 +1056,7 @@ IMPLATFORM_API ImPlatform_ShaderProgram ImPlatform_CreateShaderProgram(ImPlatfor
             {
                 NSLog(@"Metal render pipeline creation failed: %@", error.localizedDescription);
             }
-            return NULL;
+            return nil;
         }
 
         // On a cache miss, add the freshly-compiled pipeline to the archive so
@@ -1045,18 +1077,7 @@ IMPLATFORM_API ImPlatform_ShaderProgram ImPlatform_CreateShaderProgram(ImPlatfor
                 }
             }
         }
-
-        // Create program data
-        ImPlatform_ShaderProgramData_Metal* program_data = new ImPlatform_ShaderProgramData_Metal();
-        program_data->mtlVertexFunction = (__bridge_retained void*)vertexFunction;
-        program_data->mtlFragmentFunction = (__bridge_retained void*)fragmentFunction;
-        program_data->mtlRenderPipelineState = (__bridge_retained void*)pipelineState;
-        program_data->mtlUniformBuffer = nullptr;
-        program_data->uniformData = nullptr;
-        program_data->uniformDataSize = 0;
-        program_data->uniformDataDirty = false;
-
-        return program_data;
+        return pipelineState;
     }
 }
 
@@ -1100,6 +1121,8 @@ IMPLATFORM_API void ImPlatform_DestroyShaderProgram(ImPlatform_ShaderProgram pro
         for (void* texture : program_data->textures)
             if (texture)
                 CFRelease(texture);
+        for (int i = 0; i < program_data->layoutPipelineCount; i++)
+            CFRelease(program_data->layoutPipelines[i].pipeline);
         if (g_MetalBoundProgram == program_data)
             g_MetalBoundProgram = nullptr;
 
@@ -1529,6 +1552,170 @@ IMPLATFORM_API void ImPlatform_EndCustomShader(ImDrawList* draw)
 
     draw->AddCallback([](const ImDrawList*, const ImDrawCmd*) { g_MetalBoundProgram = nullptr; }, NULL);   // Unbound by the reset
     draw->AddCallback(ImGui::GetPlatformIO().DrawCallback_ResetRenderState, NULL);
+}
+
+// ============================================================================
+// Custom Vertex/Index Buffer Management API - Metal
+// ============================================================================
+
+// Shared storage buffers, drawn by ImPlatform_DrawIndexed inside a draw callback with the program bound last there.
+// shortcut: Update* writes in place; a buffer still drawn by a frame in flight must not be updated (make a new one).
+struct ImPlatform_BufferData_Metal
+{
+    void* buffer;                               // id<MTLBuffer> (retained)
+    ImPlatform_VertexBufferDesc vb_desc;        // vertex buffer: its layout (attributes copied below)
+    ImPlatform_VertexAttribute attributes[16];
+    ImGuiID layout;                             // hash of the attributes and stride: the pipeline cache key
+    ImPlatform_IndexFormat index_format;        // index buffer
+};
+
+static ImPlatform_BufferData_Metal* g_MetalBoundVB = nullptr;
+static ImPlatform_BufferData_Metal* g_MetalBoundIB = nullptr;
+
+static void* ImPlatform_Metal_NewBuffer(const void* data, size_t size)
+{
+    if (!g_GfxData.pMetalDevice || size == 0)
+        return nullptr;
+    id<MTLDevice> device = (__bridge id<MTLDevice>)g_GfxData.pMetalDevice;
+    id<MTLBuffer> buffer = data ? [device newBufferWithBytes:data length:size options:MTLResourceStorageModeShared]
+                                : [device newBufferWithLength:size options:MTLResourceStorageModeShared];
+    return buffer ? (__bridge_retained void*)buffer : nullptr;
+}
+
+IMPLATFORM_API ImPlatform_VertexBuffer ImPlatform_CreateVertexBuffer(const void* vertex_data, const ImPlatform_VertexBufferDesc* desc)
+{
+    if (!desc || !desc->vertex_count || !desc->vertex_stride || desc->attribute_count > 16)
+        return nullptr;
+    void* buffer = ImPlatform_Metal_NewBuffer(vertex_data, (size_t)desc->vertex_count * desc->vertex_stride);
+    if (!buffer)
+        return nullptr;
+    ImPlatform_BufferData_Metal* data = new ImPlatform_BufferData_Metal();
+    data->buffer = buffer;
+    data->vb_desc = *desc;
+    for (unsigned int i = 0; i < desc->attribute_count; i++)
+        data->attributes[i] = desc->attributes[i];
+    data->vb_desc.attributes = data->attributes;
+    ImGuiID layout = 2166136261u ^ desc->vertex_stride;     // FNV-1a style, as the WebGPU backend's layout key
+    for (unsigned int i = 0; i < desc->attribute_count; i++)
+        layout = (((layout ^ (ImGuiID)desc->attributes[i].format) * 16777619u) ^ desc->attributes[i].offset) * 16777619u;
+    data->layout = layout;
+    return data;
+}
+
+IMPLATFORM_API bool ImPlatform_UpdateVertexBuffer(ImPlatform_VertexBuffer buffer, const void* vertex_data, unsigned int offset, unsigned int count)
+{
+    ImPlatform_BufferData_Metal* data = (ImPlatform_BufferData_Metal*)buffer;
+    if (!data || !vertex_data || offset + count > data->vb_desc.vertex_count)
+        return false;
+    id<MTLBuffer> mtl = (__bridge id<MTLBuffer>)data->buffer;
+    memcpy((char*)mtl.contents + (size_t)offset * data->vb_desc.vertex_stride, vertex_data, (size_t)count * data->vb_desc.vertex_stride);
+    return true;
+}
+
+IMPLATFORM_API void ImPlatform_DestroyVertexBuffer(ImPlatform_VertexBuffer buffer)
+{
+    ImPlatform_BufferData_Metal* data = (ImPlatform_BufferData_Metal*)buffer;
+    if (!data)
+        return;
+    if (g_MetalBoundVB == data) g_MetalBoundVB = nullptr;
+    if (g_MetalBoundIB == data) g_MetalBoundIB = nullptr;
+    CFRelease(data->buffer);    // Command buffers that use it keep their own reference
+    delete data;
+}
+
+IMPLATFORM_API ImPlatform_IndexBuffer ImPlatform_CreateIndexBuffer(const void* index_data, const ImPlatform_IndexBufferDesc* desc)
+{
+    if (!desc || !desc->index_count)
+        return nullptr;
+    const size_t index_size = desc->format == ImPlatform_IndexFormat_UInt16 ? 2 : 4;
+    void* buffer = ImPlatform_Metal_NewBuffer(index_data, (size_t)desc->index_count * index_size);
+    if (!buffer)
+        return nullptr;
+    ImPlatform_BufferData_Metal* data = new ImPlatform_BufferData_Metal();
+    data->buffer = buffer;
+    data->index_format = desc->format;
+    data->vb_desc.vertex_count = desc->index_count;     // The index count, for the bounds of UpdateIndexBuffer
+    return data;
+}
+
+IMPLATFORM_API bool ImPlatform_UpdateIndexBuffer(ImPlatform_IndexBuffer buffer, const void* index_data, unsigned int offset, unsigned int count)
+{
+    ImPlatform_BufferData_Metal* data = (ImPlatform_BufferData_Metal*)buffer;
+    if (!data || !index_data || offset + count > data->vb_desc.vertex_count)
+        return false;
+    const size_t index_size = data->index_format == ImPlatform_IndexFormat_UInt16 ? 2 : 4;
+    id<MTLBuffer> mtl = (__bridge id<MTLBuffer>)data->buffer;
+    memcpy((char*)mtl.contents + (size_t)offset * index_size, index_data, (size_t)count * index_size);
+    return true;
+}
+
+IMPLATFORM_API void ImPlatform_DestroyIndexBuffer(ImPlatform_IndexBuffer buffer)
+{
+    ImPlatform_DestroyVertexBuffer(buffer);
+}
+
+IMPLATFORM_API void ImPlatform_BindBuffers(ImPlatform_VertexBuffer vertex_buffer, ImPlatform_IndexBuffer index_buffer)
+{
+    g_MetalBoundVB = (ImPlatform_BufferData_Metal*)vertex_buffer;
+    g_MetalBoundIB = (ImPlatform_BufferData_Metal*)index_buffer;
+}
+
+// The layout comes from the vertex buffer's attributes at draw time (attribute i at shader location i).
+IMPLATFORM_API bool ImPlatform_CreateVertexInputLayout(ImPlatform_VertexBuffer vertex_buffer, ImPlatform_ShaderProgram program)
+{
+    return vertex_buffer && program;
+}
+
+// The program's pipeline for a vertex buffer's layout: attribute i at location i, the vertices at buffer 0.
+static id<MTLRenderPipelineState> ImPlatform_Metal_LayoutPipeline(ImPlatform_ShaderProgramData_Metal* program, ImPlatform_BufferData_Metal* vb)
+{
+    for (int i = 0; i < program->layoutPipelineCount; i++)
+        if (program->layoutPipelines[i].layout == vb->layout)
+            return (__bridge id<MTLRenderPipelineState>)program->layoutPipelines[i].pipeline;
+    static const MTLVertexFormat formats[] = { MTLVertexFormatFloat, MTLVertexFormatFloat2, MTLVertexFormatFloat3, MTLVertexFormatFloat4,
+                                               MTLVertexFormatUChar4, MTLVertexFormatUChar4Normalized };
+    MTLVertexDescriptor* vertexDescriptor = [[MTLVertexDescriptor alloc] init];
+    for (unsigned int i = 0; i < vb->vb_desc.attribute_count; i++)
+    {
+        const int format = (int)vb->attributes[i].format;
+        vertexDescriptor.attributes[i].format = formats[format >= 0 && format < IM_ARRAYSIZE(formats) ? format : 3];
+        vertexDescriptor.attributes[i].offset = vb->attributes[i].offset;
+        vertexDescriptor.attributes[i].bufferIndex = 0;
+    }
+    vertexDescriptor.layouts[0].stride = vb->vb_desc.vertex_stride;
+    vertexDescriptor.layouts[0].stepRate = 1;
+    vertexDescriptor.layouts[0].stepFunction = MTLVertexStepFunctionPerVertex;
+    id<MTLRenderPipelineState> pipeline = ImPlatform_Metal_CreatePipeline((__bridge id<MTLFunction>)program->mtlVertexFunction,
+                                                                         (__bridge id<MTLFunction>)program->mtlFragmentFunction, vertexDescriptor);
+    if (pipeline && program->layoutPipelineCount < IM_ARRAYSIZE(program->layoutPipelines))
+    {
+        program->layoutPipelines[program->layoutPipelineCount].layout = vb->layout;
+        program->layoutPipelines[program->layoutPipelineCount++].pipeline = (__bridge_retained void*)pipeline;
+    }
+    return pipeline;
+}
+
+// Draws the bound buffers inside a draw callback with the program bound last there (ImPlatform_BeginCustomShader,
+// ImPlatform_BeginCustomShader_Render), Dear ImGui's blending, into the current target. primitive_type: 0 triangles,
+// 1 lines, 2 points.
+IMPLATFORM_API void ImPlatform_DrawIndexed(unsigned int primitive_type, unsigned int index_count, unsigned int start_index)
+{
+    @autoreleasepool {
+        ImPlatform_BufferData_Metal* vb = g_MetalBoundVB;
+        ImPlatform_BufferData_Metal* ib = g_MetalBoundIB;
+        if (!g_CurrentRenderEncoder || !g_MetalBoundProgram || !vb || !ib || index_count == 0)
+            return;
+        id<MTLRenderPipelineState> pipeline = ImPlatform_Metal_LayoutPipeline(g_MetalBoundProgram, vb);
+        if (!pipeline)
+            return;
+        id<MTLRenderCommandEncoder> encoder = (__bridge id<MTLRenderCommandEncoder>)g_CurrentRenderEncoder;
+        [encoder setRenderPipelineState:pipeline];
+        [encoder setVertexBuffer:(__bridge id<MTLBuffer>)vb->buffer offset:0 atIndex:0];
+        const bool u16 = ib->index_format == ImPlatform_IndexFormat_UInt16;
+        const MTLPrimitiveType type = primitive_type == 1 ? MTLPrimitiveTypeLine : primitive_type == 2 ? MTLPrimitiveTypePoint : MTLPrimitiveTypeTriangle;
+        [encoder drawIndexedPrimitives:type indexCount:index_count indexType:u16 ? MTLIndexTypeUInt16 : MTLIndexTypeUInt32
+                           indexBuffer:(__bridge id<MTLBuffer>)ib->buffer indexBufferOffset:(NSUInteger)start_index * (u16 ? 2 : 4)];
+    }
 }
 
 
