@@ -66,6 +66,9 @@
 - DirectX 12: each bind of a custom shader takes its own copy of the program's parameters (frame upload memory), so a
   program drawn several times in a frame keeps each draw's values; before, every draw read the last ones set. The demo's
   `--shader-test` draws one program twice with different parameters set from draw callbacks.
+- Shader parts on DirectX 9 define `IMP_SM3` (shader model 3: 224 pixel constant registers, no integer or bit
+  operations, no texel loads, no flat varyings), so a shader can take another path there; `nointerpolation` varyings
+  are interpolated there.
 - Shader parts: `ddx` / `ddy` in a helper function compile in the vertex stage too (a zero there; GLSL and MSL have
   derivatives in fragment shaders only).
 - OpenGL: `ImPlatform_ReadTexture()` reports its own GL errors only (an error left pending by an earlier call failed it).

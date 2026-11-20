@@ -1029,7 +1029,9 @@ IMPLATFORM_API void ImPlatform_DrawQuadNow(ImPlatform_ShaderProgram program, ImV
 //   IMP_MUL(matrix, vector),
 //   IMP_CAST(type, x) (instead of C-style casts), IMP_OUT(type) / IMP_INOUT(type) (function parameters written by the
 //   function; MSL has no out / inout), IMP_UNROLL / IMP_LOOP / IMP_BRANCH (loop and branch attributes),
-//   IMP_HLSL / IMP_GLSL / IMP_MSL (defined for the language being generated).
+//   IMP_HLSL / IMP_GLSL / IMP_MSL (defined for the language being generated), IMP_SM3 (Direct3D 9, shader model 3:
+//   224 pixel constant registers, no integer or bit operations, no texel loads, no flat varyings: nointerpolation is
+//   ignored there; a shader can take another path).
 // lerp, frac, saturate, rcp, rsqrt, atan2, fmod, mad, ddx, ddy, mul, clip (scalar) and discard are available
 // everywhere; asuint, asint, asfloat (of a uint) and f16tof32 everywhere but Direct3D 9 (shader model 3 has no bit
 // operations). Write float literals (1.0, not 1), construct vectors fully (float2(x, x), not x.xx), give pow a vector

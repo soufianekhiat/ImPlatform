@@ -454,11 +454,20 @@ IMPLATFORM_API ImPlatform_Shader ImPlatform_CreateShaderFromParts(const ImPlatfo
 #else
     const ImPlatform_ShaderFormat format = ImPlatform_ShaderFormat_HLSL;
 #endif
+    // Direct3D 9 compiles for shader model 3 (224 pixel constant registers, no integer or bit operations, no flat
+    // varyings): IMP_SM3 lets a shader take another path there; nointerpolation varyings are interpolated.
+#if IM_CURRENT_GFX == IM_GFX_DIRECTX9
+    static const char prefix[] = "#define IMP_SM3 1\n#define nointerpolation\n";
+#else
+    static const char prefix[] = "";
+#endif
+    const int prefix_len = (int)sizeof(prefix) - 1;
     const int size = ImPlatform_GenerateShaderSource(parts, stage, format, NULL, 0);
     if (size < 0)
         return NULL;
-    char* source = (char*)IM_ALLOC((size_t)size + 1);
-    ImPlatform_GenerateShaderSource(parts, stage, format, source, size + 1);
+    char* source = (char*)IM_ALLOC((size_t)(prefix_len + size) + 1);
+    memcpy(source, prefix, (size_t)prefix_len);
+    ImPlatform_GenerateShaderSource(parts, stage, format, source + prefix_len, size + 1);
     ImPlatform_ShaderDesc desc = {};
     desc.stage = stage;
     desc.format = format;
