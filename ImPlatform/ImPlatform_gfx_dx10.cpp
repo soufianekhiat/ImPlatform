@@ -1100,6 +1100,8 @@ struct ImPlatform_ShaderProgramData_DX10
     void* pPixelConstantData;  // CPU-side copy of pixel shader constants
     size_t pixelConstantDataSize;
     bool pixelConstantDataDirty;
+    unsigned int blend;         // ImPlatform_BlendKey; 0: Dear ImGui's blending is left as it is
+    ID3D10BlendState* pBlendState;
 };
 
 // The vertex buffer's input layout, matched against the program's vertex shader: attributes sharing a semantic name
@@ -1147,56 +1149,11 @@ struct VERTEX_CONSTANT_BUFFER_DX10
     float   mvp[4][4];
 };
 
-// Translate IMPLATFORM_SHADER_COMPILE_* flags to D3DCompile flags.
-static UINT ImPlatform_DX10_TranslateCompileFlags(unsigned int compile_flags)
-{
-    UINT flags = D3DCOMPILE_ENABLE_STRICTNESS;
-    if (compile_flags & IMPLATFORM_SHADER_COMPILE_SKIP_OPTIMIZATION) flags |= D3DCOMPILE_SKIP_OPTIMIZATION;
-    if (compile_flags & IMPLATFORM_SHADER_COMPILE_OPTIMIZATION_LOW)  flags |= D3DCOMPILE_OPTIMIZATION_LEVEL0;
-    if (compile_flags & IMPLATFORM_SHADER_COMPILE_OPTIMIZATION_HIGH) flags |= D3DCOMPILE_OPTIMIZATION_LEVEL3;
-    if (compile_flags & IMPLATFORM_SHADER_COMPILE_DEBUG)             flags |= D3DCOMPILE_DEBUG;
-    return flags;
-}
-
-// Try to load cached DXBC bytecode into a fresh ID3DBlob. Returns NULL on miss.
-static ID3DBlob* ImPlatform_DX10_TryLoadCachedBytecode(
-    const ImPlatform_ShaderDesc* desc,
-    const char* entry, const char* target, size_t source_len,
-    char* out_cache_path, size_t out_cache_path_size)
-{
-    out_cache_path[0] = '\0';
-    if (!desc->cache_key || !desc->cache_key[0])
-        return NULL;
-
-    unsigned long long hash = ImPlatform_ShaderCacheHashSource(
-        desc->source_code, source_len, entry, target);
-    ImPlatform_ShaderCacheBuildPath(out_cache_path, out_cache_path_size,
-                                    desc->cache_key, entry, "dxbc", hash);
-
-    size_t cached_size = 0;
-    void* cached = ImPlatform_ShaderCacheLoad(out_cache_path, &cached_size);
-    if (!cached || cached_size == 0)
-    {
-        if (cached) free(cached);
-        return NULL;
-    }
-
-    ID3DBlob* blob = NULL;
-    HRESULT hr = D3DCreateBlob(cached_size, &blob);
-    if (FAILED(hr) || !blob)
-    {
-        free(cached);
-        return NULL;
-    }
-    memcpy(blob->GetBufferPointer(), cached, cached_size);
-    free(cached);
-    fprintf(stderr, "[ImPlatform shader cache] HIT  %s/%s (%zu bytes)\n",
-            desc->cache_key, entry, cached_size);
-    return blob;
-}
-
 IMPLATFORM_API ImPlatform_Shader ImPlatform_CreateShader(const ImPlatform_ShaderDesc* desc)
 {
+    ImPlatform_ShaderDesc with_defines;
+    ImGuiTextBuffer defined_source;
+    desc = ImPlatform_ShaderApplyDefines(desc, &with_defines, &defined_source);
     if (!desc || (!desc->source_code && !desc->bytecode))
         return NULL;
 
@@ -1210,14 +1167,7 @@ IMPLATFORM_API ImPlatform_Shader ImPlatform_CreateShader(const ImPlatform_Shader
 
     HRESULT hr = S_OK;
 
-    // Resolve target profile. DX10 hardware caps at SM 4.0 (DX10.1 at 4.1);
-    // we use vs_4_0/ps_4_0 for maximum compatibility.
-    const char* target = NULL;
-    if (desc->stage == ImPlatform_ShaderStage_Vertex)
-        target = "vs_4_0";
-    else if (desc->stage == ImPlatform_ShaderStage_Fragment)
-        target = "ps_4_0";
-    else
+    if (!ImPlatform_D3DShaderTarget(desc->stage))
     {
         delete shader_data;
         return NULL;
@@ -1237,55 +1187,15 @@ IMPLATFORM_API ImPlatform_Shader ImPlatform_CreateShader(const ImPlatform_Shader
     }
     else
     {
-        // Source-compile path with optional disk cache.
-        const char* entry = desc->entry_point ? desc->entry_point : "main";
-        size_t source_len = strlen(desc->source_code);
-        char cache_path[512];
-
-        // 1) Try the cache first
-        shader_data->pBlob = ImPlatform_DX10_TryLoadCachedBytecode(
-            desc, entry, target, source_len, cache_path, sizeof(cache_path));
-
-        // 2) Cache miss: compile from source
+        // HLSL source, through the disk cache when desc->cache_key is set.
+        char* messages = NULL;
+        shader_data->pBlob = ImPlatform_D3DCompileShader(desc, &messages);
         if (!shader_data->pBlob)
         {
-            if (desc->cache_key && desc->cache_key[0])
-            {
-                fprintf(stderr, "[ImPlatform shader cache] MISS %s/%s -- compiling...\n",
-                        desc->cache_key, entry);
-            }
-
-            ID3DBlob* pErrorBlob = NULL;
-            UINT flags = ImPlatform_DX10_TranslateCompileFlags(desc->compile_flags);
-            hr = D3DCompile(
-                desc->source_code, source_len,
-                NULL, NULL, NULL,
-                entry, target, flags, 0,
-                &shader_data->pBlob, &pErrorBlob);
-
-            if (FAILED(hr))
-            {
-                if (pErrorBlob)
-                {
-                    fprintf(stderr, "Shader compilation failed: %s\n", (char*)pErrorBlob->GetBufferPointer());
-                    pErrorBlob->Release();
-                }
-                delete shader_data;
-                return NULL;
-            }
-            if (pErrorBlob) pErrorBlob->Release();
-
-            // 3) Save to cache for next launch
-            if (desc->cache_key && desc->cache_key[0] && shader_data->pBlob && cache_path[0])
-            {
-                if (ImPlatform_ShaderCacheSave(cache_path,
-                                               shader_data->pBlob->GetBufferPointer(),
-                                               shader_data->pBlob->GetBufferSize()))
-                {
-                    fprintf(stderr, "[ImPlatform shader cache] SAVE %s/%s (%zu bytes)\n",
-                            desc->cache_key, entry, (size_t)shader_data->pBlob->GetBufferSize());
-                }
-            }
+            ImPlatform_ShaderLog("Shader compilation failed: %s", messages ? messages : "");
+            free(messages);
+            delete shader_data;
+            return NULL;
         }
     }
 
@@ -1382,12 +1292,48 @@ IMPLATFORM_API ImPlatform_ShaderProgram ImPlatform_CreateShaderProgram(ImPlatfor
     return (ImPlatform_ShaderProgram)program;
 }
 
+// The blend state is created here and set when the program is bound; Dear ImGui's reset callback restores its own.
+IMPLATFORM_API bool ImPlatform_SetShaderProgramBlend(ImPlatform_ShaderProgram program, const ImPlatform_BlendDesc* blend)
+{
+    ImPlatform_ShaderProgramData_DX10* program_data = (ImPlatform_ShaderProgramData_DX10*)program;
+    unsigned int key = 0;
+    if (!program_data || !ImPlatform_BlendKey(blend, &key))
+        return false;
+    if (key == program_data->blend)
+        return true;
+    if (program_data->pBlendState)
+        program_data->pBlendState->Release();
+    program_data->pBlendState = NULL;
+    program_data->blend = key;
+    if (key)
+    {
+        static const D3D10_BLEND factors[] = { D3D10_BLEND_ZERO, D3D10_BLEND_ONE, D3D10_BLEND_SRC_COLOR, D3D10_BLEND_INV_SRC_COLOR, D3D10_BLEND_SRC_ALPHA,
+                                            D3D10_BLEND_INV_SRC_ALPHA, D3D10_BLEND_DEST_COLOR, D3D10_BLEND_INV_DEST_COLOR, D3D10_BLEND_DEST_ALPHA,
+                                            D3D10_BLEND_INV_DEST_ALPHA };
+        static const D3D10_BLEND_OP ops[] = { D3D10_BLEND_OP_ADD, D3D10_BLEND_OP_SUBTRACT, D3D10_BLEND_OP_REV_SUBTRACT, D3D10_BLEND_OP_MIN, D3D10_BLEND_OP_MAX };
+        const ImPlatform_BlendDesc b = ImPlatform_BlendFromKey(key);
+        D3D10_BLEND_DESC desc = {};
+        desc.BlendEnable[0] = b.enable;
+        desc.SrcBlend = factors[b.src_color];
+        desc.DestBlend = factors[b.dst_color];
+        desc.BlendOp = ops[b.op_color];
+        desc.SrcBlendAlpha = factors[b.src_alpha];
+        desc.DestBlendAlpha = factors[b.dst_alpha];
+        desc.BlendOpAlpha = ops[b.op_alpha];
+        desc.RenderTargetWriteMask[0] = D3D10_COLOR_WRITE_ENABLE_ALL;
+        g_GfxData.pDevice->CreateBlendState(&desc, &program_data->pBlendState);
+    }
+    return program_data->pBlendState != NULL || !key;
+}
+
 IMPLATFORM_API void ImPlatform_DestroyShaderProgram(ImPlatform_ShaderProgram program)
 {
     if (!program)
         return;
 
     ImPlatform_ShaderProgramData_DX10* program_data = (ImPlatform_ShaderProgramData_DX10*)program;
+    if (program_data->pBlendState)
+        program_data->pBlendState->Release();
     if (program_data->pVertexShader) program_data->pVertexShader->Release();
     if (program_data->pPixelShader) program_data->pPixelShader->Release();
     if (program_data->pVSBlob) program_data->pVSBlob->Release();
@@ -1527,6 +1473,11 @@ IMPLATFORM_API void ImPlatform_BeginCustomShader_Render(ImPlatform_ShaderProgram
 
     // Set custom shaders
     ImPlatform_UseShaderProgram(program);
+    if (program_data->pBlendState)
+    {
+        const float blend_factor[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
+        g_GfxData.pDevice->OMSetBlendState(program_data->pBlendState, blend_factor, 0xffffffff);
+    }
 
     // Set the input layout for the custom shader
     if (program_data->pInputLayout)

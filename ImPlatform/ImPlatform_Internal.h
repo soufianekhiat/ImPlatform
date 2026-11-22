@@ -632,4 +632,234 @@ static inline bool ImPlatform_ShaderCacheSave(const char* path, const void* data
     return written == size;
 }
 
+// ============================================================================
+// Shader compile log, defines and blending (shared across graphics backends)
+// ============================================================================
+
+// The text of ImPlatform_GetShaderLog (one instance for every translation unit).
+inline ImGuiTextBuffer& ImPlatform_ShaderLogBuffer()
+{
+    static ImGuiTextBuffer log;
+    return log;
+}
+
+// Replaces the log with the message of a failing call and prints it to stderr. Graphics thread only.
+static inline void ImPlatform_ShaderLog(const char* fmt, ...) IM_FMTARGS(1);
+static inline void ImPlatform_ShaderLog(const char* fmt, ...)
+{
+    ImGuiTextBuffer& log = ImPlatform_ShaderLogBuffer();
+    log.clear();
+    va_list args;
+    va_start(args, fmt);
+    log.appendfv(fmt, args);
+    va_end(args);
+    fprintf(stderr, "[ImPlatform] %s\n", log.c_str());
+}
+
+// Appends a source with its line numbers, as the compiler's messages refer to them.
+static inline void ImPlatform_AppendNumberedSource(ImGuiTextBuffer& out, const char* source)
+{
+    int line = 1;
+    for (const char* p = source; *p; line++)
+    {
+        const char* end = p + strcspn(p, "\n");
+        out.appendf("%4d: %.*s\n", line, (int)(end - p), p);
+        p = *end ? end + 1 : end;
+    }
+}
+
+// ImPlatform_CreateShaderProgramAsync; list_source: the log of a failure ends with the numbered source of the stage
+// (generated shaders).
+ImPlatform_ShaderJob ImPlatform_ShaderJobCreate(const ImPlatform_ShaderDesc* vertex_desc, const ImPlatform_ShaderDesc* fragment_desc,
+                                                bool list_source);
+
+// "NAME=VALUE;OTHER" (';' or new lines) -> #define lines; a line starting with '#' is kept as written.
+static inline void ImPlatform_AppendDefines(ImGuiTextBuffer& out, const char* defines)
+{
+    for (const char* p = defines; p && *p; )
+    {
+        const char* end = p + strcspn(p, ";\n");
+        while (p < end && (*p == ' ' || *p == '\t' || *p == '\r'))
+            p++;
+        const char* eq = (const char*)memchr(p, '=', (size_t)(end - p));
+        if (p < end && *p == '#')
+            out.appendf("%.*s\n", (int)(end - p), p);
+        else if (p < end)
+        {
+            if (eq)
+                out.appendf("#define %.*s %.*s\n", (int)(eq - p), p, (int)(end - eq - 1), eq + 1);
+            else
+                out.appendf("#define %.*s\n", (int)(end - p), p);
+        }
+        p = *end ? end + 1 : end;
+    }
+}
+
+// The descriptor to compile: `desc` itself, or `with` when desc->defines applies (its text is kept in `source`). The
+// #define lines go before the source, after the line of a GLSL #version, followed by a #line so that the compiler
+// numbers the lines of the source as written.
+static inline const ImPlatform_ShaderDesc* ImPlatform_ShaderApplyDefines(const ImPlatform_ShaderDesc* desc, ImPlatform_ShaderDesc* with,
+                                                                        ImGuiTextBuffer* source)
+{
+    if (!desc || !desc->source_code || !desc->defines || !desc->defines[0]
+        || desc->format == ImPlatform_ShaderFormat_SPIRV || desc->format == ImPlatform_ShaderFormat_WGSL)
+        return desc;
+    const char* body = desc->source_code;
+    int line = 1;
+    const char* version = desc->format == ImPlatform_ShaderFormat_GLSL ? strstr(body, "#version") : NULL;
+    if (version)
+    {
+        const char* eol = strchr(version, '\n');
+        eol = eol ? eol + 1 : version + strlen(version);
+        source->append(body, eol);
+        if (eol[-1] != '\n')
+            source->append("\n");
+        for (const char* p = body; p < eol; p++)
+            line += *p == '\n';
+        // "#line N" numbers the next line N from desktop GLSL 3.30, N + 1 before it and in GLSL ES.
+        const char* es = strstr(version, " es");
+        if (atoi(version + 8) < 330 || (es && es < eol))
+            line--;
+        body = eol;
+    }
+    ImPlatform_AppendDefines(*source, desc->defines);
+    source->appendf("#line %d\n%s", line, body);
+    *with = *desc;
+    with->source_code = source->c_str();
+    with->defines = NULL;
+    return with;
+}
+
+// A blend descriptor packed in an integer, as programs keep it and pipelines are keyed by it: 0 is "none set" (Dear
+// ImGui's blending). False when a member is out of range. A color factor of the alpha blend becomes its alpha factor:
+// the same value in the alpha channel, and the only form Direct3D takes.
+static inline bool ImPlatform_BlendKey(const ImPlatform_BlendDesc* b, unsigned int* key)
+{
+    if (!b)
+    {
+        *key = 0;
+        return true;
+    }
+    if ((unsigned)b->src_color > ImPlatform_BlendFactor_InvDstAlpha || (unsigned)b->dst_color > ImPlatform_BlendFactor_InvDstAlpha
+        || (unsigned)b->src_alpha > ImPlatform_BlendFactor_InvDstAlpha || (unsigned)b->dst_alpha > ImPlatform_BlendFactor_InvDstAlpha
+        || (unsigned)b->op_color > ImPlatform_BlendOp_Max || (unsigned)b->op_alpha > ImPlatform_BlendOp_Max)
+        return false;
+    unsigned alpha[2] = { (unsigned)b->src_alpha, (unsigned)b->dst_alpha };
+    for (unsigned& f : alpha)
+        if (f == ImPlatform_BlendFactor_SrcColor || f == ImPlatform_BlendFactor_InvSrcColor
+            || f == ImPlatform_BlendFactor_DstColor || f == ImPlatform_BlendFactor_InvDstColor)
+            f += ImPlatform_BlendFactor_SrcAlpha - ImPlatform_BlendFactor_SrcColor;
+    *key = 1u | (b->enable ? 2u : 0u) | ((unsigned)b->src_color << 2) | ((unsigned)b->dst_color << 6) | ((unsigned)b->op_color << 10)
+         | (alpha[0] << 13) | (alpha[1] << 17) | ((unsigned)b->op_alpha << 21);
+    return true;
+}
+
+// The descriptor of a key; Dear ImGui's blending for 0.
+static inline ImPlatform_BlendDesc ImPlatform_BlendFromKey(unsigned int key)
+{
+    ImPlatform_BlendDesc b = { true, ImPlatform_BlendFactor_SrcAlpha, ImPlatform_BlendFactor_InvSrcAlpha, ImPlatform_BlendOp_Add,
+                               ImPlatform_BlendFactor_One, ImPlatform_BlendFactor_InvSrcAlpha, ImPlatform_BlendOp_Add };
+    if (key)
+    {
+        b.enable = (key & 2u) != 0;
+        b.src_color = (ImPlatform_BlendFactor)((key >> 2) & 15u);
+        b.dst_color = (ImPlatform_BlendFactor)((key >> 6) & 15u);
+        b.op_color = (ImPlatform_BlendOp)((key >> 10) & 7u);
+        b.src_alpha = (ImPlatform_BlendFactor)((key >> 13) & 15u);
+        b.dst_alpha = (ImPlatform_BlendFactor)((key >> 17) & 15u);
+        b.op_alpha = (ImPlatform_BlendOp)((key >> 21) & 7u);
+    }
+    return b;
+}
+
+// ============================================================================
+// HLSL compilation shared by Direct3D 10, 11 and 12
+// ============================================================================
+#if IM_CURRENT_GFX == IM_GFX_DIRECTX10 || IM_CURRENT_GFX == IM_GFX_DIRECTX11 || IM_CURRENT_GFX == IM_GFX_DIRECTX12
+#include <d3dcompiler.h>
+
+// ImPlatform_CreateShaderProgramAsync compiles on a worker thread: ImPlatform_D3DCompileShader needs no device.
+#define IMPLATFORM_SHADER_COMPILE_THREAD 1
+
+static inline const char* ImPlatform_D3DShaderTarget(ImPlatform_ShaderStage stage)
+{
+#if IM_CURRENT_GFX == IM_GFX_DIRECTX10
+    // Direct3D 10 hardware stops at shader model 4.
+    return stage == ImPlatform_ShaderStage_Vertex ? "vs_4_0" : stage == ImPlatform_ShaderStage_Fragment ? "ps_4_0" : NULL;
+#else
+    return stage == ImPlatform_ShaderStage_Vertex ? "vs_5_0" : stage == ImPlatform_ShaderStage_Fragment ? "ps_5_0"
+         : stage == ImPlatform_ShaderStage_Compute ? "cs_5_0" : NULL;
+#endif
+}
+
+// HLSL source (its defines already applied) to bytecode, through the disk cache when desc->cache_key is set. NULL on
+// failure, with the compiler's messages in *out_log (to free(); may stay NULL). Uses no device and no shared state, so
+// it runs on any thread.
+static inline ID3DBlob* ImPlatform_D3DCompileShader(const ImPlatform_ShaderDesc* desc, char** out_log)
+{
+    *out_log = NULL;
+    const char* target = ImPlatform_D3DShaderTarget(desc->stage);
+    if (!target || !desc->source_code || desc->format != ImPlatform_ShaderFormat_HLSL)
+        return NULL;
+    const char* entry = desc->entry_point ? desc->entry_point : "main";
+    const size_t source_len = strlen(desc->source_code);
+    const bool cached = desc->cache_key && desc->cache_key[0];
+    char cache_path[512] = "";
+    ID3DBlob* blob = NULL;
+    if (cached)
+    {
+        ImPlatform_ShaderCacheBuildPath(cache_path, sizeof(cache_path), desc->cache_key, entry, "dxbc",
+                                        ImPlatform_ShaderCacheHashSource(desc->source_code, source_len, entry, target));
+        size_t size = 0;
+        void* data = ImPlatform_ShaderCacheLoad(cache_path, &size);
+        if (data && SUCCEEDED(D3DCreateBlob(size, &blob)) && blob)
+        {
+            memcpy(blob->GetBufferPointer(), data, size);
+            fprintf(stderr, "[ImPlatform shader cache] HIT  %s/%s (%zu bytes)\n", desc->cache_key, entry, size);
+        }
+        free(data);
+        if (blob)
+            return blob;
+        fprintf(stderr, "[ImPlatform shader cache] MISS %s/%s -- compiling...\n", desc->cache_key, entry);
+    }
+
+    UINT flags = D3DCOMPILE_ENABLE_STRICTNESS;
+    if (desc->compile_flags & IMPLATFORM_SHADER_COMPILE_SKIP_OPTIMIZATION) flags |= D3DCOMPILE_SKIP_OPTIMIZATION;
+    if (desc->compile_flags & IMPLATFORM_SHADER_COMPILE_OPTIMIZATION_LOW)  flags |= D3DCOMPILE_OPTIMIZATION_LEVEL0;
+    if (desc->compile_flags & IMPLATFORM_SHADER_COMPILE_OPTIMIZATION_HIGH) flags |= D3DCOMPILE_OPTIMIZATION_LEVEL3;
+    if (desc->compile_flags & IMPLATFORM_SHADER_COMPILE_DEBUG)             flags |= D3DCOMPILE_DEBUG;
+    ID3DBlob* errors = NULL;
+    LARGE_INTEGER freq, t0, t1;
+    QueryPerformanceFrequency(&freq);
+    QueryPerformanceCounter(&t0);
+    const HRESULT hr = D3DCompile(desc->source_code, source_len, NULL, NULL, NULL, entry, target, flags, 0, &blob, &errors);
+    QueryPerformanceCounter(&t1);
+    if (FAILED(hr) || !blob)
+    {
+        if (errors)
+        {
+            const size_t n = errors->GetBufferSize();
+            *out_log = (char*)malloc(n + 1);
+            if (*out_log)
+            {
+                memcpy(*out_log, errors->GetBufferPointer(), n);
+                (*out_log)[n] = 0;
+            }
+            errors->Release();
+        }
+        if (blob)
+            blob->Release();
+        return NULL;
+    }
+    if (errors)
+        errors->Release();
+    fprintf(stderr, "[ImPlatform shader compile] %-22s %s  target=%s  %8.2f ms  (%zu bytes, %zu src chars)\n",
+            cached ? desc->cache_key : "(no-key)", entry, target, (double)(t1.QuadPart - t0.QuadPart) * 1000.0 / (double)freq.QuadPart,
+            (size_t)blob->GetBufferSize(), source_len);
+    if (cached && ImPlatform_ShaderCacheSave(cache_path, blob->GetBufferPointer(), blob->GetBufferSize()))
+        fprintf(stderr, "[ImPlatform shader cache] SAVE %s/%s (%zu bytes)\n", desc->cache_key, entry, (size_t)blob->GetBufferSize());
+    return blob;
+}
+#endif // Direct3D 10, 11, 12
+
 #endif  // IMPLATFORM_GFX_SUPPORT_CUSTOM_SHADER

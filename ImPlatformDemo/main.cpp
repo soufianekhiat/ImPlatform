@@ -233,56 +233,76 @@ static int CheckRenderPassTest()
 #include "shaders/arrow_sdf.spv.h"
 #include "shaders/gradient.spv.h"
 #include "shaders/volume_test.spv.h"
-#define DEMO_SHADER_PROGRAM( name, shaders ) CreateDemoProgram( ImPlatform_ShaderFormat_SPIRV, name##_vs_spv, sizeof( name##_vs_spv ), name##_ps_spv, sizeof( name##_ps_spv ), "main", "main", shaders )
+#define DEMO_SHADER_ARGS( name ) ImPlatform_ShaderFormat_SPIRV, name##_vs_spv, sizeof( name##_vs_spv ), name##_ps_spv, sizeof( name##_ps_spv ), "main", "main"
 #elif (IM_CURRENT_GFX == IM_GFX_OPENGL3)
 #include "shaders/arrow_sdf.glsl.h"
 #include "shaders/gradient.glsl.h"
 #include "shaders/volume_test.glsl.h"
-#define DEMO_SHADER_PROGRAM( name, shaders ) CreateDemoProgram( ImPlatform_ShaderFormat_GLSL, name##_vs_glsl, 0, name##_ps_glsl, 0, "main", "main", shaders )
+#define DEMO_SHADER_ARGS( name ) ImPlatform_ShaderFormat_GLSL, name##_vs_glsl, 0, name##_ps_glsl, 0, "main", "main"
 #elif (IM_CURRENT_GFX == IM_GFX_DIRECTX9) || (IM_CURRENT_GFX == IM_GFX_DIRECTX10) || (IM_CURRENT_GFX == IM_GFX_DIRECTX11) || (IM_CURRENT_GFX == IM_GFX_DIRECTX12)
 #include "shaders/arrow_sdf.hlsl.h"
 #include "shaders/gradient.hlsl.h"
 #include "shaders/volume_test.hlsl.h"
-#define DEMO_SHADER_PROGRAM( name, shaders ) CreateDemoProgram( ImPlatform_ShaderFormat_HLSL, name##_hlsl, 0, name##_hlsl, 0, "vs_main", "ps_main", shaders )
+#define DEMO_SHADER_ARGS( name ) ImPlatform_ShaderFormat_HLSL, name##_hlsl, 0, name##_hlsl, 0, "vs_main", "ps_main"
 #elif (IM_CURRENT_GFX == IM_GFX_WGPU)
 #include "shaders/arrow_sdf.wgsl.h"
 #include "shaders/gradient.wgsl.h"
 #include "shaders/volume_test.wgsl.h"
-#define DEMO_SHADER_PROGRAM( name, shaders ) CreateDemoProgram( ImPlatform_ShaderFormat_WGSL, name##_vs_wgsl, 0, name##_ps_wgsl, 0, "vs_main", "ps_main", shaders )
+#define DEMO_SHADER_ARGS( name ) ImPlatform_ShaderFormat_WGSL, name##_vs_wgsl, 0, name##_ps_wgsl, 0, "vs_main", "ps_main"
 #elif (IM_CURRENT_GFX == IM_GFX_METAL)
 #include "shaders/arrow_sdf.metal.h"
 #include "shaders/gradient.metal.h"
 #include "shaders/volume_test.metal.h"
-#define DEMO_SHADER_PROGRAM( name, shaders ) CreateDemoProgram( ImPlatform_ShaderFormat_MSL, name##_vs_metal, 0, name##_ps_metal, 0, "vs_main", "ps_main", shaders )
+#define DEMO_SHADER_ARGS( name ) ImPlatform_ShaderFormat_MSL, name##_vs_metal, 0, name##_ps_metal, 0, "vs_main", "ps_main"
 #else
 #define DEMO_SHADER_NONE	// No demo shader for this backend
 #define DEMO_SHADER_PROGRAM( name, shaders ) nullptr
+#define DEMO_SHADER_JOB( name ) nullptr
+#endif
+#ifndef DEMO_SHADER_NONE
+#define DEMO_SHADER_PROGRAM( name, shaders ) CreateDemoProgram( DEMO_SHADER_ARGS( name ), shaders )
+#define DEMO_SHADER_JOB( name ) CreateDemoJob( DEMO_SHADER_ARGS( name ) )
 #endif
 
 #ifndef DEMO_SHADER_NONE
-// Creates both stages (kept in shaders[] to be destroyed) and the program; size 0: vs and ps are source text.
+// The descriptor of a stage; size 0: code is source text.
+static ImPlatform_ShaderDesc DemoShaderDesc( ImPlatform_ShaderStage stage, ImPlatform_ShaderFormat format, const void* code, size_t size, const char* entry )
+{
+	ImPlatform_ShaderDesc desc = {};
+	desc.stage = stage;
+	desc.format = format;
+	desc.entry_point = entry;
+	if ( size )
+	{
+		desc.bytecode = code;
+		desc.bytecode_size = (unsigned int)size;
+	}
+	else
+		desc.source_code = (const char*)code;
+	return desc;
+}
+
+// Creates both stages (kept in shaders[] to be destroyed) and the program.
 static ImPlatform_ShaderProgram CreateDemoProgram( ImPlatform_ShaderFormat format, const void* vs, size_t vs_size, const void* ps, size_t ps_size,
 												   const char* vs_entry, const char* ps_entry, ImPlatform_Shader shaders[ 2 ] )
 {
-	for ( int i = 0; i < 2; ++i )
-	{
-		ImPlatform_ShaderDesc desc = {};
-		desc.stage = i == 0 ? ImPlatform_ShaderStage_Vertex : ImPlatform_ShaderStage_Fragment;
-		desc.format = format;
-		desc.entry_point = i == 0 ? vs_entry : ps_entry;
-		const void* code = i == 0 ? vs : ps;
-		const size_t size = i == 0 ? vs_size : ps_size;
-		if ( size )
-		{
-			desc.bytecode = code;
-			desc.bytecode_size = (unsigned int)size;
-		}
-		else
-			desc.source_code = (const char*)code;
-		shaders[ i ] = ImPlatform_CreateShader( &desc );
-	}
+	const ImPlatform_ShaderDesc vs_desc = DemoShaderDesc( ImPlatform_ShaderStage_Vertex, format, vs, vs_size, vs_entry );
+	const ImPlatform_ShaderDesc ps_desc = DemoShaderDesc( ImPlatform_ShaderStage_Fragment, format, ps, ps_size, ps_entry );
+	shaders[ 0 ] = ImPlatform_CreateShader( &vs_desc );
+	shaders[ 1 ] = ImPlatform_CreateShader( &ps_desc );
 	return shaders[ 0 ] && shaders[ 1 ] ? ImPlatform_CreateShaderProgram( shaders[ 0 ], shaders[ 1 ] ) : nullptr;
 }
+
+#ifndef __EMSCRIPTEN__
+// The same program compiled without blocking (ImPlatform_GetShaderJobStatus tells when it is ready); --shader-async-test.
+static ImPlatform_ShaderJob CreateDemoJob( ImPlatform_ShaderFormat format, const void* vs, size_t vs_size, const void* ps, size_t ps_size,
+										   const char* vs_entry, const char* ps_entry )
+{
+	const ImPlatform_ShaderDesc vs_desc = DemoShaderDesc( ImPlatform_ShaderStage_Vertex, format, vs, vs_size, vs_entry );
+	const ImPlatform_ShaderDesc ps_desc = DemoShaderDesc( ImPlatform_ShaderStage_Fragment, format, ps, ps_size, ps_entry );
+	return ImPlatform_CreateShaderProgramAsync( &vs_desc, &ps_desc );
+}
+#endif
 #endif // DEMO_SHADER_NONE
 
 #if defined( IMGUI_HAS_TEXTURES ) && !defined( __EMSCRIPTEN__ )
@@ -716,6 +736,184 @@ static int CheckDirectDrawTest()
 		printf( "PASS\n" );
 	return bad ? 1 : 0;
 }
+
+// --blend-test: the gradient program drawn twice over opaque gray (64) with a constant color (0.5, 0.25, 0, 1), its
+// blending set from a draw callback before each half (ImPlatform_SetShaderProgramBlend is read when the program is
+// bound): additive on the left (gray plus the color), multiply on the right (gray times the color). Both keep the
+// target's alpha. Exit code as above.
+static RenderPassScene g_BlendTest;
+struct BlendTestHalf
+{
+	ImVec4					Colors[ 2 ];
+	ImPlatform_BlendPreset	Preset;
+};
+static void SetBlendTestHalf( const ImDrawList*, const ImDrawCmd* cmd )
+{
+	const BlendTestHalf* half = (const BlendTestHalf*)cmd->UserCallbackData;
+	const ImPlatform_BlendDesc blend = ImPlatform_BlendDesc_Preset( half->Preset );
+	ImPlatform_SetShaderProgramBlend( g_ShaderTestProgram, &blend );
+	ImPlatform_SetShaderUniform( g_ShaderTestProgram, "pixelBuffer", half->Colors, sizeof( half->Colors ) );
+}
+static void DrawBlendTest( ImDrawList* dl )
+{
+	static const BlendTestHalf halves[ 2 ] = { { { ImVec4( 0.5f, 0.25f, 0, 1 ), ImVec4( 0.5f, 0.25f, 0, 1 ) }, ImPlatform_BlendPreset_Additive },
+											   { { ImVec4( 0.5f, 0.25f, 0, 1 ), ImVec4( 0.5f, 0.25f, 0, 1 ) }, ImPlatform_BlendPreset_Multiply } };
+	dl->AddRectFilled( ImVec2( 0, 0 ), ImVec2( 64, 64 ), IM_COL32( 64, 64, 64, 255 ) );
+	for ( int i = 0; i < 2; i++ )
+	{
+		dl->AddCallback( SetBlendTestHalf, (void*)&halves[ i ] );
+		ImPlatform_BeginCustomShader( dl, g_ShaderTestProgram );
+		dl->AddImage( ImGui::GetIO().Fonts->TexRef, ImVec2( 32.0f * i, 0 ), ImVec2( 32.0f * i + 32.0f, 64 ) );
+		ImPlatform_EndCustomShader( dl );
+	}
+}
+
+static int CheckBlendTest()
+{
+	static unsigned char px[ 64 * 64 * 4 ];
+	if ( !DemoReadTexture( g_BlendTest.Target, 0, 0, 64, 64, px, sizeof( px ) ) )
+	{
+		printf( "SKIP: no readback of the pass target\n" );
+		return 2;
+	}
+	// 64 + 128, 64 + 64, 64 + 0 | 64 * 0.5, 64 * 0.25, 64 * 0
+	const RenderPassProbe probes[] = { { 16, 32, { 192, 128, 64, 255 } }, { 48, 32, { 32, 16, 0, 255 } } };
+	const int bad = CheckRenderPassProbes( "blend", px, 64, probes, 2, 4 );
+	if ( !bad )
+		printf( "PASS\n" );
+	return bad ? 1 : 0;
+}
+
+// --shader-async-test: programs compiled with ImPlatform_CreateShaderProgramAsync, drawn into a render pass once ready
+// and read back. Job 0 is the gradient program (every backend), drawn blue on the left. With shader parts, job 1 is a
+// permutation selected by ImPlatform_ShaderDesc::defines (MODE=2: green on the right, red otherwise) and job 2 a pixel
+// shader that does not compile: it must end Failed with the compiler's messages in its log, as ImPlatform_GetShaderLog
+// has them for the same shader compiled synchronously. Exit code as above.
+static RenderPassScene g_AsyncTest;
+static ImPlatform_ShaderJob g_AsyncJobs[ 3 ] = {};
+static ImPlatform_ShaderProgram g_AsyncPrograms[ 2 ] = {};
+static int g_AsyncFrames = 0;			// Frames drawn while a job was compiling
+static bool g_AsyncSyncLog = false;		// The synchronous compile of job 2's shader failed with a log
+static void DrawAsyncTest( ImDrawList* dl )
+{
+	for ( int i = 0; i < 2; i++ )
+		if ( g_AsyncPrograms[ i ] )
+		{
+			ImPlatform_BeginCustomShader( dl, g_AsyncPrograms[ i ] );
+			dl->AddImage( ImGui::GetIO().Fonts->TexRef, ImVec2( 32.0f * i, 0 ), ImVec2( 32.0f * i + 32.0f, 64 ) );
+			ImPlatform_EndCustomShader( dl );
+		}
+}
+
+// Called each frame: negative while a job is compiling, 0 once the scene is queued, else the exit code.
+static int UpdateAsyncTest()
+{
+	if ( !g_AsyncJobs[ 0 ] )
+	{
+		g_AsyncJobs[ 0 ] = DEMO_SHADER_JOB( gradient );
+		if ( !g_AsyncJobs[ 0 ] )
+		{
+			printf( "SKIP: no custom shader on this backend\n" );
+			return 2;
+		}
+#if IMPLATFORM_GFX_SUPPORT_SHADER_PARTS
+#if IM_CURRENT_GFX == IM_GFX_OPENGL3
+		const ImPlatform_ShaderFormat format = ImPlatform_ShaderFormat_GLSL;
+#elif IM_CURRENT_GFX == IM_GFX_METAL
+		const ImPlatform_ShaderFormat format = ImPlatform_ShaderFormat_MSL;
+#else
+		const ImPlatform_ShaderFormat format = ImPlatform_ShaderFormat_HLSL;
+#endif
+		ImPlatform_ShaderParts parts = {};
+		parts.ps_body = "#if MODE == 2\ncol_out = float4(0.0, 1.0, 0.0, 1.0);\n#else\ncol_out = float4(1.0, 0.0, 0.0, 1.0);\n#endif\n";
+		static char source[ 2 ][ 1 << 14 ];
+		ImPlatform_ShaderDesc desc[ 2 ] = {};
+		for ( int i = 0; i < 2; i++ )
+		{
+			desc[ i ].stage = i == 0 ? ImPlatform_ShaderStage_Vertex : ImPlatform_ShaderStage_Fragment;
+			desc[ i ].format = format;
+			const int len = ImPlatform_GenerateShaderSource( &parts, desc[ i ].stage, format, source[ i ], (int)sizeof( source[ i ] ) );
+			if ( len < 0 || len >= (int)sizeof( source[ i ] ) )
+			{
+				printf( "FAIL: shader source generation\n" );
+				return 1;
+			}
+			desc[ i ].source_code = source[ i ];
+			desc[ i ].entry_point = format == ImPlatform_ShaderFormat_GLSL ? "main" : i == 0 ? "vs_main" : "ps_main";
+#if IM_CURRENT_GFX == IM_GFX_DIRECTX9
+			desc[ i ].defines = "MODE=2;IMP_SM3=1;nointerpolation";	// As ImPlatform_CreateShaderFromParts defines them for shader model 3
+#else
+			desc[ i ].defines = "UNUSED;MODE=2";
+#endif
+		}
+		g_AsyncJobs[ 1 ] = ImPlatform_CreateShaderProgramAsync( &desc[ 0 ], &desc[ 1 ] );
+		parts.ps_body = "col_out = undeclared_value;\n";
+		g_AsyncJobs[ 2 ] = ImPlatform_CreateShaderProgramFromPartsAsync( &parts );
+		g_AsyncSyncLog = !ImPlatform_CreateShaderFromParts( &parts, ImPlatform_ShaderStage_Fragment ) && strstr( ImPlatform_GetShaderLog(), "undeclared_value" );
+		if ( !g_AsyncJobs[ 1 ] || !g_AsyncJobs[ 2 ] )
+		{
+			printf( "FAIL: job creation\n" );
+			return 1;
+		}
+#endif
+		printf( "after creation: %s\n", ImPlatform_GetShaderJobStatus( g_AsyncJobs[ 0 ], nullptr ) == ImPlatform_ShaderStatus_Compiling ? "compiling" : "compiled" );
+	}
+	bool compiling = false;
+	for ( int i = 0; i < 3; i++ )
+		if ( g_AsyncJobs[ i ] && ImPlatform_GetShaderJobStatus( g_AsyncJobs[ i ], i < 2 ? &g_AsyncPrograms[ i ] : nullptr ) == ImPlatform_ShaderStatus_Compiling )
+			compiling = true;
+	if ( compiling )
+	{
+		if ( ++g_AsyncFrames < 3000 )
+			return -1;
+		printf( "FAIL: still compiling after %d frames\n", g_AsyncFrames );
+		return 1;
+	}
+	for ( int i = 0; i < 2; i++ )
+		if ( g_AsyncJobs[ i ] && !g_AsyncPrograms[ i ] )
+		{
+			printf( "FAIL: job %d: %s\n", i, ImPlatform_GetShaderJobLog( g_AsyncJobs[ i ] ) );
+			return 1;
+		}
+	const ImVec4 blue[ 2 ] = { ImVec4( 0, 0, 1, 1 ), ImVec4( 0, 0, 1, 1 ) };
+	ImPlatform_SetShaderUniform( g_AsyncPrograms[ 0 ], "pixelBuffer", blue, sizeof( blue ) );
+	if ( !QueueRenderPassScene( g_AsyncTest, 64, DrawAsyncTest ) )
+	{
+		printf( "SKIP: render passes not supported on this backend\n" );
+		return 2;
+	}
+	return 0;
+}
+
+static int CheckAsyncTest()
+{
+	static unsigned char px[ 64 * 64 * 4 ];
+	if ( !DemoReadTexture( g_AsyncTest.Target, 0, 0, 64, 64, px, sizeof( px ) ) )
+	{
+		printf( "SKIP: no readback of the pass target\n" );
+		return 2;
+	}
+	const RenderPassProbe probes[] = { { 16, 32, { 0, 0, 255, 255 } }, { 48, 32, { 0, 255, 0, 255 } } };
+	int bad = CheckRenderPassProbes( "async program", px, 64, probes, g_AsyncJobs[ 1 ] ? 2 : 1, 4 );
+	if ( g_AsyncJobs[ 2 ] )
+	{
+		const char* log = ImPlatform_GetShaderJobLog( g_AsyncJobs[ 2 ] );
+		if ( ImPlatform_GetShaderJobStatus( g_AsyncJobs[ 2 ], nullptr ) != ImPlatform_ShaderStatus_Failed || !strstr( log, "undeclared_value" ) || !g_AsyncSyncLog )
+		{
+			printf( "FAIL: the shader that does not compile: status, job log \"%s\" or ImPlatform_GetShaderLog\n", log );
+			++bad;
+		}
+	}
+	if ( !bad )
+		printf( "PASS (%d frames while compiling%s)\n", g_AsyncFrames, g_AsyncJobs[ 1 ] ? "" : "; no shader parts here: defines and logs not tested" );
+	return bad ? 1 : 0;
+}
+
+static void DestroyAsyncTest()
+{
+	for ( ImPlatform_ShaderJob job : g_AsyncJobs )
+		ImPlatform_DestroyShaderJob( job );
+}
 #endif
 #endif // IMPLATFORM_GFX_SUPPORT_CUSTOM_SHADER
 
@@ -803,8 +1001,10 @@ static int ImPlatformDemo_ComputeTest()
 
 int main( int argc, char** argv )
 {
+#ifndef __EMSCRIPTEN__	// The self-tests and --dump-msl are not built for the web
 	if ( argc > 3 && strcmp( argv[ 1 ], "--dump-msl" ) == 0 )
 		return DumpMSL( argv[ 2 ], argv[ 3 ] );
+#endif
 	const bool computeTest = argc > 1 && strcmp( argv[ 1 ], "--compute-test" ) == 0;
 	const bool renderPassTest = argc > 1 && strcmp( argv[ 1 ], "--render-pass-test" ) == 0;
 	const bool shaderTest = argc > 1 && strcmp( argv[ 1 ], "--shader-test" ) == 0;
@@ -812,10 +1012,14 @@ int main( int argc, char** argv )
 	const bool partsTest = argc > 1 && strcmp( argv[ 1 ], "--shader-parts-test" ) == 0;
 	const bool texture3DTest = argc > 1 && strcmp( argv[ 1 ], "--texture3d-test" ) == 0;
 	const bool vertexInputsTest = argc > 1 && strcmp( argv[ 1 ], "--vertex-inputs-test" ) == 0;
-	const bool passTest = renderPassTest || shaderTest || directDrawTest || partsTest || texture3DTest || vertexInputsTest;	// Tests read back a render pass
+	const bool blendTest = argc > 1 && strcmp( argv[ 1 ], "--blend-test" ) == 0;
+	const bool asyncTest = argc > 1 && strcmp( argv[ 1 ], "--shader-async-test" ) == 0;
+	const bool passTest = renderPassTest || shaderTest || directDrawTest || partsTest || texture3DTest || vertexInputsTest || blendTest
+						|| asyncTest;	// Tests read back a render pass
 	int exitCode = 0;
 #ifndef __EMSCRIPTEN__
 	int renderPassFrame = 0;
+	bool asyncCompiling = false;	// --shader-async-test: its frames are counted once its programs are ready
 #endif
 	// Configure borderless window with custom titlebar
 	ImPlatform_EnableCustomTitleBar();
@@ -1055,6 +1259,32 @@ int main( int argc, char** argv )
 			exitCode = 2;
 			break;
 		}
+		if ( blendTest && renderPassFrame == 0 )
+		{
+#if IMPLATFORM_GFX_SUPPORT_CUSTOM_SHADER
+			g_ShaderTestProgram = gradient_program;
+			if ( !gradient_program || !QueueRenderPassScene( g_BlendTest, 64, DrawBlendTest ) )
+#endif
+			{
+				printf( "SKIP: no custom shader or render pass on this backend\n" );
+				exitCode = 2;
+				break;
+			}
+		}
+		if ( asyncTest && renderPassFrame == 0 )
+		{
+#if IMPLATFORM_GFX_SUPPORT_CUSTOM_SHADER
+			const int state = UpdateAsyncTest();
+#else
+			const int state = 2;
+#endif
+			if ( state > 0 )
+			{
+				exitCode = state;
+				break;
+			}
+			asyncCompiling = state < 0;
+		}
 		if ( directDrawTest && renderPassFrame == 0 )
 		{
 #if IMPLATFORM_GFX_SUPPORT_CUSTOM_SHADER
@@ -1232,11 +1462,12 @@ int main( int argc, char** argv )
 
 		ImPlatform_GfxAPISwapBuffer();
 #if defined( IMGUI_HAS_TEXTURES ) && !defined( __EMSCRIPTEN__ )
-		if ( passTest && ++renderPassFrame == 3 )
+		if ( passTest && !asyncCompiling && ++renderPassFrame == 3 )
 		{
 #if IMPLATFORM_GFX_SUPPORT_CUSTOM_SHADER
 			exitCode = shaderTest ? CheckShaderTest() : directDrawTest ? CheckDirectDrawTest() : partsTest ? CheckPartsTest()
-					 : texture3DTest ? CheckTexture3DTest() : vertexInputsTest ? CheckVertexInputsTest() : CheckRenderPassTest();
+					 : texture3DTest ? CheckTexture3DTest() : vertexInputsTest ? CheckVertexInputsTest() : blendTest ? CheckBlendTest()
+					 : asyncTest ? CheckAsyncTest() : CheckRenderPassTest();
 #else
 			exitCode = CheckRenderPassTest();
 #endif
@@ -1284,6 +1515,9 @@ int main( int argc, char** argv )
 	DestroyTexture3DTest();
 	DestroyRenderPassScene( g_VertexInputsTest );
 	DestroyVertexInputsTest();
+	DestroyRenderPassScene( g_BlendTest );
+	DestroyRenderPassScene( g_AsyncTest );
+	DestroyAsyncTest();
 	DestroyRenderPassScene( g_DirectDrawPass );
 	if ( g_DirectDrawTarget )
 		ImPlatform_DestroyTexture( g_DirectDrawTarget );

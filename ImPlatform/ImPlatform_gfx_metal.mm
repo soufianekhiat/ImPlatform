@@ -851,6 +851,8 @@ struct ImPlatform_ShaderProgramData_Metal
     void* textures[9];          // ImPlatform_SetShaderTexture: id<MTLTexture> of t1..t8 (retained; slot 0 unused)
     struct { ImGuiID layout; void* pipeline; } layoutPipelines[8];  // ImPlatform_DrawIndexed: id<MTLRenderPipelineState> per layout
     int layoutPipelineCount;
+    void* mtlVertexDescriptor;  // MTLVertexDescriptor of ImDrawVert for this program (retained); NULL with its own layout
+    unsigned int blend;         // ImPlatform_BlendKey the pipelines are built with; 0: Dear ImGui's blending
 };
 
 // Current draw data for custom shader rendering (needed for multi-viewport)
@@ -879,6 +881,9 @@ static ImPlatform_ShaderProgramData_Metal* g_MetalBoundProgram = nullptr;  // Bo
 //   See ImPlatform_Metal_InitBinaryArchive / _SaveBinaryArchive above.
 IMPLATFORM_API ImPlatform_Shader ImPlatform_CreateShader(const ImPlatform_ShaderDesc* desc)
 {
+    ImPlatform_ShaderDesc with_defines;
+    ImGuiTextBuffer defined_source;
+    desc = ImPlatform_ShaderApplyDefines(desc, &with_defines, &defined_source);
     if (!desc || !desc->source_code || !g_GfxData.pMetalDevice)
         return NULL;
 
@@ -894,10 +899,7 @@ IMPLATFORM_API ImPlatform_Shader ImPlatform_CreateShader(const ImPlatform_Shader
         id<MTLLibrary> library = [device newLibraryWithSource:sourceString options:options error:&error];
         if (!library)
         {
-            if (error)
-            {
-                NSLog(@"Metal shader compilation failed: %@", error.localizedDescription);
-            }
+            ImPlatform_ShaderLog("Metal shader compilation failed: %s", error ? error.localizedDescription.UTF8String : "");
             return NULL;
         }
 
@@ -906,7 +908,7 @@ IMPLATFORM_API ImPlatform_Shader ImPlatform_CreateShader(const ImPlatform_Shader
         id<MTLFunction> function = [library newFunctionWithName:entryPoint];
         if (!function)
         {
-            NSLog(@"Metal shader entry point '%@' not found", entryPoint);
+            ImPlatform_ShaderLog("Metal shader entry point '%s' not found", entryPoint.UTF8String);
             return NULL;
         }
 
@@ -938,7 +940,7 @@ IMPLATFORM_API void ImPlatform_DestroyShader(ImPlatform_Shader shader)
 }
 
 static id<MTLRenderPipelineState> ImPlatform_Metal_CreatePipeline(id<MTLFunction> vertexFunction, id<MTLFunction> fragmentFunction,
-                                                                  MTLVertexDescriptor* vertexDescriptor);
+                                                                  MTLVertexDescriptor* vertexDescriptor, unsigned int blend);
 
 IMPLATFORM_API ImPlatform_ShaderProgram ImPlatform_CreateShaderProgram(ImPlatform_Shader vertex_shader, ImPlatform_Shader fragment_shader)
 {
@@ -1000,7 +1002,7 @@ IMPLATFORM_API ImPlatform_ShaderProgram ImPlatform_CreateShaderProgram(ImPlatfor
         // A program whose vertex inputs are not ImDrawVert's draws vertex buffers only (ImPlatform_DrawIndexed builds
         // its pipeline per vertex buffer layout).
         id<MTLRenderPipelineState> pipelineState = nil;
-        if (!customLayout && !(pipelineState = ImPlatform_Metal_CreatePipeline(vertexFunction, fragmentFunction, vertexDescriptor)))
+        if (!customLayout && !(pipelineState = ImPlatform_Metal_CreatePipeline(vertexFunction, fragmentFunction, vertexDescriptor, 0)))
             return NULL;
 
         // Create program data
@@ -1008,6 +1010,7 @@ IMPLATFORM_API ImPlatform_ShaderProgram ImPlatform_CreateShaderProgram(ImPlatfor
         program_data->mtlVertexFunction = (__bridge_retained void*)vertexFunction;
         program_data->mtlFragmentFunction = (__bridge_retained void*)fragmentFunction;
         program_data->mtlRenderPipelineState = pipelineState ? (__bridge_retained void*)pipelineState : nullptr;
+        program_data->mtlVertexDescriptor = customLayout ? nullptr : (__bridge_retained void*)vertexDescriptor;
         program_data->mtlUniformBuffer = nullptr;
         program_data->uniformData = nullptr;
         program_data->uniformDataSize = 0;
@@ -1017,24 +1020,33 @@ IMPLATFORM_API ImPlatform_ShaderProgram ImPlatform_CreateShaderProgram(ImPlatfor
     }
 }
 
-// The pipeline of a program for a vertex layout: Dear ImGui's blending and target format, through the binary archive.
+// The pipeline of a program for a vertex layout: the program's blending (ImPlatform_BlendKey; Dear ImGui's for 0) and
+// Dear ImGui's target format, through the binary archive.
 static id<MTLRenderPipelineState> ImPlatform_Metal_CreatePipeline(id<MTLFunction> vertexFunction, id<MTLFunction> fragmentFunction,
-                                                                  MTLVertexDescriptor* vertexDescriptor)
+                                                                  MTLVertexDescriptor* vertexDescriptor, unsigned int blend)
 {
     @autoreleasepool {
+        static const MTLBlendFactor factors[] = { MTLBlendFactorZero, MTLBlendFactorOne, MTLBlendFactorSourceColor,
+                                                  MTLBlendFactorOneMinusSourceColor, MTLBlendFactorSourceAlpha,
+                                                  MTLBlendFactorOneMinusSourceAlpha, MTLBlendFactorDestinationColor,
+                                                  MTLBlendFactorOneMinusDestinationColor, MTLBlendFactorDestinationAlpha,
+                                                  MTLBlendFactorOneMinusDestinationAlpha };
+        static const MTLBlendOperation ops[] = { MTLBlendOperationAdd, MTLBlendOperationSubtract, MTLBlendOperationReverseSubtract,
+                                                 MTLBlendOperationMin, MTLBlendOperationMax };
+        const ImPlatform_BlendDesc b = ImPlatform_BlendFromKey(blend);
         id<MTLDevice> device = (__bridge id<MTLDevice>)g_GfxData.pMetalDevice;
         MTLRenderPipelineDescriptor* pipelineDescriptor = [[MTLRenderPipelineDescriptor alloc] init];
         pipelineDescriptor.vertexFunction = vertexFunction;
         pipelineDescriptor.fragmentFunction = fragmentFunction;
         pipelineDescriptor.vertexDescriptor = vertexDescriptor;
         pipelineDescriptor.colorAttachments[0].pixelFormat = MTLPixelFormatBGRA8Unorm;
-        pipelineDescriptor.colorAttachments[0].blendingEnabled = YES;
-        pipelineDescriptor.colorAttachments[0].rgbBlendOperation = MTLBlendOperationAdd;
-        pipelineDescriptor.colorAttachments[0].alphaBlendOperation = MTLBlendOperationAdd;
-        pipelineDescriptor.colorAttachments[0].sourceRGBBlendFactor = MTLBlendFactorSourceAlpha;
-        pipelineDescriptor.colorAttachments[0].destinationRGBBlendFactor = MTLBlendFactorOneMinusSourceAlpha;
-        pipelineDescriptor.colorAttachments[0].sourceAlphaBlendFactor = MTLBlendFactorOne;
-        pipelineDescriptor.colorAttachments[0].destinationAlphaBlendFactor = MTLBlendFactorOneMinusSourceAlpha;
+        pipelineDescriptor.colorAttachments[0].blendingEnabled = b.enable ? YES : NO;
+        pipelineDescriptor.colorAttachments[0].rgbBlendOperation = ops[b.op_color];
+        pipelineDescriptor.colorAttachments[0].alphaBlendOperation = ops[b.op_alpha];
+        pipelineDescriptor.colorAttachments[0].sourceRGBBlendFactor = factors[b.src_color];
+        pipelineDescriptor.colorAttachments[0].destinationRGBBlendFactor = factors[b.dst_color];
+        pipelineDescriptor.colorAttachments[0].sourceAlphaBlendFactor = factors[b.src_alpha];
+        pipelineDescriptor.colorAttachments[0].destinationAlphaBlendFactor = factors[b.dst_alpha];
 
         // Attach the global binary archive (macOS 11 / iOS 14+) so Metal can
         // look up a cached compiled pipeline instead of compiling from scratch.
@@ -1052,10 +1064,7 @@ static id<MTLRenderPipelineState> ImPlatform_Metal_CreatePipeline(id<MTLFunction
         id<MTLRenderPipelineState> pipelineState = [device newRenderPipelineStateWithDescriptor:pipelineDescriptor error:&error];
         if (!pipelineState)
         {
-            if (error)
-            {
-                NSLog(@"Metal render pipeline creation failed: %@", error.localizedDescription);
-            }
+            ImPlatform_ShaderLog("Metal render pipeline creation failed: %s", error ? error.localizedDescription.UTF8String : "");
             return nil;
         }
 
@@ -1079,6 +1088,37 @@ static id<MTLRenderPipelineState> ImPlatform_Metal_CreatePipeline(id<MTLFunction
         }
         return pipelineState;
     }
+}
+
+// Blending is part of the pipelines: the one for Dear ImGui's vertex layout is built again here, those of the vertex
+// buffer layouts at their next draw. Encoders keep the pipelines they were given, so the earlier ones can be released.
+IMPLATFORM_API bool ImPlatform_SetShaderProgramBlend(ImPlatform_ShaderProgram program, const ImPlatform_BlendDesc* blend)
+{
+    ImPlatform_ShaderProgramData_Metal* program_data = (ImPlatform_ShaderProgramData_Metal*)program;
+    unsigned int key = 0;
+    if (!program_data || !ImPlatform_BlendKey(blend, &key))
+        return false;
+    if (key == program_data->blend)
+        return true;
+
+    @autoreleasepool {
+        if (program_data->mtlVertexDescriptor)
+        {
+            id<MTLRenderPipelineState> pipeline = ImPlatform_Metal_CreatePipeline(
+                (__bridge id<MTLFunction>)program_data->mtlVertexFunction, (__bridge id<MTLFunction>)program_data->mtlFragmentFunction,
+                (__bridge MTLVertexDescriptor*)program_data->mtlVertexDescriptor, key);
+            if (!pipeline)
+                return false;
+            if (program_data->mtlRenderPipelineState)
+                CFRelease(program_data->mtlRenderPipelineState);
+            program_data->mtlRenderPipelineState = (__bridge_retained void*)pipeline;
+        }
+        for (int i = 0; i < program_data->layoutPipelineCount; i++)
+            CFRelease(program_data->layoutPipelines[i].pipeline);
+        program_data->layoutPipelineCount = 0;
+        program_data->blend = key;
+    }
+    return true;
 }
 
 IMPLATFORM_API void ImPlatform_DestroyShaderProgram(ImPlatform_ShaderProgram program)
@@ -1123,6 +1163,8 @@ IMPLATFORM_API void ImPlatform_DestroyShaderProgram(ImPlatform_ShaderProgram pro
                 CFRelease(texture);
         for (int i = 0; i < program_data->layoutPipelineCount; i++)
             CFRelease(program_data->layoutPipelines[i].pipeline);
+        if (program_data->mtlVertexDescriptor)
+            CFRelease(program_data->mtlVertexDescriptor);
         if (g_MetalBoundProgram == program_data)
             g_MetalBoundProgram = nullptr;
 
@@ -1687,7 +1729,8 @@ static id<MTLRenderPipelineState> ImPlatform_Metal_LayoutPipeline(ImPlatform_Sha
     vertexDescriptor.layouts[0].stepRate = 1;
     vertexDescriptor.layouts[0].stepFunction = MTLVertexStepFunctionPerVertex;
     id<MTLRenderPipelineState> pipeline = ImPlatform_Metal_CreatePipeline((__bridge id<MTLFunction>)program->mtlVertexFunction,
-                                                                         (__bridge id<MTLFunction>)program->mtlFragmentFunction, vertexDescriptor);
+                                                                         (__bridge id<MTLFunction>)program->mtlFragmentFunction, vertexDescriptor,
+                                                                         program->blend);
     if (pipeline && program->layoutPipelineCount < IM_ARRAYSIZE(program->layoutPipelines))
     {
         program->layoutPipelines[program->layoutPipelineCount].layout = vb->layout;

@@ -856,6 +856,12 @@ typedef struct ImPlatform_ShaderDesc {
     // Backend compile flags (bitmask of IMPLATFORM_SHADER_COMPILE_*).
     // Only used on the source-compile path (ignored for bytecode input).
     unsigned int compile_flags;
+
+    // Preprocessor definitions put before the source (HLSL, GLSL after its #version line, MSL), ';' or new lines
+    // between them: "CLIP;MODE=2" defines CLIP (for #ifdef CLIP) and MODE as 2 (for #if MODE == 2). One shader per
+    // combination is a permutation of the same source; the bytecode cache keeps one entry per combination. Compiler
+    // line numbers stay those of source_code. Ignored for bytecode, SPIR-V and WGSL (no preprocessor).
+    const char* defines;
 } ImPlatform_ShaderDesc;
 
 // Opaque handle for shader
@@ -867,10 +873,16 @@ typedef void* ImPlatform_ShaderProgram;
 // Create a shader from source code or bytecode
 // desc: Shader descriptor
 // Returns: Shader handle or NULL on failure
-// Note: Compile errors will be logged to console/debug output
+// Note: Compile errors are printed to stderr and kept for ImPlatform_GetShaderLog
 IMPLATFORM_API ImPlatform_Shader ImPlatform_CreateShader(
     const ImPlatform_ShaderDesc* desc
 );
+
+// The messages of the most recent ImPlatform_CreateShader, ImPlatform_CreateShaderFromParts or
+// ImPlatform_CreateShaderProgram call that returned NULL (the compiler's or linker's errors; for shader parts also the
+// generated source, with line numbers): text to show the user. Valid until the next failing call; "" before any.
+// Programs compiled with ImPlatform_CreateShaderProgramAsync report through ImPlatform_GetShaderJobLog instead.
+IMPLATFORM_API const char* ImPlatform_GetShaderLog(void);
 
 // Destroy a shader and free its resources
 // shader: Shader to destroy
@@ -891,6 +903,58 @@ IMPLATFORM_API ImPlatform_ShaderProgram ImPlatform_CreateShaderProgram(
 // program: Shader program to destroy
 IMPLATFORM_API void ImPlatform_DestroyShaderProgram(
     ImPlatform_ShaderProgram program
+);
+
+// Blending of a program's draws: result = op(source * src factor, target * dst factor), for color and for alpha.
+typedef enum ImPlatform_BlendFactor {
+    ImPlatform_BlendFactor_Zero,
+    ImPlatform_BlendFactor_One,
+    ImPlatform_BlendFactor_SrcColor,
+    ImPlatform_BlendFactor_InvSrcColor,  // 1 - source color
+    ImPlatform_BlendFactor_SrcAlpha,
+    ImPlatform_BlendFactor_InvSrcAlpha,  // 1 - source alpha
+    ImPlatform_BlendFactor_DstColor,
+    ImPlatform_BlendFactor_InvDstColor,  // 1 - target color
+    ImPlatform_BlendFactor_DstAlpha,
+    ImPlatform_BlendFactor_InvDstAlpha,  // 1 - target alpha
+} ImPlatform_BlendFactor;
+
+typedef enum ImPlatform_BlendOp {
+    ImPlatform_BlendOp_Add,              // source + target
+    ImPlatform_BlendOp_Subtract,         // source - target
+    ImPlatform_BlendOp_RevSubtract,      // target - source
+    ImPlatform_BlendOp_Min,              // min(source, target): the factors are not used
+    ImPlatform_BlendOp_Max,              // max(source, target): the factors are not used
+} ImPlatform_BlendOp;
+
+typedef struct ImPlatform_BlendDesc {
+    bool enable;                          // false: opaque, the source replaces the target
+    ImPlatform_BlendFactor src_color;
+    ImPlatform_BlendFactor dst_color;
+    ImPlatform_BlendOp     op_color;
+    ImPlatform_BlendFactor src_alpha;
+    ImPlatform_BlendFactor dst_alpha;
+    ImPlatform_BlendOp     op_alpha;
+} ImPlatform_BlendDesc;
+
+typedef enum ImPlatform_BlendPreset {
+    ImPlatform_BlendPreset_Alpha,         // Straight alpha "over" (Dear ImGui's): SrcAlpha, InvSrcAlpha; alpha One, InvSrcAlpha
+    ImPlatform_BlendPreset_Premultiplied, // Premultiplied alpha "over": One, InvSrcAlpha
+    ImPlatform_BlendPreset_Additive,      // SrcAlpha, One; alpha Zero, One (the target's alpha is kept)
+    ImPlatform_BlendPreset_Multiply,      // DstColor, Zero; alpha Zero, One (the target's alpha is kept)
+    ImPlatform_BlendPreset_Opaque,        // No blending
+} ImPlatform_BlendPreset;
+IMPLATFORM_API ImPlatform_BlendDesc ImPlatform_BlendDesc_Preset(ImPlatform_BlendPreset preset);
+
+// Set the blending of the draws made with a program: Dear ImGui's draws between ImPlatform_BeginCustomShader and
+// ImPlatform_EndCustomShader, ImPlatform_DrawIndexed and ImPlatform_DrawQuadNow (ImPlatform_DrawMesh has its own
+// alpha_blend). It is read when the program is bound, so set it once after creating the program, or from a draw
+// callback before binding it. blend: NULL for Dear ImGui's blending (the default). Where blending is a device state
+// (Direct3D 9 to 11, OpenGL) it stays until ImPlatform_EndCustomShader: end one program's draws before another's.
+// Returns false when the arguments are invalid.
+IMPLATFORM_API bool ImPlatform_SetShaderProgramBlend(
+    ImPlatform_ShaderProgram program,
+    const ImPlatform_BlendDesc* blend
 );
 
 #if IMPLATFORM_GFX_SUPPORT_VERTEX_BUFFERS
@@ -1083,6 +1147,48 @@ IMPLATFORM_API bool ImPlatform_ParseShaderParts(char* text, ImPlatform_ShaderPar
 // not compile (the source and the compiler messages are printed).
 IMPLATFORM_API ImPlatform_Shader ImPlatform_CreateShaderFromParts(const ImPlatform_ShaderParts* parts, ImPlatform_ShaderStage stage);
 #endif
+
+// ----------------------------------------------------------------------------
+// Asynchronous compilation: a program compiled without blocking the frame, e.g. to show "shader compilation in
+// progress" in its place.
+//   static ImPlatform_ShaderJob job = ImPlatform_CreateShaderProgramAsync(&vs_desc, &ps_desc);
+//   ImPlatform_ShaderProgram program = NULL;
+//   switch (ImPlatform_GetShaderJobStatus(job, &program)) {
+//   case ImPlatform_ShaderStatus_Compiling: ImGui::TextUnformatted("Shader compilation in progress"); break;
+//   case ImPlatform_ShaderStatus_Failed:    ImGui::TextUnformatted(ImPlatform_GetShaderJobLog(job)); break;
+//   case ImPlatform_ShaderStatus_Ready:     ImPlatform_DrawCustomShaderQuad(program); break;
+//   }
+// Direct3D 10, 11 and 12 compile the HLSL on a worker thread (one for all jobs, in creation order). The other
+// backends compile inside ImPlatform_CreateShaderProgramAsync, on the calling thread (OpenGL compiles on the thread of
+// its context; Vulkan and WebGPU take SPIR-V / WGSL and build their pipelines at the first draw): the job is Ready or
+// Failed at once there. All these functions are called on the graphics thread.
+typedef enum ImPlatform_ShaderStatus {
+    ImPlatform_ShaderStatus_Compiling,
+    ImPlatform_ShaderStatus_Ready,
+    ImPlatform_ShaderStatus_Failed,
+} ImPlatform_ShaderStatus;
+
+// Opaque handle for a program being compiled
+typedef void* ImPlatform_ShaderJob;
+
+// Starts compiling a vertex and a fragment shader into a program and returns at once. The descriptors and what they
+// point to (source, bytecode, names, defines) are copied. NULL when a descriptor is missing.
+IMPLATFORM_API ImPlatform_ShaderJob ImPlatform_CreateShaderProgramAsync(const ImPlatform_ShaderDesc* vertex_desc,
+                                                                       const ImPlatform_ShaderDesc* fragment_desc);
+#if IMPLATFORM_GFX_SUPPORT_SHADER_PARTS
+// The same from shader parts: both stages are generated here and compiled like the descriptors above.
+IMPLATFORM_API ImPlatform_ShaderJob ImPlatform_CreateShaderProgramFromPartsAsync(const ImPlatform_ShaderParts* parts);
+#endif
+// The state of a job, e.g. once per frame. When the compilation has ended, the first call creates the program (device
+// objects are created here, on the graphics thread). Ready: *out_program (optional) receives the program, the same on
+// every call and valid until ImPlatform_DestroyShaderJob; otherwise it receives NULL. Failed: see
+// ImPlatform_GetShaderJobLog.
+IMPLATFORM_API ImPlatform_ShaderStatus ImPlatform_GetShaderJobStatus(ImPlatform_ShaderJob job, ImPlatform_ShaderProgram* out_program);
+// The compiler and linker messages of a job, both stages: "" while compiling and when there are none.
+IMPLATFORM_API const char* ImPlatform_GetShaderJobLog(ImPlatform_ShaderJob job);
+// Destroys a job with its program and its stage shaders (the job owns them: do not call
+// ImPlatform_DestroyShaderProgram on its program), waiting for it when it is being compiled.
+IMPLATFORM_API void ImPlatform_DestroyShaderJob(ImPlatform_ShaderJob job);
 
 // ============================================================================
 // Readback and Compute API (optional capabilities)
@@ -1549,6 +1655,9 @@ IMPLATFORM_API bool ImPlatform_SupportsDepthDraw(void) { return false; }
 
 // Shader parts generator (ImPlatform_GenerateShaderSource, ImPlatform_CreateShaderFromParts)
 #include "ImPlatform_shader_parts.cpp"
+
+// Shader compile log, blend presets, asynchronous program compilation
+#include "ImPlatform_shader_common.cpp"
 
 // ============================================================================
 // Borderless Params Implementation

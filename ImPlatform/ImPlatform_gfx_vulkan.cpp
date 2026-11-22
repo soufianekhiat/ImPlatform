@@ -2110,6 +2110,7 @@ struct ImPlatform_PipelineVariant_Vulkan
     VkRenderPass renderPass;
     ImGuiID      layout;        // 0: ImDrawVert; else a hash of the vertex buffer layout (ImPlatform_DrawIndexed)
     unsigned int topology;      // ImPlatform_DrawIndexed's primitive type
+    unsigned int blend;         // ImPlatform_BlendKey the pipeline was built with
     VkPipeline   pipeline;
 };
 
@@ -2118,7 +2119,8 @@ struct ImPlatform_ShaderProgramData_Vulkan
     VkShaderModule vertShaderModule;
     VkShaderModule fragShaderModule;
     int locPos, locUV, locCol;
-    ImVector<ImPlatform_PipelineVariant_Vulkan> pipelines;     // One per render pass the program is drawn in
+    ImVector<ImPlatform_PipelineVariant_Vulkan> pipelines;     // One per render pass and blending the program is drawn with
+    unsigned int blend;                                         // ImPlatform_BlendKey; 0: Dear ImGui's blending
     VkPipelineLayout pipelineLayout;
     VkDescriptorSetLayout setLayouts[4];                        // ImGui's texture and sampler layouts, b0 / b1, t1..t8
     VkDescriptorPool descriptorPool;
@@ -2184,8 +2186,8 @@ static bool ImPlatform_Vulkan_PrepareSpirv(uint32_t* w, size_t count, ImPlatform
         else if (w[set_at[(int)id]] == 0 && cls == 0 && reg <= 8) set = 3;
         else
         {
-            fprintf(stderr, "[ImPlatform] Vulkan: unsupported register %c%u (set %u, binding %u): custom shaders use t0..t8, s0, b0 and b1\n",
-                    "tsbu"[cls < 4 ? cls : 3], reg, w[set_at[(int)id]], binding);
+            ImPlatform_ShaderLog("Vulkan: unsupported register %c%u (set %u, binding %u): custom shaders use t0..t8, s0, b0 and b1",
+                                 "tsbu"[cls < 4 ? cls : 3], reg, w[set_at[(int)id]], binding);
             return false;
         }
         w[set_at[(int)id]] = set;
@@ -2332,14 +2334,14 @@ IMPLATFORM_API ImPlatform_Shader ImPlatform_CreateShader(const ImPlatform_Shader
 {
     if (!desc || !desc->bytecode || desc->bytecode_size == 0 || desc->bytecode_size % 4 != 0)
     {
-        fprintf(stderr, "[ImPlatform] Vulkan: Invalid shader description\n");
+        ImPlatform_ShaderLog("Vulkan: Invalid shader description");
         return NULL;
     }
 
     // Vulkan only accepts SPIR-V bytecode
     if (desc->format != ImPlatform_ShaderFormat_SPIRV)
     {
-        fprintf(stderr, "[ImPlatform] Vulkan: Only SPIR-V format is supported. Please compile your shader to SPIR-V first.\n");
+        ImPlatform_ShaderLog("Vulkan: Only SPIR-V format is supported. Please compile your shader to SPIR-V first.");
         return NULL;
     }
 
@@ -2368,7 +2370,7 @@ IMPLATFORM_API ImPlatform_Shader ImPlatform_CreateShader(const ImPlatform_Shader
     VkResult err = vkCreateShaderModule(g_GfxData.device, &create_info, g_Allocator, &shader_data->shaderModule);
     if (err != VK_SUCCESS)
     {
-        fprintf(stderr, "[ImPlatform] Vulkan: Failed to create shader module (VkResult = %d)\n", err);
+        ImPlatform_ShaderLog("Vulkan: Failed to create shader module (VkResult = %d)", err);
         free(shader_data);
         return NULL;
     }
@@ -2409,7 +2411,7 @@ static VkPipeline ImPlatform_Vulkan_ProgramPipeline(ImPlatform_ShaderProgramData
     else if (program_data->customLayout)
         return VK_NULL_HANDLE;      // Its inputs are not ImDrawVert's
     for (const ImPlatform_PipelineVariant_Vulkan& v : program_data->pipelines)
-        if (v.renderPass == render_pass && v.layout == layout && v.topology == topology)
+        if (v.renderPass == render_pass && v.layout == layout && v.topology == topology && v.blend == program_data->blend)
             return v.pipeline;
 
     VkPipelineShaderStageCreateInfo stage[2] = {};
@@ -2491,14 +2493,22 @@ static VkPipeline ImPlatform_Vulkan_ProgramPipeline(ImPlatform_ShaderProgramData
     ms_info.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
     ms_info.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
 
+    // The program's blending (ImPlatform_SetShaderProgramBlend), Dear ImGui's when none is set
+    static const VkBlendFactor blend_factors[] = { VK_BLEND_FACTOR_ZERO, VK_BLEND_FACTOR_ONE, VK_BLEND_FACTOR_SRC_COLOR,
+                                                   VK_BLEND_FACTOR_ONE_MINUS_SRC_COLOR, VK_BLEND_FACTOR_SRC_ALPHA,
+                                                   VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA, VK_BLEND_FACTOR_DST_COLOR,
+                                                   VK_BLEND_FACTOR_ONE_MINUS_DST_COLOR, VK_BLEND_FACTOR_DST_ALPHA,
+                                                   VK_BLEND_FACTOR_ONE_MINUS_DST_ALPHA };
+    static const VkBlendOp blend_ops[] = { VK_BLEND_OP_ADD, VK_BLEND_OP_SUBTRACT, VK_BLEND_OP_REVERSE_SUBTRACT, VK_BLEND_OP_MIN, VK_BLEND_OP_MAX };
+    const ImPlatform_BlendDesc blend = ImPlatform_BlendFromKey(program_data->blend);
     VkPipelineColorBlendAttachmentState color_attachment = {};
-    color_attachment.blendEnable = VK_TRUE;
-    color_attachment.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
-    color_attachment.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
-    color_attachment.colorBlendOp = VK_BLEND_OP_ADD;
-    color_attachment.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
-    color_attachment.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
-    color_attachment.alphaBlendOp = VK_BLEND_OP_ADD;
+    color_attachment.blendEnable = blend.enable ? VK_TRUE : VK_FALSE;
+    color_attachment.srcColorBlendFactor = blend_factors[blend.src_color];
+    color_attachment.dstColorBlendFactor = blend_factors[blend.dst_color];
+    color_attachment.colorBlendOp = blend_ops[blend.op_color];
+    color_attachment.srcAlphaBlendFactor = blend_factors[blend.src_alpha];
+    color_attachment.dstAlphaBlendFactor = blend_factors[blend.dst_alpha];
+    color_attachment.alphaBlendOp = blend_ops[blend.op_alpha];
     color_attachment.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
 
     VkPipelineDepthStencilStateCreateInfo depth_info = {};
@@ -2532,11 +2542,11 @@ static VkPipeline ImPlatform_Vulkan_ProgramPipeline(ImPlatform_ShaderProgramData
     pipeline_info.subpass = 0;
 
     // The global pipeline cache lets the compiled state be reused across runs (see ImPlatform_Vulkan_InitPipelineCache).
-    ImPlatform_PipelineVariant_Vulkan variant = { render_pass, layout, topology, VK_NULL_HANDLE };
+    ImPlatform_PipelineVariant_Vulkan variant = { render_pass, layout, topology, program_data->blend, VK_NULL_HANDLE };
     VkResult err = vkCreateGraphicsPipelines(g_GfxData.device, g_VulkanPipelineCache, 1, &pipeline_info, g_Allocator, &variant.pipeline);
     if (err != VK_SUCCESS)
     {
-        fprintf(stderr, "[ImPlatform] Vulkan: Failed to create graphics pipeline (VkResult = %d)\n", err);
+        ImPlatform_ShaderLog("Vulkan: Failed to create graphics pipeline (VkResult = %d)", err);
         return VK_NULL_HANDLE;
     }
     program_data->pipelines.push_back(variant);
@@ -2548,7 +2558,7 @@ IMPLATFORM_API ImPlatform_ShaderProgram ImPlatform_CreateShaderProgram(ImPlatfor
 {
     if (!vertex_shader || !fragment_shader)
     {
-        fprintf(stderr, "[ImPlatform] Vulkan: Both vertex and fragment shaders are required\n");
+        ImPlatform_ShaderLog("Vulkan: Both vertex and fragment shaders are required");
         return NULL;
     }
 
@@ -2557,12 +2567,12 @@ IMPLATFORM_API ImPlatform_ShaderProgram ImPlatform_CreateShaderProgram(ImPlatfor
 
     if (vs_data->stage != ImPlatform_ShaderStage_Vertex || fs_data->stage != ImPlatform_ShaderStage_Fragment)
     {
-        fprintf(stderr, "[ImPlatform] Vulkan: Invalid shader stages\n");
+        ImPlatform_ShaderLog("Vulkan: Invalid shader stages");
         return NULL;
     }
     if (vs_data->locPos < 0 && !vs_data->customLayout)
     {
-        fprintf(stderr, "[ImPlatform] Vulkan: the vertex shader reads no position\n");
+        ImPlatform_ShaderLog("Vulkan: the vertex shader reads no position");
         return NULL;
     }
     if (!ImPlatform_Vulkan_InitConstantRing())
@@ -2649,7 +2659,7 @@ IMPLATFORM_API ImPlatform_ShaderProgram ImPlatform_CreateShaderProgram(ImPlatfor
     }
     if (!ok)
     {
-        fprintf(stderr, "[ImPlatform] Vulkan: Failed to create the layout of a shader program\n");
+        ImPlatform_ShaderLog("Vulkan: Failed to create the layout of a shader program");
         ImPlatform_DestroyShaderProgram((ImPlatform_ShaderProgram)program_data);
         return NULL;
     }
@@ -2668,6 +2678,14 @@ IMPLATFORM_API ImPlatform_ShaderProgram ImPlatform_CreateShaderProgram(ImPlatfor
     vkUpdateDescriptorSets(g_GfxData.device, 2, writes, 0, nullptr);
 
     return (ImPlatform_ShaderProgram)program_data;
+}
+
+// Read when the program is bound: its pipeline for that blending is created on first use, and the pipelines of an
+// earlier blending stay with the program (command buffers being recorded may still use them).
+IMPLATFORM_API bool ImPlatform_SetShaderProgramBlend(ImPlatform_ShaderProgram program, const ImPlatform_BlendDesc* blend)
+{
+    ImPlatform_ShaderProgramData_Vulkan* program_data = (ImPlatform_ShaderProgramData_Vulkan*)program;
+    return program_data && ImPlatform_BlendKey(blend, &program_data->blend);
 }
 
 IMPLATFORM_API void ImPlatform_DestroyShaderProgram(ImPlatform_ShaderProgram program)

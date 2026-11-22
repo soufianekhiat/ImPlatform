@@ -1752,6 +1752,7 @@ struct ImPlatform_ShaderProgramData_WebGPU
     int vertexLocations[3];
     ImPlatform_LayoutPipeline_WebGPU layoutPipelines[8];
     int layoutPipelineCount;
+    unsigned int blend;                     // ImPlatform_BlendKey the pipelines are built with; 0: Dear ImGui's blending
     WGPUTextureView texture0;               // t0 of the direct draws (ImPlatform_SetShaderTexture slot 0)
     WGPUBindGroupLayout bindGroupLayout;
     WGPUBindGroup bindGroup;
@@ -1940,7 +1941,7 @@ IMPLATFORM_API void ImPlatform_DestroyShader(ImPlatform_Shader shader)
 
 // A program's pipeline: ImDrawVert at the locations its vertex shader declares, or with 'vertices' a vertex buffer whose
 // attribute i feeds location i (Slang numbers the inputs in declaration order), as 'topology' (ImPlatform_DrawIndexed's
-// primitive type). Dear ImGui's blending, into the surface's format.
+// primitive type). The program's blending (Dear ImGui's when none is set), into the surface's format.
 static WGPURenderPipeline ImPlatform_WGPU_CreatePipeline(ImPlatform_ShaderProgramData_WebGPU* program_data, const ImPlatform_VertexBufferDesc* vertices,
                                                          unsigned int topology)
 {
@@ -1994,17 +1995,28 @@ static WGPURenderPipeline ImPlatform_WGPU_CreatePipeline(ImPlatform_ShaderProgra
     vertex_state.bufferCount = 1;
     vertex_state.buffers = &vertex_buffer_layout;
 
+    static const WGPUBlendFactor blend_factors[] = { WGPUBlendFactor_Zero, WGPUBlendFactor_One, WGPUBlendFactor_Src, WGPUBlendFactor_OneMinusSrc,
+                                                     WGPUBlendFactor_SrcAlpha, WGPUBlendFactor_OneMinusSrcAlpha, WGPUBlendFactor_Dst,
+                                                     WGPUBlendFactor_OneMinusDst, WGPUBlendFactor_DstAlpha, WGPUBlendFactor_OneMinusDstAlpha };
+    static const WGPUBlendOperation blend_ops[] = { WGPUBlendOperation_Add, WGPUBlendOperation_Subtract, WGPUBlendOperation_ReverseSubtract,
+                                                    WGPUBlendOperation_Min, WGPUBlendOperation_Max };
+    const ImPlatform_BlendDesc blend = ImPlatform_BlendFromKey(program_data->blend);
     WGPUBlendState blend_state = {};
-    blend_state.color.operation = WGPUBlendOperation_Add;
-    blend_state.color.srcFactor = WGPUBlendFactor_SrcAlpha;
-    blend_state.color.dstFactor = WGPUBlendFactor_OneMinusSrcAlpha;
-    blend_state.alpha.operation = WGPUBlendOperation_Add;
-    blend_state.alpha.srcFactor = WGPUBlendFactor_One;
-    blend_state.alpha.dstFactor = WGPUBlendFactor_OneMinusSrcAlpha;
+    blend_state.color.operation = blend_ops[blend.op_color];
+    blend_state.color.srcFactor = blend_factors[blend.src_color];
+    blend_state.color.dstFactor = blend_factors[blend.dst_color];
+    blend_state.alpha.operation = blend_ops[blend.op_alpha];
+    blend_state.alpha.srcFactor = blend_factors[blend.src_alpha];
+    blend_state.alpha.dstFactor = blend_factors[blend.dst_alpha];
+    // WebGPU requires the factors of min and max, which do not use them, to be One.
+    if (blend.op_color >= ImPlatform_BlendOp_Min)
+        blend_state.color.srcFactor = blend_state.color.dstFactor = WGPUBlendFactor_One;
+    if (blend.op_alpha >= ImPlatform_BlendOp_Min)
+        blend_state.alpha.srcFactor = blend_state.alpha.dstFactor = WGPUBlendFactor_One;
 
     WGPUColorTargetState color_target = {};
     color_target.format = g_GfxData.swapChainFormat;
-    color_target.blend = &blend_state;
+    color_target.blend = blend.enable ? &blend_state : NULL;
     color_target.writeMask = WGPUColorWriteMask_All;
 
     WGPUFragmentState fragment_state = {};
@@ -2104,6 +2116,36 @@ IMPLATFORM_API ImPlatform_ShaderProgram ImPlatform_CreateShaderProgram(ImPlatfor
         return NULL;
     }
     return program_data;
+}
+
+// Blending is part of the pipelines: the one for Dear ImGui's vertex layout is built again here, those of the vertex
+// buffer layouts at their next draw. A pass keeps the pipelines it was given, so the earlier ones can be released.
+IMPLATFORM_API bool ImPlatform_SetShaderProgramBlend(ImPlatform_ShaderProgram program, const ImPlatform_BlendDesc* blend)
+{
+    ImPlatform_ShaderProgramData_WebGPU* program_data = (ImPlatform_ShaderProgramData_WebGPU*)program;
+    unsigned int key = 0;
+    if (!program_data || !g_GfxData.device || !ImPlatform_BlendKey(blend, &key))
+        return false;
+    if (key == program_data->blend)
+        return true;
+    const unsigned int previous = program_data->blend;
+    program_data->blend = key;
+    if (program_data->renderPipeline)
+    {
+        WGPURenderPipeline pipeline = ImPlatform_WGPU_CreatePipeline(program_data, NULL, 0);
+        if (!pipeline)
+        {
+            program_data->blend = previous;
+            return false;
+        }
+        wgpuRenderPipelineRelease(program_data->renderPipeline);
+        program_data->renderPipeline = pipeline;
+    }
+    for (int i = 0; i < program_data->layoutPipelineCount; i++)
+        if (program_data->layoutPipelines[i].pipeline)
+            wgpuRenderPipelineRelease(program_data->layoutPipelines[i].pipeline);
+    program_data->layoutPipelineCount = 0;
+    return true;
 }
 
 IMPLATFORM_API void ImPlatform_DestroyShaderProgram(ImPlatform_ShaderProgram program)

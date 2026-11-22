@@ -11,6 +11,7 @@ ImPlatform is a platform abstraction layer that simplifies multiplatform develop
 - **Multi-Viewport Support**: Built-in support for ImGui's multi-viewport and docking features
 - **Custom Shader Support**: Render custom shaders with ImGui's vertex/index buffers, written once in HLSL and compiled offline for every backend
 - **Shader Parts**: Shaders written once and generated at run time as HLSL, GLSL or MSL (Direct3D 9 to 12, OpenGL 3, Metal), with their own vertex inputs, varyings and textures
+- **Shader Blending, Permutations and Errors**: per-program blend state on every backend, `#define` permutations of one source, compiler messages returned to the application, and programs compiled without blocking the frame (on a worker thread on DirectX 10/11/12)
 - **Texture Creation API**: Platform-agnostic texture loading and management, 3D textures on every backend
 - **Render Targets and Render Passes**: Nestable render-target stack, and Dear ImGui draw data rendered into a texture before the frame on every backend, with premultiplied alpha
 - **Direct Draws from Draw Callbacks**: switch to a render texture, copy the current target, draw a quad or your own vertex buffers with a custom shader and pushed constants (DirectX 9/11/12, OpenGL 3, Vulkan; DirectX 10 and WebGPU without target switches or copies; Metal draws vertex buffers)
@@ -184,6 +185,62 @@ ImPlatform_EndCustomShader(draw_list);
 ```
 
 Plain HLSL files can be compiled offline for every backend with Slang (see `ImPlatformDemo/shaders/README.md`).
+
+**Compile errors.** When `ImPlatform_CreateShader()`, `ImPlatform_CreateShaderFromParts()` or
+`ImPlatform_CreateShaderProgram()` returns NULL, `ImPlatform_GetShaderLog()` returns the compiler's or linker's
+messages (also printed to stderr), to show in the application. For shader parts the generated source follows, with line
+numbers. Vulkan and WebGPU take compiled or validated-later code (SPIR-V, WGSL): their log holds ImPlatform's own
+messages only, and WebGPU reports WGSL errors through the device's error callback (stderr).
+
+```cpp
+ImPlatform_Shader ps = ImPlatform_CreateShader(&ps_desc);
+if (!ps)
+    ImGui::TextUnformatted(ImPlatform_GetShaderLog());
+```
+
+**Permutations.** `ImPlatform_ShaderDesc::defines` puts preprocessor definitions before the source (HLSL, GLSL, MSL),
+for `#ifdef` and `#if NAME == value`: one shader per combination. The bytecode cache keeps one entry per combination
+and the compiler's line numbers stay those of the source. Shader parts have the same field
+(`ImPlatform_ShaderParts::defines`, or a `//@defines` section).
+
+```cpp
+ps_desc.defines = "CLIP;MODE=2";     // #define CLIP  and  #define MODE 2
+```
+
+**Blending.** A program draws with Dear ImGui's blending (straight alpha) unless it is given its own:
+
+```cpp
+ImPlatform_BlendDesc blend = ImPlatform_BlendDesc_Preset(ImPlatform_BlendPreset_Additive);  // or Alpha, Premultiplied, Multiply, Opaque
+blend.op_alpha = ImPlatform_BlendOp_Max;                                                    // any factor / operation
+ImPlatform_SetShaderProgramBlend(program, &blend);                                          // NULL: Dear ImGui's again
+```
+
+It applies to the draw list commands between `ImPlatform_BeginCustomShader()` and `ImPlatform_EndCustomShader()`, to
+`ImPlatform_DrawIndexed()` and to `ImPlatform_DrawQuadNow()`, on every backend (a device state on DirectX 9 to 11 and
+OpenGL, part of the program's pipelines elsewhere). It is read when the program is bound: set it once after creating the
+program, or from a draw callback before the draw.
+
+**Asynchronous compilation.** `ImPlatform_CreateShaderProgramAsync()` returns at once and the program is compiled
+without blocking the frame; `ImPlatform_GetShaderJobStatus()` tells when it is ready.
+
+```cpp
+static ImPlatform_ShaderJob job = ImPlatform_CreateShaderProgramAsync(&vs_desc, &ps_desc);
+ImPlatform_ShaderProgram program = NULL;
+switch (ImPlatform_GetShaderJobStatus(job, &program))
+{
+case ImPlatform_ShaderStatus_Compiling: ImGui::TextUnformatted("Shader compilation in progress"); break;
+case ImPlatform_ShaderStatus_Failed:    ImGui::TextUnformatted(ImPlatform_GetShaderJobLog(job)); break;
+case ImPlatform_ShaderStatus_Ready:     ImPlatform_DrawCustomShaderQuad(program); break;
+}
+...
+ImPlatform_DestroyShaderJob(job);    // With its program
+```
+
+`ImPlatform_CreateShaderProgramFromPartsAsync()` does the same from shader parts. DirectX 10, 11 and 12 compile the HLSL
+on a worker thread (one for all jobs); the device objects are created by the first `ImPlatform_GetShaderJobStatus()`
+call after that, on the graphics thread. The other backends compile inside the create call, so the job is ready or
+failed at once there: DirectX 9, OpenGL (it compiles on the thread of its context) and Metal; Vulkan and WebGPU take
+SPIR-V / WGSL and build their pipelines at the first draw.
 
 #### Shader Parts (when `IMPLATFORM_GFX_SUPPORT_SHADER_PARTS` is enabled)
 
@@ -362,9 +419,9 @@ run time (DirectX 9: the device's volume texture capability).
 `IM_GFX_CUSTOM` keeps ImPlatform's platform layer (window, input, DPI, title bar) and compiles
 none of its graphics backends. The application links its own implementation of the graphics
 entry points (`ImPlatform_InitGfxAPI`, `ImPlatform_GfxAPINewFrame`, `ImPlatform_GfxAPIRender`,
-`ImPlatform_GfxAPISwapBuffer`, textures, shaders, the render passes `ImPlatform_GetRenderPassFormat` /
-`QueueRenderPass` / `PushPremultipliedAlpha` / `PopPremultipliedAlpha`, the `Supports*` queries, and the functions of
-every optional group above that it keeps) plus:
+`ImPlatform_GfxAPISwapBuffer`, textures, shaders with `ImPlatform_GetShaderLog` and `ImPlatform_SetShaderProgramBlend`,
+the render passes `ImPlatform_GetRenderPassFormat` / `QueueRenderPass` / `PushPremultipliedAlpha` /
+`PopPremultipliedAlpha`, the `Supports*` queries, and the functions of every optional group above that it keeps) plus:
 
 ```cpp
 // Called by the platform layer (Win32, GLFW, SDL2, SDL3) when the window's framebuffer is resized.
@@ -373,7 +430,8 @@ void ImPlatform_Gfx_OnResize_Custom(unsigned int uWidth, unsigned int uHeight);
 
 The `IMPLATFORM_GFX_SUPPORT_*` feature flags and API groups default to 1 and can each be predefined to 0
 to describe what the application's backend supports (a group set to 0 is neither declared nor needed). With GLFW the window is created with
-`GLFW_NO_API`.
+`GLFW_NO_API`. The asynchronous shader jobs and `ImPlatform_BlendDesc_Preset` stay ImPlatform's: a job calls the
+application's `ImPlatform_CreateShader` and `ImPlatform_CreateShaderProgram` when it is created.
 
 ### Predefined Combinations
 
@@ -479,6 +537,8 @@ ImPlatformDemo_Win32_DX12 --direct-draw-test   # from a draw callback: push a re
 ImPlatformDemo_Win32_DX12 --shader-parts-test  # a shader written as parts: parameters in both stages, varying, texture t1
 ImPlatformDemo_Win32_DX12 --texture3d-test     # a 2x2x2 texture at t1, sampled by shaders/volume_test.hlsl and by shader parts
 ImPlatformDemo_Win32_DX12 --vertex-inputs-test  # shader parts with their own vertex inputs and a flat int varying, DrawIndexed
+ImPlatformDemo_Win32_DX12 --blend-test         # one program drawn with additive then multiply blending, set from draw callbacks
+ImPlatformDemo_Win32_DX12 --shader-async-test  # programs compiled asynchronously, a defines permutation, the log of a shader that fails
 ```
 
 Each prints PASS or FAIL and exits with 0 (pass), 1 (fail) or 2 (unsupported by the backend).
@@ -497,6 +557,7 @@ ImPlatform/
 │   ├── ImPlatform_app_*.cpp     # Platform backends (Win32, GLFW, SDL, Apple)
 │   ├── ImPlatform_gfx_*.cpp     # Graphics API backends (DX, OpenGL, Vulkan, etc.)
 │   ├── ImPlatform_shader_parts.cpp  # HLSL / GLSL / MSL generation from shader parts
+│   ├── ImPlatform_shader_common.cpp # Shader compile log, blend presets, asynchronous program compilation
 │   └── ImPlatform_titlebar.cpp  # Custom titlebar drawing
 ├── ImPlatformDemo/
 │   ├── main.cpp                  # Example application and self-tests

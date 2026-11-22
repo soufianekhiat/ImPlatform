@@ -823,13 +823,14 @@ struct ImPlatform_ShaderProgramData_DX12
 {
     ID3DBlob* pVSBlob;                  // Vertex shader bytecode
     ID3DBlob* pPSBlob;                  // Pixel shader bytecode
-    ID3D12PipelineState* pPSO;          // Pipeline State Object
+    ID3D12PipelineState* pPSO;          // The pipeline for Dear ImGui's vertex layout and 'blend' (owned by meshPSOs)
+    unsigned int blend;                 // ImPlatform_BlendKey; 0: Dear ImGui's blending
     ID3D12RootSignature* pRootSignature; // Root signature
     ID3D12Resource* pPixelConstantBuffer; // GPU constant buffer for pixel shader
     void* pPixelConstantData;           // CPU-side copy of pixel shader constants
     size_t pixelConstantDataSize;       // Size of pixel constant data
     bool pixelConstantDataDirty;        // Whether constant data needs upload
-    std::unordered_map<std::string, ID3D12PipelineState*> meshPSOs;     // ImPlatform_DrawMesh pipelines of this program.
+    std::unordered_map<std::string, ID3D12PipelineState*> meshPSOs;     // Every pipeline of this program, by layout, target and blending.
     ImTextureID extraTextures[kExtraTextures];                          // t1..t8 (ImPlatform_SetShaderTexture), 0 when unset
     ImTextureID texture0;                                               // t0 of the direct draws (ImPlatform_SetShaderTexture slot 0)
 };
@@ -840,56 +841,11 @@ struct VERTEX_CONSTANT_BUFFER_DX12
     float mvp[4][4];
 };
 
-// Translate IMPLATFORM_SHADER_COMPILE_* flags to D3DCompile flags.
-static UINT ImPlatform_DX12_TranslateCompileFlags(unsigned int compile_flags)
-{
-    UINT flags = D3DCOMPILE_ENABLE_STRICTNESS;
-    if (compile_flags & IMPLATFORM_SHADER_COMPILE_SKIP_OPTIMIZATION) flags |= D3DCOMPILE_SKIP_OPTIMIZATION;
-    if (compile_flags & IMPLATFORM_SHADER_COMPILE_OPTIMIZATION_LOW)  flags |= D3DCOMPILE_OPTIMIZATION_LEVEL0;
-    if (compile_flags & IMPLATFORM_SHADER_COMPILE_OPTIMIZATION_HIGH) flags |= D3DCOMPILE_OPTIMIZATION_LEVEL3;
-    if (compile_flags & IMPLATFORM_SHADER_COMPILE_DEBUG)             flags |= D3DCOMPILE_DEBUG;
-    return flags;
-}
-
-// Try to load cached DXBC bytecode into a fresh ID3DBlob. Returns NULL on miss.
-static ID3DBlob* ImPlatform_DX12_TryLoadCachedBytecode(
-    const ImPlatform_ShaderDesc* desc,
-    const char* entry, const char* target, size_t source_len,
-    char* out_cache_path, size_t out_cache_path_size)
-{
-    out_cache_path[0] = '\0';
-    if (!desc->cache_key || !desc->cache_key[0])
-        return NULL;
-
-    unsigned long long hash = ImPlatform_ShaderCacheHashSource(
-        desc->source_code, source_len, entry, target);
-    ImPlatform_ShaderCacheBuildPath(out_cache_path, out_cache_path_size,
-                                    desc->cache_key, entry, "dxbc", hash);
-
-    size_t cached_size = 0;
-    void* cached = ImPlatform_ShaderCacheLoad(out_cache_path, &cached_size);
-    if (!cached || cached_size == 0)
-    {
-        if (cached) free(cached);
-        return NULL;
-    }
-
-    ID3DBlob* blob = NULL;
-    HRESULT hr = D3DCreateBlob(cached_size, &blob);
-    if (FAILED(hr) || !blob)
-    {
-        free(cached);
-        return NULL;
-    }
-    memcpy(blob->GetBufferPointer(), cached, cached_size);
-    free(cached);
-    fprintf(stderr, "[ImPlatform shader cache] HIT  %s/%s (%zu bytes)\n",
-            desc->cache_key, entry, cached_size);
-    return blob;
-}
-
 IMPLATFORM_API ImPlatform_Shader ImPlatform_CreateShader(const ImPlatform_ShaderDesc* desc)
 {
+    ImPlatform_ShaderDesc with_defines;
+    ImGuiTextBuffer defined_source;
+    desc = ImPlatform_ShaderApplyDefines(desc, &with_defines, &defined_source);
     if (!desc || (!desc->source_code && !desc->bytecode))
         return NULL;
 
@@ -903,19 +859,12 @@ IMPLATFORM_API ImPlatform_Shader ImPlatform_CreateShader(const ImPlatform_Shader
 
     HRESULT hr = S_OK;
 
-    // Resolve target profile
-    const char* target = NULL;
-    if (desc->stage == ImPlatform_ShaderStage_Vertex)
-        target = "vs_5_0";
-    else if (desc->stage == ImPlatform_ShaderStage_Fragment)
-        target = "ps_5_0";
-    else if (desc->stage == ImPlatform_ShaderStage_Compute)
-        target = "cs_5_0";
-    else
+    if (!ImPlatform_D3DShaderTarget(desc->stage))
     {
         delete shader_data;
         return NULL;
     }
+    shader_data->label = std::string(desc->cache_key ? desc->cache_key : "shader") + "/" + (desc->entry_point ? desc->entry_point : "main");
 
     if (desc->bytecode && desc->bytecode_size > 0)
     {
@@ -931,56 +880,15 @@ IMPLATFORM_API ImPlatform_Shader ImPlatform_CreateShader(const ImPlatform_Shader
     }
     else
     {
-        // Source-compile path with optional disk cache.
-        const char* entry = desc->entry_point ? desc->entry_point : "main";
-        shader_data->label = std::string(desc->cache_key ? desc->cache_key : "shader") + "/" + entry;
-        size_t source_len = strlen(desc->source_code);
-        char cache_path[512];
-
-        // 1) Try the cache first
-        shader_data->pBlob = ImPlatform_DX12_TryLoadCachedBytecode(
-            desc, entry, target, source_len, cache_path, sizeof(cache_path));
-
-        // 2) Cache miss (or no cache_key): compile from source
+        // HLSL source, through the disk cache when desc->cache_key is set.
+        char* messages = NULL;
+        shader_data->pBlob = ImPlatform_D3DCompileShader(desc, &messages);
         if (!shader_data->pBlob)
         {
-            if (desc->cache_key && desc->cache_key[0])
-            {
-                fprintf(stderr, "[ImPlatform shader cache] MISS %s/%s -- compiling...\n",
-                        desc->cache_key, entry);
-            }
-
-            ID3DBlob* pErrorBlob = NULL;
-            UINT flags = ImPlatform_DX12_TranslateCompileFlags(desc->compile_flags);
-            hr = D3DCompile(
-                desc->source_code, source_len,
-                NULL, NULL, NULL,
-                entry, target, flags, 0,
-                &shader_data->pBlob, &pErrorBlob);
-
-            if (FAILED(hr))
-            {
-                if (pErrorBlob)
-                {
-                    fprintf(stderr, "DX12 Shader compilation failed: %s\n", (char*)pErrorBlob->GetBufferPointer());
-                    pErrorBlob->Release();
-                }
-                delete shader_data;
-                return NULL;
-            }
-            if (pErrorBlob) pErrorBlob->Release();
-
-            // 3) Save to cache for next launch
-            if (desc->cache_key && desc->cache_key[0] && shader_data->pBlob && cache_path[0])
-            {
-                if (ImPlatform_ShaderCacheSave(cache_path,
-                                               shader_data->pBlob->GetBufferPointer(),
-                                               shader_data->pBlob->GetBufferSize()))
-                {
-                    fprintf(stderr, "[ImPlatform shader cache] SAVE %s/%s (%zu bytes)\n",
-                            desc->cache_key, entry, (size_t)shader_data->pBlob->GetBufferSize());
-                }
-            }
+            ImPlatform_ShaderLog("Shader compilation failed: %s", messages ? messages : "");
+            free(messages);
+            delete shader_data;
+            return NULL;
         }
     }
 
@@ -1000,6 +908,82 @@ IMPLATFORM_API void ImPlatform_DestroyShader(ImPlatform_Shader shader)
         ImPlatform_DX12_DeferRelease(shader_data->pComputePSO);     // Dispatches recorded but not yet submitted still use it.
 
     delete shader_data;
+}
+
+// A program's blending (ImPlatform_SetShaderProgramBlend; Dear ImGui's when none is set) in a pipeline description.
+static void ImP12_ProgramBlend(D3D12_RENDER_TARGET_BLEND_DESC& rt, unsigned int key)
+{
+    static const D3D12_BLEND factors[] = { D3D12_BLEND_ZERO, D3D12_BLEND_ONE, D3D12_BLEND_SRC_COLOR, D3D12_BLEND_INV_SRC_COLOR, D3D12_BLEND_SRC_ALPHA,
+                                           D3D12_BLEND_INV_SRC_ALPHA, D3D12_BLEND_DEST_COLOR, D3D12_BLEND_INV_DEST_COLOR, D3D12_BLEND_DEST_ALPHA,
+                                           D3D12_BLEND_INV_DEST_ALPHA };
+    static const D3D12_BLEND_OP ops[] = { D3D12_BLEND_OP_ADD, D3D12_BLEND_OP_SUBTRACT, D3D12_BLEND_OP_REV_SUBTRACT, D3D12_BLEND_OP_MIN, D3D12_BLEND_OP_MAX };
+    const ImPlatform_BlendDesc b = ImPlatform_BlendFromKey(key);
+    rt.BlendEnable = b.enable;
+    rt.SrcBlend = factors[b.src_color];
+    rt.DestBlend = factors[b.dst_color];
+    rt.BlendOp = ops[b.op_color];
+    rt.SrcBlendAlpha = factors[b.src_alpha];
+    rt.DestBlendAlpha = factors[b.dst_alpha];
+    rt.BlendOpAlpha = ops[b.op_alpha];
+    rt.LogicOp = D3D12_LOGIC_OP_NOOP;
+    rt.RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
+}
+
+// The program's pipeline for Dear ImGui's vertex layout and the program's blending, created on first use and kept in
+// meshPSOs: pipelines of an earlier blending stay there, as command lists being recorded may still use them. NULL (kept
+// too) for a program written for ImPlatform_DrawMesh: its own vertex layout and root signature do not fit.
+static ID3D12PipelineState* ImP12_ImGuiPipeline(ImPlatform_ShaderProgramData_DX12* program)
+{
+    const std::string key = "imgui|" + std::to_string(program->blend);
+    auto it = program->meshPSOs.find(key);
+    if (it != program->meshPSOs.end())
+        return it->second;
+
+    // Input layout matching ImDrawVert
+    D3D12_INPUT_ELEMENT_DESC inputLayout[] =
+    {
+        { "POSITION", 0, DXGI_FORMAT_R32G32_FLOAT,   0,  0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+        { "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT,   0,  8, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+        { "COLOR",    0, DXGI_FORMAT_R8G8B8A8_UNORM, 0, 16, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+    };
+
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC psoDesc = {};
+    psoDesc.pRootSignature = program->pRootSignature;
+    psoDesc.VS = { program->pVSBlob->GetBufferPointer(), program->pVSBlob->GetBufferSize() };
+    psoDesc.PS = { program->pPSBlob->GetBufferPointer(), program->pPSBlob->GetBufferSize() };
+    ImP12_ProgramBlend(psoDesc.BlendState.RenderTarget[0], program->blend);
+    psoDesc.SampleMask = UINT_MAX;
+    psoDesc.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
+    psoDesc.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
+    psoDesc.RasterizerState.FrontCounterClockwise = FALSE;
+    psoDesc.RasterizerState.DepthBias = D3D12_DEFAULT_DEPTH_BIAS;
+    psoDesc.RasterizerState.DepthBiasClamp = D3D12_DEFAULT_DEPTH_BIAS_CLAMP;
+    psoDesc.RasterizerState.SlopeScaledDepthBias = D3D12_DEFAULT_SLOPE_SCALED_DEPTH_BIAS;
+    psoDesc.RasterizerState.DepthClipEnable = TRUE;
+    psoDesc.RasterizerState.MultisampleEnable = FALSE;
+    psoDesc.RasterizerState.AntialiasedLineEnable = FALSE;
+    psoDesc.DepthStencilState.DepthEnable = FALSE;
+    psoDesc.DepthStencilState.StencilEnable = FALSE;
+    psoDesc.InputLayout = { inputLayout, 3 };
+    psoDesc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+    psoDesc.NumRenderTargets = 1;
+    psoDesc.RTVFormats[0] = DXGI_FORMAT_R8G8B8A8_UNORM;  // Match the swapchain format
+    psoDesc.SampleDesc.Count = 1;
+
+    ID3D12PipelineState* pso = NULL;
+    if (FAILED(g_GfxData.pDevice->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&pso))))
+        pso = NULL;
+    program->meshPSOs[key] = pso;
+    return pso;
+}
+
+IMPLATFORM_API bool ImPlatform_SetShaderProgramBlend(ImPlatform_ShaderProgram program, const ImPlatform_BlendDesc* blend)
+{
+    ImPlatform_ShaderProgramData_DX12* program_data = (ImPlatform_ShaderProgramData_DX12*)program;
+    if (!program_data || !g_GfxData.pDevice || !ImPlatform_BlendKey(blend, &program_data->blend))
+        return false;
+    program_data->pPSO = ImP12_ImGuiPipeline(program_data);
+    return true;
 }
 
 IMPLATFORM_API ImPlatform_ShaderProgram ImPlatform_CreateShaderProgram(ImPlatform_Shader vertex_shader, ImPlatform_Shader fragment_shader)
@@ -1106,7 +1090,7 @@ IMPLATFORM_API ImPlatform_ShaderProgram ImPlatform_CreateShaderProgram(ImPlatfor
     {
         if (pErrorBlob)
         {
-            fprintf(stderr, "DX12 Root signature serialization failed: %s\n", (char*)pErrorBlob->GetBufferPointer());
+            ImPlatform_ShaderLog("DX12 Root signature serialization failed: %s", (char*)pErrorBlob->GetBufferPointer());
             pErrorBlob->Release();
         }
         delete program;
@@ -1124,57 +1108,14 @@ IMPLATFORM_API ImPlatform_ShaderProgram ImPlatform_CreateShaderProgram(ImPlatfor
 
     if (FAILED(hr))
     {
-        fprintf(stderr, "DX12 CreateRootSignature failed\n");
+        ImPlatform_ShaderLog("DX12 CreateRootSignature failed");
         if (program->pVSBlob) program->pVSBlob->Release();
         if (program->pPSBlob) program->pPSBlob->Release();
         delete program;
         return NULL;
     }
 
-    // Create Pipeline State Object (PSO)
-    // Define input layout matching ImDrawVert structure
-    D3D12_INPUT_ELEMENT_DESC inputLayout[] =
-    {
-        { "POSITION", 0, DXGI_FORMAT_R32G32_FLOAT,   0,  0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
-        { "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT,   0,  8, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
-        { "COLOR",    0, DXGI_FORMAT_R8G8B8A8_UNORM, 0, 16, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
-    };
-
-    D3D12_GRAPHICS_PIPELINE_STATE_DESC psoDesc = {};
-    psoDesc.pRootSignature = program->pRootSignature;
-    psoDesc.VS = { program->pVSBlob->GetBufferPointer(), program->pVSBlob->GetBufferSize() };
-    psoDesc.PS = { program->pPSBlob->GetBufferPointer(), program->pPSBlob->GetBufferSize() };
-    psoDesc.BlendState.RenderTarget[0].BlendEnable = TRUE;
-    psoDesc.BlendState.RenderTarget[0].SrcBlend = D3D12_BLEND_SRC_ALPHA;
-    psoDesc.BlendState.RenderTarget[0].DestBlend = D3D12_BLEND_INV_SRC_ALPHA;
-    psoDesc.BlendState.RenderTarget[0].BlendOp = D3D12_BLEND_OP_ADD;
-    psoDesc.BlendState.RenderTarget[0].SrcBlendAlpha = D3D12_BLEND_ONE;
-    psoDesc.BlendState.RenderTarget[0].DestBlendAlpha = D3D12_BLEND_INV_SRC_ALPHA;
-    psoDesc.BlendState.RenderTarget[0].BlendOpAlpha = D3D12_BLEND_OP_ADD;
-    psoDesc.BlendState.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
-    psoDesc.SampleMask = UINT_MAX;
-    psoDesc.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
-    psoDesc.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
-    psoDesc.RasterizerState.FrontCounterClockwise = FALSE;
-    psoDesc.RasterizerState.DepthBias = D3D12_DEFAULT_DEPTH_BIAS;
-    psoDesc.RasterizerState.DepthBiasClamp = D3D12_DEFAULT_DEPTH_BIAS_CLAMP;
-    psoDesc.RasterizerState.SlopeScaledDepthBias = D3D12_DEFAULT_SLOPE_SCALED_DEPTH_BIAS;
-    psoDesc.RasterizerState.DepthClipEnable = TRUE;
-    psoDesc.RasterizerState.MultisampleEnable = FALSE;
-    psoDesc.RasterizerState.AntialiasedLineEnable = FALSE;
-    psoDesc.DepthStencilState.DepthEnable = FALSE;
-    psoDesc.DepthStencilState.StencilEnable = FALSE;
-    psoDesc.InputLayout = { inputLayout, 3 };
-    psoDesc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
-    psoDesc.NumRenderTargets = 1;
-    psoDesc.RTVFormats[0] = DXGI_FORMAT_R8G8B8A8_UNORM;  // Match the swapchain format
-    psoDesc.SampleDesc.Count = 1;
-
-    // The ImGui-layout pipeline serves the ImGui draw callbacks only; a program written for ImPlatform_DrawMesh (its own
-    // vertex layout and root signature) does not fit it and keeps pPSO NULL.
-    hr = g_GfxData.pDevice->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&program->pPSO));
-    if (FAILED(hr))
-        program->pPSO = NULL;
+    program->pPSO = ImP12_ImGuiPipeline(program);
 
     return (ImPlatform_ShaderProgram)program;
 }
@@ -1213,8 +1154,6 @@ IMPLATFORM_API void ImPlatform_DestroyShaderProgram(ImPlatform_ShaderProgram pro
         program_data->pPixelConstantBuffer->Release();
     if (program_data->pPixelConstantData)
         free(program_data->pPixelConstantData);
-    if (program_data->pPSO)
-        program_data->pPSO->Release();
     for (auto& kv : program_data->meshPSOs)      // The queue was drained above.
         if (kv.second)
             kv.second->Release();
@@ -3434,7 +3373,7 @@ IMPLATFORM_API void ImPlatform_BindBuffers(ImPlatform_VertexBuffer vertex_buffer
 }
 
 // Draws the bound buffers inside a draw callback with the program bound last there (ImPlatform_BeginCustomShader,
-// ImPlatform_BeginCustomShader_Render, ImPlatform_SetShaderTexture), Dear ImGui's blending, into the current target. The
+// ImPlatform_BeginCustomShader_Render, ImPlatform_SetShaderTexture) and its blending, into the current target. The
 // pipeline for the buffer's vertex layout is created on first use and kept by the program. primitive_type: 0 triangles,
 // 1 lines, 2 points. Offline drawing into a render texture uses ImPlatform_DrawMesh.
 IMPLATFORM_API void ImPlatform_DrawIndexed(unsigned int primitive_type, unsigned int index_count, unsigned int start_index)
@@ -3450,7 +3389,7 @@ IMPLATFORM_API void ImPlatform_DrawIndexed(unsigned int primitive_type, unsigned
         index_count = ib->ib_desc.index_count - start_index;    // The rest of the buffer
     if ((UINT64)start_index + index_count > ib->ib_desc.index_count)
         return;
-    std::string key = "callback|" + std::to_string(primitive_type) + "|" + std::to_string(vb->vb_desc.vertex_stride);
+    std::string key = "callback|" + std::to_string(prog->blend) + "|" + std::to_string(primitive_type) + "|" + std::to_string(vb->vb_desc.vertex_stride);
     for (size_t i = 0; i < vb->attributes.size(); i++)
         key += "|" + std::to_string((int)vb->attributes[i].format) + ":" + std::to_string(vb->attributes[i].offset) + ":" + vb->semantics[i];
     ID3D12PipelineState*& pso = prog->meshPSOs[key];
@@ -3474,16 +3413,7 @@ IMPLATFORM_API void ImPlatform_DrawIndexed(unsigned int primitive_type, unsigned
         pd.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
         pd.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
         pd.RasterizerState.DepthClipEnable = TRUE;
-        D3D12_RENDER_TARGET_BLEND_DESC& b = pd.BlendState.RenderTarget[0];
-        b.BlendEnable = TRUE;
-        b.SrcBlend = D3D12_BLEND_SRC_ALPHA;
-        b.DestBlend = D3D12_BLEND_INV_SRC_ALPHA;
-        b.BlendOp = D3D12_BLEND_OP_ADD;
-        b.SrcBlendAlpha = D3D12_BLEND_ONE;
-        b.DestBlendAlpha = D3D12_BLEND_INV_SRC_ALPHA;
-        b.BlendOpAlpha = D3D12_BLEND_OP_ADD;
-        b.LogicOp = D3D12_LOGIC_OP_NOOP;
-        b.RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
+        ImP12_ProgramBlend(pd.BlendState.RenderTarget[0], prog->blend);
         if (FAILED(g_GfxData.pDevice->CreateGraphicsPipelineState(&pd, IID_PPV_ARGS(&pso))))
         {
             pso = NULL;

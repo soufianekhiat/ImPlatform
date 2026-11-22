@@ -1099,6 +1099,7 @@ struct ImPlatform_ShaderProgramData_DX9
     ImPlatform_ShaderData_DX9* ps;
     ImVector<unsigned char> params; // b1
     IDirect3DBaseTexture9* textures[9]; // ImPlatform_SetShaderTexture: t0 for direct draws, t1..t8 for every draw (referenced)
+    unsigned int blend;                 // ImPlatform_BlendKey; 0: Dear ImGui's blending is left as it is
 };
 
 // b1 of the direct draws while pushed (ImPlatform_PushShaderConstants), a stack.
@@ -1148,6 +1149,9 @@ static void ImP9_RemapSamplers(DWORD* code, size_t words, const unsigned char re
 
 IMPLATFORM_API ImPlatform_Shader ImPlatform_CreateShader(const ImPlatform_ShaderDesc* desc)
 {
+    ImPlatform_ShaderDesc with_defines;
+    ImGuiTextBuffer defined_source;
+    desc = ImPlatform_ShaderApplyDefines(desc, &with_defines, &defined_source);
     if (!desc || !g_GfxData.pDevice || (desc->stage != ImPlatform_ShaderStage_Vertex && desc->stage != ImPlatform_ShaderStage_Fragment))
         return NULL;
     const bool vertex = desc->stage == ImPlatform_ShaderStage_Vertex;
@@ -1162,7 +1166,7 @@ IMPLATFORM_API ImPlatform_Shader ImPlatform_CreateShader(const ImPlatform_Shader
         if (FAILED(D3DCompile(desc->source_code, len, NULL, NULL, NULL, entry, vertex ? "vs_3_0" : "ps_3_0",
                               D3DCOMPILE_OPTIMIZATION_LEVEL3, 0, &blob, &errors)))
         {
-            fprintf(stderr, "[ImPlatform] DX9: shader compilation failed: %s\n", errors ? (const char*)errors->GetBufferPointer() : "");
+            ImPlatform_ShaderLog("DX9: shader compilation failed: %s", errors ? (const char*)errors->GetBufferPointer() : "");
             if (errors) errors->Release();
             return NULL;
         }
@@ -1185,7 +1189,7 @@ IMPLATFORM_API ImPlatform_Shader ImPlatform_CreateShader(const ImPlatform_Shader
     }
     else
     {
-        fprintf(stderr, "[ImPlatform] DX9: custom shaders take HLSL source or shader model 3 bytecode\n");
+        ImPlatform_ShaderLog("DX9: custom shaders take HLSL source or shader model 3 bytecode");
         return NULL;
     }
 
@@ -1236,7 +1240,7 @@ IMPLATFORM_API ImPlatform_Shader ImPlatform_CreateShader(const ImPlatform_Shader
                               : g_GfxData.pDevice->CreatePixelShader(code.Data, (IDirect3DPixelShader9**)&sd->shader);
     if (FAILED(hr))
     {
-        fprintf(stderr, "[ImPlatform] DX9: CreateVertexShader / CreatePixelShader failed (0x%08lx)\n", (unsigned long)hr);
+        ImPlatform_ShaderLog("DX9: CreateVertexShader / CreatePixelShader failed (0x%08lx)", (unsigned long)hr);
         IM_DELETE(sd);
         return NULL;
     }
@@ -1333,8 +1337,31 @@ static void ImP9_BindProgram(ImPlatform_ShaderProgramData_DX9* pd, const D3DMATR
             dev->SetSamplerState(slot, D3DSAMP_ADDRESSV, D3DTADDRESS_CLAMP);
             dev->SetSamplerState(slot, D3DSAMP_ADDRESSW, D3DTADDRESS_CLAMP);
         }
+    if (pd->blend)
+    {
+        static const D3DBLEND factors[] = { D3DBLEND_ZERO, D3DBLEND_ONE, D3DBLEND_SRCCOLOR, D3DBLEND_INVSRCCOLOR, D3DBLEND_SRCALPHA,
+                                            D3DBLEND_INVSRCALPHA, D3DBLEND_DESTCOLOR, D3DBLEND_INVDESTCOLOR, D3DBLEND_DESTALPHA,
+                                            D3DBLEND_INVDESTALPHA };
+        static const D3DBLENDOP ops[] = { D3DBLENDOP_ADD, D3DBLENDOP_SUBTRACT, D3DBLENDOP_REVSUBTRACT, D3DBLENDOP_MIN, D3DBLENDOP_MAX };
+        const ImPlatform_BlendDesc b = ImPlatform_BlendFromKey(pd->blend);
+        dev->SetRenderState(D3DRS_ALPHABLENDENABLE, b.enable);
+        dev->SetRenderState(D3DRS_SRCBLEND, factors[b.src_color]);
+        dev->SetRenderState(D3DRS_DESTBLEND, factors[b.dst_color]);
+        dev->SetRenderState(D3DRS_BLENDOP, ops[b.op_color]);
+        dev->SetRenderState(D3DRS_SEPARATEALPHABLENDENABLE, TRUE);
+        dev->SetRenderState(D3DRS_SRCBLENDALPHA, factors[b.src_alpha]);
+        dev->SetRenderState(D3DRS_DESTBLENDALPHA, factors[b.dst_alpha]);
+        dev->SetRenderState(D3DRS_BLENDOPALPHA, ops[b.op_alpha]);
+    }
     g_P9_Bound = pd;
     g_P9_BoundProjection = projection;
+}
+
+// Render states set when the program is bound; Dear ImGui's reset callback restores its own.
+IMPLATFORM_API bool ImPlatform_SetShaderProgramBlend(ImPlatform_ShaderProgram program, const ImPlatform_BlendDesc* blend)
+{
+    ImPlatform_ShaderProgramData_DX9* pd = (ImPlatform_ShaderProgramData_DX9*)program;
+    return pd && ImPlatform_BlendKey(blend, &pd->blend);
 }
 
 IMPLATFORM_API void ImPlatform_UseShaderProgram(ImPlatform_ShaderProgram program)
@@ -1459,7 +1486,12 @@ IMPLATFORM_API void ImPlatform_EndCustomShader(ImDrawList* draw)
     if (!draw)
         return;
 
-    draw->AddCallback([](const ImDrawList*, const ImDrawCmd*) { g_P9_Bound = NULL; }, NULL);      // Unbound by the reset
+    draw->AddCallback([](const ImDrawList*, const ImDrawCmd*)
+    {
+        g_P9_Bound = NULL;      // Unbound by the reset
+        if (g_GfxData.pDevice)
+            g_GfxData.pDevice->SetRenderState(D3DRS_BLENDOPALPHA, D3DBLENDOP_ADD);     // Not part of Dear ImGui's reset
+    }, NULL);
     draw->AddCallback(ImGui::GetPlatformIO().DrawCallback_ResetRenderState, NULL);
 }
 

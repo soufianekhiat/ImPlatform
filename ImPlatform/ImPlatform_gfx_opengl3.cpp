@@ -28,6 +28,23 @@
 #ifndef GL_LINES
 #define GL_LINES                          0x0001
 #endif
+#ifndef GL_ZERO
+#define GL_ZERO                           0
+#endif
+#ifndef GL_SRC_COLOR
+#define GL_SRC_COLOR                      0x0300
+#define GL_ONE_MINUS_SRC_COLOR            0x0301
+#define GL_DST_ALPHA                      0x0304
+#define GL_ONE_MINUS_DST_ALPHA            0x0305
+#define GL_DST_COLOR                      0x0306
+#define GL_ONE_MINUS_DST_COLOR            0x0307
+#endif
+#ifndef GL_FUNC_SUBTRACT
+#define GL_MIN                            0x8007
+#define GL_MAX                            0x8008
+#define GL_FUNC_SUBTRACT                  0x800A
+#define GL_FUNC_REVERSE_SUBTRACT          0x800B
+#endif
 #ifndef GL_POINTS
 #define GL_POINTS                         0x0000
 #endif
@@ -1827,6 +1844,7 @@ struct ImPlatform_ShaderProgramData_GL
     void*        cb_data;
     unsigned int cb_size;
     GLuint       cb_ubo;
+    unsigned int blend;                     // ImPlatform_BlendKey; 0: Dear ImGui's blending is left as it is
 };
 
 // Projection matrix block (binding 0, HLSL `cbuffer vertexBuffer : register(b0)`),
@@ -1896,10 +1914,9 @@ static GLuint ImPlatform_CompileShader_GL(GLenum shader_type, const char* source
     glGetShaderiv(shader, GL_COMPILE_STATUS, &success);
     if (!success)
     {
-        char info_log[512];
-        glGetShaderInfoLog(shader, 512, NULL, info_log);
-        // Log error (in production, you'd want proper logging)
-        fprintf(stderr, "Shader compilation failed: %s\n", info_log);
+        char info_log[4096];
+        glGetShaderInfoLog(shader, sizeof(info_log), NULL, info_log);
+        ImPlatform_ShaderLog("Shader compilation failed: %s", info_log);
         glDeleteShader(shader);
         return 0;
     }
@@ -2012,6 +2029,9 @@ static char* ImPlatform_StrDup_GL(const char* s)
 
 IMPLATFORM_API ImPlatform_Shader ImPlatform_CreateShader(const ImPlatform_ShaderDesc* desc)
 {
+    ImPlatform_ShaderDesc with_defines;
+    ImGuiTextBuffer defined_source;
+    desc = ImPlatform_ShaderApplyDefines(desc, &with_defines, &defined_source);
     if (!desc || !desc->source_code)
         return NULL;
 
@@ -2239,9 +2259,9 @@ IMPLATFORM_API ImPlatform_ShaderProgram ImPlatform_CreateShaderProgram(ImPlatfor
         glGetProgramiv(program, GL_LINK_STATUS, &success);
         if (!success)
         {
-            char info_log[512];
-            glGetProgramInfoLog(program, 512, NULL, info_log);
-            fprintf(stderr, "Shader program linking failed: %s\n", info_log);
+            char info_log[4096];
+            glGetProgramInfoLog(program, sizeof(info_log), NULL, info_log);
+            ImPlatform_ShaderLog("Shader program linking failed: %s", info_log);
             glDeleteProgram(program);
             return NULL;
         }
@@ -2262,6 +2282,13 @@ IMPLATFORM_API ImPlatform_ShaderProgram ImPlatform_CreateShaderProgram(ImPlatfor
     ImPlatform_GL_FindAttributes(program, program_data->attrib_locations);
 
     return (ImPlatform_ShaderProgram)program_data;
+}
+
+// Blend state set when the program is bound; Dear ImGui's reset callback restores its own.
+IMPLATFORM_API bool ImPlatform_SetShaderProgramBlend(ImPlatform_ShaderProgram program, const ImPlatform_BlendDesc* blend)
+{
+    ImPlatform_ShaderProgramData_GL* program_data = (ImPlatform_ShaderProgramData_GL*)program;
+    return program_data && ImPlatform_BlendKey(blend, &program_data->blend);
 }
 
 IMPLATFORM_API void ImPlatform_DestroyShaderProgram(ImPlatform_ShaderProgram program)
@@ -2461,63 +2488,10 @@ IMPLATFORM_API bool ImPlatform_SetShaderTexture(ImPlatform_ShaderProgram program
 // ============================================================================
 
 // ImDrawCallback handler to activate a custom shader
-static void ImPlatform_SetCustomShader(const ImDrawList* parent_list, const ImDrawCmd* cmd)
+IMPLATFORM_API void ImPlatform_BeginCustomShader_Render(ImPlatform_ShaderProgram program);
+static void ImPlatform_SetCustomShader(const ImDrawList* /*parent_list*/, const ImDrawCmd* cmd)
 {
-    (void)parent_list;
-    ImPlatform_ShaderProgram program = (ImPlatform_ShaderProgram)cmd->UserCallbackData;
-    if (!program) return;
-
-    ImPlatform_ShaderProgramData_GL* program_data = (ImPlatform_ShaderProgramData_GL*)program;
-
-    // Bind the shader program
-    ImPlatform_BindShaderProgram(program);
-    ImPlatform_GL_PointAttributes(program_data);
-
-    // Use cached draw data for correct viewport projection in multi-viewport mode
-    ImDrawData* draw_data = g_CurrentDrawData;
-    ImPlatform_GL_BindUniformBlocks(program_data, draw_data);
-    if (!draw_data) return;
-
-    float L = draw_data->DisplayPos.x;
-    float R = draw_data->DisplayPos.x + draw_data->DisplaySize.x;
-    float T = draw_data->DisplayPos.y;
-    float B = draw_data->DisplayPos.y + draw_data->DisplaySize.y;
-
-    const float ortho_projection[4][4] = {
-        { 2.0f/(R-L),   0.0f,         0.0f,   0.0f },
-        { 0.0f,         2.0f/(T-B),   0.0f,   0.0f },
-        { 0.0f,         0.0f,        -1.0f,   0.0f },
-        { (R+L)/(L-R),  (T+B)/(B-T),  0.0f,   1.0f },
-    };
-
-    // Apply projection matrix
-    GLint proj_loc = glGetUniformLocation(program_data->program_id, "ProjMtx");
-    if (proj_loc != -1)
-        glUniformMatrix4fv(proj_loc, 1, GL_FALSE, &ortho_projection[0][0]);
-
-    // Apply all stored uniforms
-    for (int i = 0; i < program_data->uniform_count; i++)
-    {
-        ImPlatform_UniformData_GL* uniform = &program_data->uniforms[i];
-        GLint location = glGetUniformLocation(program_data->program_id, uniform->name);
-
-        if (location == -1)
-            continue;
-
-        unsigned int size = uniform->size;
-        const float* data = uniform->data;
-
-        if (size == sizeof(float) * 1)
-            glUniform1fv_Ptr(location, 1, data);
-        else if (size == sizeof(float) * 2)
-            glUniform2fv_Ptr(location, 1, data);
-        else if (size == sizeof(float) * 3)
-            glUniform3fv_Ptr(location, 1, data);
-        else if (size == sizeof(float) * 4)
-            glUniform4fv_Ptr(location, 1, data);
-        else if (size == sizeof(float) * 16)
-            glUniformMatrix4fv(location, 1, GL_FALSE, data);
-    }
+    ImPlatform_BeginCustomShader_Render((ImPlatform_ShaderProgram)cmd->UserCallbackData);
 }
 
 // Activate a custom shader immediately (for use inside draw callbacks).
@@ -2529,6 +2503,19 @@ IMPLATFORM_API void ImPlatform_BeginCustomShader_Render(ImPlatform_ShaderProgram
     // Bind the shader program
     ImPlatform_BindShaderProgram(program);
     ImPlatform_GL_PointAttributes(program_data);
+    if (program_data->blend)
+    {
+        static const GLenum factors[] = { GL_ZERO, GL_ONE, GL_SRC_COLOR, GL_ONE_MINUS_SRC_COLOR, GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA,
+                                          GL_DST_COLOR, GL_ONE_MINUS_DST_COLOR, GL_DST_ALPHA, GL_ONE_MINUS_DST_ALPHA };
+        static const GLenum ops[] = { GL_FUNC_ADD, GL_FUNC_SUBTRACT, GL_FUNC_REVERSE_SUBTRACT, GL_MIN, GL_MAX };
+        const ImPlatform_BlendDesc b = ImPlatform_BlendFromKey(program_data->blend);
+        if (b.enable)
+            glEnable(GL_BLEND);
+        else
+            glDisable(GL_BLEND);
+        glBlendFuncSeparate(factors[b.src_color], factors[b.dst_color], factors[b.src_alpha], factors[b.dst_alpha]);
+        glBlendEquationSeparate(ops[b.op_color], ops[b.op_alpha]);
+    }
 
     // Use cached draw data for correct viewport projection in multi-viewport mode
     ImDrawData* draw_data = g_CurrentDrawData;

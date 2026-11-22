@@ -83,28 +83,6 @@ static int ImPlatform_ParseDecls(const char* list, ImPlatform_PartsDecl* out, in
     return count;
 }
 
-// "NAME=VALUE;OTHER" (';' or new lines) -> #define lines; a line starting with '#' is kept as written.
-static void ImPlatform_PartsDefines(ImGuiTextBuffer& out, const char* defines)
-{
-    for (const char* p = defines; p && *p; )
-    {
-        const char* end = p + strcspn(p, ";\n");
-        while (p < end && (*p == ' ' || *p == '\t' || *p == '\r'))
-            p++;
-        const char* eq = (const char*)memchr(p, '=', (size_t)(end - p));
-        if (p < end && *p == '#')
-            out.appendf("%.*s\n", (int)(end - p), p);
-        else if (p < end)
-        {
-            if (eq)
-                out.appendf("#define %.*s %.*s\n", (int)(eq - p), p, (int)(end - eq - 1), eq + 1);
-            else
-                out.appendf("#define %.*s\n", (int)(end - p), p);
-        }
-        p = *end ? end + 1 : end;
-    }
-}
-
 static const char* ImPlatform_PartsText(const char* s) { return s ? s : ""; }
 static const char* ImPlatform_PartsTexture0(const ImPlatform_ShaderParts* parts) { return parts->textures[0] ? parts->textures[0] : "texture0"; }
 static bool ImPlatform_PartsIs3D(const ImPlatform_ShaderParts* parts, int slot) { return (parts->textures_3d >> slot) & 1u; }
@@ -124,7 +102,7 @@ static void ImPlatform_PartsHLSL(ImGuiTextBuffer& out, const ImPlatform_ShaderPa
         "#define IMP_MUL(m, v) mul(m, v)\n"
         "#define IMP_CAST(type, x) ((type)(x))\n"
         "#define IMP_OUT(type) out type\n#define IMP_INOUT(type) inout type\n");
-    ImPlatform_PartsDefines(out, parts->defines);
+    ImPlatform_AppendDefines(out, parts->defines);
     out.append("cbuffer ImpVertex : register(b0) { float4x4 ProjMtx; };\n");
     if (parts->params && parts->params[0])
         out.appendf("cbuffer ImpParams : register(b1) {\n%s\n};\n", parts->params);
@@ -201,7 +179,7 @@ static void ImPlatform_PartsGLSL(ImGuiTextBuffer& out, const ImPlatform_ShaderPa
     // Derivatives exist in fragment shaders only; the helper functions are compiled in both stages, so the vertex stage
     // gets a zero of the argument's type.
     out.append(vertex ? "#define ddx(x) ((x) - (x))\n#define ddy(x) ((x) - (x))\n" : "#define ddx dFdx\n#define ddy dFdy\n");
-    ImPlatform_PartsDefines(out, parts->defines);
+    ImPlatform_AppendDefines(out, parts->defines);
     // The backend binds these blocks by name to bindings 0 and 1 (the binding qualifier needs GLSL 4.20). Render passes
     // mirror the vertices (render textures are stored bottom-up; imp_mirror.x is 1, imp_mirror.y the mirror line): in_pos
     // is unmirrored and ProjMtx mirrors again, so the bodies work in Dear ImGui coordinates.
@@ -283,7 +261,7 @@ static void ImPlatform_PartsMSL(ImGuiTextBuffer& out, const ImPlatform_ShaderPar
         "template<typename T, int N, typename S, typename = enable_if_t<is_scalar<S>::value>> vec<T, N> pow(vec<T, N> x, S y) { return pow(x, vec<T, N>(T(y))); }\n");
     // Derivatives exist in fragment functions only (as in GLSL): a zero of the argument's type in the vertex stage.
     out.append(vertex ? "#define ddx(x) ((x) - (x))\n#define ddy(x) ((x) - (x))\n" : "#define ddx dfdx\n#define ddy dfdy\n");
-    ImPlatform_PartsDefines(out, parts->defines);
+    ImPlatform_AppendDefines(out, parts->defines);
     const bool has_params = parts->params && parts->params[0];
     // ImpParams is the buffer layout (float3 is 16 bytes in MSL: packed_float3 keeps the HLSL / std140 offsets);
     // ImpContext holds what the bodies see (MSL has no derived classes): ProjMtx, the parameter values, and the arrays
@@ -447,7 +425,9 @@ IMPLATFORM_API int ImPlatform_GenerateShaderSource(const ImPlatform_ShaderParts*
 }
 
 #if IMPLATFORM_GFX_SUPPORT_SHADER_PARTS && IM_CURRENT_GFX != IM_GFX_CUSTOM
-IMPLATFORM_API ImPlatform_Shader ImPlatform_CreateShaderFromParts(const ImPlatform_ShaderParts* parts, ImPlatform_ShaderStage stage)
+// The descriptor of one stage for the backend; its generated text is kept in `source`. False for an unsupported stage.
+static bool ImPlatform_PartsDesc(const ImPlatform_ShaderParts* parts, ImPlatform_ShaderStage stage, ImPlatform_ShaderDesc* desc,
+                                 ImVector<char>* source)
 {
 #if IM_CURRENT_GFX == IM_GFX_OPENGL3
     const ImPlatform_ShaderFormat format = ImPlatform_ShaderFormat_GLSL;
@@ -464,24 +444,48 @@ IMPLATFORM_API ImPlatform_Shader ImPlatform_CreateShaderFromParts(const ImPlatfo
     static const char prefix[] = "";
 #endif
     const int prefix_len = (int)sizeof(prefix) - 1;
-    const int size = ImPlatform_GenerateShaderSource(parts, stage, format, NULL, 0);
+    const int size = parts ? ImPlatform_GenerateShaderSource(parts, stage, format, NULL, 0) : -1;
     if (size < 0)
+        return false;
+    source->resize(prefix_len + size + 1);
+    memcpy(source->Data, prefix, (size_t)prefix_len);
+    ImPlatform_GenerateShaderSource(parts, stage, format, source->Data + prefix_len, size + 1);
+    *desc = ImPlatform_ShaderDesc();
+    desc->stage = stage;
+    desc->format = format;
+    desc->source_code = source->Data;
+    desc->entry_point = format == ImPlatform_ShaderFormat_GLSL ? "main" : stage == ImPlatform_ShaderStage_Vertex ? "vs_main" : "ps_main";
+    desc->cache_key = parts->cache_key;
+    desc->compile_flags = parts->compile_flags;
+    return true;
+}
+
+IMPLATFORM_API ImPlatform_Shader ImPlatform_CreateShaderFromParts(const ImPlatform_ShaderParts* parts, ImPlatform_ShaderStage stage)
+{
+    ImPlatform_ShaderDesc desc;
+    ImVector<char> source;
+    if (!ImPlatform_PartsDesc(parts, stage, &desc, &source))
         return NULL;
-    char* source = (char*)IM_ALLOC((size_t)(prefix_len + size) + 1);
-    memcpy(source, prefix, (size_t)prefix_len);
-    ImPlatform_GenerateShaderSource(parts, stage, format, source + prefix_len, size + 1);
-    ImPlatform_ShaderDesc desc = {};
-    desc.stage = stage;
-    desc.format = format;
-    desc.source_code = source;
-    desc.entry_point = format == ImPlatform_ShaderFormat_GLSL ? "main" : stage == ImPlatform_ShaderStage_Vertex ? "vs_main" : "ps_main";
-    desc.cache_key = parts->cache_key;
-    desc.compile_flags = parts->compile_flags;
     ImPlatform_Shader shader = ImPlatform_CreateShader(&desc);
     if (!shader)
-        fprintf(stderr, "[ImPlatform] shader parts: the generated %s shader did not compile:\n%s\n",
-                stage == ImPlatform_ShaderStage_Vertex ? "vertex" : "pixel", source);
-    IM_FREE(source);
+    {
+        // The compiler's messages refer to lines of the generated source: it follows them in the log.
+        ImGuiTextBuffer& log = ImPlatform_ShaderLogBuffer();
+        const int messages = log.size();
+        log.appendf("\nThe generated %s shader:\n", stage == ImPlatform_ShaderStage_Vertex ? "vertex" : "pixel");
+        ImPlatform_AppendNumberedSource(log, source.Data);
+        fprintf(stderr, "%s", log.c_str() + messages);
+    }
     return shader;
+}
+
+IMPLATFORM_API ImPlatform_ShaderJob ImPlatform_CreateShaderProgramFromPartsAsync(const ImPlatform_ShaderParts* parts)
+{
+    ImPlatform_ShaderDesc desc[2];
+    ImVector<char> source[2];
+    if (!ImPlatform_PartsDesc(parts, ImPlatform_ShaderStage_Vertex, &desc[0], &source[0])
+        || !ImPlatform_PartsDesc(parts, ImPlatform_ShaderStage_Fragment, &desc[1], &source[1]))
+        return NULL;
+    return ImPlatform_ShaderJobCreate(&desc[0], &desc[1], true);
 }
 #endif

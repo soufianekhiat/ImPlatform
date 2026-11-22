@@ -1,5 +1,29 @@
 # Changelog
 
+## Unreleased
+
+Changes since 2.0.0 (the `v2` branch).
+
+### Added
+- **Blending of custom shader programs** on every backend: `ImPlatform_SetShaderProgramBlend()` with an
+  `ImPlatform_BlendDesc` (factors and operation for color and for alpha) or a preset from `ImPlatform_BlendDesc_Preset()`
+  (alpha, premultiplied, additive, multiply, opaque). It applies to the draw list commands of the program,
+  `ImPlatform_DrawIndexed()` and `ImPlatform_DrawQuadNow()`. Demo `--blend-test`.
+- **Shader compile errors for the application**: `ImPlatform_GetShaderLog()` returns the compiler's or linker's messages
+  of the last create call that failed; for shader parts the generated source follows with line numbers.
+- **Shader permutations**: `ImPlatform_ShaderDesc::defines` ("CLIP;MODE=2") for `#ifdef` / `#if` in HLSL, GLSL and MSL
+  source, with the compiler's line numbers kept and one bytecode cache entry per combination.
+- **Asynchronous program compilation**: `ImPlatform_CreateShaderProgramAsync()` /
+  `ImPlatform_CreateShaderProgramFromPartsAsync()` return a job at once, `ImPlatform_GetShaderJobStatus()` reports
+  compiling, ready or failed and gives the program, `ImPlatform_GetShaderJobLog()` the messages. DirectX 10, 11 and 12
+  compile the HLSL on a worker thread; the other backends compile inside the create call. Demo `--shader-async-test`.
+
+### Changed
+- DirectX 10, 11 and 12 share one HLSL compile function (`ImPlatform_D3DCompileShader` in `ImPlatform_Internal.h`):
+  DirectX 10 and 12 print the compile time of a shader as DirectX 11 did.
+- An `IM_GFX_CUSTOM` application also provides `ImPlatform_GetShaderLog()` and `ImPlatform_SetShaderProgramBlend()`.
+- New source file `ImPlatform/ImPlatform_shader_common.cpp` (included by `ImPlatform.h`; listed in `CMakeLists.txt`).
+
 ## 2.0.0
 
 Changes since 0.5.0 (the `main` branch).
