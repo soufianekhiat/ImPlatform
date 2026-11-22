@@ -55,10 +55,10 @@
 #pragma once
 
 // ImPlatform version
-// (Integer encoded as XYYZZ for use in #if preprocessor conditionals, e.g. '#if IMPLATFORM_VERSION_NUM >= 20000')
-#define IMPLATFORM_VERSION          "2.0.0"
-#define IMPLATFORM_VERSION_NUM      20000
-#define IMPLATFORM_VERSION_MAJOR    2
+// (Integer encoded as XYYZZ for use in #if preprocessor conditionals, e.g. '#if IMPLATFORM_VERSION_NUM >= 30000')
+#define IMPLATFORM_VERSION          "3.0.0"
+#define IMPLATFORM_VERSION_NUM      30000
+#define IMPLATFORM_VERSION_MAJOR    3
 #define IMPLATFORM_VERSION_MINOR    0
 #define IMPLATFORM_VERSION_PATCH    0
 
@@ -329,7 +329,7 @@ extern "C" {
 // Version Information
 // ============================================================================
 
-// Get ImPlatform version string (e.g., "2.0.0")
+// Get ImPlatform version string (e.g., "3.0.0")
 // Returns: Version string (compile-time constant, do not free)
 IMPLATFORM_API const char* ImPlatform_GetVersion(void);
 

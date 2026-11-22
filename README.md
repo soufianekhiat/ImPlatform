@@ -32,13 +32,13 @@ You can check the ImPlatform version at both compile-time and runtime:
 // Compile-time version checking
 #include <ImPlatform.h>
 
-#if IMPLATFORM_VERSION_NUM >= 20000
-    // Features available in version 2.0.0+
+#if IMPLATFORM_VERSION_NUM >= 30000
+    // Features available in version 3.0.0+
 #endif
 
 // Runtime version checking
-const char* version = ImPlatform_GetVersion();  // Returns "2.0.0"
-int version_num = ImPlatform_GetVersionNum();   // Returns 20000
+const char* version = ImPlatform_GetVersion();  // Returns "3.0.0"
+int version_num = ImPlatform_GetVersionNum();   // Returns 30000
 
 printf("ImPlatform version: %s (numeric: %d)\n", version, version_num);
 ```
@@ -46,6 +46,7 @@ printf("ImPlatform version: %s (numeric: %d)\n", version, version_num);
 Version encoding: `XYYZZ` where `X` = major, `YY` = minor, `ZZ` = patch
 - Version 0.5.0 = 500
 - Version 2.0.0 = 20000
+- Version 3.0.0 = 30000
 
 ### Basic Usage
 

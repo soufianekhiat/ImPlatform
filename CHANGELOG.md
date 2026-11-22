@@ -1,8 +1,8 @@
 # Changelog
 
-## Unreleased
+## 3.0.0
 
-Changes since 2.0.0 (the `v2` branch).
+Changes since 2.0.0 (the `v2` branch), in progress on the `v3` branch.
 
 ### Added
 - **Blending of custom shader programs** on every backend: `ImPlatform_SetShaderProgramBlend()` with an
