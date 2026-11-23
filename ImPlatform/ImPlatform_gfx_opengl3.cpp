@@ -1668,11 +1668,14 @@ IMPLATFORM_API bool ImPlatform_UpdateVertexBuffer(ImPlatform_VertexBuffer buffer
 
     ImPlatform_BufferData_GL* buf = (ImPlatform_BufferData_GL*)buffer;
 
+    // The binding is left as found: an update may run inside a draw callback, between Dear ImGui's draws.
+    GLint bound = 0;
+    glGetIntegerv(GL_ARRAY_BUFFER_BINDING, &bound);
     glBindBuffer(GL_ARRAY_BUFFER, buf->vbo);
     size_t byte_offset = offset * buf->vb_desc.vertex_stride;
     size_t byte_size = count * buf->vb_desc.vertex_stride;
     glBufferSubData(GL_ARRAY_BUFFER, byte_offset, byte_size, vertex_data);
-    glBindBuffer(GL_ARRAY_BUFFER, 0);
+    glBindBuffer(GL_ARRAY_BUFFER, (GLuint)bound);
 
     return true;
 }
@@ -1728,9 +1731,11 @@ IMPLATFORM_API bool ImPlatform_UpdateIndexBuffer(ImPlatform_IndexBuffer buffer, 
     size_t byte_offset = offset * index_size;
     size_t byte_size = count * index_size;
 
+    GLint bound = 0;    // Part of the bound vertex array object
+    glGetIntegerv(GL_ELEMENT_ARRAY_BUFFER_BINDING, &bound);
     glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, buf->ibo);
     glBufferSubData(GL_ELEMENT_ARRAY_BUFFER, byte_offset, byte_size, index_data);
-    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, (GLuint)bound);
 
     return true;
 }

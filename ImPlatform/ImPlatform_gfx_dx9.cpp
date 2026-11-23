@@ -136,9 +136,11 @@ void ImPlatform_Gfx_CleanupDevice_DX9(ImPlatform_GfxData_DX9* pData)
 }
 
 // Internal API - Reset D3D9 device
+void ImPlatform_DX9_ReleaseStreamBuffers();
 void ImPlatform_Gfx_ResetDevice_DX9(ImPlatform_GfxData_DX9* pData)
 {
     ImGui_ImplDX9_InvalidateDeviceObjects();
+    ImPlatform_DX9_ReleaseStreamBuffers();      // Default pool resources go before a reset
     HRESULT hr = pData->pDevice->Reset(&pData->d3dpp);
     if (hr == D3DERR_INVALIDCALL)
         IM_ASSERT(0); // Reset fails while D3DPOOL_DEFAULT resources are still alive (e.g. ImPlatform render textures)
@@ -296,7 +298,7 @@ IMPLATFORM_API bool ImPlatform_GfxAPISwapBuffer(void)
 // ImPlatform API - ShutdownGfxAPI
 IMPLATFORM_API void ImPlatform_ShutdownGfxAPI(void)
 {
-    // Nothing special needed
+    ImPlatform_DX9_ReleaseStreamBuffers();
 }
 
 // ImPlatform API - ShutdownWindow
@@ -790,16 +792,94 @@ struct ImPlatform_BufferData_DX9
     ImPlatform_VertexBufferDesc vb_desc;
     ImPlatform_IndexBufferDesc ib_desc;
     ImPlatform_VertexAttribute* attributes;
+    UINT capacity;      // Of the Direct3D buffer, in bytes: a Stream buffer may have taken a larger one
+    bool drawn;         // Drawn since its last whole write
 };
 
-static D3DPOOL ImPlatform_GetD3D9Pool(ImPlatform_BufferUsage usage)
+// Static and Dynamic buffers are in the managed pool: Direct3D keeps a copy of them in system memory, so a lock of a
+// part or of the whole is ordered with the draws around it, and they survive a device reset. Stream buffers are dynamic
+// buffers of the default pool: a whole write discards (the driver hands out memory no issued draw reads); a part is
+// written in place, and refused once the buffer has been drawn. Destroyed Stream buffers are kept for the next Stream
+// buffer of a close size, which discards them: buffers created and destroyed every frame create no Direct3D buffer.
+// They are released before a device reset, as the default pool requires.
+struct ImPlatform_StreamBuffer_DX9
 {
-    return (usage == ImPlatform_BufferUsage_Static) ? D3DPOOL_MANAGED : D3DPOOL_DEFAULT;
+    IDirect3DResource9* buffer;
+    UINT capacity;
+    D3DFORMAT format;   // Index buffers: D3DFMT_INDEX16 / 32; vertex buffers: D3DFMT_UNKNOWN
+    int frame;          // The frame it was destroyed in
+};
+static ImVector<ImPlatform_StreamBuffer_DX9> g_StreamBuffers;
+
+// T: IDirect3DVertexBuffer9 or IDirect3DIndexBuffer9
+template <typename T> static bool ImPlatform_DX9_WriteBuffer(T* buffer, const void* data, UINT at, UINT bytes, DWORD flags)
+{
+    void* locked = NULL;
+    if (FAILED(buffer->Lock(at, bytes, &locked, flags)))
+        return false;
+    memcpy(locked, data, bytes);
+    buffer->Unlock();
+    return true;
 }
 
-static DWORD ImPlatform_GetD3D9Usage(ImPlatform_BufferUsage usage)
+// A destroyed Stream buffer of that format large enough for 'size' bytes, filled with 'data'; NULL when there is none.
+template <typename T> static T* ImPlatform_DX9_TakeStreamBuffer(const void* data, UINT size, D3DFORMAT format, UINT* capacity)
 {
-    return (usage == ImPlatform_BufferUsage_Dynamic || usage == ImPlatform_BufferUsage_Stream) ? D3DUSAGE_DYNAMIC | D3DUSAGE_WRITEONLY : 0;
+    const int frame = ImGui::GetFrameCount();
+    for (int i = g_StreamBuffers.Size - 1; i >= 0; i--)
+    {
+        const ImPlatform_StreamBuffer_DX9 s = g_StreamBuffers[i];
+        if (s.format == format && s.capacity >= size && s.capacity / 2 <= size
+            && ImPlatform_DX9_WriteBuffer((T*)s.buffer, data, 0, size, D3DLOCK_DISCARD))
+        {
+            g_StreamBuffers.erase(g_StreamBuffers.Data + i);
+            *capacity = s.capacity;
+            return (T*)s.buffer;
+        }
+        if (frame - s.frame > 240)      // Not taken for a while
+        {
+            s.buffer->Release();
+            g_StreamBuffers.erase(g_StreamBuffers.Data + i);
+        }
+    }
+    return NULL;
+}
+
+static void ImPlatform_DX9_ReleaseBuffer(IDirect3DResource9* buffer, UINT capacity, D3DFORMAT format, ImPlatform_BufferUsage usage)
+{
+    if (!buffer)
+        return;
+    if (usage == ImPlatform_BufferUsage_Stream)
+    {
+        const ImPlatform_StreamBuffer_DX9 s = { buffer, capacity, format, ImGui::GetFrameCount() };
+        g_StreamBuffers.push_back(s);
+    }
+    else
+        buffer->Release();
+}
+
+void ImPlatform_DX9_ReleaseStreamBuffers()
+{
+    for (const ImPlatform_StreamBuffer_DX9& s : g_StreamBuffers)
+        s.buffer->Release();
+    g_StreamBuffers.clear();
+}
+
+// size: of the buffer's content. drawn: set when the buffer is drawn.
+template <typename T> static bool ImPlatform_DX9_UpdateBuffer(T* buffer, ImPlatform_BufferUsage usage, bool* drawn, const void* data, UINT at, UINT bytes, UINT size)
+{
+    if (bytes == 0)
+        return true;
+    if (usage != ImPlatform_BufferUsage_Stream)
+        return ImPlatform_DX9_WriteBuffer(buffer, data, at, bytes, 0);
+    const bool whole = bytes == size;
+    if (!whole && *drawn)
+        return false;       // Nothing holds the rest of its content for another version: the whole buffer only
+    if (!ImPlatform_DX9_WriteBuffer(buffer, data, at, bytes, whole ? D3DLOCK_DISCARD : D3DLOCK_NOOVERWRITE))
+        return false;
+    if (whole)
+        *drawn = false;
+    return true;
 }
 
 static D3DFORMAT ImPlatform_GetD3D9IndexFormat(ImPlatform_IndexFormat format)
@@ -844,11 +924,24 @@ IMPLATFORM_API bool ImPlatform_CreateVertexInputLayout(ImPlatform_VertexBuffer v
 
 IMPLATFORM_API ImPlatform_VertexBuffer ImPlatform_CreateVertexBuffer(const void* vertex_data, const ImPlatform_VertexBufferDesc* desc)
 {
-    if (!desc || !vertex_data)
+    if (!desc || !vertex_data || !desc->vertex_count || !desc->vertex_stride)
         return NULL;
+    const bool stream = desc->usage == ImPlatform_BufferUsage_Stream;
+    const UINT size = desc->vertex_count * desc->vertex_stride;
+    UINT capacity = size;
+    LPDIRECT3DVERTEXBUFFER9 d3d_buffer = stream ? ImPlatform_DX9_TakeStreamBuffer<IDirect3DVertexBuffer9>(vertex_data, size, D3DFMT_UNKNOWN, &capacity) : NULL;
+    if (!d3d_buffer)
+    {
+        if (FAILED(g_GfxData.pDevice->CreateVertexBuffer(size, stream ? D3DUSAGE_DYNAMIC | D3DUSAGE_WRITEONLY : 0, 0,
+                                                         stream ? D3DPOOL_DEFAULT : D3DPOOL_MANAGED, &d3d_buffer, NULL)))
+            return NULL;
+        ImPlatform_DX9_WriteBuffer(d3d_buffer, vertex_data, 0, size, stream ? D3DLOCK_DISCARD : 0);
+    }
 
     ImPlatform_BufferData_DX9* buffer = new ImPlatform_BufferData_DX9();
     memset(buffer, 0, sizeof(ImPlatform_BufferData_DX9));
+    buffer->pVertexBuffer = d3d_buffer;
+    buffer->capacity = capacity;
     buffer->vb_desc = *desc;
 
     if (desc->attribute_count > 0 && desc->attributes)
@@ -857,51 +950,17 @@ IMPLATFORM_API ImPlatform_VertexBuffer ImPlatform_CreateVertexBuffer(const void*
         memcpy(buffer->attributes, desc->attributes, sizeof(ImPlatform_VertexAttribute) * desc->attribute_count);
         buffer->vb_desc.attributes = buffer->attributes;
     }
-
-    DWORD usage = ImPlatform_GetD3D9Usage(desc->usage);
-    D3DPOOL pool = ImPlatform_GetD3D9Pool(desc->usage);
-
-    HRESULT hr = g_GfxData.pDevice->CreateVertexBuffer(
-        desc->vertex_count * desc->vertex_stride,
-        usage,
-        0,
-        pool,
-        &buffer->pVertexBuffer,
-        NULL);
-
-    if (FAILED(hr))
-    {
-        delete[] buffer->attributes;
-        delete buffer;
-        return NULL;
-    }
-
-    void* pData;
-    if (SUCCEEDED(buffer->pVertexBuffer->Lock(0, 0, &pData, 0)))
-    {
-        memcpy(pData, vertex_data, desc->vertex_count * desc->vertex_stride);
-        buffer->pVertexBuffer->Unlock();
-    }
-
     return (ImPlatform_VertexBuffer)buffer;
 }
 
-IMPLATFORM_API bool ImPlatform_UpdateVertexBuffer(ImPlatform_VertexBuffer vertex_buffer, const void* vertex_data, unsigned int vertex_count, unsigned int offset)
+IMPLATFORM_API bool ImPlatform_UpdateVertexBuffer(ImPlatform_VertexBuffer vertex_buffer, const void* vertex_data, unsigned int offset, unsigned int vertex_count)
 {
-    if (!vertex_buffer || !vertex_data)
-        return false;
-
     ImPlatform_BufferData_DX9* buffer = (ImPlatform_BufferData_DX9*)vertex_buffer;
-    void* pData;
-    HRESULT hr = buffer->pVertexBuffer->Lock(0, 0, &pData, D3DLOCK_DISCARD);
-    if (FAILED(hr))
+    if (!buffer || !buffer->pVertexBuffer || !vertex_data || (unsigned long long)offset + vertex_count > buffer->vb_desc.vertex_count)
         return false;
-
-    size_t byte_offset = offset * buffer->vb_desc.vertex_stride;
-    size_t byte_size = vertex_count * buffer->vb_desc.vertex_stride;
-    memcpy((char*)pData + byte_offset, vertex_data, byte_size);
-    buffer->pVertexBuffer->Unlock();
-    return true;
+    const UINT stride = buffer->vb_desc.vertex_stride;
+    return ImPlatform_DX9_UpdateBuffer(buffer->pVertexBuffer, buffer->vb_desc.usage, &buffer->drawn, vertex_data, offset * stride,
+                                       vertex_count * stride, buffer->vb_desc.vertex_count * stride);
 }
 
 // Dear ImGui's DX9 backend binds its vertex / index buffers and FVF once per RenderDrawData, not when it resets the
@@ -918,7 +977,7 @@ IMPLATFORM_API void ImPlatform_DestroyVertexBuffer(ImPlatform_VertexBuffer verte
     ImPlatform_BufferData_DX9* buffer = (ImPlatform_BufferData_DX9*)vertex_buffer;
     if (g_P9_VB == buffer)
         g_P9_VB = NULL;
-    if (buffer->pVertexBuffer) buffer->pVertexBuffer->Release();
+    ImPlatform_DX9_ReleaseBuffer(buffer->pVertexBuffer, buffer->capacity, D3DFMT_UNKNOWN, buffer->vb_desc.usage);
     if (buffer->pVertexDeclaration) buffer->pVertexDeclaration->Release();
     delete[] buffer->attributes;
     delete buffer;
@@ -926,60 +985,37 @@ IMPLATFORM_API void ImPlatform_DestroyVertexBuffer(ImPlatform_VertexBuffer verte
 
 IMPLATFORM_API ImPlatform_IndexBuffer ImPlatform_CreateIndexBuffer(const void* index_data, const ImPlatform_IndexBufferDesc* desc)
 {
-    if (!desc || !index_data)
+    if (!desc || !index_data || !desc->index_count)
         return NULL;
+    const bool stream = desc->usage == ImPlatform_BufferUsage_Stream;
+    const UINT size = desc->index_count * ((desc->format == ImPlatform_IndexFormat_UInt16) ? sizeof(uint16_t) : sizeof(uint32_t));
+    const D3DFORMAT format = ImPlatform_GetD3D9IndexFormat(desc->format);
+    UINT capacity = size;
+    LPDIRECT3DINDEXBUFFER9 d3d_buffer = stream ? ImPlatform_DX9_TakeStreamBuffer<IDirect3DIndexBuffer9>(index_data, size, format, &capacity) : NULL;
+    if (!d3d_buffer)
+    {
+        if (FAILED(g_GfxData.pDevice->CreateIndexBuffer(size, stream ? D3DUSAGE_DYNAMIC | D3DUSAGE_WRITEONLY : 0, format,
+                                                        stream ? D3DPOOL_DEFAULT : D3DPOOL_MANAGED, &d3d_buffer, NULL)))
+            return NULL;
+        ImPlatform_DX9_WriteBuffer(d3d_buffer, index_data, 0, size, stream ? D3DLOCK_DISCARD : 0);
+    }
 
     ImPlatform_BufferData_DX9* buffer = new ImPlatform_BufferData_DX9();
     memset(buffer, 0, sizeof(ImPlatform_BufferData_DX9));
+    buffer->pIndexBuffer = d3d_buffer;
+    buffer->capacity = capacity;
     buffer->ib_desc = *desc;
-
-    unsigned int index_size = (desc->format == ImPlatform_IndexFormat_UInt16) ? sizeof(uint16_t) : sizeof(uint32_t);
-    DWORD usage = ImPlatform_GetD3D9Usage(desc->usage);
-    D3DPOOL pool = ImPlatform_GetD3D9Pool(desc->usage);
-    D3DFORMAT format = ImPlatform_GetD3D9IndexFormat(desc->format);
-
-    HRESULT hr = g_GfxData.pDevice->CreateIndexBuffer(
-        desc->index_count * index_size,
-        usage,
-        format,
-        pool,
-        &buffer->pIndexBuffer,
-        NULL);
-
-    if (FAILED(hr))
-    {
-        delete buffer;
-        return NULL;
-    }
-
-    void* pData;
-    if (SUCCEEDED(buffer->pIndexBuffer->Lock(0, 0, &pData, 0)))
-    {
-        memcpy(pData, index_data, desc->index_count * index_size);
-        buffer->pIndexBuffer->Unlock();
-    }
-
     return (ImPlatform_IndexBuffer)buffer;
 }
 
-IMPLATFORM_API bool ImPlatform_UpdateIndexBuffer(ImPlatform_IndexBuffer index_buffer, const void* index_data, unsigned int index_count, unsigned int offset)
+IMPLATFORM_API bool ImPlatform_UpdateIndexBuffer(ImPlatform_IndexBuffer index_buffer, const void* index_data, unsigned int offset, unsigned int index_count)
 {
-    if (!index_buffer || !index_data)
-        return false;
-
     ImPlatform_BufferData_DX9* buffer = (ImPlatform_BufferData_DX9*)index_buffer;
-    unsigned int index_size = (buffer->ib_desc.format == ImPlatform_IndexFormat_UInt16) ? sizeof(uint16_t) : sizeof(uint32_t);
-
-    void* pData;
-    HRESULT hr = buffer->pIndexBuffer->Lock(0, 0, &pData, D3DLOCK_DISCARD);
-    if (FAILED(hr))
+    if (!buffer || !buffer->pIndexBuffer || !index_data || (unsigned long long)offset + index_count > buffer->ib_desc.index_count)
         return false;
-
-    size_t byte_offset = offset * index_size;
-    size_t byte_size = index_count * index_size;
-    memcpy((char*)pData + byte_offset, index_data, byte_size);
-    buffer->pIndexBuffer->Unlock();
-    return true;
+    const UINT index_size = (buffer->ib_desc.format == ImPlatform_IndexFormat_UInt16) ? sizeof(uint16_t) : sizeof(uint32_t);
+    return ImPlatform_DX9_UpdateBuffer(buffer->pIndexBuffer, buffer->ib_desc.usage, &buffer->drawn, index_data, offset * index_size,
+                                       index_count * index_size, buffer->ib_desc.index_count * index_size);
 }
 
 IMPLATFORM_API void ImPlatform_DestroyIndexBuffer(ImPlatform_IndexBuffer index_buffer)
@@ -990,7 +1026,7 @@ IMPLATFORM_API void ImPlatform_DestroyIndexBuffer(ImPlatform_IndexBuffer index_b
     ImPlatform_BufferData_DX9* buffer = (ImPlatform_BufferData_DX9*)index_buffer;
     if (g_P9_IB == buffer)
         g_P9_IB = NULL;
-    if (buffer->pIndexBuffer) buffer->pIndexBuffer->Release();
+    ImPlatform_DX9_ReleaseBuffer(buffer->pIndexBuffer, buffer->capacity, ImPlatform_GetD3D9IndexFormat(buffer->ib_desc.format), buffer->ib_desc.usage);
     delete buffer;
 }
 
@@ -1050,6 +1086,7 @@ IMPLATFORM_API void ImPlatform_DrawIndexed(unsigned int primitive_type, unsigned
     dev->GetVertexDeclaration(&prev_decl);
     dev->GetFVF(&prev_fvf);
 
+    g_P9_VB->drawn = g_P9_IB->drawn = true;
     dev->SetStreamSource(0, g_P9_VB->pVertexBuffer, 0, g_P9_VB->vb_desc.vertex_stride);
     if (g_P9_VB->pVertexDeclaration)
         dev->SetVertexDeclaration(g_P9_VB->pVertexDeclaration);

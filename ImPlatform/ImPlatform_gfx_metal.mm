@@ -1601,10 +1601,11 @@ IMPLATFORM_API void ImPlatform_EndCustomShader(ImDrawList* draw)
 // ============================================================================
 
 // Shared storage buffers, drawn by ImPlatform_DrawIndexed inside a draw callback with the program bound last there.
-// shortcut: Update* writes in place; a buffer still drawn by a frame in flight must not be updated (make a new one).
+// An update of a buffer drawn since it was last written goes to a copy: the frames that drew it keep the previous one.
 struct ImPlatform_BufferData_Metal
 {
     void* buffer;                               // id<MTLBuffer> (retained)
+    bool drawn;                                 // A draw of it was recorded since it was last written
     ImPlatform_VertexBufferDesc vb_desc;        // vertex buffer: its layout (attributes copied below)
     ImPlatform_VertexAttribute attributes[16];
     ImGuiID layout;                             // hash of the attributes and stride: the pipeline cache key
@@ -1622,6 +1623,23 @@ static void* ImPlatform_Metal_NewBuffer(const void* data, size_t size)
     id<MTLBuffer> buffer = data ? [device newBufferWithBytes:data length:size options:MTLResourceStorageModeShared]
                                 : [device newBufferWithLength:size options:MTLResourceStorageModeShared];
     return buffer ? (__bridge_retained void*)buffer : nullptr;
+}
+
+// Leaves in data->buffer memory no recorded draw reads: command buffers retain the buffers they draw, so a drawn one is
+// left to them and replaced by a copy.
+// shortcut: one MTLBuffer per update of a drawn buffer; pool them if their allocation shows in a profile.
+static bool ImPlatform_Metal_WritableBuffer(ImPlatform_BufferData_Metal* data)
+{
+    if (!data->drawn)
+        return true;
+    id<MTLBuffer> previous = (__bridge id<MTLBuffer>)data->buffer;
+    void* copy = ImPlatform_Metal_NewBuffer(previous.contents, (size_t)previous.length);
+    if (!copy)
+        return false;
+    CFRelease(data->buffer);
+    data->buffer = copy;
+    data->drawn = false;
+    return true;
 }
 
 IMPLATFORM_API ImPlatform_VertexBuffer ImPlatform_CreateVertexBuffer(const void* vertex_data, const ImPlatform_VertexBufferDesc* desc)
@@ -1647,7 +1665,7 @@ IMPLATFORM_API ImPlatform_VertexBuffer ImPlatform_CreateVertexBuffer(const void*
 IMPLATFORM_API bool ImPlatform_UpdateVertexBuffer(ImPlatform_VertexBuffer buffer, const void* vertex_data, unsigned int offset, unsigned int count)
 {
     ImPlatform_BufferData_Metal* data = (ImPlatform_BufferData_Metal*)buffer;
-    if (!data || !vertex_data || offset + count > data->vb_desc.vertex_count)
+    if (!data || !vertex_data || offset + count > data->vb_desc.vertex_count || !ImPlatform_Metal_WritableBuffer(data))
         return false;
     id<MTLBuffer> mtl = (__bridge id<MTLBuffer>)data->buffer;
     memcpy((char*)mtl.contents + (size_t)offset * data->vb_desc.vertex_stride, vertex_data, (size_t)count * data->vb_desc.vertex_stride);
@@ -1683,7 +1701,7 @@ IMPLATFORM_API ImPlatform_IndexBuffer ImPlatform_CreateIndexBuffer(const void* i
 IMPLATFORM_API bool ImPlatform_UpdateIndexBuffer(ImPlatform_IndexBuffer buffer, const void* index_data, unsigned int offset, unsigned int count)
 {
     ImPlatform_BufferData_Metal* data = (ImPlatform_BufferData_Metal*)buffer;
-    if (!data || !index_data || offset + count > data->vb_desc.vertex_count)
+    if (!data || !index_data || offset + count > data->vb_desc.vertex_count || !ImPlatform_Metal_WritableBuffer(data))
         return false;
     const size_t index_size = data->index_format == ImPlatform_IndexFormat_UInt16 ? 2 : 4;
     id<MTLBuffer> mtl = (__bridge id<MTLBuffer>)data->buffer;
@@ -1751,6 +1769,7 @@ IMPLATFORM_API void ImPlatform_DrawIndexed(unsigned int primitive_type, unsigned
         id<MTLRenderPipelineState> pipeline = ImPlatform_Metal_LayoutPipeline(g_MetalBoundProgram, vb);
         if (!pipeline)
             return;
+        vb->drawn = ib->drawn = true;
         id<MTLRenderCommandEncoder> encoder = (__bridge id<MTLRenderCommandEncoder>)g_CurrentRenderEncoder;
         [encoder setRenderPipelineState:pipeline];
         [encoder setVertexBuffer:(__bridge id<MTLBuffer>)vb->buffer offset:0 atIndex:0];

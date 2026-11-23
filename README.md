@@ -591,6 +591,8 @@ ImPlatformDemo_Win32_DX12 --direct-draw-test   # from a draw callback: push a re
 ImPlatformDemo_Win32_DX12 --shader-parts-test  # a shader written as parts: parameters in both stages, varying, texture t1
 ImPlatformDemo_Win32_DX12 --texture3d-test     # a 2x2x2 texture at t1, sampled by shaders/volume_test.hlsl and by shader parts
 ImPlatformDemo_Win32_DX12 --vertex-inputs-test  # shader parts with their own vertex inputs and a flat int varying, DrawIndexed
+ImPlatformDemo_Win32_DX12 --buffer-update-test # Dynamic and Stream vertex buffers written and drawn twice a frame: each draw keeps its content
+ImPlatformDemo_Win32_DX12 --mesh-stream-test   # the same through ImPlatform_DrawMesh, the Stream buffer created and destroyed each frame
 ImPlatformDemo_Win32_DX12 --blend-test         # one program drawn with six blend presets (additive to lighten), set by name from draw callbacks
 ImPlatformDemo_Win32_DX12 --shader-async-test  # programs compiled asynchronously, a defines permutation, the log of a shader that fails
 ImPlatformDemo_Win32_DX12 --screenshot-test    # the main viewport captured and read back

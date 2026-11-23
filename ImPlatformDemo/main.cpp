@@ -345,6 +345,256 @@ static int CheckShaderTest()
 	return bad ? 1 : 0;
 }
 
+// --buffer-update-test: a Dynamic and a Stream vertex buffer of one quad each (the vertex layout of shaders/gradient.hlsl)
+// drawn by ImPlatform_DrawIndexed from a draw callback into a render pass, three frames in a row. In a frame each buffer
+// is written (the quad without height, then its lower vertices as a partial update, which must keep the upper ones),
+// drawn on the left, written again (the Dynamic one in two parts) and drawn on the right: the left draw must keep what
+// it was recorded with, and so must the frames still in flight when the next frame writes. The Stream buffer is created
+// again every frame, which takes the one destroyed the frame before where the backend keeps them. Left
+// quads green (uv.y 0), right ones blue (uv.y 1). Exit code as above.
+static RenderPassScene g_BufferUpdateTest;
+#if IMPLATFORM_GFX_SUPPORT_VERTEX_BUFFERS
+static ImPlatform_VertexBuffer g_BufferUpdateVB[ 2 ] = {};	// Dynamic, Stream
+static ImPlatform_IndexBuffer g_BufferUpdateIB = nullptr;
+static bool g_BufferUpdateOk = true;
+struct BufferUpdateVertex { float pos[ 2 ]; float col[ 4 ]; float uv[ 2 ]; };
+static void FillBufferUpdateQuad( BufferUpdateVertex v[ 4 ], float x, float y, float height, float end )
+{
+	const float xs[ 4 ] = { x, x + 32, x + 32, x }, ys[ 4 ] = { y, y, y + height, y + height };
+	for ( int i = 0; i < 4; ++i )
+		v[ i ] = { { xs[ i ], ys[ i ] }, { 1, 1, 1, 1 }, { 0, end } };
+}
+static void WriteBufferUpdate( int buffer, const BufferUpdateVertex* v, unsigned int offset, unsigned int count )
+{
+	if ( !ImPlatform_UpdateVertexBuffer( g_BufferUpdateVB[ buffer ], v, offset, count ) )
+		g_BufferUpdateOk = false;
+}
+static void DrawBufferUpdateQuads( const ImDrawList*, const ImDrawCmd* )
+{
+	for ( int b = 0; b < 2; ++b )
+	{
+		const float y = 32.0f * b;
+		BufferUpdateVertex v[ 4 ], lower[ 4 ];
+		FillBufferUpdateQuad( v, 0, y, 0, 0 );
+		FillBufferUpdateQuad( lower, 0, y, 32, 0 );
+		WriteBufferUpdate( b, v, 0, 4 );
+		WriteBufferUpdate( b, lower + 2, 2, 2 );
+		ImPlatform_BindBuffers( g_BufferUpdateVB[ b ], g_BufferUpdateIB );
+		ImPlatform_DrawIndexed( 0, 6, 0 );
+		FillBufferUpdateQuad( v, 32, y, 32, 1 );
+		if ( b == 0 )
+		{
+			// The Dynamic buffer in two parts, after its draw: each part keeps the rest.
+			WriteBufferUpdate( b, v, 0, 2 );
+			WriteBufferUpdate( b, v + 2, 2, 2 );
+		}
+		else
+			WriteBufferUpdate( b, v, 0, 4 );	// A Stream buffer that was drawn takes the whole buffer only
+		ImPlatform_BindBuffers( g_BufferUpdateVB[ b ], g_BufferUpdateIB );
+		ImPlatform_DrawIndexed( 0, 6, 0 );
+	}
+}
+static void DrawBufferUpdateTest( ImDrawList* dl )
+{
+	static const ImVec4 colors[ 2 ] = { ImVec4( 0, 1, 0, 1 ), ImVec4( 0, 0, 1, 1 ) };
+	dl->AddCallback( SetShaderTestColors, (void*)colors );
+	ImPlatform_BeginCustomShader( dl, g_ShaderTestProgram );
+	dl->AddCallback( DrawBufferUpdateQuads, nullptr );
+	ImPlatform_EndCustomShader( dl );
+}
+#endif
+
+// Called each frame of the test.
+static bool QueueBufferUpdateTest()
+{
+#if IMPLATFORM_GFX_SUPPORT_VERTEX_BUFFERS
+	static const ImPlatform_VertexAttribute attributes[ 3 ] = {
+		{ ImPlatform_VertexFormat_Float2, 0, "POSITION" }, { ImPlatform_VertexFormat_Float4, 8, "COLOR" }, { ImPlatform_VertexFormat_Float2, 24, "TEXCOORD" } };
+	BufferUpdateVertex v[ 4 ];
+	FillBufferUpdateQuad( v, 0, 0, 32, 0 );
+	ImPlatform_VertexBufferDesc vb = {};
+	vb.vertex_count = 4;
+	vb.vertex_stride = sizeof( BufferUpdateVertex );
+	vb.attributes = attributes;
+	vb.attribute_count = 3;
+	if ( !g_BufferUpdateIB )
+	{
+		const unsigned short indices[ 6 ] = { 0, 1, 2, 0, 2, 3 };
+		ImPlatform_IndexBufferDesc ib = {};
+		ib.index_count = 6;
+		ib.format = ImPlatform_IndexFormat_UInt16;
+		ib.usage = ImPlatform_BufferUsage_Static;
+		g_BufferUpdateIB = ImPlatform_CreateIndexBuffer( indices, &ib );
+		vb.usage = ImPlatform_BufferUsage_Dynamic;
+		g_BufferUpdateVB[ 0 ] = ImPlatform_CreateVertexBuffer( v, &vb );
+	}
+	// A Stream buffer holds for a frame: the previous frame's has its draws recorded and goes.
+	if ( g_BufferUpdateVB[ 1 ] )
+		ImPlatform_DestroyVertexBuffer( g_BufferUpdateVB[ 1 ] );
+	vb.usage = ImPlatform_BufferUsage_Stream;
+	g_BufferUpdateVB[ 1 ] = ImPlatform_CreateVertexBuffer( v, &vb );
+	if ( !g_BufferUpdateIB || !g_BufferUpdateVB[ 0 ] || !g_BufferUpdateVB[ 1 ]
+		 || !ImPlatform_CreateVertexInputLayout( g_BufferUpdateVB[ 0 ], g_ShaderTestProgram )
+		 || !ImPlatform_CreateVertexInputLayout( g_BufferUpdateVB[ 1 ], g_ShaderTestProgram ) )
+		return false;
+	return QueueRenderPassScene( g_BufferUpdateTest, 64, DrawBufferUpdateTest );
+#else
+	return false;
+#endif
+}
+
+static int CheckBufferUpdateTest()
+{
+	static unsigned char px[ 64 * 64 * 4 ];
+	if ( !DemoReadTexture( g_BufferUpdateTest.Target, 0, 0, 64, 64, px, sizeof( px ) ) )
+	{
+		printf( "SKIP: no readback of the pass target\n" );
+		return 2;
+	}
+	const RenderPassProbe probes[] = { { 16, 16, { 0, 255, 0, 255 } }, { 48, 16, { 0, 0, 255, 255 } },
+									   { 16, 48, { 0, 255, 0, 255 } }, { 48, 48, { 0, 0, 255, 255 } } };
+	int bad = CheckRenderPassProbes( "buffer update", px, 64, probes, 4, 4 );
+#if IMPLATFORM_GFX_SUPPORT_VERTEX_BUFFERS
+	if ( !g_BufferUpdateOk )
+	{
+		printf( "FAIL: an update of a Dynamic or Stream vertex buffer returned false\n" );
+		++bad;
+	}
+#endif
+	if ( !bad )
+		printf( "PASS\n" );
+	return bad ? 1 : 0;
+}
+
+static void DestroyBufferUpdateTest()
+{
+#if IMPLATFORM_GFX_SUPPORT_VERTEX_BUFFERS
+	for ( ImPlatform_VertexBuffer buffer : g_BufferUpdateVB )
+		if ( buffer )
+			ImPlatform_DestroyVertexBuffer( buffer );
+	if ( g_BufferUpdateIB )
+		ImPlatform_DestroyIndexBuffer( g_BufferUpdateIB );
+#endif
+}
+
+// --mesh-stream-test (DirectX 11 and 12, the backends with ImPlatform_DrawMesh): three frames in a row, into a render
+// texture with depth, a Stream vertex buffer is created, drawn (left half, green) and destroyed, then a Dynamic one is
+// written and drawn twice (upper right red, lower right blue): each draw keeps the content it was recorded with, and
+// the frames in flight keep theirs. Exit code as above.
+static ImTextureID g_MeshStreamTarget = 0;
+static ImPlatform_ShaderProgram g_MeshStreamProgram = nullptr;
+static ImPlatform_Shader g_MeshStreamShaders[ 2 ] = {};
+#if IMPLATFORM_GFX_SUPPORT_DEPTH_DRAW && IMPLATFORM_GFX_SUPPORT_VERTEX_BUFFERS
+static ImPlatform_VertexBuffer g_MeshStreamDynamic = nullptr;
+static ImPlatform_IndexBuffer g_MeshStreamIB = nullptr;
+struct MeshStreamVertex { float pos[ 2 ]; float col[ 4 ]; };
+static void FillMeshStreamQuad( MeshStreamVertex v[ 4 ], float x0, float y0, float x1, float y1, float r, float g, float b )
+{
+	const float xs[ 4 ] = { x0, x1, x1, x0 }, ys[ 4 ] = { y0, y0, y1, y1 };
+	for ( int i = 0; i < 4; ++i )
+		v[ i ] = { { xs[ i ], ys[ i ] }, { r, g, b, 1 } };
+}
+#endif
+
+// One frame of the test. 0: drawn, 1: a call failed, 2: not supported.
+static int RunMeshStreamFrame()
+{
+#if IMPLATFORM_GFX_SUPPORT_DEPTH_DRAW && IMPLATFORM_GFX_SUPPORT_VERTEX_BUFFERS
+	// Positions are clip space
+	static const char* hlsl =
+		"struct VS_INPUT { float2 pos : POSITION; float4 col : COLOR0; };\n"
+		"struct PS_INPUT { float4 pos : SV_POSITION; float4 col : COLOR0; };\n"
+		"PS_INPUT vs_main(VS_INPUT input) { PS_INPUT output; output.pos = float4(input.pos, 0.5, 1.0); output.col = input.col; return output; }\n"
+		"float4 ps_main(PS_INPUT input) : SV_Target { return input.col; }\n";
+	static const ImPlatform_VertexAttribute attributes[ 2 ] = {
+		{ ImPlatform_VertexFormat_Float2, 0, "POSITION" }, { ImPlatform_VertexFormat_Float4, 8, "COLOR" } };
+	MeshStreamVertex v[ 4 ];
+	FillMeshStreamQuad( v, -1, -1, 0, 1, 0, 1, 0 );
+	ImPlatform_VertexBufferDesc vb = {};
+	vb.vertex_count = 4;
+	vb.vertex_stride = sizeof( MeshStreamVertex );
+	vb.attributes = attributes;
+	vb.attribute_count = 2;
+	if ( !g_MeshStreamTarget )
+	{
+		const ImPlatform_ShaderDesc vs = DemoShaderDesc( ImPlatform_ShaderStage_Vertex, ImPlatform_ShaderFormat_HLSL, hlsl, 0, "vs_main" );
+		const ImPlatform_ShaderDesc ps = DemoShaderDesc( ImPlatform_ShaderStage_Fragment, ImPlatform_ShaderFormat_HLSL, hlsl, 0, "ps_main" );
+		g_MeshStreamShaders[ 0 ] = ImPlatform_CreateShader( &vs );
+		g_MeshStreamShaders[ 1 ] = ImPlatform_CreateShader( &ps );
+		if ( g_MeshStreamShaders[ 0 ] && g_MeshStreamShaders[ 1 ] )
+			g_MeshStreamProgram = ImPlatform_CreateShaderProgram( g_MeshStreamShaders[ 0 ], g_MeshStreamShaders[ 1 ] );
+		const unsigned short indices[ 6 ] = { 0, 1, 2, 0, 2, 3 };
+		ImPlatform_IndexBufferDesc ib = {};
+		ib.index_count = 6;
+		ib.format = ImPlatform_IndexFormat_UInt16;
+		ib.usage = ImPlatform_BufferUsage_Static;
+		g_MeshStreamIB = ImPlatform_CreateIndexBuffer( indices, &ib );
+		vb.usage = ImPlatform_BufferUsage_Dynamic;
+		g_MeshStreamDynamic = ImPlatform_CreateVertexBuffer( v, &vb );
+		const ImPlatform_TextureDesc desc = ImPlatform_TextureDesc_Default( 64, 64 );
+		g_MeshStreamTarget = ImPlatform_CreateRenderTextureWithDepth( &desc );
+		if ( !g_MeshStreamProgram || !g_MeshStreamIB || !g_MeshStreamDynamic || !g_MeshStreamTarget
+			 || !ImPlatform_CreateVertexInputLayout( g_MeshStreamDynamic, g_MeshStreamProgram ) )
+			return 2;
+	}
+	vb.usage = ImPlatform_BufferUsage_Stream;
+	ImPlatform_VertexBuffer stream = ImPlatform_CreateVertexBuffer( v, &vb );
+	bool ok = stream && ImPlatform_CreateVertexInputLayout( stream, g_MeshStreamProgram ) && ImPlatform_BeginRenderToTexture( g_MeshStreamTarget );
+	if ( ok )
+	{
+		ImPlatform_DrawMeshDesc mesh = {};
+		mesh.program = g_MeshStreamProgram;
+		mesh.indices = g_MeshStreamIB;
+		mesh.index_count = 6;
+		mesh.vertices = stream;
+		ok = ImPlatform_DrawMesh( &mesh );
+		mesh.vertices = g_MeshStreamDynamic;
+		FillMeshStreamQuad( v, 0, 0, 1, 1, 1, 0, 0 );
+		ok = ImPlatform_UpdateVertexBuffer( g_MeshStreamDynamic, v, 0, 4 ) && ImPlatform_DrawMesh( &mesh ) && ok;
+		FillMeshStreamQuad( v, 0, -1, 1, 0, 0, 0, 1 );
+		ok = ImPlatform_UpdateVertexBuffer( g_MeshStreamDynamic, v, 0, 4 ) && ImPlatform_DrawMesh( &mesh ) && ok;
+		ImPlatform_EndRenderToTexture();
+	}
+	if ( stream )
+		ImPlatform_DestroyVertexBuffer( stream );	// Its draw is recorded: the frame keeps the memory, the handle goes.
+	return ok ? 0 : 1;
+#else
+	return 2;
+#endif
+}
+
+static int CheckMeshStreamTest()
+{
+	static unsigned char px[ 64 * 64 * 4 ];
+	if ( !DemoReadTexture( g_MeshStreamTarget, 0, 0, 64, 64, px, sizeof( px ) ) )
+	{
+		printf( "SKIP: no readback of the render texture\n" );
+		return 2;
+	}
+	const RenderPassProbe probes[] = { { 16, 32, { 0, 255, 0, 255 } }, { 48, 16, { 255, 0, 0, 255 } }, { 48, 48, { 0, 0, 255, 255 } } };
+	const int bad = CheckRenderPassProbes( "mesh stream", px, 64, probes, 3, 4 );
+	if ( !bad )
+		printf( "PASS\n" );
+	return bad ? 1 : 0;
+}
+
+static void DestroyMeshStreamTest()
+{
+	if ( g_MeshStreamProgram )
+		ImPlatform_DestroyShaderProgram( g_MeshStreamProgram );
+	for ( ImPlatform_Shader shader : g_MeshStreamShaders )
+		if ( shader )
+			ImPlatform_DestroyShader( shader );
+#if IMPLATFORM_GFX_SUPPORT_DEPTH_DRAW && IMPLATFORM_GFX_SUPPORT_VERTEX_BUFFERS
+	if ( g_MeshStreamDynamic )
+		ImPlatform_DestroyVertexBuffer( g_MeshStreamDynamic );
+	if ( g_MeshStreamIB )
+		ImPlatform_DestroyIndexBuffer( g_MeshStreamIB );
+#endif
+	if ( g_MeshStreamTarget )
+		ImPlatform_DestroyTexture( g_MeshStreamTarget );
+}
+
 // --shader-parts-test: a shader written once as parts (ImPlatform_CreateShaderFromParts) drawn into a render pass and
 // read back: its parameter block is read in both stages (the vertex body moves the quad down by Offset), with a
 // varying, helper functions, a define, a named texture t1, IMP_UNROLL and IMP_CAST. The gradient of --shader-test, its
@@ -1224,12 +1474,14 @@ int main( int argc, char** argv )
 	const bool partsTest = argc > 1 && strcmp( argv[ 1 ], "--shader-parts-test" ) == 0;
 	const bool texture3DTest = argc > 1 && strcmp( argv[ 1 ], "--texture3d-test" ) == 0;
 	const bool vertexInputsTest = argc > 1 && strcmp( argv[ 1 ], "--vertex-inputs-test" ) == 0;
+	const bool bufferUpdateTest = argc > 1 && strcmp( argv[ 1 ], "--buffer-update-test" ) == 0;
+	const bool meshStreamTest = argc > 1 && strcmp( argv[ 1 ], "--mesh-stream-test" ) == 0;
 	const bool blendTest = argc > 1 && strcmp( argv[ 1 ], "--blend-test" ) == 0;
 	const bool asyncTest = argc > 1 && strcmp( argv[ 1 ], "--shader-async-test" ) == 0;
 	const bool screenshotViewportTest = argc > 1 && strcmp( argv[ 1 ], "--screenshot-viewport-test" ) == 0;
 	const bool screenshotTest = screenshotViewportTest || ( argc > 1 && strcmp( argv[ 1 ], "--screenshot-test" ) == 0 );
 	const bool passTest = renderPassTest || shaderTest || directDrawTest || partsTest || texture3DTest || vertexInputsTest || blendTest
-						|| asyncTest || screenshotTest;	// Tests read back what a few frames rendered
+						|| asyncTest || screenshotTest || bufferUpdateTest || meshStreamTest;	// Tests read back what a few frames rendered
 	int exitCode = 0;
 #ifndef __EMSCRIPTEN__
 	int renderPassFrame = 0;
@@ -1477,6 +1729,28 @@ int main( int argc, char** argv )
 			exitCode = 2;
 			break;
 		}
+		if ( meshStreamTest && renderPassFrame < 3 )
+		{
+			const int result = RunMeshStreamFrame();
+			if ( result )
+			{
+				printf( result == 2 ? "SKIP: no ImPlatform_DrawMesh on this backend\n" : "FAIL: a buffer or draw call failed\n" );
+				exitCode = result;
+				break;
+			}
+		}
+		if ( bufferUpdateTest && renderPassFrame < 3 )
+		{
+#if IMPLATFORM_GFX_SUPPORT_CUSTOM_SHADER
+			g_ShaderTestProgram = gradient_program;
+			if ( !gradient_program || !QueueBufferUpdateTest() )
+#endif
+			{
+				printf( "SKIP: no custom shader, vertex buffer or render pass on this backend\n" );
+				exitCode = 2;
+				break;
+			}
+		}
 		if ( blendTest && renderPassFrame == 0 )
 		{
 #if IMPLATFORM_GFX_SUPPORT_CUSTOM_SHADER
@@ -1610,7 +1884,7 @@ int main( int argc, char** argv )
 		}
 
 		// Custom Shader Demo Window 2: Linear Gradient (Bottom-left)
-		if (gradient_program && !shaderTest && !directDrawTest)		// The tests set their own constants
+		if (gradient_program && !shaderTest && !directDrawTest && !bufferUpdateTest)		// The tests set their own constants
 		{
 			ImGui::SetNextWindowPos(ImVec2(0, grid_top + half_height), ImGuiCond_Always);
 			ImGui::SetNextWindowSize(ImVec2(half_width, half_height), ImGuiCond_Always);
@@ -1705,7 +1979,8 @@ int main( int argc, char** argv )
 #if IMPLATFORM_GFX_SUPPORT_CUSTOM_SHADER
 			exitCode = shaderTest ? CheckShaderTest() : directDrawTest ? CheckDirectDrawTest() : partsTest ? CheckPartsTest()
 					 : texture3DTest ? CheckTexture3DTest() : vertexInputsTest ? CheckVertexInputsTest() : blendTest ? CheckBlendTest()
-					 : asyncTest ? CheckAsyncTest() : CheckRenderPassTest();
+					 : asyncTest ? CheckAsyncTest() : bufferUpdateTest ? CheckBufferUpdateTest() : meshStreamTest ? CheckMeshStreamTest()
+					 : CheckRenderPassTest();
 #else
 			exitCode = CheckRenderPassTest();
 #endif
@@ -1755,6 +2030,9 @@ int main( int argc, char** argv )
 	DestroyTexture3DTest();
 	DestroyRenderPassScene( g_VertexInputsTest );
 	DestroyVertexInputsTest();
+	DestroyRenderPassScene( g_BufferUpdateTest );
+	DestroyBufferUpdateTest();
+	DestroyMeshStreamTest();
 	DestroyRenderPassScene( g_BlendTest );
 	DestroyRenderPassScene( g_AsyncTest );
 	DestroyAsyncTest();

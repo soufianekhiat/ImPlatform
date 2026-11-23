@@ -435,9 +435,11 @@ IMPLATFORM_API bool ImPlatform_GfxAPISwapBuffer(void)
 }
 
 // ImPlatform API - ShutdownGfxAPI
+static void ImPlatform_DX11_ReleaseStreamBuffers();
 IMPLATFORM_API void ImPlatform_ShutdownGfxAPI(void)
 {
     g_P11_DeviceReady = false;
+    ImPlatform_DX11_ReleaseStreamBuffers();
 }
 
 // ImPlatform API - ShutdownWindow (gfx-specific part)
@@ -1185,31 +1187,9 @@ struct ImPlatform_BufferData_DX11
     ImPlatform_VertexBufferDesc vb_desc;
     ImPlatform_IndexBufferDesc ib_desc;
     ImPlatform_VertexAttribute* attributes;
+    UINT capacity;      // Of the Direct3D buffer, in bytes: a Stream buffer may have taken a larger one
+    bool bound;         // Bound for a draw since its last whole write
 };
-
-// Helper to convert ImPlatform usage to D3D11 usage
-static D3D11_USAGE ImPlatform_GetD3D11Usage(ImPlatform_BufferUsage usage)
-{
-    switch (usage)
-    {
-    case ImPlatform_BufferUsage_Static:  return D3D11_USAGE_DEFAULT;
-    case ImPlatform_BufferUsage_Dynamic: return D3D11_USAGE_DYNAMIC;
-    case ImPlatform_BufferUsage_Stream:  return D3D11_USAGE_DYNAMIC;
-    default: return D3D11_USAGE_DEFAULT;
-    }
-}
-
-// Helper to convert ImPlatform usage to D3D11 CPU access flags
-static UINT ImPlatform_GetD3D11CPUAccessFlags(ImPlatform_BufferUsage usage)
-{
-    switch (usage)
-    {
-    case ImPlatform_BufferUsage_Static:  return 0;
-    case ImPlatform_BufferUsage_Dynamic: return D3D11_CPU_ACCESS_WRITE;
-    case ImPlatform_BufferUsage_Stream:  return D3D11_CPU_ACCESS_WRITE;
-    default: return 0;
-    }
-}
 
 // Helper to convert ImPlatform vertex format to DXGI format
 static DXGI_FORMAT ImPlatform_GetDXGIFormat(ImPlatform_VertexFormat format)
@@ -1232,13 +1212,126 @@ static DXGI_FORMAT ImPlatform_GetIndexFormat_DX11(ImPlatform_IndexFormat format)
     return (format == ImPlatform_IndexFormat_UInt16) ? DXGI_FORMAT_R16_UINT : DXGI_FORMAT_R32_UINT;
 }
 
+// Static and Dynamic buffers are D3D11_USAGE_DEFAULT. An update of a Dynamic buffer is an UpdateSubresource, which
+// Direct3D orders with the draws around it, for a part as for the whole. Stream buffers are D3D11_USAGE_DYNAMIC and
+// written by Map: a whole write discards (the driver hands out memory no issued draw reads); a part is written in place,
+// and refused once the buffer has been bound for a draw. Destroyed Stream buffers are kept for the next Stream buffer of
+// a close size, which discards them: buffers created and destroyed every frame create no Direct3D buffer.
+struct ImPlatform_StreamBuffer_DX11
+{
+    ID3D11Buffer* buffer;
+    UINT capacity;
+    bool index;
+    int frame;          // The frame it was destroyed in
+};
+static ImVector<ImPlatform_StreamBuffer_DX11> g_StreamBuffers;
+
+static void* ImPlatform_DX11_MapBuffer(ID3D11Buffer* buffer, bool discard)
+{
+    D3D11_MAPPED_SUBRESOURCE mapped;
+    const D3D11_MAP map = discard ? D3D11_MAP_WRITE_DISCARD : D3D11_MAP_WRITE_NO_OVERWRITE;
+    return SUCCEEDED(g_GfxData.pDeviceContext->Map(buffer, 0, map, 0, &mapped)) ? mapped.pData : NULL;
+}
+
+static ID3D11Buffer* ImPlatform_DX11_NewBuffer(const void* data, UINT size, ImPlatform_BufferUsage usage, bool index, UINT* capacity)
+{
+    if (!data || !size)
+        return NULL;
+    const bool stream = usage == ImPlatform_BufferUsage_Stream;
+    const int frame = ImGui::GetFrameCount();
+    for (int i = stream ? g_StreamBuffers.Size - 1 : -1; i >= 0; i--)
+    {
+        const ImPlatform_StreamBuffer_DX11 s = g_StreamBuffers[i];
+        void* mapped = NULL;
+        if (s.index == index && s.capacity >= size && s.capacity / 2 <= size && (mapped = ImPlatform_DX11_MapBuffer(s.buffer, true)) != NULL)
+        {
+            memcpy(mapped, data, size);
+            g_GfxData.pDeviceContext->Unmap(s.buffer, 0);
+            g_StreamBuffers.erase(g_StreamBuffers.Data + i);
+            *capacity = s.capacity;
+            return s.buffer;
+        }
+        if (frame - s.frame > 240)      // Not taken for a while
+        {
+            s.buffer->Release();
+            g_StreamBuffers.erase(g_StreamBuffers.Data + i);
+        }
+    }
+    D3D11_BUFFER_DESC bd;
+    memset(&bd, 0, sizeof(bd));
+    bd.Usage = stream ? D3D11_USAGE_DYNAMIC : D3D11_USAGE_DEFAULT;
+    bd.ByteWidth = size;
+    bd.BindFlags = index ? D3D11_BIND_INDEX_BUFFER : D3D11_BIND_VERTEX_BUFFER;
+    bd.CPUAccessFlags = stream ? D3D11_CPU_ACCESS_WRITE : 0;
+    D3D11_SUBRESOURCE_DATA init;
+    memset(&init, 0, sizeof(init));
+    init.pSysMem = data;
+    ID3D11Buffer* buffer = NULL;
+    if (FAILED(g_GfxData.pDevice->CreateBuffer(&bd, &init, &buffer)))
+        return NULL;
+    *capacity = size;
+    return buffer;
+}
+
+static void ImPlatform_DX11_ReleaseBuffer(ID3D11Buffer* buffer, UINT capacity, ImPlatform_BufferUsage usage, bool index)
+{
+    if (!buffer)
+        return;
+    if (usage == ImPlatform_BufferUsage_Stream)
+    {
+        const ImPlatform_StreamBuffer_DX11 s = { buffer, capacity, index, ImGui::GetFrameCount() };
+        g_StreamBuffers.push_back(s);
+    }
+    else
+        buffer->Release();
+}
+
+static void ImPlatform_DX11_ReleaseStreamBuffers()
+{
+    for (const ImPlatform_StreamBuffer_DX11& s : g_StreamBuffers)
+        s.buffer->Release();
+    g_StreamBuffers.clear();
+}
+
+// size: of the buffer's content. bound: set when the buffer is bound for a draw.
+static bool ImPlatform_DX11_UpdateBuffer(ID3D11Buffer* buffer, ImPlatform_BufferUsage usage, bool* bound, const void* data, UINT at, UINT bytes, UINT size)
+{
+    if (usage == ImPlatform_BufferUsage_Static)
+        return false;
+    if (bytes == 0)
+        return true;
+    if (usage == ImPlatform_BufferUsage_Dynamic)
+    {
+        const D3D11_BOX box = { at, 0, 0, at + bytes, 1, 1 };
+        g_GfxData.pDeviceContext->UpdateSubresource(buffer, 0, &box, data, 0, 0);
+        return true;
+    }
+    const bool whole = bytes == size;
+    if (!whole && *bound)
+        return false;       // Nothing holds the rest of its content for another version: the whole buffer only
+    void* mapped = ImPlatform_DX11_MapBuffer(buffer, whole);
+    if (!mapped)
+        return false;
+    memcpy((char*)mapped + at, data, bytes);
+    g_GfxData.pDeviceContext->Unmap(buffer, 0);
+    if (whole)
+        *bound = false;
+    return true;
+}
+
 IMPLATFORM_API ImPlatform_VertexBuffer ImPlatform_CreateVertexBuffer(const void* vertex_data, const ImPlatform_VertexBufferDesc* desc)
 {
     if (!desc || !vertex_data)
         return NULL;
+    UINT capacity = 0;
+    ID3D11Buffer* d3d_buffer = ImPlatform_DX11_NewBuffer(vertex_data, desc->vertex_count * desc->vertex_stride, desc->usage, false, &capacity);
+    if (!d3d_buffer)
+        return NULL;
 
     ImPlatform_BufferData_DX11* buffer = new ImPlatform_BufferData_DX11();
     memset(buffer, 0, sizeof(ImPlatform_BufferData_DX11));
+    buffer->pVertexBuffer = d3d_buffer;
+    buffer->capacity = capacity;
     buffer->vb_desc = *desc;
 
     // Copy attribute array
@@ -1248,48 +1341,17 @@ IMPLATFORM_API ImPlatform_VertexBuffer ImPlatform_CreateVertexBuffer(const void*
         memcpy(buffer->attributes, desc->attributes, sizeof(ImPlatform_VertexAttribute) * desc->attribute_count);
         buffer->vb_desc.attributes = buffer->attributes;
     }
-
-    // Create vertex buffer
-    D3D11_BUFFER_DESC bd;
-    memset(&bd, 0, sizeof(bd));
-    bd.Usage = ImPlatform_GetD3D11Usage(desc->usage);
-    bd.ByteWidth = desc->vertex_count * desc->vertex_stride;
-    bd.BindFlags = D3D11_BIND_VERTEX_BUFFER;
-    bd.CPUAccessFlags = ImPlatform_GetD3D11CPUAccessFlags(desc->usage);
-
-    D3D11_SUBRESOURCE_DATA initData;
-    memset(&initData, 0, sizeof(initData));
-    initData.pSysMem = vertex_data;
-
-    HRESULT hr = g_GfxData.pDevice->CreateBuffer(&bd, &initData, &buffer->pVertexBuffer);
-    if (FAILED(hr))
-    {
-        delete[] buffer->attributes;
-        delete buffer;
-        return NULL;
-    }
-
     return (ImPlatform_VertexBuffer)buffer;
 }
 
-IMPLATFORM_API bool ImPlatform_UpdateVertexBuffer(ImPlatform_VertexBuffer vertex_buffer, const void* vertex_data, unsigned int vertex_count, unsigned int offset)
+IMPLATFORM_API bool ImPlatform_UpdateVertexBuffer(ImPlatform_VertexBuffer vertex_buffer, const void* vertex_data, unsigned int offset, unsigned int vertex_count)
 {
-    if (!vertex_buffer || !vertex_data)
-        return false;
-
     ImPlatform_BufferData_DX11* buffer = (ImPlatform_BufferData_DX11*)vertex_buffer;
-
-    D3D11_MAPPED_SUBRESOURCE mapped;
-    HRESULT hr = g_GfxData.pDeviceContext->Map(buffer->pVertexBuffer, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped);
-    if (FAILED(hr))
+    if (!buffer || !buffer->pVertexBuffer || !vertex_data || (unsigned long long)offset + vertex_count > buffer->vb_desc.vertex_count)
         return false;
-
-    size_t byte_offset = offset * buffer->vb_desc.vertex_stride;
-    size_t byte_size = vertex_count * buffer->vb_desc.vertex_stride;
-    memcpy((char*)mapped.pData + byte_offset, vertex_data, byte_size);
-
-    g_GfxData.pDeviceContext->Unmap(buffer->pVertexBuffer, 0);
-    return true;
+    const UINT stride = buffer->vb_desc.vertex_stride;
+    return ImPlatform_DX11_UpdateBuffer(buffer->pVertexBuffer, buffer->vb_desc.usage, &buffer->bound, vertex_data, offset * stride,
+                                        vertex_count * stride, buffer->vb_desc.vertex_count * stride);
 }
 
 IMPLATFORM_API void ImPlatform_DestroyVertexBuffer(ImPlatform_VertexBuffer vertex_buffer)
@@ -1298,9 +1360,7 @@ IMPLATFORM_API void ImPlatform_DestroyVertexBuffer(ImPlatform_VertexBuffer verte
         return;
 
     ImPlatform_BufferData_DX11* buffer = (ImPlatform_BufferData_DX11*)vertex_buffer;
-
-    if (buffer->pVertexBuffer)
-        buffer->pVertexBuffer->Release();
+    ImPlatform_DX11_ReleaseBuffer(buffer->pVertexBuffer, buffer->capacity, buffer->vb_desc.usage, false);
     if (buffer->pInputLayout)
         buffer->pInputLayout->Release();
 
@@ -1312,54 +1372,28 @@ IMPLATFORM_API ImPlatform_IndexBuffer ImPlatform_CreateIndexBuffer(const void* i
 {
     if (!desc || !index_data)
         return NULL;
+    const UINT index_size = (desc->format == ImPlatform_IndexFormat_UInt16) ? sizeof(uint16_t) : sizeof(uint32_t);
+    UINT capacity = 0;
+    ID3D11Buffer* d3d_buffer = ImPlatform_DX11_NewBuffer(index_data, desc->index_count * index_size, desc->usage, true, &capacity);
+    if (!d3d_buffer)
+        return NULL;
 
     ImPlatform_BufferData_DX11* buffer = new ImPlatform_BufferData_DX11();
     memset(buffer, 0, sizeof(ImPlatform_BufferData_DX11));
+    buffer->pIndexBuffer = d3d_buffer;
+    buffer->capacity = capacity;
     buffer->ib_desc = *desc;
-
-    // Create index buffer
-    unsigned int index_size = (desc->format == ImPlatform_IndexFormat_UInt16) ? sizeof(uint16_t) : sizeof(uint32_t);
-
-    D3D11_BUFFER_DESC bd;
-    memset(&bd, 0, sizeof(bd));
-    bd.Usage = ImPlatform_GetD3D11Usage(desc->usage);
-    bd.ByteWidth = desc->index_count * index_size;
-    bd.BindFlags = D3D11_BIND_INDEX_BUFFER;
-    bd.CPUAccessFlags = ImPlatform_GetD3D11CPUAccessFlags(desc->usage);
-
-    D3D11_SUBRESOURCE_DATA initData;
-    memset(&initData, 0, sizeof(initData));
-    initData.pSysMem = index_data;
-
-    HRESULT hr = g_GfxData.pDevice->CreateBuffer(&bd, &initData, &buffer->pIndexBuffer);
-    if (FAILED(hr))
-    {
-        delete buffer;
-        return NULL;
-    }
-
     return (ImPlatform_IndexBuffer)buffer;
 }
 
-IMPLATFORM_API bool ImPlatform_UpdateIndexBuffer(ImPlatform_IndexBuffer index_buffer, const void* index_data, unsigned int index_count, unsigned int offset)
+IMPLATFORM_API bool ImPlatform_UpdateIndexBuffer(ImPlatform_IndexBuffer index_buffer, const void* index_data, unsigned int offset, unsigned int index_count)
 {
-    if (!index_buffer || !index_data)
-        return false;
-
     ImPlatform_BufferData_DX11* buffer = (ImPlatform_BufferData_DX11*)index_buffer;
-    unsigned int index_size = (buffer->ib_desc.format == ImPlatform_IndexFormat_UInt16) ? sizeof(uint16_t) : sizeof(uint32_t);
-
-    D3D11_MAPPED_SUBRESOURCE mapped;
-    HRESULT hr = g_GfxData.pDeviceContext->Map(buffer->pIndexBuffer, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped);
-    if (FAILED(hr))
+    if (!buffer || !buffer->pIndexBuffer || !index_data || (unsigned long long)offset + index_count > buffer->ib_desc.index_count)
         return false;
-
-    size_t byte_offset = offset * index_size;
-    size_t byte_size = index_count * index_size;
-    memcpy((char*)mapped.pData + byte_offset, index_data, byte_size);
-
-    g_GfxData.pDeviceContext->Unmap(buffer->pIndexBuffer, 0);
-    return true;
+    const UINT index_size = (buffer->ib_desc.format == ImPlatform_IndexFormat_UInt16) ? sizeof(uint16_t) : sizeof(uint32_t);
+    return ImPlatform_DX11_UpdateBuffer(buffer->pIndexBuffer, buffer->ib_desc.usage, &buffer->bound, index_data, offset * index_size,
+                                        index_count * index_size, buffer->ib_desc.index_count * index_size);
 }
 
 IMPLATFORM_API void ImPlatform_DestroyIndexBuffer(ImPlatform_IndexBuffer index_buffer)
@@ -1368,10 +1402,7 @@ IMPLATFORM_API void ImPlatform_DestroyIndexBuffer(ImPlatform_IndexBuffer index_b
         return;
 
     ImPlatform_BufferData_DX11* buffer = (ImPlatform_BufferData_DX11*)index_buffer;
-
-    if (buffer->pIndexBuffer)
-        buffer->pIndexBuffer->Release();
-
+    ImPlatform_DX11_ReleaseBuffer(buffer->pIndexBuffer, buffer->capacity, buffer->ib_desc.usage, true);
     delete buffer;
 }
 
@@ -1384,6 +1415,7 @@ IMPLATFORM_API void ImPlatform_BindVertexBuffer(ImPlatform_VertexBuffer vertex_b
 
     UINT stride = buffer->vb_desc.vertex_stride;
     UINT offset = 0;
+    buffer->bound = true;
     g_GfxData.pDeviceContext->IASetVertexBuffers(0, 1, &buffer->pVertexBuffer, &stride, &offset);
 
     if (buffer->pInputLayout)
@@ -1398,6 +1430,7 @@ IMPLATFORM_API void ImPlatform_BindIndexBuffer(ImPlatform_IndexBuffer index_buff
     ImPlatform_BufferData_DX11* buffer = (ImPlatform_BufferData_DX11*)index_buffer;
     DXGI_FORMAT format = ImPlatform_GetIndexFormat_DX11(buffer->ib_desc.format);
 
+    buffer->bound = true;
     g_GfxData.pDeviceContext->IASetIndexBuffer(buffer->pIndexBuffer, format, 0);
 }
 
@@ -2334,6 +2367,7 @@ IMPLATFORM_API bool ImPlatform_DrawMesh(const ImPlatform_DrawMeshDesc* desc)
     ID3D11Buffer* pcb = make_cb(desc->ps_constants, desc->ps_constants_size);
 
     const UINT stride = vb->vb_desc.vertex_stride, offset = 0;
+    vb->bound = ib->bound = true;
     ctx->IASetInputLayout(vb->pInputLayout);
     ctx->IASetVertexBuffers(0, 1, &vb->pVertexBuffer, &stride, &offset);
     ctx->IASetIndexBuffer(ib->pIndexBuffer, ib->ib_desc.format == ImPlatform_IndexFormat_UInt16 ? DXGI_FORMAT_R16_UINT : DXGI_FORMAT_R32_UINT, 0);

@@ -104,6 +104,7 @@ static ImPlatform_ShaderProgram g_CurrentUniformBlockProgram = nullptr;
 static VkCommandBuffer g_CurrentCommandBuffer = VK_NULL_HANDLE;
 static VkRenderPass g_CurrentRenderPass = VK_NULL_HANDLE;
 static void ImPlatform_Vulkan_ReleaseConstantRing();
+static void ImPlatform_Vulkan_ReleaseRetiredBuffers();
 
 // The render passes being recorded on the frame's command buffer, innermost last: the main viewport's or a queued render
 // pass's, then the targets of ImPlatform_PushRenderTarget. Draw callbacks end the innermost to copy or switch targets and
@@ -917,6 +918,7 @@ IMPLATFORM_API void ImPlatform_ShutdownWindow(void)
     ImPlatform_DestroyTexture(g_WhiteTexture);
     g_WhiteTexture = 0;
     ImPlatform_Vulkan_ReleaseConstantRing();
+    ImPlatform_Vulkan_ReleaseRetiredBuffers();
     if (g_UploadCommandPool != VK_NULL_HANDLE)
     {
         vkDestroyCommandPool(g_GfxData.device, g_UploadCommandPool, g_Allocator); // Also frees g_UploadCommandBuffer
@@ -1961,12 +1963,30 @@ IMPLATFORM_API void ImPlatform_DestroyTexture(ImTextureID texture_id)
 
 // Vertex and index buffers drawn by ImPlatform_DrawIndexed inside draw callbacks, in host-visible memory.
 // shortcut: static buffers stay in host-visible memory too; move them to device memory if drawing them gets slow.
+// The Vulkan buffer under a handle changes: an update of a buffer that frames in flight may still draw writes another
+// one, and a destroyed or replaced buffer is retired, not freed. Once the frames that could draw it have completed, a
+// retired buffer goes to the next buffer it is large enough for, so buffers created, updated or destroyed every frame
+// settle on a few Vulkan buffers per frame in flight and never wait for the device.
+// shortcut: frames are counted by ImGui::GetFrameCount(); without frames nothing retired is taken again or freed.
+static const int g_FramesInFlightMax = 8;       // Swapchains keep fewer frames in flight (as the constant ring assumes)
+struct ImPlatform_HostBuffer_Vulkan
+{
+    VkBuffer       buffer;
+    VkDeviceMemory memory;
+    char*          mapped;
+    VkDeviceSize   capacity;
+    bool           index;
+    int            frame;       // The frame it was retired in
+};
+static ImVector<ImPlatform_HostBuffer_Vulkan> g_RetiredBuffers;
 struct ImPlatform_BufferData_Vulkan
 {
     VkBuffer       buffer;
     VkDeviceMemory memory;
     char*          mapped;
     VkDeviceSize   size;
+    VkDeviceSize   capacity;    // Of 'buffer': at least 'size'
+    int            drawn;       // The last frame a draw of it was recorded in; 0: none since it was written
     bool           index;
     ImPlatform_VertexBufferDesc vb_desc;
     ImVector<ImPlatform_VertexAttribute> attributes;
@@ -1977,22 +1997,84 @@ static ImPlatform_BufferData_Vulkan* g_BoundIndexBuffer = NULL;
 static bool ImPlatform_Vulkan_CreateHostBuffer(VkDeviceSize size, VkBufferUsageFlags usage, VkBuffer* buf, VkDeviceMemory* mem);
 static void ImPlatform_Vulkan_DestroyHostBuffer(VkBuffer buf, VkDeviceMemory mem);
 
-static ImPlatform_BufferData_Vulkan* ImPlatform_Vulkan_CreateBuffer(const void* data, VkDeviceSize size, VkBufferUsageFlags usage)
+// Gives b a mapped Vulkan buffer of b->size bytes that no frame in flight draws: a retired one of a close size, or a
+// new one. Retired buffers nothing took for a while are freed on the way. b is left as it was on failure.
+static bool ImPlatform_Vulkan_AcquireBuffer(ImPlatform_BufferData_Vulkan* b)
+{
+    const int frame = ImGui::GetFrameCount();
+    int found = -1;
+    for (int i = g_RetiredBuffers.Size - 1; i >= 0; i--)
+    {
+        const ImPlatform_HostBuffer_Vulkan r = g_RetiredBuffers[i];
+        if (frame - r.frame <= g_FramesInFlightMax)
+            continue;
+        if (found < 0 && r.index == b->index && r.capacity >= b->size && r.capacity <= b->size * 2)
+            found = i;
+        else if (frame - r.frame > 240)
+        {
+            ImPlatform_Vulkan_DestroyHostBuffer(r.buffer, r.memory);
+            g_RetiredBuffers.erase(g_RetiredBuffers.Data + i);
+            if (found > i)
+                found--;
+        }
+    }
+    if (found >= 0)
+    {
+        const ImPlatform_HostBuffer_Vulkan r = g_RetiredBuffers[found];
+        g_RetiredBuffers.erase(g_RetiredBuffers.Data + found);
+        b->buffer = r.buffer;
+        b->memory = r.memory;
+        b->mapped = r.mapped;
+        b->capacity = r.capacity;
+        b->drawn = 0;
+        return true;
+    }
+    VkBuffer buffer = VK_NULL_HANDLE;
+    VkDeviceMemory memory = VK_NULL_HANDLE;
+    void* mapped = NULL;
+    if (!ImPlatform_Vulkan_CreateHostBuffer(b->size, b->index ? VK_BUFFER_USAGE_INDEX_BUFFER_BIT : VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, &buffer, &memory))
+        return false;
+    if (vkMapMemory(g_GfxData.device, memory, 0, VK_WHOLE_SIZE, 0, &mapped) != VK_SUCCESS || !mapped)
+    {
+        ImPlatform_Vulkan_DestroyHostBuffer(buffer, memory);
+        return false;
+    }
+    b->buffer = buffer;
+    b->memory = memory;
+    b->mapped = (char*)mapped;
+    b->capacity = b->size;
+    b->drawn = 0;
+    return true;
+}
+
+// Frames in flight may still draw b's Vulkan buffer: it stays alive (and mapped) for them.
+static void ImPlatform_Vulkan_RetireBuffer(const ImPlatform_BufferData_Vulkan* b)
+{
+    const ImPlatform_HostBuffer_Vulkan r = { b->buffer, b->memory, b->mapped, b->capacity, b->index, ImGui::GetFrameCount() };
+    g_RetiredBuffers.push_back(r);
+}
+
+// At shutdown, the device idle.
+static void ImPlatform_Vulkan_ReleaseRetiredBuffers()
+{
+    for (const ImPlatform_HostBuffer_Vulkan& r : g_RetiredBuffers)
+        ImPlatform_Vulkan_DestroyHostBuffer(r.buffer, r.memory);
+    g_RetiredBuffers.clear();
+}
+
+static ImPlatform_BufferData_Vulkan* ImPlatform_Vulkan_CreateBuffer(const void* data, VkDeviceSize size, bool index)
 {
     if (!data || size == 0)
         return NULL;
     ImPlatform_BufferData_Vulkan* b = IM_NEW(ImPlatform_BufferData_Vulkan)();
-    void* mapped = NULL;
-    if (!ImPlatform_Vulkan_CreateHostBuffer(size, usage, &b->buffer, &b->memory))
+    b->size = size;
+    b->index = index;
+    if (!ImPlatform_Vulkan_AcquireBuffer(b))
     {
         IM_DELETE(b);
         return NULL;
     }
-    vkMapMemory(g_GfxData.device, b->memory, 0, VK_WHOLE_SIZE, 0, &mapped);
-    b->mapped = (char*)mapped;
-    b->size = size;
-    if (b->mapped)
-        memcpy(b->mapped, data, (size_t)size);
+    memcpy(b->mapped, data, (size_t)size);
     return b;
 }
 
@@ -2000,7 +2082,17 @@ static bool ImPlatform_Vulkan_UpdateBuffer(ImPlatform_BufferData_Vulkan* b, cons
 {
     if (!b || !b->mapped || !data || at + bytes > b->size)
         return false;
-    memcpy(b->mapped + at, data, (size_t)bytes);     // Callers must not update a buffer the GPU still reads.
+    if (b->drawn && ImGui::GetFrameCount() - b->drawn <= g_FramesInFlightMax)
+    {
+        // Frames in flight may still draw this Vulkan buffer: they keep it, the handle writes another one.
+        const ImPlatform_BufferData_Vulkan previous = *b;
+        if (!ImPlatform_Vulkan_AcquireBuffer(b))
+            return false;
+        if (bytes != b->size)
+            memcpy(b->mapped, previous.mapped, (size_t)b->size);
+        ImPlatform_Vulkan_RetireBuffer(&previous);
+    }
+    memcpy(b->mapped + at, data, (size_t)bytes);
     return true;
 }
 
@@ -2010,9 +2102,7 @@ static void ImPlatform_Vulkan_DestroyBuffer(ImPlatform_BufferData_Vulkan* b)
         return;
     if (g_BoundVertexBuffer == b) g_BoundVertexBuffer = NULL;
     if (g_BoundIndexBuffer == b) g_BoundIndexBuffer = NULL;
-    vkDeviceWaitIdle(g_GfxData.device);     // Frames in flight may still draw it
-    vkUnmapMemory(g_GfxData.device, b->memory);
-    ImPlatform_Vulkan_DestroyHostBuffer(b->buffer, b->memory);
+    ImPlatform_Vulkan_RetireBuffer(b);
     IM_DELETE(b);
 }
 
@@ -2020,8 +2110,7 @@ IMPLATFORM_API ImPlatform_VertexBuffer ImPlatform_CreateVertexBuffer(const void*
 {
     if (!desc || !desc->attributes || !desc->attribute_count || desc->attribute_count > 16)
         return NULL;
-    ImPlatform_BufferData_Vulkan* b = ImPlatform_Vulkan_CreateBuffer(vertex_data, (VkDeviceSize)desc->vertex_count * desc->vertex_stride,
-                                                                     VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);
+    ImPlatform_BufferData_Vulkan* b = ImPlatform_Vulkan_CreateBuffer(vertex_data, (VkDeviceSize)desc->vertex_count * desc->vertex_stride, false);
     if (!b)
         return NULL;
     b->vb_desc = *desc;
@@ -2031,7 +2120,7 @@ IMPLATFORM_API ImPlatform_VertexBuffer ImPlatform_CreateVertexBuffer(const void*
     return (ImPlatform_VertexBuffer)b;
 }
 
-IMPLATFORM_API bool ImPlatform_UpdateVertexBuffer(ImPlatform_VertexBuffer vertex_buffer, const void* vertex_data, unsigned int vertex_count, unsigned int offset)
+IMPLATFORM_API bool ImPlatform_UpdateVertexBuffer(ImPlatform_VertexBuffer vertex_buffer, const void* vertex_data, unsigned int offset, unsigned int vertex_count)
 {
     ImPlatform_BufferData_Vulkan* b = (ImPlatform_BufferData_Vulkan*)vertex_buffer;
     const VkDeviceSize stride = b ? b->vb_desc.vertex_stride : 0;
@@ -2045,15 +2134,14 @@ IMPLATFORM_API ImPlatform_IndexBuffer ImPlatform_CreateIndexBuffer(const void* i
     if (!desc)
         return NULL;
     const VkDeviceSize index_size = desc->format == ImPlatform_IndexFormat_UInt16 ? 2 : 4;
-    ImPlatform_BufferData_Vulkan* b = ImPlatform_Vulkan_CreateBuffer(index_data, desc->index_count * index_size, VK_BUFFER_USAGE_INDEX_BUFFER_BIT);
+    ImPlatform_BufferData_Vulkan* b = ImPlatform_Vulkan_CreateBuffer(index_data, desc->index_count * index_size, true);
     if (!b)
         return NULL;
-    b->index = true;
     b->ib_desc = *desc;
     return (ImPlatform_IndexBuffer)b;
 }
 
-IMPLATFORM_API bool ImPlatform_UpdateIndexBuffer(ImPlatform_IndexBuffer index_buffer, const void* index_data, unsigned int index_count, unsigned int offset)
+IMPLATFORM_API bool ImPlatform_UpdateIndexBuffer(ImPlatform_IndexBuffer index_buffer, const void* index_data, unsigned int offset, unsigned int index_count)
 {
     ImPlatform_BufferData_Vulkan* b = (ImPlatform_BufferData_Vulkan*)index_buffer;
     const VkDeviceSize index_size = b && b->ib_desc.format == ImPlatform_IndexFormat_UInt16 ? 2 : 4;
@@ -3720,6 +3808,7 @@ IMPLATFORM_API void ImPlatform_DrawIndexed(unsigned int primitive_type, unsigned
     ImPlatform_Vulkan_BindProgram(program_data, cmd, ImPlatform_Vulkan_FindDrawData(NULL), VK_NULL_HANDLE, &vb->vb_desc, primitive_type);
     if (g_BoundShaderProgram != program_data)
         return;
+    vb->drawn = ib->drawn = ImGui::GetFrameCount();
     const VkDeviceSize zero = 0;
     vkCmdBindVertexBuffers(cmd, 0, 1, &vb->buffer, &zero);
     vkCmdBindIndexBuffer(cmd, ib->buffer, 0, ib->ib_desc.format == ImPlatform_IndexFormat_UInt16 ? VK_INDEX_TYPE_UINT16 : VK_INDEX_TYPE_UINT32);

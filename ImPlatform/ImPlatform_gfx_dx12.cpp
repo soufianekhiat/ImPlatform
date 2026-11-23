@@ -607,6 +607,7 @@ IMPLATFORM_API void ImPlatform_GfxViewportPost(void)
 IMPLATFORM_API bool ImPlatform_GfxAPISwapBuffer(void)
 {
     // The main viewport command list was submitted by ImPlatform_GfxAPIRender, secondary viewports by RenderPlatformWindowsDefault()
+    ImPlatform_DX12_FlushWork();    // Work recorded since then reads this frame's stream buffers: it goes before the frame's fence.
     g_GfxData.pCommandQueue->Signal(g_GfxData.pFence, ++g_GfxData.uFenceLastSignaledValue);
     ImPlatform_DX12_EndFrame(g_GfxData.uFenceLastSignaledValue);
     if (g_CurrentFrameCtx)
@@ -1885,9 +1886,11 @@ namespace
             for (size_t i = 0; i < pages.size(); i++)
             {
                 ImP12_State::page& p = pages[i];
-                if (p.fence != UINT64_MAX && ImP12_Done(p.fence) && p.size >= size)
+                // A page of the submission being recorded with room left, or one whose submission has completed.
+                if (p.fence == UINT64_MAX ? fits(p) : (ImP12_Done(p.fence) && p.size >= size))
                 {
-                    p.used = 0;
+                    if (p.fence != UINT64_MAX)
+                        p.used = 0;
                     p.fence = UINT64_MAX;
                     page_index = (int)i;
                     break;
@@ -1928,6 +1931,20 @@ namespace
         return true;
     }
 
+    // Frames: what the command lists of a frame read (the frame arena, vertex buffers) is free again once the fence
+    // signalled after that frame has completed. g_P12_FrameFence holds it for the last frames, by frame % 8; an older
+    // frame completed before those.
+    UINT64 g_P12_Frame = 1;         // The frame being recorded
+    UINT64 g_P12_FrameFence[8] = {};
+    bool ImP12_FrameDone(UINT64 frame)
+    {
+        if (frame >= g_P12_Frame)
+            return false;
+        if (frame + 8 < g_P12_Frame)
+            frame = g_P12_Frame - 8;
+        return ImP12_Done(g_P12_FrameFence[frame % 8]);
+    }
+
     // The frame's command lists are submitted and 'fence' follows them: frame pages used since the last call wait for it.
     void ImP12_EndFrameUploads(UINT64 fence)
     {
@@ -1935,6 +1952,8 @@ namespace
             if (p.fence == UINT64_MAX)
                 p.fence = fence;
         g_P12.frame_page_index = -1;
+        g_P12_FrameFence[g_P12_Frame % 8] = fence;
+        g_P12_Frame++;
     }
 
     // ---- Transient descriptor tables ---------------------------------------------------------------------------
@@ -2454,12 +2473,31 @@ IMPLATFORM_API void ImPlatform_EndRenderToTexture(void)
     g_P12.active_rt = NULL;
 }
 
-// ---- Vertex / index buffers (upload heap, persistently mapped) -------------------------------------------------
+// ---- Vertex / index buffers ------------------------------------------------------------------------------------
+// Static: device memory (DEFAULT heap), filled by a copy recorded on the work list (submitted before the frame, so before
+// any draw that reads it); not updatable.
+// Dynamic: CPU-written memory of its own (UPLOAD heap, read by the GPU over the bus at every draw: large static meshes
+// there cost the bus bandwidth each frame). An update of memory that a frame in flight may still read goes to another
+// version of the buffer; versions are kept and written again once the GPU is done with them, so a buffer updated every
+// frame settles at one version per frame in flight.
+// Stream: memory of the frame arena, no resource of its own. It holds for the draws of the frame that wrote it
+// (ImPlatform_CreateVertexBuffer or an update of the whole buffer) and is recycled once that frame has completed.
+// shortcut: frames end at ImPlatform_GfxAPISwapBuffer; an application that draws and never presents keeps every stream
+// allocation and dynamic version, end its frames from ImP12_Flush when one needs that.
+struct ImP12_BufferMemory
+{
+    ID3D12Resource* res;                // Null for Stream: the arena's page
+    uint8_t* cpu;                       // Null for Static
+    D3D12_GPU_VIRTUAL_ADDRESS gpu;
+    UINT64 drawn;                       // The last frame whose command lists read it; 0: none since it was written
+};
 struct ImPlatform_BufferData_DX12
 {
-    ID3D12Resource* res;
-    uint8_t* cpu;
+    ImP12_BufferMemory mem;                     // What draws read
+    std::vector<ImP12_BufferMemory> spares;     // Dynamic: versions left to the frames that drew them
     UINT64 size;
+    UINT64 stream_frame;                        // Stream: the frame its memory belongs to
+    ImPlatform_BufferUsage usage;
     ImPlatform_VertexBufferDesc vb_desc;
     ImPlatform_IndexBufferDesc ib_desc;
     std::vector<ImPlatform_VertexAttribute> attributes;
@@ -2467,63 +2505,8 @@ struct ImPlatform_BufferData_DX12
     bool is_index;
 };
 
-// Static buffers live in device memory (DEFAULT heap), filled by a copy recorded on the work list (submitted before
-// the frame, so before any draw that reads them); they cannot be updated. Dynamic buffers stay CPU-written (UPLOAD
-// heap, read by the GPU over the bus at every draw: large static meshes there cost the bus bandwidth each frame).
-static ImPlatform_BufferData_DX12* ImP12_CreateBuffer(const void* data, UINT64 size, bool device_local = false,
-                                                      D3D12_RESOURCE_STATES rest = D3D12_RESOURCE_STATE_GENERIC_READ)
+static D3D12_RESOURCE_DESC ImP12_BufferDesc(UINT64 size)
 {
-    if (!data || !size || !ImP12_Init())
-        return NULL;
-    ImPlatform_BufferData_DX12* b = new ImPlatform_BufferData_DX12();
-    b->size = size;
-    ID3D12GraphicsCommandList* list = device_local ? ImP12_List() : NULL;
-    if (list)
-    {
-        D3D12_HEAP_PROPERTIES dh = {}, uh = {};
-        dh.Type = D3D12_HEAP_TYPE_DEFAULT;
-        uh.Type = D3D12_HEAP_TYPE_UPLOAD;
-        D3D12_RESOURCE_DESC rd = {};
-        rd.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
-        rd.Width = size;
-        rd.Height = 1;
-        rd.DepthOrArraySize = 1;
-        rd.MipLevels = 1;
-        rd.SampleDesc.Count = 1;
-        rd.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
-        ID3D12Resource* staging = NULL;
-        uint8_t* cpu = NULL;
-        D3D12_RANGE none = { 0, 0 };
-        if (FAILED(g_GfxData.pDevice->CreateCommittedResource(&dh, D3D12_HEAP_FLAG_NONE, &rd, D3D12_RESOURCE_STATE_COPY_DEST, NULL, IID_PPV_ARGS(&b->res))))
-        {
-            delete b;
-            return NULL;
-        }
-        if (FAILED(g_GfxData.pDevice->CreateCommittedResource(&uh, D3D12_HEAP_FLAG_NONE, &rd, D3D12_RESOURCE_STATE_GENERIC_READ, NULL, IID_PPV_ARGS(&staging)))
-            || FAILED(staging->Map(0, &none, (void**)&cpu)))
-        {
-            if (staging)
-                staging->Release();
-            b->res->Release();
-            delete b;
-            return NULL;
-        }
-        memcpy(cpu, data, (size_t)size);
-        staging->Unmap(0, NULL);
-        list->CopyBufferRegion(b->res, 0, staging, 0, size);
-        D3D12_RESOURCE_BARRIER bar = {};
-        bar.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-        bar.Transition.pResource = b->res;
-        bar.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-        bar.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
-        bar.Transition.StateAfter = rest;
-        list->ResourceBarrier(1, &bar);
-        ImP12_DeferRelease(staging);        // Released once the work list that reads it has completed.
-        b->cpu = NULL;
-        return b;
-    }
-    D3D12_HEAP_PROPERTIES hp = {};
-    hp.Type = D3D12_HEAP_TYPE_UPLOAD;
     D3D12_RESOURCE_DESC rd = {};
     rd.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
     rd.Width = size;
@@ -2532,22 +2515,150 @@ static ImPlatform_BufferData_DX12* ImP12_CreateBuffer(const void* data, UINT64 s
     rd.MipLevels = 1;
     rd.SampleDesc.Count = 1;
     rd.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
-    if (FAILED(g_GfxData.pDevice->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &rd, D3D12_RESOURCE_STATE_GENERIC_READ, NULL, IID_PPV_ARGS(&b->res))))
+    return rd;
+}
+
+// A committed upload buffer, mapped for its lifetime.
+static bool ImP12_NewUploadMemory(UINT64 size, ImP12_BufferMemory* out)
+{
+    D3D12_HEAP_PROPERTIES hp = {};
+    hp.Type = D3D12_HEAP_TYPE_UPLOAD;
+    const D3D12_RESOURCE_DESC rd = ImP12_BufferDesc(size);
+    ImP12_BufferMemory m = {};
+    D3D12_RANGE none = { 0, 0 };
+    if (FAILED(g_GfxData.pDevice->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &rd, D3D12_RESOURCE_STATE_GENERIC_READ, NULL, IID_PPV_ARGS(&m.res))))
+        return false;
+    if (FAILED(m.res->Map(0, &none, (void**)&m.cpu)))
+    {
+        m.res->Release();
+        return false;
+    }
+    m.gpu = m.res->GetGPUVirtualAddress();
+    *out = m;
+    return true;
+}
+
+static bool ImP12_NewStreamMemory(ImPlatform_BufferData_DX12* b)
+{
+    ImP12_Upload up;
+    if (!ImP12_Alloc(b->size, 16, &up, true))
+        return false;
+    b->mem = { NULL, up.cpu, up.gpu, 0 };
+    b->stream_frame = g_P12_Frame;
+    return true;
+}
+
+static ImPlatform_BufferData_DX12* ImP12_CreateBuffer(const void* data, UINT64 size, ImPlatform_BufferUsage usage, D3D12_RESOURCE_STATES rest)
+{
+    if (!data || !size || !ImP12_Init())
+        return NULL;
+    ImPlatform_BufferData_DX12* b = new ImPlatform_BufferData_DX12();
+    b->size = size;
+    b->usage = usage;
+    if (usage == ImPlatform_BufferUsage_Static)
+    {
+        ID3D12GraphicsCommandList* list = ImP12_List();
+        D3D12_HEAP_PROPERTIES dh = {};
+        dh.Type = D3D12_HEAP_TYPE_DEFAULT;
+        const D3D12_RESOURCE_DESC rd = ImP12_BufferDesc(size);
+        ImP12_BufferMemory staging = {};
+        if (!list || FAILED(g_GfxData.pDevice->CreateCommittedResource(&dh, D3D12_HEAP_FLAG_NONE, &rd, D3D12_RESOURCE_STATE_COPY_DEST, NULL, IID_PPV_ARGS(&b->mem.res))))
+        {
+            delete b;
+            return NULL;
+        }
+        if (!ImP12_NewUploadMemory(size, &staging))
+        {
+            b->mem.res->Release();
+            delete b;
+            return NULL;
+        }
+        memcpy(staging.cpu, data, (size_t)size);
+        staging.res->Unmap(0, NULL);
+        list->CopyBufferRegion(b->mem.res, 0, staging.res, 0, size);
+        D3D12_RESOURCE_BARRIER bar = {};
+        bar.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+        bar.Transition.pResource = b->mem.res;
+        bar.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+        bar.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
+        bar.Transition.StateAfter = rest;
+        list->ResourceBarrier(1, &bar);
+        ImP12_DeferRelease(staging.res);    // Released once the work list that reads it has completed.
+        b->mem.gpu = b->mem.res->GetGPUVirtualAddress();
+        return b;
+    }
+    if (usage == ImPlatform_BufferUsage_Stream ? !ImP12_NewStreamMemory(b) : !ImP12_NewUploadMemory(size, &b->mem))
     {
         delete b;
         return NULL;
     }
-    D3D12_RANGE none = { 0, 0 };
-    b->res->Map(0, &none, (void**)&b->cpu);
-    memcpy(b->cpu, data, (size_t)size);
+    memcpy(b->mem.cpu, data, (size_t)size);
     return b;
+}
+
+// Leaves in b->mem memory that no recorded or running command list reads. whole: every byte is about to be replaced,
+// the previous content is not carried over.
+static bool ImP12_WritableBuffer(ImPlatform_BufferData_DX12* b, bool whole)
+{
+    if (!b->mem.cpu)
+        return false;       // Static buffers (device memory) are not updatable.
+    if (b->usage == ImPlatform_BufferUsage_Stream)
+    {
+        const bool current = b->stream_frame == g_P12_Frame;
+        if (current && !b->mem.drawn)
+            return true;
+        const uint8_t* previous = b->mem.cpu;
+        if ((!current && !whole) || !ImP12_NewStreamMemory(b))
+            return false;   // The memory of an earlier frame is gone: only an update of the whole buffer brings it back.
+        if (!whole)
+            memcpy(b->mem.cpu, previous, (size_t)b->size);
+        return true;
+    }
+    if (!b->mem.drawn || ImP12_FrameDone(b->mem.drawn))
+    {
+        b->mem.drawn = 0;
+        return true;
+    }
+    ImP12_BufferMemory next = {};
+    for (size_t i = 0; i < b->spares.size(); i++)
+        if (ImP12_FrameDone(b->spares[i].drawn))
+        {
+            next = b->spares[i];
+            b->spares.erase(b->spares.begin() + (ptrdiff_t)i);
+            break;
+        }
+    if (!next.cpu && !ImP12_NewUploadMemory(b->size, &next))
+        return false;
+    if (!whole)
+        memcpy(next.cpu, b->mem.cpu, (size_t)b->size);     // Reads write-combined memory, slowly: whole updates skip it.
+    next.drawn = 0;
+    b->spares.push_back(b->mem);
+    b->mem = next;
+    return true;
+}
+
+static bool ImP12_UpdateBuffer(ImPlatform_BufferData_DX12* b, const void* data, UINT64 at, UINT64 bytes)
+{
+    if (!b || !data || at + bytes > b->size || !ImP12_WritableBuffer(b, at == 0 && bytes == b->size))
+        return false;
+    memcpy(b->mem.cpu + at, data, (size_t)bytes);
+    return true;
+}
+
+// A draw of b is being recorded. False for stream memory of an earlier frame, which the arena has handed out again.
+static bool ImP12_BufferDrawn(ImPlatform_BufferData_DX12* b)
+{
+    if (b->usage == ImPlatform_BufferUsage_Stream && b->stream_frame != g_P12_Frame)
+        return false;
+    b->mem.drawn = g_P12_Frame;
+    return true;
 }
 
 IMPLATFORM_API ImPlatform_VertexBuffer ImPlatform_CreateVertexBuffer(const void* vertex_data, const ImPlatform_VertexBufferDesc* desc)
 {
     if (!desc || !desc->attributes || !desc->attribute_count)
         return NULL;
-    ImPlatform_BufferData_DX12* b = ImP12_CreateBuffer(vertex_data, (UINT64)desc->vertex_count * desc->vertex_stride, desc->usage == ImPlatform_BufferUsage_Static,
+    ImPlatform_BufferData_DX12* b = ImP12_CreateBuffer(vertex_data, (UINT64)desc->vertex_count * desc->vertex_stride, desc->usage,
                                                        D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER);
     if (!b)
         return NULL;
@@ -2561,14 +2672,11 @@ IMPLATFORM_API ImPlatform_VertexBuffer ImPlatform_CreateVertexBuffer(const void*
     return (ImPlatform_VertexBuffer)b;
 }
 
-IMPLATFORM_API bool ImPlatform_UpdateVertexBuffer(ImPlatform_VertexBuffer vertex_buffer, const void* vertex_data, unsigned int vertex_count, unsigned int offset)
+IMPLATFORM_API bool ImPlatform_UpdateVertexBuffer(ImPlatform_VertexBuffer vertex_buffer, const void* vertex_data, unsigned int offset, unsigned int count)
 {
     ImPlatform_BufferData_DX12* b = (ImPlatform_BufferData_DX12*)vertex_buffer;
-    const UINT64 stride = b ? b->vb_desc.vertex_stride : 0, at = (UINT64)offset * stride, bytes = (UINT64)vertex_count * stride;
-    if (!b || !b->cpu || !vertex_data || at + bytes > b->size)
-        return false;       // Static buffers (device memory) are not updatable.
-    memcpy(b->cpu + at, vertex_data, (size_t)bytes);    // Callers must not update a buffer the GPU still reads.
-    return true;
+    const UINT64 stride = b ? b->vb_desc.vertex_stride : 0;
+    return b && !b->is_index && ImP12_UpdateBuffer(b, vertex_data, (UINT64)offset * stride, (UINT64)count * stride);
 }
 
 IMPLATFORM_API void ImPlatform_DestroyVertexBuffer(ImPlatform_VertexBuffer vertex_buffer)
@@ -2576,7 +2684,10 @@ IMPLATFORM_API void ImPlatform_DestroyVertexBuffer(ImPlatform_VertexBuffer verte
     ImPlatform_BufferData_DX12* b = (ImPlatform_BufferData_DX12*)vertex_buffer;
     if (!b)
         return;
-    ImP12_DeferRelease(b->res);
+    if (b->mem.res)
+        ImP12_DeferRelease(b->mem.res);
+    for (ImP12_BufferMemory& m : b->spares)
+        ImP12_DeferRelease(m.res);
     delete b;
 }
 
@@ -2585,8 +2696,7 @@ IMPLATFORM_API ImPlatform_IndexBuffer ImPlatform_CreateIndexBuffer(const void* i
     if (!desc)
         return NULL;
     const UINT64 isize = desc->format == ImPlatform_IndexFormat_UInt16 ? 2 : 4;
-    ImPlatform_BufferData_DX12* b = ImP12_CreateBuffer(index_data, (UINT64)desc->index_count * isize, desc->usage == ImPlatform_BufferUsage_Static,
-                                                       D3D12_RESOURCE_STATE_INDEX_BUFFER);
+    ImPlatform_BufferData_DX12* b = ImP12_CreateBuffer(index_data, (UINT64)desc->index_count * isize, desc->usage, D3D12_RESOURCE_STATE_INDEX_BUFFER);
     if (!b)
         return NULL;
     b->ib_desc = *desc;
@@ -2594,14 +2704,11 @@ IMPLATFORM_API ImPlatform_IndexBuffer ImPlatform_CreateIndexBuffer(const void* i
     return (ImPlatform_IndexBuffer)b;
 }
 
-IMPLATFORM_API bool ImPlatform_UpdateIndexBuffer(ImPlatform_IndexBuffer index_buffer, const void* index_data, unsigned int index_count, unsigned int offset)
+IMPLATFORM_API bool ImPlatform_UpdateIndexBuffer(ImPlatform_IndexBuffer index_buffer, const void* index_data, unsigned int offset, unsigned int count)
 {
     ImPlatform_BufferData_DX12* b = (ImPlatform_BufferData_DX12*)index_buffer;
-    const UINT64 isize = b && b->ib_desc.format == ImPlatform_IndexFormat_UInt16 ? 2 : 4, at = (UINT64)offset * isize, bytes = (UINT64)index_count * isize;
-    if (!b || !b->cpu || !index_data || at + bytes > b->size)
-        return false;       // Static buffers (device memory) are not updatable.
-    memcpy(b->cpu + at, index_data, (size_t)bytes);
-    return true;
+    const UINT64 isize = b && b->ib_desc.format == ImPlatform_IndexFormat_UInt16 ? 2 : 4;
+    return b && b->is_index && ImP12_UpdateBuffer(b, index_data, (UINT64)offset * isize, (UINT64)count * isize);
 }
 
 IMPLATFORM_API void ImPlatform_DestroyIndexBuffer(ImPlatform_IndexBuffer index_buffer)
@@ -2932,6 +3039,8 @@ IMPLATFORM_API bool ImPlatform_GfxRecreateDevice(void)
     if (g_P12_Timer.buffer) g_P12_Timer.buffer->Release();
     g_P12_Timer = ImP12_Timer();
     g_P12_Generation++;     // Outstanding readbacks of the old device now fail instead of reading the new fence.
+    memset(g_P12_FrameFence, 0, sizeof(g_P12_FrameFence));     // The new device's fence starts over.
+    g_P12_Frame++;          // Stream buffers of the old device's arena are of an earlier frame now.
     for (ImP12_Readback* r : g_P12_Readbacks)
     {
         r->buffer->Release();
@@ -3041,7 +3150,8 @@ IMPLATFORM_API bool ImPlatform_DrawMesh(const ImPlatform_DrawMeshDesc* desc)
     ImPlatform_ShaderProgramData_DX12* prog = (ImPlatform_ShaderProgramData_DX12*)desc->program;
     ImPlatform_BufferData_DX12* vb = (ImPlatform_BufferData_DX12*)desc->vertices;
     ImPlatform_BufferData_DX12* ib = (ImPlatform_BufferData_DX12*)desc->indices;
-    if (!prog->pVSBlob || !prog->pPSBlob || vb->is_index || !ib->is_index || desc->index_count > ib->ib_desc.index_count)
+    if (!prog->pVSBlob || !prog->pPSBlob || vb->is_index || !ib->is_index || desc->index_count > ib->ib_desc.index_count
+        || !ImP12_BufferDrawn(vb) || !ImP12_BufferDrawn(ib))
         return false;
     ImP12_ReserveTransient(4);
     ID3D12GraphicsCommandList* list = ImP12_List();
@@ -3118,8 +3228,8 @@ IMPLATFORM_API bool ImPlatform_DrawMesh(const ImPlatform_DrawMeshDesc* desc)
     list->SetGraphicsRootConstantBufferView(0, vcb.gpu);
     list->SetGraphicsRootConstantBufferView(1, pcb.gpu);
     list->SetGraphicsRootDescriptorTable(2, ImP12_Table(srvs, 4));
-    D3D12_VERTEX_BUFFER_VIEW vbv = { vb->res->GetGPUVirtualAddress(), (UINT)vb->size, vb->vb_desc.vertex_stride };
-    D3D12_INDEX_BUFFER_VIEW ibv = { ib->res->GetGPUVirtualAddress(), (UINT)ib->size,
+    D3D12_VERTEX_BUFFER_VIEW vbv = { vb->mem.gpu, (UINT)vb->size, vb->vb_desc.vertex_stride };
+    D3D12_INDEX_BUFFER_VIEW ibv = { ib->mem.gpu, (UINT)ib->size,
                                     ib->ib_desc.format == ImPlatform_IndexFormat_UInt16 ? DXGI_FORMAT_R16_UINT : DXGI_FORMAT_R32_UINT };
     list->IASetVertexBuffers(0, 1, &vbv);
     list->IASetIndexBuffer(&ibv);
@@ -3416,7 +3526,7 @@ IMPLATFORM_API void ImPlatform_DrawIndexed(unsigned int primitive_type, unsigned
         return;
     if (index_count == 0)
         index_count = ib->ib_desc.index_count - start_index;    // The rest of the buffer
-    if ((UINT64)start_index + index_count > ib->ib_desc.index_count)
+    if ((UINT64)start_index + index_count > ib->ib_desc.index_count || !ImP12_BufferDrawn(vb) || !ImP12_BufferDrawn(ib))
         return;
     std::string key = "callback|" + std::to_string(prog->blend) + "|" + std::to_string(primitive_type) + "|" + std::to_string(vb->vb_desc.vertex_stride);
     for (size_t i = 0; i < vb->attributes.size(); i++)
@@ -3452,8 +3562,8 @@ IMPLATFORM_API void ImPlatform_DrawIndexed(unsigned int primitive_type, unsigned
     }
     ImP12_BindProgram(list, prog, g_CurrentDrawData ? g_CurrentDrawData : ImGui::GetDrawData(), 0);
     list->SetPipelineState(pso);
-    const D3D12_VERTEX_BUFFER_VIEW vbv = { vb->res->GetGPUVirtualAddress(), (UINT)vb->size, vb->vb_desc.vertex_stride };
-    const D3D12_INDEX_BUFFER_VIEW ibv = { ib->res->GetGPUVirtualAddress(), (UINT)ib->size,
+    const D3D12_VERTEX_BUFFER_VIEW vbv = { vb->mem.gpu, (UINT)vb->size, vb->vb_desc.vertex_stride };
+    const D3D12_INDEX_BUFFER_VIEW ibv = { ib->mem.gpu, (UINT)ib->size,
                                           ib->ib_desc.format == ImPlatform_IndexFormat_UInt16 ? DXGI_FORMAT_R16_UINT : DXGI_FORMAT_R32_UINT };
     list->IASetVertexBuffers(0, 1, &vbv);
     list->IASetIndexBuffer(&ibv);

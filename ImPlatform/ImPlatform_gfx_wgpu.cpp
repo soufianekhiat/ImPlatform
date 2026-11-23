@@ -1579,7 +1579,7 @@ IMPLATFORM_API ImPlatform_VertexBuffer ImPlatform_CreateVertexBuffer(const void*
     return (ImPlatform_VertexBuffer)vb;
 }
 
-IMPLATFORM_API bool ImPlatform_UpdateVertexBuffer(ImPlatform_VertexBuffer vertex_buffer, const void* vertex_data, unsigned int vertex_count, unsigned int offset)
+IMPLATFORM_API bool ImPlatform_UpdateVertexBuffer(ImPlatform_VertexBuffer vertex_buffer, const void* vertex_data, unsigned int offset, unsigned int vertex_count)
 {
     if (!vertex_buffer || !vertex_data || !g_GfxData.queue)
         return false;
@@ -1635,7 +1635,7 @@ IMPLATFORM_API ImPlatform_IndexBuffer ImPlatform_CreateIndexBuffer(const void* i
     return (ImPlatform_IndexBuffer)ib;
 }
 
-IMPLATFORM_API bool ImPlatform_UpdateIndexBuffer(ImPlatform_IndexBuffer index_buffer, const void* index_data, unsigned int index_count, unsigned int offset)
+IMPLATFORM_API bool ImPlatform_UpdateIndexBuffer(ImPlatform_IndexBuffer index_buffer, const void* index_data, unsigned int offset, unsigned int index_count)
 {
     if (!index_buffer || !index_data || !g_GfxData.queue)
         return false;
