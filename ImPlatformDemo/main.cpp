@@ -1572,10 +1572,8 @@ static int ImPlatformDemo_TouchTest()
 // --drop-test: a drag from another application comes out of the ImPlatform_SetDropCallback callback as events, and
 // each file out of the ImPlatform_SetDropFileCallback one. SDL3, and SDL2 off Windows: drop events pushed on SDL's
 // queue. Windows (Win32, GLFW, SDL2): a data object holding a file and a URL handed to the window's drop target,
-// entering, moving and dropping, then entering and leaving; then ImPlatform_DragOut drags a file and a text out, which
-// drop at once on the window itself (no button is held). That last step moves the mouse cursor over the window and
-// back, and keeps the window above the others meanwhile. Exit code: 0 pass, 1 fail, 2 on GLFW off Windows (nothing
-// can hand it a drop).
+// entering, moving and dropping, then entering and leaving. Exit code: 0 pass, 1 fail, 2 on GLFW off Windows (nothing
+// can hand it a drop there: see --drop-wait-test).
 #if IMPLATFORM_APP_SUPPORT_DROP_FILE
 // The events of a drag as text in a buffer of 512 characters: B(egin) P(osition) F:path T:text E(nd).
 static ImVec2 g_DropTestPos;
@@ -1688,34 +1686,6 @@ static int ImPlatformDemo_DropTest()
 	target->DragLeave();
 	data->Release();
 	at = copy && g_DropTestPos.x == 30.0f && g_DropTestPos.y == 40.0f;
-	if ( strcmp( log, want ) != 0 || files != 1 || !at )
-	{
-		printf( "FAIL: events \"%s\", %d files, position %d\n", log, files, (int)at );
-		return 1;
-	}
-	// Dragged out: with no button held the drag ends at once, on the window under the cursor, which is this one
-	static char out_log[ 512 ];
-	const char* paths[ 1 ] = { "C:\\out.png" };
-	POINT cursor = {};
-	RECT rect = {};
-	GetCursorPos( &cursor );
-	ImPlatform_SetAlwaysOnTop( true );
-	ImPlatform_PlatformEvents();
-	GetWindowRect( window, &rect );
-	SetCursorPos( ( rect.left + rect.right ) / 2, ( rect.top + rect.bottom ) / 2 );
-	ImPlatform_SetDropCallback( DropTestCallback, out_log );
-	const bool dropped = ImPlatform_SupportsDragOut() && ImPlatform_DragOut( paths, 1, "dragged out" );
-	SetCursorPos( cursor.x, cursor.y );
-	ImPlatform_SetAlwaysOnTop( false );
-	want = "F:C:\\out.png T:dragged out E ";
-	const size_t tail = strlen( out_log ) > strlen( want ) ? strlen( out_log ) - strlen( want ) : 0;
-	if ( !dropped || strcmp( out_log + tail, want ) != 0 || out_log[ 0 ] != 'B' || files != 2 )
-	{
-		printf( "FAIL: dragged out %d, events \"%s\", %d files\n", (int)dropped, out_log, files );
-		return 1;
-	}
-	strcpy( log, want = "" );
-	files = 1;
 #endif
 	ImPlatform_SetDropCallback( nullptr, nullptr );
 	ImPlatform_SetDropFileCallback( nullptr, nullptr );
@@ -1751,6 +1721,69 @@ static int ImPlatformDemo_DropWaitTest()
 	return dropped ? 0 : 1;
 #else
 	printf( "SKIP: no drop events on this platform\n" );
+	return 2;
+#endif
+}
+
+// --drag-out-test: ImPlatform_DragOut drags a file and a text out of the application. With no mouse button held the
+// drag ends at once on the window under the pointer: the demo's own, whose drop callback gets them back. On Windows
+// the test puts the pointer over the window itself, and back, and keeps the window above the others meanwhile.
+// Elsewhere it first waits three seconds: for the pointer to be put over the window (under Xvfb it is there, in the
+// middle of the screen), or for a button to be pressed, in which case the drag follows the pointer to the window of
+// another application until the release. Exit code: 0 pass, 1 fail, 2 without drag out.
+static int ImPlatformDemo_DragOutTest()
+{
+#if IMPLATFORM_APP_SUPPORT_DROP_FILE
+	if ( !ImPlatform_SupportsDragOut() )
+	{
+		printf( "SKIP: nothing can be dragged out on this platform\n" );
+		return 2;
+	}
+	static char log[ 512 ];
+	ImPlatform_SetDropCallback( DropTestCallback, log );
+#ifdef _WIN32
+	const char* path = "C:\\out.png";
+	const HWND window = (HWND)ImPlatform_Native_MainWindow();
+	POINT cursor = {};
+	RECT rect = {};
+	GetCursorPos( &cursor );
+	ImPlatform_SetAlwaysOnTop( true );
+	ImPlatform_PlatformEvents();
+	GetWindowRect( window, &rect );
+	SetCursorPos( ( rect.left + rect.right ) / 2, ( rect.top + rect.bottom ) / 2 );
+#else
+	const char* path = "/tmp/out put.png";
+	for ( int i = 0; i < 300; ++i )
+	{
+		ImPlatform_PlatformEvents();
+		std::this_thread::sleep_for( std::chrono::milliseconds( 10 ) );
+	}
+#endif
+	const bool taken = ImPlatform_DragOut( &path, 1, "dragged out" );
+#ifdef _WIN32
+	SetCursorPos( cursor.x, cursor.y );
+	ImPlatform_SetAlwaysOnTop( false );
+#endif
+	for ( int i = 0; i < 20; ++i )	// What the window library still holds of the drop
+	{
+		ImPlatform_PlatformEvents();
+		std::this_thread::sleep_for( std::chrono::milliseconds( 10 ) );
+	}
+	ImPlatform_SetDropCallback( nullptr, nullptr );
+	char file[ 128 ];
+	snprintf( file, sizeof( file ), "F:%s ", path );
+	const size_t used = strlen( log );
+	// ImPlatform's OLE target reads the files and the text; an X11 target takes the files when there are files, and
+	// SDL3's own target the text when there is text
+	const bool has_file = strstr( log, file ) != nullptr, has_text = strstr( log, "T:dragged out " ) != nullptr;
+	bool ok = taken && log[ 0 ] == 'B' && ( has_file || has_text ) && used > 2 && strcmp( log + used - 2, "E " ) == 0;
+#if defined( _WIN32 ) && IM_CURRENT_PLATFORM != IM_PLATFORM_SDL3
+	ok = ok && has_file && has_text;
+#endif
+	printf( "taken %d, events \"%s\"\n%s\n", (int)taken, log, ok ? "PASS" : "FAIL: the drag did not come back to the window" );
+	return ok ? 0 : 1;
+#else
+	printf( "SKIP: nothing can be dragged out on this platform\n" );
 	return 2;
 #endif
 }
@@ -2021,6 +2054,8 @@ int main( int argc, char** argv )
 		return ImPlatformDemo_DropTest();
 	if ( argc > 1 && strcmp( argv[ 1 ], "--drop-wait-test" ) == 0 )
 		return ImPlatformDemo_DropWaitTest();
+	if ( argc > 1 && strcmp( argv[ 1 ], "--drag-out-test" ) == 0 )
+		return ImPlatformDemo_DragOutTest();
 	if ( argc > 1 && strcmp( argv[ 1 ], "--clipboard-test" ) == 0 )
 		return ImPlatformDemo_ClipboardTest();
 	if ( argc > 1 && strcmp( argv[ 1 ], "--window-test" ) == 0 )

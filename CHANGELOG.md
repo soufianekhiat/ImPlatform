@@ -59,6 +59,8 @@ Changes since 2.0.0 (the `v2` branch), in progress on the `v3` branch.
 - **Linux on X11, whichever library made the window**: a GLFW or SDL2 window follows the drag protocol itself
   (XDND, through the window's proxy property), so it reports a drag while it hovers and takes files, links and text.
   libX11 is loaded at run time. Demo `--drop-wait-test` prints the events of a drag made by another application.
+  `ImPlatform_DragOut()` works there too, as the source of the same protocol: the pointer is followed while a button
+  is held and the window under it takes the files or the text at the release. Demo `--drag-out-test`.
 - **Win32 + Vulkan** build configuration (Sharpmake `Win32_Vulkan`, CMake `ImPlatformDemo_Win32_Vulkan`, CI) and
   `IM_TARGET_WIN32_VULKAN`.
 - **Borderless window on stock GLFW** is resized by its edges (`ImPlatform_BorderlessParams::resizeBorderSize`,

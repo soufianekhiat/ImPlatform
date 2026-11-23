@@ -19,7 +19,7 @@ ImPlatform is a platform abstraction layer that simplifies multiplatform develop
 - **Depth-Tested Meshes and Device Control**: Depth render textures, meshes with depth / blend / cull states, device loss and recreation (DirectX 11/12)
 - **Pen Input**: Pressure, tilt, barrel rotation and eraser (Windows with Win32, GLFW or SDL2, with coalesced samples; SDL3 on Windows, Linux and macOS)
 - **Touch Input**: the fingers on a touch screen and their gesture, pan, pinch zoom and rotation (Windows, SDL2, SDL3); a trackpad's pinch (Windows, macOS, SDL 3.4+)
-- **Drag and Drop with Other Applications**: files and text or URLs dropped on the application, with the drag reported while it hovers (Windows, Linux on X11, SDL3) or at the release (macOS and Wayland with SDL2 or GLFW); files and text dragged out of it (Windows)
+- **Drag and Drop with Other Applications**: files and text or URLs dropped on the application, with the drag reported while it hovers (Windows, Linux on X11, SDL3) or at the release (macOS and Wayland with SDL2 or GLFW); files and text dragged out of it (Windows, Linux on X11)
 - **Window State**: borderless fullscreen, always on top, window icon (Win32, GLFW, SDL2, SDL3)
 - **System Theme and Clipboard Images**: the user's light or dark mode, and RGBA images to and from the clipboard, on Windows, macOS and Linux whatever the window library
 - **Screenshots**: a viewport captured as a texture and read back as RGBA pixels (DirectX 9/11/12, OpenGL 3, Vulkan)
@@ -453,7 +453,7 @@ it is the application's work.
 
 On Windows and with SDL3, Dear ImGui's platform windows (multi-viewports) take drops too; elsewhere the main window does. `event->pos` is in the space of `ImGui::GetMousePos()`: client-area coordinates, or desktop coordinates once multi-viewports are enabled.
 
-Dragging out of the application (Windows; `ImPlatform_SupportsDragOut()` is false elsewhere):
+Dragging out of the application (Windows with every window library, Linux on X11 with GLFW or SDL2; `ImPlatform_SupportsDragOut()` is false elsewhere):
 
 ```cpp
 // While a mouse button is held, when a drag that started in the application leaves its window
@@ -718,7 +718,8 @@ ImPlatformDemo_Win32_DX12 --shader-async-test  # programs compiled asynchronousl
 ImPlatformDemo_Win32_DX12 --screenshot-test    # the main viewport captured and read back
 ImPlatformDemo_SDL3_OpenGL3 --pen-test         # SDL3: synthetic pen events come out as pen samples (exit 2 elsewhere)
 ImPlatformDemo_SDL3_OpenGL3 --touch-test       # two fingers touch, spread, turn and lift, then a trackpad pinch: touch points and gesture (exit 2 on GLFW)
-ImPlatformDemo_Win32_DX11 --drop-test          # a drag with a file and a URL enters, moves, drops, leaves; on Windows a file and a text are dragged out and dropped back (moves the mouse cursor); exit 2 on GLFW off Windows
+ImPlatformDemo_Win32_DX11 --drop-test          # a drag with a file and a URL enters, moves, drops, leaves: the drop events (exit 2 on GLFW off Windows)
+ImPlatformDemo_Win32_DX11 --drag-out-test      # a file and a text dragged out and dropped back on the window (on Windows it moves the mouse cursor there and back)
 ImPlatformDemo_GLFW_OpenGL3 --drop-wait-test  # waits ten seconds for a drag from another application and prints its events
 ImPlatformDemo_Win32_DX11 --window-test        # fullscreen and back, always on top, icon; prints the system theme
 ImPlatformDemo_Win32_DX11 --clipboard-test     # an image to the clipboard and back (it replaces the clipboard's content); prints the system theme
@@ -808,7 +809,7 @@ The library has been tested with the following configurations:
 - OpenGL3 multi-viewport with custom shaders may have minor offset issues in some edge cases
 - Custom titlebar on stock GLFW: the window is moved and resized by ImPlatform, without the system's window snapping (TheCherno's fork with `IM_THE_CHERNO_GLFW3` gives native hit-testing)
 - Off Windows, pen input needs SDL3 and touch input SDL2 or SDL3 (GLFW has neither there, SDL2 no pen)
-- On macOS and Wayland, GLFW and SDL2 report a drop at the release (GLFW: files only); off Windows nothing can be dragged out of the application
+- On macOS and Wayland, GLFW and SDL2 report a drop at the release (GLFW: files only), and nothing can be dragged out of the application; nor with SDL3 on Linux
 - Clipboard images on Linux need libpng 1.6 and, with GLFW or SDL2, libX11 at run time
 - The macOS theme, clipboard image and trackpad gestures compile in CI but have not run on a Mac with a display
 - A trackpad's pinch is recognized on Windows as the Ctrl-marked wheel messages a precision touchpad sends; it has not been tried on a touchpad. Linux reports one through SDL 3.4+ only

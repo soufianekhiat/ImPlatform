@@ -1605,8 +1605,10 @@ IMPLATFORM_API void ImPlatform_SetDropCallback(ImPlatform_DropCallback callback,
 // Dragging out of the application: files (UTF-8 paths) and / or text that another application takes where the user
 // drops them. Call it while a mouse button is held, when a drag that started in the application should leave it (the
 // mouse left the window during an ImGui drag, for instance). It returns when the drag ends: true when it was dropped
-// on something that took it. The application's frames stop meanwhile; the system draws the drag.
-// Windows (every window library); ImPlatform_SupportsDragOut() is false elsewhere and the call returns false.
+// on something that took it. The application's frames stop meanwhile. Escape cancels the drag.
+// Windows (every window library: OLE, the system draws the drag) and Linux on X11 with GLFW or SDL2 (the XDND
+// protocol; nothing is drawn under the pointer; a target takes the files when there are files, the text otherwise).
+// ImPlatform_SupportsDragOut() is false elsewhere and the call returns false.
 IMPLATFORM_API bool ImPlatform_SupportsDragOut(void);
 IMPLATFORM_API bool ImPlatform_DragOut(const char* const* file_paths, int file_count, const char* text);
 
