@@ -918,21 +918,25 @@ static void DestroyAsyncTest()
 // --screenshot-test: a red and a blue square drawn on top of the main viewport, the viewport captured
 // (ImPlatform_CaptureViewport) and read back (ImPlatform_ReadCapture): the capture has the size of the back buffer and
 // both squares at their place, as RGBA. Exit code as above.
+// --screenshot-viewport-test: the same with multi-viewports, for a window placed outside the main one (a secondary
+// platform window). Exit 2 where the platform has no multi-viewports or the backend captures the main viewport only.
 static ImTextureID g_Screenshot = 0;
 static unsigned int g_ScreenshotW = 0, g_ScreenshotH = 0;
 static ImVec2 g_ScreenshotScale;
-static bool QueueScreenshotTest()
+static bool g_ScreenshotMain = true;
+static bool QueueScreenshotTest( ImGuiViewport* viewport )
 {
 #if IMPLATFORM_GFX_SUPPORT_RENDER_TARGETS && IMPLATFORM_GFX_SUPPORT_READBACK
-	ImGuiViewport* viewport = ImGui::GetMainViewport();
+	g_ScreenshotMain = viewport == ImGui::GetMainViewport();
 	ImDrawList* dl = ImGui::GetForegroundDrawList( viewport );
 	const ImVec2 o = viewport->Pos;
 	dl->AddRectFilled( ImVec2( o.x + 16, o.y + 16 ), ImVec2( o.x + 48, o.y + 48 ), IM_COL32( 255, 0, 0, 255 ) );
 	dl->AddRectFilled( ImVec2( o.x + 64, o.y + 16 ), ImVec2( o.x + 96, o.y + 48 ), IM_COL32( 0, 0, 255, 255 ) );
 	g_ScreenshotScale = viewport->FramebufferScale;
-	g_Screenshot = ImPlatform_CaptureViewport( nullptr, &g_ScreenshotW, &g_ScreenshotH );
+	g_Screenshot = ImPlatform_CaptureViewport( viewport, &g_ScreenshotW, &g_ScreenshotH );
 	return g_Screenshot != 0;
 #else
+	(void)viewport;
 	return false;
 #endif
 }
@@ -950,7 +954,7 @@ static int CheckScreenshotTest()
 		printf( "FAIL: ImPlatform_ReadCapture\n" );
 		return 1;
 	}
-	if ( g_ScreenshotW != bw || g_ScreenshotH != bh )
+	if ( g_ScreenshotMain && ( g_ScreenshotW != bw || g_ScreenshotH != bh ) )
 	{
 		printf( "FAIL: capture %ux%u, back buffer %ux%u\n", g_ScreenshotW, g_ScreenshotH, bw, bh );
 		++bad;
@@ -1222,7 +1226,8 @@ int main( int argc, char** argv )
 	const bool vertexInputsTest = argc > 1 && strcmp( argv[ 1 ], "--vertex-inputs-test" ) == 0;
 	const bool blendTest = argc > 1 && strcmp( argv[ 1 ], "--blend-test" ) == 0;
 	const bool asyncTest = argc > 1 && strcmp( argv[ 1 ], "--shader-async-test" ) == 0;
-	const bool screenshotTest = argc > 1 && strcmp( argv[ 1 ], "--screenshot-test" ) == 0;
+	const bool screenshotViewportTest = argc > 1 && strcmp( argv[ 1 ], "--screenshot-viewport-test" ) == 0;
+	const bool screenshotTest = screenshotViewportTest || ( argc > 1 && strcmp( argv[ 1 ], "--screenshot-test" ) == 0 );
 	const bool passTest = renderPassTest || shaderTest || directDrawTest || partsTest || texture3DTest || vertexInputsTest || blendTest
 						|| asyncTest || screenshotTest;	// Tests read back what a few frames rendered
 	int exitCode = 0;
@@ -1317,6 +1322,8 @@ int main( int argc, char** argv )
 #endif
 #ifdef IMGUI_HAS_VIEWPORT
 	//io.ConfigFlags |= ImGuiConfigFlags_ViewportsEnable;		// Enable Multi-Viewport / Platform Windows
+	if ( screenshotViewportTest )
+		io.ConfigFlags |= ImGuiConfigFlags_ViewportsEnable;
 	////io.ConfigViewportsNoAutoMerge = true;
 	////io.ConfigViewportsNoTaskBarIcon = true;
 #endif
@@ -1650,7 +1657,25 @@ int main( int argc, char** argv )
 #endif // IMPLATFORM_GFX_SUPPORT_CUSTOM_SHADER
 
 #if defined( IMGUI_HAS_TEXTURES ) && !defined( __EMSCRIPTEN__ )
-		if ( screenshotTest && renderPassFrame == 1 && !QueueScreenshotTest() )
+		ImGuiViewport* screenshotViewport = ImGui::GetMainViewport();
+#ifdef IMGUI_HAS_VIEWPORT
+		if ( screenshotViewportTest )
+		{
+			// Outside the main window: Dear ImGui gives it a platform window of its own.
+			ImGui::SetNextWindowPos( ImVec2( screenshotViewport->Pos.x + screenshotViewport->Size.x + 32.0f, screenshotViewport->Pos.y ) );
+			ImGui::SetNextWindowSize( ImVec2( 240.0f, 160.0f ) );
+			ImGui::Begin( "Secondary viewport", nullptr, ImGuiWindowFlags_NoDecoration );
+			screenshotViewport = ImGui::GetWindowViewport();
+			ImGui::End();
+		}
+#endif
+		if ( screenshotViewportTest && renderPassFrame == 1 && screenshotViewport == ImGui::GetMainViewport() )
+		{
+			printf( "SKIP: no secondary viewport on this platform\n" );
+			exitCode = 2;
+			break;
+		}
+		if ( screenshotTest && renderPassFrame == 1 && !QueueScreenshotTest( screenshotViewport ) )
 		{
 			printf( "SKIP: no viewport capture on this backend\n" );
 			exitCode = 2;

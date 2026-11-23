@@ -680,7 +680,7 @@ The library has been tested with the following configurations:
 - OpenGL3 multi-viewport with custom shaders may have minor offset issues in some edge cases
 - Custom titlebar on stock GLFW: the window is moved and resized by ImPlatform, without the system's window snapping (TheCherno's fork with `IM_THE_CHERNO_GLFW3` gives native hit-testing)
 - Pen input is on Win32 and SDL3 only (GLFW and SDL2 have no pen API)
-- `ImPlatform_CopyBackbuffer()` is DirectX 11 only; `ImPlatform_CaptureViewport()` covers DirectX 9, 11, 12, OpenGL and Vulkan (main viewport only on Vulkan)
+- `ImPlatform_CopyBackbuffer()` is DirectX 11 only; `ImPlatform_CaptureViewport()` covers DirectX 9, 11, 12, OpenGL and Vulkan (main viewport only on DirectX 12 and Vulkan)
 
 ## Contributing
 

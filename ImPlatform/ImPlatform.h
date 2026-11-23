@@ -1247,7 +1247,7 @@ IMPLATFORM_API void ImPlatform_ReleaseReadback(ImPlatform_Readback readback);
 
 #if IMPLATFORM_GFX_SUPPORT_RENDER_TARGETS && IMPLATFORM_GFX_SUPPORT_READBACK
 // Screenshots: the image of a viewport as rendered this frame (NULL: the main viewport; with multi-viewports, a
-// secondary platform window, except on Vulkan where those are rendered by Dear ImGui's backend).
+// secondary platform window, except on DirectX 12 and Vulkan, where their targets belong to Dear ImGui's backend: 0).
 // ImPlatform_CaptureViewport: call it during the frame, once what is to be captured has been submitted and before
 // ImGui::Render(). It adds a draw callback at the end of the viewport's foreground draw list (what that list receives
 // afterwards is not captured) and returns a render texture of the viewport's size in pixels (*out_width, *out_height)
@@ -1967,6 +1967,15 @@ IMPLATFORM_API ImTextureID ImPlatform_CaptureViewport(ImGuiViewport* viewport, u
 {
     if (!viewport)
         viewport = ImGui::GetMainViewport();
+#if defined(IM_CURRENT_GFX) && (IM_CURRENT_GFX == IM_GFX_VULKAN || IM_CURRENT_GFX == IM_GFX_DIRECTX12)
+    // The targets of secondary viewports belong to Dear ImGui's backend: ImPlatform_CopyCurrentTarget does not reach them.
+    if (viewport != ImGui::GetMainViewport())
+    {
+        if (out_width)  *out_width = 0;
+        if (out_height) *out_height = 0;
+        return 0;
+    }
+#endif
     ImPlatform_CaptureRequest request = {};
     request.width = (int)(viewport->Size.x * viewport->FramebufferScale.x);
     request.height = (int)(viewport->Size.y * viewport->FramebufferScale.y);

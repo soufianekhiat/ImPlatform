@@ -25,7 +25,7 @@ Changes since 2.0.0 (the `v2` branch), in progress on the `v3` branch.
   `--compute-async-test`.
 - **Screenshots**: `ImPlatform_CaptureViewport()` returns a render texture that holds the image of a viewport once the
   frame is rendered, `ImPlatform_ReadCapture()` its pixels as RGBA8 (DirectX 9, 11, 12, OpenGL, Vulkan; main viewport
-  only on Vulkan). Demo `--screenshot-test`.
+  only on DirectX 12 and Vulkan). Demo `--screenshot-test`, `--screenshot-viewport-test`.
 - **Pen input on SDL3** (Windows, Linux, macOS) from its pen events: pressure, tilt, rotation, eraser, contact. Demo
   `--pen-test` (synthetic events).
 - **Win32 + Vulkan** build configuration (Sharpmake `Win32_Vulkan`, CMake `ImPlatformDemo_Win32_Vulkan`, CI) and

@@ -17,7 +17,8 @@ without freezing the frame, and report their errors to the application. The full
   return a job to poll (`ImPlatform_GetShaderJobStatus()`), compiled on a worker thread on DirectX 10, 11 and 12.
 - **Asynchronous compute**: `ImPlatform_DispatchComputeAsync()` never waits for the GPU and returns a handle to poll.
 - **Screenshots**: `ImPlatform_CaptureViewport()` gives the image of a viewport as a texture,
-  `ImPlatform_ReadCapture()` its RGBA pixels (DirectX 9, 11, 12, OpenGL, Vulkan).
+  `ImPlatform_ReadCapture()` its RGBA pixels (DirectX 9, 11, 12, OpenGL, Vulkan; a secondary viewport everywhere but
+  DirectX 12 and Vulkan).
 - **Pen input on SDL3** (Windows, Linux, macOS), beside Win32.
 - **Borderless window on stock GLFW**: moved and resized by its edges without TheCherno's fork.
 - **Win32 + Vulkan** is a built and tested configuration.
