@@ -336,6 +336,21 @@ float ImPlatform_App_GetDpiScale_GLFW(void)
     return g_AppData.fDpiScale > 0.0f ? g_AppData.fDpiScale : 1.0f;
 }
 
+#if defined(__linux__)
+// Declared by glfw3native.h along with the Xlib headers, whose macros would leak here. Weak: a GLFW built without X11
+// does not have it.
+extern "C" unsigned long glfwGetX11Window(GLFWwindow* window) __attribute__((weak));
+
+unsigned long ImPlatform_App_GetX11Window(void)
+{
+#if GLFW_VERSION_MAJOR > 3 || (GLFW_VERSION_MAJOR == 3 && GLFW_VERSION_MINOR >= 4)
+    if (glfwGetPlatform() != GLFW_PLATFORM_X11)     // GLFW 3.4 picks X11 or Wayland when it starts
+        return 0;
+#endif
+    return glfwGetX11Window && g_AppData.pWindow ? glfwGetX11Window(g_AppData.pWindow) : 0;
+}
+#endif
+
 // Internal API - Get GLFW window
 GLFWwindow* ImPlatform_App_GetGLFWWindow(void)
 {
@@ -354,11 +369,10 @@ void ImPlatform_App_OnDropFileCallbackChanged(bool has_callback)
     g_AppData.bDropFileEnabled = has_callback;
     if (g_AppData.pWindow)
         glfwSetDropCallback(g_AppData.pWindow, has_callback ? glfw_drop_callback : NULL);
-#ifdef _WIN32
-    // Windows: the window is made an OLE drop target, which reports the drag while it hovers and carries text. GLFW's
-    // callback, files at the release, stays for a thread that has no OLE.
+    // Windows and X11: the system's own drag protocol is followed for the window (ImPlatform_native.cpp), which
+    // reports the drag while it hovers and carries text. GLFW's callback, files at the release, stays for where that
+    // is not possible.
     ImPlatform_Native_AcceptDrops(has_callback);
-#endif
 }
 #endif // IMPLATFORM_APP_SUPPORT_DROP_FILE
 

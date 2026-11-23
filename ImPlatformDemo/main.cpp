@@ -1576,21 +1576,26 @@ static int ImPlatformDemo_TouchTest()
 // drop at once on the window itself (no button is held). That last step moves the mouse cursor over the window and
 // back, and keeps the window above the others meanwhile. Exit code: 0 pass, 1 fail, 2 on GLFW off Windows (nothing
 // can hand it a drop).
-#if IMPLATFORM_APP_SUPPORT_DROP_FILE && ( defined( _WIN32 ) || IM_CURRENT_PLATFORM == IM_PLATFORM_SDL2 || IM_CURRENT_PLATFORM == IM_PLATFORM_SDL3 )
-#define DEMO_DROP_TEST 1
+#if IMPLATFORM_APP_SUPPORT_DROP_FILE
+// The events of a drag as text in a buffer of 512 characters: B(egin) P(osition) F:path T:text E(nd).
 static ImVec2 g_DropTestPos;
 static void DropTestCallback( const ImPlatform_DropEvent* event, void* user_data )
 {
 	static const char* const names[ 5 ] = { "B", "P", "F", "T", "E" };
 	char* log = (char*)user_data;
 	const size_t used = strlen( log );
+	if ( event->type == ImPlatform_DropEvent_Position )
+		g_DropTestPos = event->pos;
+	if ( used + 8 >= 512 )
+		return;
 	if ( event->text )
 		snprintf( log + used, 512 - used, "%s:%s ", names[ event->type ], event->text );
 	else
 		snprintf( log + used, 512 - used, "%s ", names[ event->type ] );
-	if ( event->type == ImPlatform_DropEvent_Position )
-		g_DropTestPos = event->pos;
 }
+#endif
+#if IMPLATFORM_APP_SUPPORT_DROP_FILE && ( defined( _WIN32 ) || IM_CURRENT_PLATFORM == IM_PLATFORM_SDL2 || IM_CURRENT_PLATFORM == IM_PLATFORM_SDL3 )
+#define DEMO_DROP_TEST 1
 static void DropTestFileCallback( const char*, ImVec2, void* user_data )
 {
 	++*(int*)user_data;
@@ -1719,6 +1724,33 @@ static int ImPlatformDemo_DropTest()
 	return ok ? 0 : 1;
 #else
 	printf( "SKIP: a drop cannot be synthesized on this platform\n" );
+	return 2;
+#endif
+}
+
+// --drop-wait-test: waits ten seconds for another application to drag something over the window and drop it, then
+// prints the events and the last position. For a drag made by hand, or by a program that speaks the system's drag
+// protocol. Exit code: 0 when a drop with an item came, 1 when none did, 2 without drop events.
+#include <chrono>
+#include <thread>
+static int ImPlatformDemo_DropWaitTest()
+{
+#if IMPLATFORM_APP_SUPPORT_DROP_FILE
+	static char log[ 512 ];
+	ImPlatform_SetDropCallback( DropTestCallback, log );
+	bool dropped = false;
+	for ( int i = 0; i < 1000 && !dropped; ++i )
+	{
+		ImPlatform_PlatformEvents();
+		std::this_thread::sleep_for( std::chrono::milliseconds( 10 ) );
+		const size_t used = strlen( log );
+		dropped = used > 2 && strcmp( log + used - 2, "E " ) == 0 && ( strstr( log, "F:" ) || strstr( log, "T:" ) );
+	}
+	ImPlatform_SetDropCallback( nullptr, nullptr );
+	printf( "events \"%s\", last position (%g, %g)\n%s\n", log, g_DropTestPos.x, g_DropTestPos.y, dropped ? "PASS" : "FAIL: no drop came" );
+	return dropped ? 0 : 1;
+#else
+	printf( "SKIP: no drop events on this platform\n" );
 	return 2;
 #endif
 }
@@ -1987,6 +2019,8 @@ int main( int argc, char** argv )
 		return ImPlatformDemo_TouchTest();
 	if ( argc > 1 && strcmp( argv[ 1 ], "--drop-test" ) == 0 )
 		return ImPlatformDemo_DropTest();
+	if ( argc > 1 && strcmp( argv[ 1 ], "--drop-wait-test" ) == 0 )
+		return ImPlatformDemo_DropWaitTest();
 	if ( argc > 1 && strcmp( argv[ 1 ], "--clipboard-test" ) == 0 )
 		return ImPlatformDemo_ClipboardTest();
 	if ( argc > 1 && strcmp( argv[ 1 ], "--window-test" ) == 0 )

@@ -370,7 +370,6 @@ void ImPlatform_Native_NotifyDroppedFiles(void* drop, ImVec2 pos);  // drop: an 
 #ifdef _WIN32
 void* ImPlatform_Native_MainWindow(void);       // The main window's HWND
 void* ImPlatform_Native_GetDropTarget(void);    // The IDropTarget of the application's windows
-void  ImPlatform_Native_AcceptDrops(bool accept);
 #if defined(IM_CURRENT_PLATFORM) && (IM_CURRENT_PLATFORM == IM_PLATFORM_WIN32)
 bool  ImPlatform_Native_WindowMessage(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
 #endif
@@ -447,6 +446,11 @@ void ImPlatform_Touch_Rotate(float degrees);
 // and before the main window is destroyed.
 void ImPlatform_Native_Pump(void);
 void ImPlatform_Native_Shutdown(void);
+// The application's windows take the drags the system itself reports (Windows: OLE; Linux: XDND), or stop taking them.
+void ImPlatform_Native_AcceptDrops(bool accept);
+#if defined(__linux__)
+unsigned long ImPlatform_App_GetX11Window(void);    // The main window's X11 id; 0 when it is not an X11 window
+#endif
 
 #if defined(IM_CURRENT_GFX) && (IM_CURRENT_GFX == IM_GFX_DIRECTX11)
 bool ImPlatform_Gfx_CreateDevice_DX11(void* hWnd, struct ImPlatform_GfxData_DX11* pData);

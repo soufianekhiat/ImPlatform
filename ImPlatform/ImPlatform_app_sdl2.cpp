@@ -63,6 +63,19 @@ SDL_Window* ImPlatform_App_GetSDL2Window(void)
     return g_AppData.pWindow;
 }
 
+#if defined(__linux__)
+unsigned long ImPlatform_App_GetX11Window(void)
+{
+#if defined(SDL_VIDEO_DRIVER_X11)
+    SDL_SysWMinfo info;
+    SDL_VERSION(&info.version);
+    if (g_AppData.pWindow && SDL_GetWindowWMInfo(g_AppData.pWindow, &info) && info.subsystem == SDL_SYSWM_X11)
+        return info.info.x11.window;
+#endif
+    return 0;
+}
+#endif
+
 // Internal API - Get SDL2 app data
 ImPlatform_AppData_SDL2* ImPlatform_App_GetData_SDL2(void)
 {
@@ -352,11 +365,9 @@ void ImPlatform_App_OnDropFileCallbackChanged(bool has_callback)
 {
     for (Uint32 type = SDL_DROPFILE; type <= SDL_DROPCOMPLETE; ++type)
         SDL_EventState(type, has_callback ? SDL_ENABLE : SDL_DISABLE);
-#ifdef _WIN32
-    // Windows: the window is made an OLE drop target, which reports the drag while it hovers and carries text. SDL2's
-    // events, files at the release, stay for a thread that has no OLE.
+    // Windows and X11: the system's own drag protocol is followed for the window (ImPlatform_native.cpp), which
+    // reports the drag while it hovers. SDL2's events, at the release, stay for where that is not possible.
     ImPlatform_Native_AcceptDrops(has_callback);
-#endif
 }
 #endif // IMPLATFORM_APP_SUPPORT_DROP_FILE
 

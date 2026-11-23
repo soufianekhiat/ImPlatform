@@ -28,7 +28,7 @@ without freezing the frame, and report their errors to the application. The full
 - **Drag and drop from other applications**: `ImPlatform_SetDropCallback()` reports a drag as it hovers (Win32, SDL3)
   and what it drops: files, and text or URLs.
   On Windows this holds for GLFW and SDL2 windows too, and `ImPlatform_DragOut()` drags files and text out of the
-  application.
+  application. On Linux (X11) GLFW and SDL2 windows report the hover and take text as well.
 - **Window state**: borderless fullscreen, always on top, window icon. **System theme**: the user's light or dark
   mode. **Clipboard images** as RGBA pixels. The last two are taken from Windows, macOS and Linux themselves,
   whatever the window library.

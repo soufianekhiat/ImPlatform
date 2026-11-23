@@ -1572,10 +1572,11 @@ typedef void (*ImPlatform_DropFileCallback)(const char* path, ImVec2 pos, void* 
 IMPLATFORM_API void ImPlatform_SetDropFileCallback(ImPlatform_DropFileCallback callback, void* user_data);
 
 // Everything a drag from another application does over the application's windows. A drop is a Begin event, one
-// File or Text event per item, then an End event. Windows (every window library: an OLE drop target) and SDL3 report
-// the drag before the button is released: Begin comes when it enters a window, Position events follow it, and an End
-// event without items means it left or was cancelled. Elsewhere SDL2 and GLFW report a drop at the release only
-// (GLFW: files only). On Windows and with SDL3, Dear ImGui's platform windows (multi-viewports) take drops too.
+// File or Text event per item, then an End event. Windows (every window library: an OLE drop target), Linux on X11
+// (every window library: the XDND protocol) and SDL3 report the drag before the button is released: Begin comes when
+// it enters a window, Position events follow it, and an End event without items means it left or was cancelled.
+// Elsewhere (macOS and Wayland with GLFW or SDL2) a drop is reported at the release only (GLFW: files only). On
+// Windows and with SDL3, Dear ImGui's platform windows (multi-viewports) take drops too.
 // ImPlatform passes on what the drag carries and nothing more: a link or an image dragged from a browser comes as
 // Text holding its URL (downloading it is the application's work), a file from a file manager as File.
 typedef enum ImPlatform_DropEventType {

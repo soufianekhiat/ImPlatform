@@ -5,8 +5,9 @@
 //            window too.
 //   macOS:   CoreFoundation, the pasteboard and ImageIO through their C interfaces, AppKit's events through the
 //            Objective-C runtime, so this file compiles as C++ and as Objective-C++.
-//   Linux:   the settings portal over D-Bus, libpng and the X11 clipboard (SDL3: SDL's clipboard). libdbus, libpng and
-//            libX11 are loaded at run time: where one is not installed, what needs it reports that it is unsupported.
+//   Linux:   the settings portal over D-Bus, libpng, the X11 clipboard and the X11 drag protocol (SDL3: SDL's own).
+//            libdbus, libpng and libX11 are loaded at run time: where one is not installed, what needs it reports
+//            that it is unsupported.
 
 #include "ImPlatform_Internal.h"
 
@@ -39,6 +40,7 @@
 #if defined(__linux__) && !defined(__ANDROID__)
     #define IMPLATFORM_NATIVE_LINUX 1
     #include <dlfcn.h>
+    #include <stdio.h>
     #include <time.h>
     #include <unistd.h>
 #else
@@ -750,9 +752,10 @@ union ImPlatform_XEvent
     struct { int type; unsigned long serial; int send_event; void* display; ImPlatform_XID owner, requestor, selection, target, property, time; } request;  // XSelectionRequestEvent
     struct { int type; unsigned long serial; int send_event; void* display; ImPlatform_XID requestor, selection, target, property, time; } selection;       // XSelectionEvent
     struct { int type; unsigned long serial; int send_event; void* display; ImPlatform_XID window, atom, time; int state; } property;                       // XPropertyEvent
+    struct { int type; unsigned long serial; int send_event; void* display; ImPlatform_XID window, message_type; int format; long l[5]; } client;           // XClientMessageEvent
     long pad[24];
 };
-enum { ImPlatform_XPropertyNotify = 28, ImPlatform_XSelectionClear = 29, ImPlatform_XSelectionRequest = 30, ImPlatform_XSelectionNotify = 31 };
+enum { ImPlatform_XPropertyNotify = 28, ImPlatform_XSelectionClear = 29, ImPlatform_XSelectionRequest = 30, ImPlatform_XSelectionNotify = 31, ImPlatform_XClientMessage = 33 };
 
 static struct
 {
@@ -772,6 +775,8 @@ static struct
     int            (*SendEvent)(void*, ImPlatform_XID, int, long, ImPlatform_XEvent*);
     int            (*Flush)(void*);
     int            (*Sync)(void*, int);
+    int            (*TranslateCoordinates)(void*, ImPlatform_XID, ImPlatform_XID, int, int, int*, int*, ImPlatform_XID*);
+    int            (*DeleteProperty)(void*, ImPlatform_XID, ImPlatform_XID);
     int            (*(*SetErrorHandler)(int (*)(void*, void*)))(void*, void*);
     void*          display;
     ImPlatform_XID window, clipboard, png, targets, incr, property;
@@ -795,7 +800,7 @@ static bool ImPlatform_X11_Open()
     IMPLATFORM_X(InternAtom); IMPLATFORM_X(Pending); IMPLATFORM_X(NextEvent); IMPLATFORM_X(ConvertSelection);
     IMPLATFORM_X(GetWindowProperty); IMPLATFORM_X(Free); IMPLATFORM_X(SetSelectionOwner); IMPLATFORM_X(GetSelectionOwner);
     IMPLATFORM_X(ChangeProperty); IMPLATFORM_X(SendEvent); IMPLATFORM_X(Flush); IMPLATFORM_X(Sync);
-    IMPLATFORM_X(SetErrorHandler);
+    IMPLATFORM_X(SetErrorHandler); IMPLATFORM_X(TranslateCoordinates); IMPLATFORM_X(DeleteProperty);
 #undef IMPLATFORM_X
 #undef IMPLATFORM_X_AS
     void* display = ok ? g_X.OpenDisplay(NULL) : NULL;
@@ -835,10 +840,18 @@ struct ImPlatform_XTransfer
 };
 static ImVector<ImPlatform_XTransfer> g_XTransfers;
 
+#if IMPLATFORM_APP_SUPPORT_DROP_FILE
+static void ImPlatform_X11_DropMessage(const ImPlatform_XEvent* event);
+#endif
+
 // Answers an application that asks what this one put on the clipboard, gives the next increment of an image it is
-// reading, or forgets the image when another application copied.
+// reading, forgets the image when another application copied, or follows a drag over the window.
 static void ImPlatform_X11_Serve(const ImPlatform_XEvent* event)
 {
+#if IMPLATFORM_APP_SUPPORT_DROP_FILE
+    if (event->type == ImPlatform_XClientMessage)
+        ImPlatform_X11_DropMessage(event);
+#endif
     if (event->type == ImPlatform_XSelectionClear)
     {
         g_ClipboardPng.clear();
@@ -919,11 +932,11 @@ static bool ImPlatform_X11_Wait(int type, ImPlatform_XEvent* event)
     return false;
 }
 
-// The PNG on the clipboard, whole or in the increments a large one comes in.
-static bool ImPlatform_X11_ReadClipboard(ImVector<unsigned char>* png)
+// The data of a selection (the clipboard's PNG, a drag's files), whole or in the increments large data comes in.
+static bool ImPlatform_X11_ReadSelection(ImPlatform_XID selection, ImPlatform_XID target, ImPlatform_XID time, ImVector<unsigned char>* out)
 {
     ImPlatform_XEvent event;
-    g_X.ConvertSelection(g_X.display, g_X.clipboard, g_X.png, g_X.property, g_X.window, 0);     // CurrentTime
+    g_X.ConvertSelection(g_X.display, selection, target, g_X.property, g_X.window, time);
     if (!ImPlatform_X11_Wait(ImPlatform_XSelectionNotify, &event) || !event.selection.property)
         return false;
     for (bool incremental = false;;)
@@ -937,21 +950,208 @@ static bool ImPlatform_X11_ReadClipboard(ImVector<unsigned char>* png)
         const bool announce = type == g_X.incr && !incremental;     // The owner announces increments: the data follows
         if (!announce && format == 8 && count > 0)
         {
-            const int at = png->Size;
-            png->resize(at + (int)count);
-            memcpy(png->Data + at, data, count);
+            const int at = out->Size;
+            out->resize(at + (int)count);
+            memcpy(out->Data + at, data, count);
         }
         if (data)
             g_X.Free(data);
         if (announce)
             incremental = true;
         else if (!incremental || count == 0)    // Whole in one property, or the empty increment that ends the transfer
-            return png->Size > 0;
+            return out->Size > 0;
         if (!ImPlatform_X11_Wait(ImPlatform_XPropertyNotify, &event))
             return false;
     }
 }
+
+#if IMPLATFORM_APP_SUPPORT_DROP_FILE
+// Drags over the main window (the XDND protocol). GLFW reports the dropped files only, SDL2 nothing before the
+// release: the window's XdndProxy property sends the messages of a drag to this connection's window, which answers
+// them in the window's place.
+static struct
+{
+    ImPlatform_XID aware, proxy, enter, position, status, leave, drop, finished, selection, copy, type_list;
+    ImPlatform_XID uri_list, utf8, text_utf8, text;
+    ImPlatform_XID target;      // The window this connection answers for; 0 while it answers for none
+    ImPlatform_XID source;      // The window the drag comes from
+    ImPlatform_XID format;      // What the drag is asked for when it drops; 0 when it carries neither files nor text
+    bool           wanted;      // The application set a drop callback
+    ImVec2         pos;
+} g_XDrop;
+
+// Answers the source of the drag: XdndStatus while it moves, XdndFinished once it dropped.
+static void ImPlatform_X11_DropReply(ImPlatform_XID message, bool accepted)
+{
+    ImPlatform_XEvent reply;
+    memset(&reply, 0, sizeof(reply));
+    reply.client.type = ImPlatform_XClientMessage;
+    reply.client.window = g_XDrop.source;
+    reply.client.message_type = message;
+    reply.client.format = 32;
+    reply.client.l[0] = (long)g_XDrop.target;
+    reply.client.l[1] = accepted ? 1 : 0;
+    reply.client.l[message == g_XDrop.status ? 4 : 2] = accepted ? (long)g_XDrop.copy : 0;     // The action taken
+    g_X.SendEvent(g_X.display, g_XDrop.source, 0, 0, &reply);
+    g_X.Flush(g_X.display);
+}
+
+// What a drag dropped: the lines of a URI list (a File event per file, a Text event per link), or a text.
+static void ImPlatform_X11_NotifyDropped(char* data, bool uris)
+{
+    if (!uris)
+    {
+        if (data[0])
+            ImPlatform_NotifyDrop(ImPlatform_DropEvent_Text, data, g_XDrop.pos);
+        return;
+    }
+    for (char* line = data; *line;)
+    {
+        char* end = line;
+        while (*end && *end != '\r' && *end != '\n')
+            ++end;
+        char* next = end;
+        while (*next == '\r' || *next == '\n')
+            ++next;
+        *end = 0;
+        char* path = strncmp(line, "file://", 7) == 0 ? strchr(line + 7, '/') : NULL;   // After the host name, empty as a rule
+        if (path)
+        {
+            char* out = path;
+            for (const char* in = path; *in; ++in)      // %XX is a byte
+            {
+                unsigned value = 0;
+                if (in[0] == '%' && in[1] && in[2] && sscanf(in + 1, "%2x", &value) == 1)
+                {
+                    *out++ = (char)value;
+                    in += 2;
+                }
+                else
+                    *out++ = *in;
+            }
+            *out = 0;
+            ImPlatform_NotifyDrop(ImPlatform_DropEvent_File, path, g_XDrop.pos);
+        }
+        else if (line[0] && line[0] != '#')
+            ImPlatform_NotifyDrop(ImPlatform_DropEvent_Text, line, g_XDrop.pos);    // A link: its URL
+        line = next;
+    }
+}
+
+static void ImPlatform_X11_DropMessage(const ImPlatform_XEvent* event)
+{
+    const ImPlatform_XID message = event->client.message_type;
+    const long* l = event->client.l;
+    if (message == g_XDrop.enter)
+    {
+        // Up to three types come in the message; more are in a property of the source
+        ImPlatform_XID types[64];
+        int count = 0;
+        g_XDrop.source = (ImPlatform_XID)l[0];
+        if (l[1] & 1)
+        {
+            ImPlatform_XID type = 0;
+            int format = 0;
+            unsigned long listed = 0, left = 0;
+            unsigned char* data = NULL;
+            if (g_X.GetWindowProperty(g_X.display, g_XDrop.source, g_XDrop.type_list, 0, 64, 0, 4, &type, &format, &listed, &left, &data) == 0 && data)    // XA_ATOM
+            {
+                for (; format == 32 && count < (int)listed && count < 64; ++count)
+                    types[count] = ((const ImPlatform_XID*)data)[count];
+                g_X.Free(data);
+            }
+        }
+        else
+            for (int i = 2; i < 5; ++i)
+                if (l[i])
+                    types[count++] = (ImPlatform_XID)l[i];
+        // Files and links first, then text in the best encoding the drag offers
+        const ImPlatform_XID formats[4] = { g_XDrop.uri_list, g_XDrop.utf8, g_XDrop.text_utf8, g_XDrop.text };
+        g_XDrop.format = 0;
+        for (int f = 0; f < 4 && !g_XDrop.format; ++f)
+            for (int i = 0; i < count; ++i)
+                if (types[i] == formats[f])
+                    g_XDrop.format = formats[f];
+        if (g_XDrop.format)
+            ImPlatform_NotifyDrop(ImPlatform_DropEvent_Begin, NULL, g_XDrop.pos);
+    }
+    else if (message == g_XDrop.position)
+    {
+        int x = 0, y = 0;
+        ImPlatform_XID child = 0;
+        g_XDrop.source = (ImPlatform_XID)l[0];
+        g_X.TranslateCoordinates(g_X.display, g_X.RootOf(g_X.display), g_XDrop.target, (short)(l[2] >> 16), (short)(l[2] & 0xffff), &x, &y, &child);
+        g_XDrop.pos = ImVec2((float)x, (float)y);
+        if (g_XDrop.format)
+            ImPlatform_NotifyDrop(ImPlatform_DropEvent_Position, NULL, g_XDrop.pos);
+        ImPlatform_X11_DropReply(g_XDrop.status, g_XDrop.format != 0);
+    }
+    else if (message == g_XDrop.leave)
+    {
+        if (g_XDrop.format)
+            ImPlatform_NotifyDrop(ImPlatform_DropEvent_End, NULL, g_XDrop.pos);
+        g_XDrop.format = 0;
+    }
+    else if (message == g_XDrop.drop)
+    {
+        const ImPlatform_XID format = g_XDrop.format;
+        g_XDrop.source = (ImPlatform_XID)l[0];
+        g_XDrop.format = 0;     // Messages of another drag may come while this one is read
+        ImVector<unsigned char> data;
+        if (format && ImPlatform_X11_ReadSelection(g_XDrop.selection, format, (ImPlatform_XID)l[2], &data))
+        {
+            data.push_back(0);
+            ImPlatform_X11_NotifyDropped((char*)data.Data, format == g_XDrop.uri_list);
+        }
+        if (format)
+            ImPlatform_NotifyDrop(ImPlatform_DropEvent_End, NULL, g_XDrop.pos);
+        ImPlatform_X11_DropReply(g_XDrop.finished, format != 0);
+    }
+}
+
+// Stands for the main window in the drags over it while a drop callback is set, and no longer when none is.
+static void ImPlatform_X11_WatchDrops()
+{
+    const ImPlatform_XID window = g_XDrop.wanted ? (ImPlatform_XID)ImPlatform_App_GetX11Window() : 0;
+    if (window == g_XDrop.target || !ImPlatform_X11_Open())
+        return;
+    ImPlatform_X11_Errors ignored;
+    if (!g_XDrop.enter)
+    {
+#define IMPLATFORM_ATOM(member, name) g_XDrop.member = g_X.InternAtom(g_X.display, name, 0)
+        IMPLATFORM_ATOM(aware, "XdndAware"); IMPLATFORM_ATOM(proxy, "XdndProxy"); IMPLATFORM_ATOM(enter, "XdndEnter");
+        IMPLATFORM_ATOM(position, "XdndPosition"); IMPLATFORM_ATOM(status, "XdndStatus"); IMPLATFORM_ATOM(leave, "XdndLeave");
+        IMPLATFORM_ATOM(drop, "XdndDrop"); IMPLATFORM_ATOM(finished, "XdndFinished"); IMPLATFORM_ATOM(selection, "XdndSelection");
+        IMPLATFORM_ATOM(copy, "XdndActionCopy"); IMPLATFORM_ATOM(type_list, "XdndTypeList"); IMPLATFORM_ATOM(uri_list, "text/uri-list");
+        IMPLATFORM_ATOM(utf8, "UTF8_STRING"); IMPLATFORM_ATOM(text_utf8, "text/plain;charset=utf-8"); IMPLATFORM_ATOM(text, "text/plain");
+#undef IMPLATFORM_ATOM
+    }
+    if (g_XDrop.target)
+        g_X.DeleteProperty(g_X.display, g_XDrop.target, g_XDrop.proxy);
+    g_XDrop.target = window;
+    if (window)
+    {
+        // The window says where its drags go; the proxy names itself, which is how a source tells it is one
+        const long version = 5;
+        g_X.ChangeProperty(g_X.display, g_X.window, g_XDrop.aware, 4, 32, 0, (const unsigned char*)&version, 1);       // XA_ATOM
+        g_X.ChangeProperty(g_X.display, g_X.window, g_XDrop.proxy, 33, 32, 0, (const unsigned char*)&g_X.window, 1);   // XA_WINDOW
+        g_X.ChangeProperty(g_X.display, window, g_XDrop.proxy, 33, 32, 0, (const unsigned char*)&g_X.window, 1);
+    }
+    g_X.Flush(g_X.display);
+}
+#endif // IMPLATFORM_APP_SUPPORT_DROP_FILE
 #endif // IMPLATFORM_NATIVE_X11
+
+#ifndef _WIN32
+void ImPlatform_Native_AcceptDrops(bool accept)
+{
+#if IMPLATFORM_NATIVE_X11 && IMPLATFORM_APP_SUPPORT_DROP_FILE
+    g_XDrop.wanted = accept;    // Applied by ImPlatform_Native_Pump, once the window exists
+#else
+    (void)accept;
+#endif
+}
+#endif
 
 #if IMPLATFORM_NATIVE_LINUX
 #if IMPLATFORM_NATIVE_SDL3
@@ -975,7 +1175,7 @@ static bool ImPlatform_Native_ReadClipboardImage(ImVector<unsigned char>* rgba, 
     if (!ImPlatform_X11_Open())
         return false;
     ImPlatform_X11_Errors ignored;
-    return ImPlatform_X11_ReadClipboard(&png) && ImPlatform_PngDecode(png.Data, (size_t)png.Size, rgba, width, height);
+    return ImPlatform_X11_ReadSelection(g_X.clipboard, g_X.png, 0, &png) && ImPlatform_PngDecode(png.Data, (size_t)png.Size, rgba, width, height);
 #else
     (void)rgba; (void)width; (void)height;
     return false;
@@ -1023,6 +1223,9 @@ void ImPlatform_Native_Pump(void)
 #elif IMPLATFORM_NATIVE_MACOS
     ImPlatform_Mac_WatchGestures();
 #elif IMPLATFORM_NATIVE_X11
+#if IMPLATFORM_APP_SUPPORT_DROP_FILE
+    ImPlatform_X11_WatchDrops();
+#endif
     if (g_X.display && g_X.Pending(g_X.display))
     {
         ImPlatform_X11_Errors ignored;
