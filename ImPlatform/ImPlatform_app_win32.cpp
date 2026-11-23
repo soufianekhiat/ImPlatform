@@ -7,11 +7,9 @@
 
 #include "../imgui/backends/imgui_impl_win32.h"
 #include <tchar.h>
-#include <math.h>     // For powf
 #include <windowsx.h>  // For GET_X_LPARAM, GET_Y_LPARAM
 #if IMPLATFORM_APP_SUPPORT_DROP_FILE
-#include <shellapi.h>  // For DragAcceptFiles, DragQueryFileW, DragFinish
-#include <ole2.h>      // For IDropTarget, RegisterDragDrop
+#include <shellapi.h>  // For DragQueryPoint, DragFinish
 #endif
 
 // Global state
@@ -22,205 +20,14 @@ extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg
 
 // Forward declarations from internal header are already included
 
-// Windows Ink pen samples: every hardware sample since the previous message (history is newest first).
-static void ImPlatform_Win32_PenMessage(HWND hWnd, WPARAM wParam)
-{
-    const UINT32 id = GET_POINTERID_WPARAM(wParam);
-    POINTER_INPUT_TYPE type = PT_POINTER;
-    POINTER_PEN_INFO pen = {};
-    if (!::GetPointerType(id, &type) || type != PT_PEN || !::GetPointerPenInfo(id, &pen))
-        return;
-    POINTER_PEN_INFO history[64];
-    UINT32 count = pen.pointerInfo.historyCount;
-    if (count > 64)
-        count = 64;     // Older samples beyond the buffer are skipped (rare: the queue is read every message).
-    if (count <= 1 || !::GetPointerPenInfoHistory(id, &count, history))
-    {
-        history[0] = pen;
-        count = 1;
-    }
-    LARGE_INTEGER freq;
-    ::QueryPerformanceFrequency(&freq);
-    for (UINT32 k = count; k-- > 0;)
-    {
-        const POINTER_PEN_INFO& h = history[k];
-        POINT pt = h.pointerInfo.ptPixelLocation;
-        ::ScreenToClient(hWnd, &pt);
-        ImPlatform_PenSample s = {};
-        s.x = (float)pt.x;
-        s.y = (float)pt.y;
-        s.pressure = (h.penMask & PEN_MASK_PRESSURE) ? (float)h.pressure / 1024.0f : -1.0f;
-        s.has_tilt = (h.penMask & (PEN_MASK_TILT_X | PEN_MASK_TILT_Y)) != 0;
-        s.tilt_x = (float)h.tiltX;
-        s.tilt_y = (float)h.tiltY;
-        s.time = (double)h.pointerInfo.PerformanceCount / (double)freq.QuadPart;
-        s.in_contact = (h.pointerInfo.pointerFlags & POINTER_FLAG_INCONTACT) != 0;
-        s.eraser = (h.penFlags & (PEN_FLAG_INVERTED | PEN_FLAG_ERASER)) != 0;
-        s.has_rotation = (h.penMask & PEN_MASK_ROTATION) != 0;
-        s.rotation = (float)h.rotation;
-        ImPlatform_Pen_Push(&s);
-    }
-}
-
-// A finger on the touch screen: in contact at a position, or lifted (a finger that hovers counts as lifted).
-static void ImPlatform_Win32_TouchMessage(HWND hWnd, UINT msg, WPARAM wParam)
-{
-    const UINT32 id = GET_POINTERID_WPARAM(wParam);
-    POINTER_INPUT_TYPE type = PT_POINTER;
-    POINTER_TOUCH_INFO touch = {};
-    if (!::GetPointerType(id, &type) || type != PT_TOUCH || !::GetPointerTouchInfo(id, &touch))
-        return;
-    POINT pt = touch.pointerInfo.ptPixelLocation;
-    ::ScreenToClient(hWnd, &pt);
-    ImPlatform_Touch_Set(id, (float)pt.x, (float)pt.y, (touch.touchMask & TOUCH_MASK_PRESSURE) ? (float)touch.pressure / 1024.0f : -1.0f,
-                         msg != WM_POINTERUP && (touch.pointerInfo.pointerFlags & POINTER_FLAG_INCONTACT) != 0);
-}
-
 static DWORD g_FullscreenStyle = 0;     // The window's style before it went fullscreen; 0 while it is not
-
-#if IMPLATFORM_APP_SUPPORT_DROP_FILE
-// The files of a drop, one File event each.
-static void ImPlatform_Win32_NotifyDroppedFiles(HDROP hDrop, ImVec2 pos)
-{
-    const UINT count = ::DragQueryFileW(hDrop, 0xFFFFFFFF, NULL, 0);
-    for (UINT i = 0; i < count; ++i)
-    {
-        wchar_t wpath[32767];
-        ::DragQueryFileW(hDrop, i, wpath, 32767);
-        char utf8path[32767 * 3];
-        ::WideCharToMultiByte(CP_UTF8, 0, wpath, -1, utf8path, sizeof(utf8path), NULL, NULL);
-        ImPlatform_NotifyDrop(ImPlatform_DropEvent_File, utf8path, pos);
-    }
-}
-
-// Drags from other applications over the main window (OLE): reported when they enter, as they move, and when they
-// drop their files and text or leave.
-struct ImPlatform_DropTarget_Win32 : IDropTarget
-{
-    bool bAccepted;     // The drag over the window carries files or text
-
-    static ImVec2 ClientPos(POINTL pt)
-    {
-        POINT p = { pt.x, pt.y };
-        ::ScreenToClient(g_AppData.hWnd, &p);
-        return ImVec2((float)p.x, (float)p.y);
-    }
-    static FORMATETC Format(CLIPFORMAT format)
-    {
-        const FORMATETC f = { format, NULL, DVASPECT_CONTENT, -1, TYMED_HGLOBAL };
-        return f;
-    }
-
-    HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid, void** object) override
-    {
-        const bool mine = IsEqualIID(riid, IID_IUnknown) || IsEqualIID(riid, IID_IDropTarget);
-        *object = mine ? this : NULL;
-        return mine ? S_OK : E_NOINTERFACE;
-    }
-    ULONG STDMETHODCALLTYPE AddRef() override { return 1; }     // Static storage: not counted
-    ULONG STDMETHODCALLTYPE Release() override { return 1; }
-
-    HRESULT STDMETHODCALLTYPE DragEnter(IDataObject* data, DWORD keys, POINTL pt, DWORD* effect) override
-    {
-        FORMATETC files = Format(CF_HDROP), text = Format(CF_UNICODETEXT);
-        bAccepted = data->QueryGetData(&files) == S_OK || data->QueryGetData(&text) == S_OK;
-        if (bAccepted)
-            ImPlatform_NotifyDrop(ImPlatform_DropEvent_Begin, NULL, ClientPos(pt));
-        return DragOver(keys, pt, effect);
-    }
-    HRESULT STDMETHODCALLTYPE DragOver(DWORD, POINTL pt, DWORD* effect) override
-    {
-        if (bAccepted)
-            ImPlatform_NotifyDrop(ImPlatform_DropEvent_Position, NULL, ClientPos(pt));
-        *effect = bAccepted ? DROPEFFECT_COPY : DROPEFFECT_NONE;
-        return S_OK;
-    }
-    HRESULT STDMETHODCALLTYPE DragLeave() override
-    {
-        if (bAccepted)
-            ImPlatform_NotifyDrop(ImPlatform_DropEvent_End, NULL, ImVec2(0.0f, 0.0f));
-        bAccepted = false;
-        return S_OK;
-    }
-    HRESULT STDMETHODCALLTYPE Drop(IDataObject* data, DWORD, POINTL pt, DWORD* effect) override
-    {
-        *effect = bAccepted ? DROPEFFECT_COPY : DROPEFFECT_NONE;
-        if (!bAccepted)
-            return S_OK;
-        const ImVec2 pos = ClientPos(pt);
-        FORMATETC files = Format(CF_HDROP), text = Format(CF_UNICODETEXT);
-        STGMEDIUM medium;
-        if (data->GetData(&files, &medium) == S_OK)
-        {
-            ImPlatform_Win32_NotifyDroppedFiles((HDROP)medium.hGlobal, pos);
-            ::ReleaseStgMedium(&medium);
-        }
-        if (data->GetData(&text, &medium) == S_OK)
-        {
-            if (const wchar_t* wide = (const wchar_t*)::GlobalLock(medium.hGlobal))
-            {
-                ImVector<char> utf8;
-                utf8.resize(::WideCharToMultiByte(CP_UTF8, 0, wide, -1, NULL, 0, NULL, NULL));
-                ::WideCharToMultiByte(CP_UTF8, 0, wide, -1, utf8.Data, utf8.Size, NULL, NULL);
-                ::GlobalUnlock(medium.hGlobal);
-                if (utf8.Size > 1)
-                    ImPlatform_NotifyDrop(ImPlatform_DropEvent_Text, utf8.Data, pos);
-            }
-            ::ReleaseStgMedium(&medium);
-        }
-        bAccepted = false;
-        ImPlatform_NotifyDrop(ImPlatform_DropEvent_End, NULL, pos);
-        return S_OK;
-    }
-};
-static ImPlatform_DropTarget_Win32 g_DropTarget;
-static bool g_DropRegistered = false;   // g_DropTarget is the window's drop target
-static bool g_OleInitialized = false;
-
-void* ImPlatform_Win32_GetDropTarget(void)
-{
-    return static_cast<IDropTarget*>(&g_DropTarget);
-}
-
-// Makes the window take drops, or refuse them.
-static void ImPlatform_Win32_AcceptDrops(bool accept)
-{
-    if (!g_AppData.hWnd)
-        return;
-    if (g_DropRegistered)
-        ::RevokeDragDrop(g_AppData.hWnd);
-    g_DropRegistered = false;
-    ::DragAcceptFiles(g_AppData.hWnd, FALSE);
-    if (!accept)
-        return;
-    if (!g_OleInitialized)
-        g_OleInitialized = SUCCEEDED(::OleInitialize(NULL));
-    g_DropRegistered = g_OleInitialized && SUCCEEDED(::RegisterDragDrop(g_AppData.hWnd, &g_DropTarget));
-    if (!g_DropRegistered)
-        ::DragAcceptFiles(g_AppData.hWnd, TRUE);    // A thread in the multithreaded apartment has no OLE: files, at the release (WM_DROPFILES)
-}
-#endif // IMPLATFORM_APP_SUPPORT_DROP_FILE
 
 // Win32 message handler
 static LRESULT WINAPI WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
 {
-    // A pinch on a precision touchpad arrives as a wheel message marked Ctrl while the key is up. It is the gesture's
-    // zoom, and no scroll for ImGui.
-    if (msg == WM_MOUSEWHEEL && (GET_KEYSTATE_WPARAM(wParam) & MK_CONTROL) && ::GetKeyState(VK_CONTROL) >= 0)
-    {
-        ImPlatform_Touch_Zoom(powf(2.0f, (float)GET_WHEEL_DELTA_WPARAM(wParam) / (4.0f * (float)WHEEL_DELTA)));
+    // Pen, touch and trackpad pinch (ImPlatform_native.cpp, shared with the GLFW and SDL2 windows)
+    if (ImPlatform_Native_WindowMessage(hWnd, msg, wParam, lParam))
         return 0;
-    }
-    if (msg == WM_POINTERDOWN || msg == WM_POINTERUPDATE || msg == WM_POINTERUP)
-    {
-        ImPlatform_Win32_PenMessage(hWnd, wParam);     // Observed only: the messages still reach ImGui and DefWindowProc.
-        ImPlatform_Win32_TouchMessage(hWnd, msg, wParam);
-    }
-    else if (msg == WM_POINTERLEAVE || msg == WM_POINTERCAPTURECHANGED)
-    {
-        ImPlatform_Pen_Leave();
-        ImPlatform_Touch_Set(GET_POINTERID_WPARAM(wParam), 0.0f, 0.0f, 0.0f, false);   // Nothing to lift when it is the pen's
-    }
 
     if (ImGui_ImplWin32_WndProcHandler(hWnd, msg, wParam, lParam))
         return true;
@@ -401,7 +208,7 @@ static LRESULT WINAPI WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
             ::DragQueryPoint(hDrop, &pt);  // client-space coordinates
             const ImVec2 pos((float)pt.x, (float)pt.y);
             ImPlatform_NotifyDrop(ImPlatform_DropEvent_Begin, NULL, pos);
-            ImPlatform_Win32_NotifyDroppedFiles(hDrop, pos);
+            ImPlatform_Native_NotifyDroppedFiles(hDrop, pos);
             ImPlatform_NotifyDrop(ImPlatform_DropEvent_End, NULL, pos);
             ::DragFinish(hDrop);
             return 0;
@@ -510,7 +317,7 @@ IMPLATFORM_API bool ImPlatform_ShowWindow(void)
     ::UpdateWindow(g_AppData.hWnd);
 #if IMPLATFORM_APP_SUPPORT_DROP_FILE
     if (g_AppData.bDropFileEnabled)
-        ImPlatform_Win32_AcceptDrops(true);
+        ImPlatform_Native_AcceptDrops(true);
 #endif
     return true;
 }
@@ -535,6 +342,7 @@ IMPLATFORM_API bool ImPlatform_PlatformContinue(void)
 IMPLATFORM_API bool ImPlatform_PlatformEvents(void)
 {
     MSG msg;
+    ImPlatform_Native_Pump();
     while (::PeekMessage(&msg, NULL, 0U, 0U, PM_REMOVE))
     {
         ::TranslateMessage(&msg);
@@ -650,12 +458,7 @@ IMPLATFORM_API bool ImPlatform_SetWindowIcon(const unsigned char* rgba, int widt
 
 IMPLATFORM_API void ImPlatform_DestroyWindow(void)
 {
-#if IMPLATFORM_APP_SUPPORT_DROP_FILE
-    ImPlatform_Win32_AcceptDrops(false);
-    if (g_OleInitialized)
-        ::OleUninitialize();
-    g_OleInitialized = false;
-#endif
+    ImPlatform_Native_Shutdown();
     ::DestroyWindow(g_AppData.hWnd);
     ::UnregisterClassW(g_AppData.wc.lpszClassName, g_AppData.wc.hInstance);
 #if IMPLATFORM_APP_SUPPORT_WINDOW_STATE
@@ -687,7 +490,7 @@ ImPlatform_AppData_Win32* ImPlatform_App_GetData_Win32(void)
 void ImPlatform_App_OnDropFileCallbackChanged(bool has_callback)
 {
     g_AppData.bDropFileEnabled = has_callback;
-    ImPlatform_Win32_AcceptDrops(has_callback);
+    ImPlatform_Native_AcceptDrops(has_callback);
 }
 #endif // IMPLATFORM_APP_SUPPORT_DROP_FILE
 

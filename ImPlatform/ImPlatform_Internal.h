@@ -362,7 +362,17 @@ extern ImPlatform_BorderlessParams g_BorderlessParams;
 // A drop event for the application's callbacks (utf8: the path of a File event, the text of a Text event).
 void ImPlatform_NotifyDrop(ImPlatform_DropEventType type, const char* utf8, ImVec2 client_pos);
 #if defined(IM_CURRENT_PLATFORM) && (IM_CURRENT_PLATFORM == IM_PLATFORM_WIN32)
-void* ImPlatform_Win32_GetDropTarget(void);     // The main window's IDropTarget
+void ImPlatform_Native_NotifyDroppedFiles(void* drop, ImVec2 pos);  // drop: an HDROP
+#endif
+#endif
+
+// ImPlatform_native.cpp on Windows, for the Win32, GLFW and SDL2 backends (SDL3 reads its drops itself).
+#ifdef _WIN32
+void* ImPlatform_Native_MainWindow(void);       // The main window's HWND
+void* ImPlatform_Native_GetDropTarget(void);    // The IDropTarget of the application's windows
+void  ImPlatform_Native_AcceptDrops(bool accept);
+#if defined(IM_CURRENT_PLATFORM) && (IM_CURRENT_PLATFORM == IM_PLATFORM_WIN32)
+bool  ImPlatform_Native_WindowMessage(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
 #endif
 #endif
 
@@ -433,8 +443,10 @@ void ImPlatform_Touch_Set(unsigned long long id, float x, float y, float pressur
 // A pinch reported as a zoom factor, a turn in degrees clockwise (trackpads); ignored while fingers are in contact.
 void ImPlatform_Touch_Zoom(float factor);
 void ImPlatform_Touch_Rotate(float degrees);
-// ImPlatform_native.cpp: what the system libraries need between two frames. Called by ImPlatform_PlatformEvents.
+// ImPlatform_native.cpp: what the system libraries need between two frames (called by ImPlatform_PlatformEvents),
+// and before the main window is destroyed.
 void ImPlatform_Native_Pump(void);
+void ImPlatform_Native_Shutdown(void);
 
 #if defined(IM_CURRENT_GFX) && (IM_CURRENT_GFX == IM_GFX_DIRECTX11)
 bool ImPlatform_Gfx_CreateDevice_DX11(void* hWnd, struct ImPlatform_GfxData_DX11* pData);

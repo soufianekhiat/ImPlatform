@@ -1,7 +1,8 @@
 // dear imgui: Platform Abstraction - system services reached without the window library
-// The user's light or dark mode, images on the clipboard and, on macOS, the trackpad's gestures: what GLFW, SDL2 or
-// SDL3 do not expose is taken from the system itself.
-//   Windows: Win32.
+// The user's light or dark mode, images on the clipboard, the pen, the trackpad's gestures, drags in and out: what
+// GLFW, SDL2 or SDL3 do not expose is taken from the system itself.
+//   Windows: Win32 and OLE. The pen, touch, pinch and drops of the Win32 backend's window are those of a GLFW or SDL2
+//            window too.
 //   macOS:   CoreFoundation, the pasteboard and ImageIO through their C interfaces, AppKit's events through the
 //            Objective-C runtime, so this file compiles as C++ and as Objective-C++.
 //   Linux:   the settings portal over D-Bus, libpng and the X11 clipboard (SDL3: SDL's clipboard). libdbus, libpng and
@@ -56,6 +57,389 @@
 #else
     #define IMPLATFORM_NATIVE_SDL3 0
 #endif
+
+// ============================================================================
+// Windows: pen, touch, pinch and drops of the window, whichever library made it
+// ============================================================================
+
+#ifdef _WIN32
+#include <math.h>
+#include <ole2.h>       // IDropTarget, RegisterDragDrop, DoDragDrop
+#include <shellapi.h>   // DragQueryFileW
+#include <shlobj.h>     // SHCreateDataObject, DROPFILES
+
+// The backends whose window gets its pen, touch and drops here. SDL3 reads them itself.
+#if defined(IM_CURRENT_PLATFORM) && (IM_CURRENT_PLATFORM == IM_PLATFORM_WIN32 || IM_CURRENT_PLATFORM == IM_PLATFORM_GLFW || IM_CURRENT_PLATFORM == IM_PLATFORM_SDL2)
+    #define IMPLATFORM_NATIVE_WINDOW 1
+#else
+    #define IMPLATFORM_NATIVE_WINDOW 0
+#endif
+
+#if defined(IM_CURRENT_PLATFORM) && (IM_CURRENT_PLATFORM == IM_PLATFORM_GLFW)
+    #define GLFW_EXPOSE_NATIVE_WIN32
+    #include <GLFW/glfw3native.h>
+#endif
+
+void* ImPlatform_Native_MainWindow(void)
+{
+#if defined(IM_CURRENT_PLATFORM) && (IM_CURRENT_PLATFORM == IM_PLATFORM_GLFW)
+    GLFWwindow* window = ImPlatform_App_GetGLFWWindow();
+    return window ? glfwGetWin32Window(window) : NULL;
+#elif defined(IM_CURRENT_PLATFORM) && (IM_CURRENT_PLATFORM == IM_PLATFORM_WIN32 || IM_CURRENT_PLATFORM == IM_PLATFORM_SDL2 || IM_CURRENT_PLATFORM == IM_PLATFORM_SDL3)
+    return ImPlatform_App_GetHWND();
+#else
+    return NULL;
+#endif
+}
+
+#if IMPLATFORM_NATIVE_WINDOW
+// Windows Ink pen samples: every hardware sample since the previous message (history is newest first).
+static void ImPlatform_Native_PenMessage(HWND hWnd, WPARAM wParam)
+{
+    const UINT32 id = GET_POINTERID_WPARAM(wParam);
+    POINTER_INPUT_TYPE type = PT_POINTER;
+    POINTER_PEN_INFO pen = {};
+    if (!::GetPointerType(id, &type) || type != PT_PEN || !::GetPointerPenInfo(id, &pen))
+        return;
+    POINTER_PEN_INFO history[64];
+    UINT32 count = pen.pointerInfo.historyCount;
+    if (count > 64)
+        count = 64;     // Older samples beyond the buffer are skipped (rare: the queue is read every message).
+    if (count <= 1 || !::GetPointerPenInfoHistory(id, &count, history))
+    {
+        history[0] = pen;
+        count = 1;
+    }
+    LARGE_INTEGER freq;
+    ::QueryPerformanceFrequency(&freq);
+    for (UINT32 k = count; k-- > 0;)
+    {
+        const POINTER_PEN_INFO& h = history[k];
+        POINT pt = h.pointerInfo.ptPixelLocation;
+        ::ScreenToClient(hWnd, &pt);
+        ImPlatform_PenSample s = {};
+        s.x = (float)pt.x;
+        s.y = (float)pt.y;
+        s.pressure = (h.penMask & PEN_MASK_PRESSURE) ? (float)h.pressure / 1024.0f : -1.0f;
+        s.has_tilt = (h.penMask & (PEN_MASK_TILT_X | PEN_MASK_TILT_Y)) != 0;
+        s.tilt_x = (float)h.tiltX;
+        s.tilt_y = (float)h.tiltY;
+        s.time = (double)h.pointerInfo.PerformanceCount / (double)freq.QuadPart;
+        s.in_contact = (h.pointerInfo.pointerFlags & POINTER_FLAG_INCONTACT) != 0;
+        s.eraser = (h.penFlags & (PEN_FLAG_INVERTED | PEN_FLAG_ERASER)) != 0;
+        s.has_rotation = (h.penMask & PEN_MASK_ROTATION) != 0;
+        s.rotation = (float)h.rotation;
+        ImPlatform_Pen_Push(&s);
+    }
+}
+
+#if IM_CURRENT_PLATFORM != IM_PLATFORM_SDL2    // SDL2 reports the fingers itself, as its finger events
+// A finger on the touch screen: in contact at a position, or lifted (a finger that hovers counts as lifted).
+static void ImPlatform_Native_TouchMessage(HWND hWnd, UINT msg, WPARAM wParam)
+{
+    const UINT32 id = GET_POINTERID_WPARAM(wParam);
+    POINTER_INPUT_TYPE type = PT_POINTER;
+    POINTER_TOUCH_INFO touch = {};
+    if (!::GetPointerType(id, &type) || type != PT_TOUCH || !::GetPointerTouchInfo(id, &touch))
+        return;
+    POINT pt = touch.pointerInfo.ptPixelLocation;
+    ::ScreenToClient(hWnd, &pt);
+    ImPlatform_Touch_Set(id, (float)pt.x, (float)pt.y, (touch.touchMask & TOUCH_MASK_PRESSURE) ? (float)touch.pressure / 1024.0f : -1.0f,
+                         msg != WM_POINTERUP && (touch.pointerInfo.pointerFlags & POINTER_FLAG_INCONTACT) != 0);
+}
+#endif
+
+// The pen, touch and pinch messages of the main window. Returns true when the message is used up (a pinch); the
+// others are observed only and still reach Dear ImGui and the window's own procedure.
+bool ImPlatform_Native_WindowMessage(HWND hWnd, UINT msg, WPARAM wParam, LPARAM)
+{
+    // A pinch on a precision touchpad arrives as a wheel message marked Ctrl while the key is up. It is the gesture's
+    // zoom, and no scroll for Dear ImGui.
+    if (msg == WM_MOUSEWHEEL && (GET_KEYSTATE_WPARAM(wParam) & MK_CONTROL) && ::GetKeyState(VK_CONTROL) >= 0)
+    {
+        ImPlatform_Touch_Zoom(powf(2.0f, (float)GET_WHEEL_DELTA_WPARAM(wParam) / (4.0f * (float)WHEEL_DELTA)));
+        return true;
+    }
+    if (msg == WM_POINTERDOWN || msg == WM_POINTERUPDATE || msg == WM_POINTERUP)
+    {
+        ImPlatform_Native_PenMessage(hWnd, wParam);
+#if IM_CURRENT_PLATFORM != IM_PLATFORM_SDL2
+        ImPlatform_Native_TouchMessage(hWnd, msg, wParam);
+#endif
+    }
+    else if (msg == WM_POINTERLEAVE || msg == WM_POINTERCAPTURECHANGED)
+    {
+        ImPlatform_Pen_Leave();
+#if IM_CURRENT_PLATFORM != IM_PLATFORM_SDL2
+        ImPlatform_Touch_Set(GET_POINTERID_WPARAM(wParam), 0.0f, 0.0f, 0.0f, false);   // Nothing to lift when it is the pen's
+#endif
+    }
+    return false;
+}
+
+#if IM_CURRENT_PLATFORM != IM_PLATFORM_WIN32
+// GLFW and SDL2 own the window procedure: this one is put before theirs.
+static HWND    g_NativeHooked = NULL;
+static WNDPROC g_NativeNextProc = NULL;
+
+static LRESULT CALLBACK ImPlatform_Native_WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
+{
+    if (ImPlatform_Native_WindowMessage(hWnd, msg, wParam, lParam))
+        return 0;
+    return ::CallWindowProcW(g_NativeNextProc, hWnd, msg, wParam, lParam);
+}
+#endif
+#endif // IMPLATFORM_NATIVE_WINDOW
+
+// UTF-8 text as a global memory block of UTF-16, the form the clipboard and OLE carry text in.
+static HGLOBAL ImPlatform_Native_WideMemory(const char* utf8)
+{
+    const int chars = ::MultiByteToWideChar(CP_UTF8, 0, utf8, -1, NULL, 0);
+    HGLOBAL memory = ::GlobalAlloc(GMEM_MOVEABLE | GMEM_ZEROINIT, (size_t)chars * sizeof(wchar_t));
+    if (wchar_t* wide = memory ? (wchar_t*)::GlobalLock(memory) : NULL)
+    {
+        ::MultiByteToWideChar(CP_UTF8, 0, utf8, -1, wide, chars);
+        ::GlobalUnlock(memory);
+    }
+    return memory;
+}
+
+#if IMPLATFORM_APP_SUPPORT_DROP_FILE && IMPLATFORM_NATIVE_WINDOW
+// The files of a drop, one File event each.
+void ImPlatform_Native_NotifyDroppedFiles(void* drop, ImVec2 pos)
+{
+    const UINT count = ::DragQueryFileW((HDROP)drop, 0xFFFFFFFF, NULL, 0);
+    for (UINT i = 0; i < count; ++i)
+    {
+        wchar_t wpath[32767];
+        ::DragQueryFileW((HDROP)drop, i, wpath, 32767);
+        char utf8path[32767 * 3];
+        ::WideCharToMultiByte(CP_UTF8, 0, wpath, -1, utf8path, sizeof(utf8path), NULL, NULL);
+        ImPlatform_NotifyDrop(ImPlatform_DropEvent_File, utf8path, pos);
+    }
+}
+
+// Drags from other applications over the application's windows (OLE): reported when they enter, as they move, and
+// when they drop their files and text or leave. One object serves the main window and Dear ImGui's platform windows.
+struct ImPlatform_DropTarget_Win32 : IDropTarget
+{
+    bool bAccepted;     // The drag over the window carries files or text
+
+    // The main window's client area, whichever window the drag is over: ImPlatform_NotifyDrop takes it from there
+    static ImVec2 ClientPos(POINTL pt)
+    {
+        POINT p = { pt.x, pt.y };
+        ::ScreenToClient((HWND)ImPlatform_Native_MainWindow(), &p);
+        return ImVec2((float)p.x, (float)p.y);
+    }
+    static FORMATETC Format(CLIPFORMAT format)
+    {
+        const FORMATETC f = { format, NULL, DVASPECT_CONTENT, -1, TYMED_HGLOBAL };
+        return f;
+    }
+
+    HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid, void** object) override
+    {
+        const bool mine = IsEqualIID(riid, IID_IUnknown) || IsEqualIID(riid, IID_IDropTarget);
+        *object = mine ? this : NULL;
+        return mine ? S_OK : E_NOINTERFACE;
+    }
+    ULONG STDMETHODCALLTYPE AddRef() override { return 1; }     // Static storage: not counted
+    ULONG STDMETHODCALLTYPE Release() override { return 1; }
+
+    HRESULT STDMETHODCALLTYPE DragEnter(IDataObject* data, DWORD keys, POINTL pt, DWORD* effect) override
+    {
+        FORMATETC files = Format(CF_HDROP), text = Format(CF_UNICODETEXT);
+        bAccepted = data->QueryGetData(&files) == S_OK || data->QueryGetData(&text) == S_OK;
+        if (bAccepted)
+            ImPlatform_NotifyDrop(ImPlatform_DropEvent_Begin, NULL, ClientPos(pt));
+        return DragOver(keys, pt, effect);
+    }
+    HRESULT STDMETHODCALLTYPE DragOver(DWORD, POINTL pt, DWORD* effect) override
+    {
+        if (bAccepted)
+            ImPlatform_NotifyDrop(ImPlatform_DropEvent_Position, NULL, ClientPos(pt));
+        *effect = bAccepted ? DROPEFFECT_COPY : DROPEFFECT_NONE;
+        return S_OK;
+    }
+    HRESULT STDMETHODCALLTYPE DragLeave() override
+    {
+        if (bAccepted)
+            ImPlatform_NotifyDrop(ImPlatform_DropEvent_End, NULL, ImVec2(0.0f, 0.0f));
+        bAccepted = false;
+        return S_OK;
+    }
+    HRESULT STDMETHODCALLTYPE Drop(IDataObject* data, DWORD, POINTL pt, DWORD* effect) override
+    {
+        *effect = bAccepted ? DROPEFFECT_COPY : DROPEFFECT_NONE;
+        if (!bAccepted)
+            return S_OK;
+        const ImVec2 pos = ClientPos(pt);
+        FORMATETC files = Format(CF_HDROP), text = Format(CF_UNICODETEXT);
+        STGMEDIUM medium;
+        if (data->GetData(&files, &medium) == S_OK)
+        {
+            ImPlatform_Native_NotifyDroppedFiles(medium.hGlobal, pos);
+            ::ReleaseStgMedium(&medium);
+        }
+        if (data->GetData(&text, &medium) == S_OK)
+        {
+            if (const wchar_t* wide = (const wchar_t*)::GlobalLock(medium.hGlobal))
+            {
+                ImVector<char> utf8;
+                utf8.resize(::WideCharToMultiByte(CP_UTF8, 0, wide, -1, NULL, 0, NULL, NULL));
+                ::WideCharToMultiByte(CP_UTF8, 0, wide, -1, utf8.Data, utf8.Size, NULL, NULL);
+                ::GlobalUnlock(medium.hGlobal);
+                if (utf8.Size > 1)
+                    ImPlatform_NotifyDrop(ImPlatform_DropEvent_Text, utf8.Data, pos);
+            }
+            ::ReleaseStgMedium(&medium);
+        }
+        bAccepted = false;
+        ImPlatform_NotifyDrop(ImPlatform_DropEvent_End, NULL, pos);
+        return S_OK;
+    }
+};
+static ImPlatform_DropTarget_Win32 g_DropTarget;
+static bool           g_DropWanted = false;         // The application set a drop callback
+static bool           g_DropOle = false;            // OleInitialize succeeded, to be undone
+static ImVector<HWND> g_DropWindows;                // The windows seen while drops are wanted
+
+void* ImPlatform_Native_GetDropTarget(void)
+{
+    return static_cast<IDropTarget*>(&g_DropTarget);
+}
+
+// Makes the main window and each platform window of Dear ImGui a drop target while drops are wanted, and no longer
+// one when they are not.
+static void ImPlatform_Native_SyncDrops()
+{
+    HWND main = (HWND)ImPlatform_Native_MainWindow();
+    for (int i = g_DropWindows.Size - 1; i >= 0; --i)
+        if (!g_DropWanted || !::IsWindow(g_DropWindows[i]))
+        {
+            if (::IsWindow(g_DropWindows[i]))
+                ::RevokeDragDrop(g_DropWindows[i]);
+            g_DropWindows.erase(&g_DropWindows[i]);
+        }
+    if (!g_DropWanted || !main)
+        return;
+    if (!g_DropOle)
+        g_DropOle = SUCCEEDED(::OleInitialize(NULL));
+    ImVector<HWND> windows;
+    windows.push_back(main);
+    if (ImGui::GetCurrentContext() && (ImGui::GetIO().ConfigFlags & ImGuiConfigFlags_ViewportsEnable))
+        for (ImGuiViewport* viewport : ImGui::GetPlatformIO().Viewports)
+            if (viewport->PlatformHandleRaw && viewport->PlatformHandleRaw != (void*)main)
+                windows.push_back((HWND)viewport->PlatformHandleRaw);
+    for (HWND window : windows)
+    {
+        if (g_DropWindows.contains(window))
+            continue;
+        g_DropWindows.push_back(window);
+        const bool registered = g_DropOle && SUCCEEDED(::RegisterDragDrop(window, &g_DropTarget));
+#if IM_CURRENT_PLATFORM == IM_PLATFORM_WIN32
+        // A thread in the multithreaded apartment has no OLE: files, at the release (WM_DROPFILES). GLFW and SDL2
+        // keep their own handling of that message for this case.
+        if (window == main)
+            ::DragAcceptFiles(main, registered ? FALSE : TRUE);
+#else
+        (void)registered;
+#endif
+    }
+}
+
+void ImPlatform_Native_AcceptDrops(bool accept)
+{
+    g_DropWanted = accept;
+#if IM_CURRENT_PLATFORM == IM_PLATFORM_WIN32
+    if (!accept && ImPlatform_Native_MainWindow())
+        ::DragAcceptFiles((HWND)ImPlatform_Native_MainWindow(), FALSE);
+#endif
+    ImPlatform_Native_SyncDrops();
+}
+#else
+void* ImPlatform_Native_GetDropTarget(void) { return NULL; }
+void ImPlatform_Native_AcceptDrops(bool) {}
+#endif
+
+// What is dragged out of the application lets go when no mouse button is held any more.
+struct ImPlatform_DropSource_Win32 : IDropSource
+{
+    HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid, void** object) override
+    {
+        const bool mine = IsEqualIID(riid, IID_IUnknown) || IsEqualIID(riid, IID_IDropSource);
+        *object = mine ? this : NULL;
+        return mine ? S_OK : E_NOINTERFACE;
+    }
+    ULONG STDMETHODCALLTYPE AddRef() override { return 1; }     // On the stack of ImPlatform_DragOut: not counted
+    ULONG STDMETHODCALLTYPE Release() override { return 1; }
+    HRESULT STDMETHODCALLTYPE QueryContinueDrag(BOOL escape, DWORD keys) override
+    {
+        return escape ? DRAGDROP_S_CANCEL : (keys & (MK_LBUTTON | MK_RBUTTON | MK_MBUTTON)) ? S_OK : DRAGDROP_S_DROP;
+    }
+    HRESULT STDMETHODCALLTYPE GiveFeedback(DWORD) override { return DRAGDROP_S_USEDEFAULTCURSORS; }
+};
+#endif // _WIN32
+
+IMPLATFORM_API bool ImPlatform_SupportsDragOut(void)
+{
+#ifdef _WIN32
+    return true;
+#else
+    return false;
+#endif
+}
+
+IMPLATFORM_API bool ImPlatform_DragOut(const char* const* file_paths, int file_count, const char* text)
+{
+#ifdef _WIN32
+    if (FAILED(::OleInitialize(NULL)))      // Counted: undone below, also when OLE was initialized before
+        return false;
+    bool dropped = false;
+    IDataObject* data = NULL;
+    if (SUCCEEDED(::SHCreateDataObject(NULL, 0, NULL, NULL, IID_IDataObject, (void**)&data)))
+    {
+        FORMATETC format = { CF_UNICODETEXT, NULL, DVASPECT_CONTENT, -1, TYMED_HGLOBAL };
+        STGMEDIUM medium;
+        memset(&medium, 0, sizeof(medium));
+        medium.tymed = TYMED_HGLOBAL;
+        if (text && text[0] && (medium.hGlobal = ImPlatform_Native_WideMemory(text)) != NULL)
+            if (FAILED(data->SetData(&format, &medium, TRUE)))  // TRUE: the object owns the memory
+                ::GlobalFree(medium.hGlobal);
+        // The files: a DROPFILES header, the paths one after the other, each ended by a zero, and a last zero
+        size_t chars = 1;
+        for (int i = 0; i < file_count; ++i)
+            chars += (size_t)::MultiByteToWideChar(CP_UTF8, 0, file_paths[i], -1, NULL, 0);
+        medium.hGlobal = file_count > 0 ? ::GlobalAlloc(GMEM_MOVEABLE | GMEM_ZEROINIT, sizeof(DROPFILES) + chars * sizeof(wchar_t)) : NULL;
+        if (DROPFILES* drop = medium.hGlobal ? (DROPFILES*)::GlobalLock(medium.hGlobal) : NULL)
+        {
+            drop->pFiles = sizeof(DROPFILES);
+            drop->fWide = TRUE;
+            wchar_t* at = (wchar_t*)(drop + 1);
+            for (int i = 0; i < file_count; ++i)
+                at += ::MultiByteToWideChar(CP_UTF8, 0, file_paths[i], -1, at, (int)chars);
+            ::GlobalUnlock(medium.hGlobal);
+            format.cfFormat = CF_HDROP;
+            if (FAILED(data->SetData(&format, &medium, TRUE)))
+                ::GlobalFree(medium.hGlobal);
+        }
+        ImPlatform_DropSource_Win32 source;
+        DWORD effect = DROPEFFECT_NONE;
+        dropped = ::DoDragDrop(data, &source, DROPEFFECT_COPY | DROPEFFECT_LINK, &effect) == DRAGDROP_S_DROP && effect != DROPEFFECT_NONE;
+        data->Release();
+        // The button was released inside the drag: Dear ImGui did not see it
+        if (ImGui::GetCurrentContext())
+            for (int button = 0; button < 3; ++button)
+                ImGui::GetIO().AddMouseButtonEvent(button, false);
+    }
+    ::OleUninitialize();
+    return dropped;
+#else
+    (void)file_paths; (void)file_count; (void)text;
+    return false;
+#endif
+}
 
 // ============================================================================
 // System theme
@@ -387,8 +771,8 @@ static struct
     int            (*ChangeProperty)(void*, ImPlatform_XID, ImPlatform_XID, ImPlatform_XID, int, int, const unsigned char*, int);
     int            (*SendEvent)(void*, ImPlatform_XID, int, long, ImPlatform_XEvent*);
     int            (*Flush)(void*);
-    long           (*MaxRequestSize)(void*);
-    long           (*ExtendedMaxRequestSize)(void*);
+    int            (*Sync)(void*, int);
+    int            (*(*SetErrorHandler)(int (*)(void*, void*)))(void*, void*);
     void*          display;
     ImPlatform_XID window, clipboard, png, targets, incr, property;
 } g_X;
@@ -410,8 +794,8 @@ static bool ImPlatform_X11_Open()
     IMPLATFORM_X(OpenDisplay); IMPLATFORM_X_AS(RootOf, "XDefaultRootWindow"); IMPLATFORM_X(CreateSimpleWindow); IMPLATFORM_X(SelectInput);
     IMPLATFORM_X(InternAtom); IMPLATFORM_X(Pending); IMPLATFORM_X(NextEvent); IMPLATFORM_X(ConvertSelection);
     IMPLATFORM_X(GetWindowProperty); IMPLATFORM_X(Free); IMPLATFORM_X(SetSelectionOwner); IMPLATFORM_X(GetSelectionOwner);
-    IMPLATFORM_X(ChangeProperty); IMPLATFORM_X(SendEvent); IMPLATFORM_X(Flush); IMPLATFORM_X(MaxRequestSize);
-    IMPLATFORM_X(ExtendedMaxRequestSize);
+    IMPLATFORM_X(ChangeProperty); IMPLATFORM_X(SendEvent); IMPLATFORM_X(Flush); IMPLATFORM_X(Sync);
+    IMPLATFORM_X(SetErrorHandler);
 #undef IMPLATFORM_X
 #undef IMPLATFORM_X_AS
     void* display = ok ? g_X.OpenDisplay(NULL) : NULL;
@@ -428,11 +812,57 @@ static bool ImPlatform_X11_Open()
     return true;
 }
 
-// Answers an application that asks what this one put on the clipboard, or forgets it when another one copied.
+// Xlib ends the process on an error, and a window that asked for the clipboard can go away while it is answered:
+// the errors are ignored while this connection is used. Its errors only arrive while it is read, which only happens
+// here, so the handler of the window library is back in place for its own connection.
+static int ImPlatform_X11_IgnoreError(void*, void*)
+{
+    return 0;
+}
+struct ImPlatform_X11_Errors
+{
+    int (*previous)(void*, void*);
+    ImPlatform_X11_Errors() { previous = g_X.SetErrorHandler(ImPlatform_X11_IgnoreError); }
+    ~ImPlatform_X11_Errors() { g_X.Sync(g_X.display, 0); g_X.SetErrorHandler(previous); }
+};
+
+// An image larger than this goes to the application that pastes it in increments (INCR), as the X11 conventions ask.
+enum { ImPlatform_XIncrement = 256 * 1024 };
+struct ImPlatform_XTransfer
+{
+    ImPlatform_XID requestor, property;
+    int            sent;
+};
+static ImVector<ImPlatform_XTransfer> g_XTransfers;
+
+// Answers an application that asks what this one put on the clipboard, gives the next increment of an image it is
+// reading, or forgets the image when another application copied.
 static void ImPlatform_X11_Serve(const ImPlatform_XEvent* event)
 {
     if (event->type == ImPlatform_XSelectionClear)
+    {
         g_ClipboardPng.clear();
+        g_XTransfers.clear();
+    }
+    if (event->type == ImPlatform_XPropertyNotify && event->property.state == 1)   // PropertyDelete: the increment was read
+        for (int i = 0; i < g_XTransfers.Size; ++i)
+        {
+            ImPlatform_XTransfer& transfer = g_XTransfers[i];
+            if (transfer.requestor != event->property.window || transfer.property != event->property.atom)
+                continue;
+            const int left = g_ClipboardPng.Size - transfer.sent;
+            const int bytes = left < ImPlatform_XIncrement ? left : (int)ImPlatform_XIncrement;
+            g_X.ChangeProperty(g_X.display, transfer.requestor, transfer.property, g_X.png, 8, 0, g_ClipboardPng.Data + transfer.sent, bytes);
+            g_X.Flush(g_X.display);
+            transfer.sent += bytes;
+            if (bytes == 0)     // The empty increment ends the transfer
+            {
+                if (transfer.requestor != g_X.window)
+                    g_X.SelectInput(g_X.display, transfer.requestor, 0);
+                g_XTransfers.erase(&transfer);
+            }
+            break;
+        }
     if (event->type != ImPlatform_XSelectionRequest)
         return;
     ImPlatform_XEvent reply;
@@ -442,26 +872,36 @@ static void ImPlatform_X11_Serve(const ImPlatform_XEvent* event)
     reply.selection.selection = event->request.selection;
     reply.selection.target = event->request.target;
     reply.selection.time = event->request.time;
+    const ImPlatform_XID requestor = event->request.requestor;
     const ImPlatform_XID property = event->request.property ? event->request.property : event->request.target;
-    // shortcut: an image larger than one request (16 MB of PNG with the BIG-REQUESTS extension) is refused; give it
-    // in increments (INCR) when images of that size are copied out.
-    const long words = g_X.ExtendedMaxRequestSize(g_X.display) ? g_X.ExtendedMaxRequestSize(g_X.display) : g_X.MaxRequestSize(g_X.display);
     if (event->request.target == g_X.targets)
     {
         const ImPlatform_XID targets[2] = { g_X.targets, g_X.png };
-        g_X.ChangeProperty(g_X.display, event->request.requestor, property, 4, 32, 0, (const unsigned char*)targets, 2);   // XA_ATOM, PropModeReplace
+        g_X.ChangeProperty(g_X.display, requestor, property, 4, 32, 0, (const unsigned char*)targets, 2);   // XA_ATOM, PropModeReplace
         reply.selection.property = property;
     }
-    else if (event->request.target == g_X.png && g_ClipboardPng.Size > 0 && g_ClipboardPng.Size < words * 4 - 256)
+    else if (event->request.target == g_X.png && g_ClipboardPng.Size > 0)
     {
-        g_X.ChangeProperty(g_X.display, event->request.requestor, property, g_X.png, 8, 0, g_ClipboardPng.Data, g_ClipboardPng.Size);
+        if (g_ClipboardPng.Size <= ImPlatform_XIncrement)
+            g_X.ChangeProperty(g_X.display, requestor, property, g_X.png, 8, 0, g_ClipboardPng.Data, g_ClipboardPng.Size);
+        else
+        {
+            // The property announces the size; each time the requestor deletes it, the next increment replaces it
+            const long size = g_ClipboardPng.Size;
+            const ImPlatform_XTransfer transfer = { requestor, property, 0 };
+            if (requestor != g_X.window)
+                g_X.SelectInput(g_X.display, requestor, 1L << 22);     // PropertyChangeMask
+            g_X.ChangeProperty(g_X.display, requestor, property, g_X.incr, 32, 0, (const unsigned char*)&size, 1);
+            g_XTransfers.push_back(transfer);
+        }
         reply.selection.property = property;
     }
-    g_X.SendEvent(g_X.display, event->request.requestor, 0, 0, &reply);
+    g_X.SendEvent(g_X.display, requestor, 0, 0, &reply);
     g_X.Flush(g_X.display);
 }
 
-// Waits for an event of one type, answering the others. Returns false after a second without it.
+// Waits for the answer to this file's own request (the selection notification, or a new value of its property),
+// answering the other events. Returns false after a second without it.
 static bool ImPlatform_X11_Wait(int type, ImPlatform_XEvent* event)
 {
     for (int ms = 0; ms < 1000; ++ms)
@@ -469,7 +909,8 @@ static bool ImPlatform_X11_Wait(int type, ImPlatform_XEvent* event)
         while (g_X.Pending(g_X.display))
         {
             g_X.NextEvent(g_X.display, event);
-            if (event->type == type && (type != ImPlatform_XPropertyNotify || event->property.state == 0))     // PropertyNewValue
+            if (event->type == type && (type != ImPlatform_XPropertyNotify
+                || (event->property.state == 0 && event->property.window == g_X.window && event->property.atom == g_X.property)))     // PropertyNewValue
                 return true;
             ImPlatform_X11_Serve(event);
         }
@@ -531,7 +972,10 @@ static bool ImPlatform_Native_ReadClipboardImage(ImVector<unsigned char>* rgba, 
     return ok;
 #elif IMPLATFORM_NATIVE_X11
     ImVector<unsigned char> png;
-    return ImPlatform_X11_Open() && ImPlatform_X11_ReadClipboard(&png) && ImPlatform_PngDecode(png.Data, (size_t)png.Size, rgba, width, height);
+    if (!ImPlatform_X11_Open())
+        return false;
+    ImPlatform_X11_Errors ignored;
+    return ImPlatform_X11_ReadClipboard(&png) && ImPlatform_PngDecode(png.Data, (size_t)png.Size, rgba, width, height);
 #else
     (void)rgba; (void)width; (void)height;
     return false;
@@ -546,6 +990,8 @@ static bool ImPlatform_Native_WriteClipboardImage(const unsigned char* rgba, int
 #elif IMPLATFORM_NATIVE_X11
     if (!ImPlatform_X11_Open() || !ImPlatform_PngEncode(rgba, width, height, &g_ClipboardPng))
         return false;
+    ImPlatform_X11_Errors ignored;
+    g_XTransfers.clear();   // An application still reading the previous image gets no more of it
     g_X.SetSelectionOwner(g_X.display, g_X.clipboard, g_X.window, 0);   // CurrentTime
     g_X.Flush(g_X.display);
     return g_X.GetSelectionOwner(g_X.display, g_X.clipboard) == g_X.window;
@@ -559,15 +1005,54 @@ static bool ImPlatform_Native_WriteClipboardImage(const unsigned char* rgba, int
 // What the system libraries need between two frames (ImPlatform_PlatformEvents).
 void ImPlatform_Native_Pump(void)
 {
-#if IMPLATFORM_NATIVE_MACOS
+#if defined(_WIN32)
+#if IMPLATFORM_NATIVE_WINDOW
+#if IM_CURRENT_PLATFORM != IM_PLATFORM_WIN32
+    HWND main = (HWND)ImPlatform_Native_MainWindow();
+    if (main && main != g_NativeHooked)
+    {
+        g_NativeNextProc = (WNDPROC)::SetWindowLongPtrW(main, GWLP_WNDPROC, (LONG_PTR)ImPlatform_Native_WndProc);
+        g_NativeHooked = main;
+    }
+#endif
+#if IMPLATFORM_APP_SUPPORT_DROP_FILE
+    if (g_DropWanted || g_DropWindows.Size > 0)
+        ImPlatform_Native_SyncDrops();      // Dear ImGui's platform windows come and go
+#endif
+#endif
+#elif IMPLATFORM_NATIVE_MACOS
     ImPlatform_Mac_WatchGestures();
 #elif IMPLATFORM_NATIVE_X11
-    ImPlatform_XEvent event;
-    while (g_X.display && g_X.Pending(g_X.display))
+    if (g_X.display && g_X.Pending(g_X.display))
     {
-        g_X.NextEvent(g_X.display, &event);
-        ImPlatform_X11_Serve(&event);
+        ImPlatform_X11_Errors ignored;
+        ImPlatform_XEvent event;
+        while (g_X.Pending(g_X.display))
+        {
+            g_X.NextEvent(g_X.display, &event);
+            ImPlatform_X11_Serve(&event);
+        }
     }
+#endif
+}
+
+// Before the main window is destroyed.
+void ImPlatform_Native_Shutdown(void)
+{
+#if defined(_WIN32) && IMPLATFORM_NATIVE_WINDOW
+#if IMPLATFORM_APP_SUPPORT_DROP_FILE
+    g_DropWanted = false;
+    ImPlatform_Native_SyncDrops();
+    if (g_DropOle)
+        ::OleUninitialize();
+    g_DropOle = false;
+#endif
+#if IM_CURRENT_PLATFORM != IM_PLATFORM_WIN32
+    // Dear ImGui's GLFW backend puts GLFW's own procedure back when it shuts down: this one is then already out
+    if (g_NativeHooked && ::IsWindow(g_NativeHooked) && (WNDPROC)::GetWindowLongPtrW(g_NativeHooked, GWLP_WNDPROC) == ImPlatform_Native_WndProc)
+        ::SetWindowLongPtrW(g_NativeHooked, GWLP_WNDPROC, (LONG_PTR)g_NativeNextProc);
+    g_NativeHooked = NULL;
+#endif
 #endif
 }
 

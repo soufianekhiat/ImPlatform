@@ -1520,6 +1520,9 @@ static int ImPlatformDemo_TouchTest()
 		printf( "SKIP: no touch input on this platform\n" );
 		return 2;
 	}
+	ImPlatform_TouchGesture before;
+	ImPlatform_PlatformEvents();
+	ImPlatform_ConsumeTouchGesture( &before );	// What the window received while it opened is not part of the test
 	ImPlatform_TouchPoint points[ 4 ];
 	TouchTestFinger( 1, 100.0f, 100.0f, 0 );
 	TouchTestFinger( 2, 200.0f, 100.0f, 0 );
@@ -1544,11 +1547,7 @@ static int ImPlatformDemo_TouchTest()
 	ok = TouchTestGesture( "none", false, 0, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f ) && ok;
 	ok = ImPlatform_GetTouchPoints( points, 4 ) == 0 && ok;
 	// A trackpad's pinch is the gesture's zoom, without fingers
-#if IM_CURRENT_PLATFORM == IM_PLATFORM_WIN32
-	// What a precision touchpad sends: a wheel notch marked Ctrl while the key is up (keep it up during the test)
-	SendMessageW( ImPlatform_App_GetHWND(), WM_MOUSEWHEEL, MAKEWPARAM( MK_CONTROL, WHEEL_DELTA ), 0 );
-	ok = TouchTestGesture( "pinch", true, 0, 0.0f, 0.0f, 0.0f, 0.0f, 1.189207f, 0.0f ) && ok;
-#elif IM_CURRENT_PLATFORM == IM_PLATFORM_SDL3
+#if IM_CURRENT_PLATFORM == IM_PLATFORM_SDL3
 #if SDL_VERSION_ATLEAST( 3, 4, 0 )
 	SDL_Event pinch;
 	SDL_zero( pinch );
@@ -1558,6 +1557,12 @@ static int ImPlatformDemo_TouchTest()
 	ImPlatform_PlatformEvents();
 	ok = TouchTestGesture( "pinch", true, 0, 0.0f, 0.0f, 0.0f, 0.0f, 1.5f, 0.0f ) && ok;
 #endif
+#elif defined( _WIN32 )
+	// What a precision touchpad sends to the window, whichever library made it: a wheel notch marked Ctrl while the key
+	// is up (keep it up during the test)
+	ImPlatform_PlatformEvents();
+	SendMessageW( (HWND)ImPlatform_Native_MainWindow(), WM_MOUSEWHEEL, MAKEWPARAM( MK_CONTROL, WHEEL_DELTA ), 0 );
+	ok = TouchTestGesture( "pinch", true, 0, 0.0f, 0.0f, 0.0f, 0.0f, 1.189207f, 0.0f ) && ok;
 #endif
 	if ( ok )
 		printf( "PASS\n" );
@@ -1565,10 +1570,13 @@ static int ImPlatformDemo_TouchTest()
 }
 
 // --drop-test: a drag from another application comes out of the ImPlatform_SetDropCallback callback as events, and
-// each file out of the ImPlatform_SetDropFileCallback one. SDL2 and SDL3: drop events pushed on SDL's queue. Win32: a
-// data object holding a file and a URL handed to the window's drop target, entering, moving and dropping, then
-// entering and leaving. Exit code: 0 pass, 1 fail, 2 on GLFW (nothing can hand it a drop).
-#if IMPLATFORM_APP_SUPPORT_DROP_FILE && ( IM_CURRENT_PLATFORM == IM_PLATFORM_WIN32 || IM_CURRENT_PLATFORM == IM_PLATFORM_SDL2 || IM_CURRENT_PLATFORM == IM_PLATFORM_SDL3 )
+// each file out of the ImPlatform_SetDropFileCallback one. SDL3, and SDL2 off Windows: drop events pushed on SDL's
+// queue. Windows (Win32, GLFW, SDL2): a data object holding a file and a URL handed to the window's drop target,
+// entering, moving and dropping, then entering and leaving; then ImPlatform_DragOut drags a file and a text out, which
+// drop at once on the window itself (no button is held). That last step moves the mouse cursor over the window and
+// back, and keeps the window above the others meanwhile. Exit code: 0 pass, 1 fail, 2 on GLFW off Windows (nothing
+// can hand it a drop).
+#if IMPLATFORM_APP_SUPPORT_DROP_FILE && ( defined( _WIN32 ) || IM_CURRENT_PLATFORM == IM_PLATFORM_SDL2 || IM_CURRENT_PLATFORM == IM_PLATFORM_SDL3 )
 #define DEMO_DROP_TEST 1
 static ImVec2 g_DropTestPos;
 static void DropTestCallback( const ImPlatform_DropEvent* event, void* user_data )
@@ -1587,7 +1595,7 @@ static void DropTestFileCallback( const char*, ImVec2, void* user_data )
 {
 	++*(int*)user_data;
 }
-#if IM_CURRENT_PLATFORM == IM_PLATFORM_WIN32
+#if defined( _WIN32 ) && IM_CURRENT_PLATFORM != IM_PLATFORM_SDL3
 #include <shlobj.h>
 static HGLOBAL DropTestMemory( const void* bytes, size_t size )
 {
@@ -1626,7 +1634,7 @@ static int ImPlatformDemo_DropTest()
 	}
 	ImPlatform_PlatformEvents();
 	at = g_DropTestPos.x == 30.0f && g_DropTestPos.y == 40.0f;
-#elif IM_CURRENT_PLATFORM == IM_PLATFORM_SDL2
+#elif !defined( _WIN32 )
 	const char* want = "B F:a.png T:https://example.com/i.png E ";
 	const struct { Uint32 type; const char* data; } events[ 4 ] = { { SDL_DROPBEGIN, nullptr }, { SDL_DROPFILE, "a.png" },
 		{ SDL_DROPTEXT, "https://example.com/i.png" }, { SDL_DROPCOMPLETE, nullptr } };
@@ -1642,7 +1650,8 @@ static int ImPlatformDemo_DropTest()
 	ImPlatform_PlatformEvents();
 #else
 	const char* want = "B P P F:C:\\a.png T:https://example.com/i.png E B P E ";
-	IDropTarget* target = (IDropTarget*)ImPlatform_Win32_GetDropTarget();
+	IDropTarget* target = (IDropTarget*)ImPlatform_Native_GetDropTarget();
+	const HWND window = (HWND)ImPlatform_Native_MainWindow();
 	IDataObject* data = nullptr;
 	if ( FAILED( SHCreateDataObject( nullptr, 0, nullptr, nullptr, IID_IDataObject, (void**)&data ) ) )
 	{
@@ -1663,7 +1672,7 @@ static int ImPlatformDemo_DropTest()
 	medium.hGlobal = DropTestMemory( &drop, sizeof( drop ) );
 	data->SetData( &format, &medium, TRUE );
 	POINT client = { 30, 40 };
-	ClientToScreen( ImPlatform_App_GetHWND(), &client );
+	ClientToScreen( window, &client );
 	const POINTL pt = { client.x, client.y };
 	DWORD effect = DROPEFFECT_COPY;
 	target->DragEnter( data, 0, pt, &effect );
@@ -1674,6 +1683,34 @@ static int ImPlatformDemo_DropTest()
 	target->DragLeave();
 	data->Release();
 	at = copy && g_DropTestPos.x == 30.0f && g_DropTestPos.y == 40.0f;
+	if ( strcmp( log, want ) != 0 || files != 1 || !at )
+	{
+		printf( "FAIL: events \"%s\", %d files, position %d\n", log, files, (int)at );
+		return 1;
+	}
+	// Dragged out: with no button held the drag ends at once, on the window under the cursor, which is this one
+	static char out_log[ 512 ];
+	const char* paths[ 1 ] = { "C:\\out.png" };
+	POINT cursor = {};
+	RECT rect = {};
+	GetCursorPos( &cursor );
+	ImPlatform_SetAlwaysOnTop( true );
+	ImPlatform_PlatformEvents();
+	GetWindowRect( window, &rect );
+	SetCursorPos( ( rect.left + rect.right ) / 2, ( rect.top + rect.bottom ) / 2 );
+	ImPlatform_SetDropCallback( DropTestCallback, out_log );
+	const bool dropped = ImPlatform_SupportsDragOut() && ImPlatform_DragOut( paths, 1, "dragged out" );
+	SetCursorPos( cursor.x, cursor.y );
+	ImPlatform_SetAlwaysOnTop( false );
+	want = "F:C:\\out.png T:dragged out E ";
+	const size_t tail = strlen( out_log ) > strlen( want ) ? strlen( out_log ) - strlen( want ) : 0;
+	if ( !dropped || strcmp( out_log + tail, want ) != 0 || out_log[ 0 ] != 'B' || files != 2 )
+	{
+		printf( "FAIL: dragged out %d, events \"%s\", %d files\n", (int)dropped, out_log, files );
+		return 1;
+	}
+	strcpy( log, want = "" );
+	files = 1;
 #endif
 	ImPlatform_SetDropCallback( nullptr, nullptr );
 	ImPlatform_SetDropFileCallback( nullptr, nullptr );

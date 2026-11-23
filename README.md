@@ -17,9 +17,9 @@ ImPlatform is a platform abstraction layer that simplifies multiplatform develop
 - **Direct Draws from Draw Callbacks**: switch to a render texture, copy the current target, draw a quad or your own vertex buffers with a custom shader and pushed constants (DirectX 9/11/12, OpenGL 3, Vulkan; DirectX 10 and WebGPU without target switches or copies; Metal draws vertex buffers)
 - **Readback and Compute**: Texture readback (synchronous on every backend but WebGPU, asynchronous on DirectX 11/12) and compute dispatch on DirectX 11/12, Vulkan and OpenGL 4.3+
 - **Depth-Tested Meshes and Device Control**: Depth render textures, meshes with depth / blend / cull states, device loss and recreation (DirectX 11/12)
-- **Pen Input**: Pressure, tilt, barrel rotation and eraser (Win32 with coalesced samples; SDL3 on Windows, Linux and macOS)
-- **Touch Input**: the fingers on a touch screen and their gesture, pan, pinch zoom and rotation (Win32, SDL2, SDL3); a trackpad's pinch (Win32, macOS, SDL 3.4+)
-- **Drag and Drop from Other Applications**: files and text or URLs, with the drag reported while it hovers (Win32, SDL3) or at the release (SDL2, GLFW)
+- **Pen Input**: Pressure, tilt, barrel rotation and eraser (Windows with Win32, GLFW or SDL2, with coalesced samples; SDL3 on Windows, Linux and macOS)
+- **Touch Input**: the fingers on a touch screen and their gesture, pan, pinch zoom and rotation (Windows, SDL2, SDL3); a trackpad's pinch (Windows, macOS, SDL 3.4+)
+- **Drag and Drop with Other Applications**: files and text or URLs dropped on the application, with the drag reported while it hovers (Windows, SDL3) or at the release (SDL2 and GLFW elsewhere); files and text dragged out of it (Windows)
 - **Window State**: borderless fullscreen, always on top, window icon (Win32, GLFW, SDL2, SDL3)
 - **System Theme and Clipboard Images**: the user's light or dark mode, and RGBA images to and from the clipboard, on Windows, macOS and Linux whatever the window library
 - **Screenshots**: a viewport captured as a texture and read back as RGBA pixels (DirectX 9/11/12, OpenGL 3, Vulkan)
@@ -389,7 +389,7 @@ viewport.
 #### Pen and Touch Input
 
 Dear ImGui sees a pen or a finger as the mouse. These calls give what the mouse does not carry, the same way on every
-platform that has it (`ImPlatform_SupportsPen()`: Win32, SDL3; `ImPlatform_SupportsTouch()`: Win32, SDL2, SDL3):
+platform that has it (`ImPlatform_SupportsPen()`: Windows with Win32, GLFW or SDL2, and SDL3; `ImPlatform_SupportsTouch()`: Windows, SDL2, SDL3):
 
 ```cpp
 // Pen: every sample since the previous call (pressure, tilt, rotation, eraser, contact)
@@ -445,12 +445,23 @@ it is the application's work.
 
 | Platform | Drag reported while it hovers | Files | Text / URLs |
 |---|---|---|---|
-| Win32 | yes | yes | yes |
-| SDL3 | yes | yes | yes |
-| SDL2 | no (at the release) | yes | where SDL2 reports it (not on Windows) |
-| GLFW | no (at the release) | yes | no |
+| Windows (Win32, GLFW, SDL2) | yes | yes | yes |
+| SDL3 (Windows, Linux, macOS) | yes | yes | yes |
+| SDL2 on Linux and macOS | no (at the release) | yes | where SDL2 reports it |
+| GLFW on Linux and macOS | no (at the release) | yes | no |
 
-Drops are taken by the main window. Dragging something out of the application is not covered.
+On Windows and with SDL3, Dear ImGui's platform windows (multi-viewports) take drops too; elsewhere the main window does. `event->pos` is in the space of `ImGui::GetMousePos()`: client-area coordinates, or desktop coordinates once multi-viewports are enabled.
+
+Dragging out of the application (Windows; `ImPlatform_SupportsDragOut()` is false elsewhere):
+
+```cpp
+// While a mouse button is held, when a drag that started in the application leaves its window
+if (ImGui::IsMouseDragging(ImGuiMouseButton_Left) && !ImGui::IsWindowHovered(ImGuiHoveredFlags_AnyWindow))
+{
+    const char* paths[] = { "C:/exports/picture.png" };
+    bool taken = ImPlatform_DragOut(paths, 1, NULL);    // files and / or text; returns when the drag ends
+}
+```
 
 #### Window State, System Theme, Clipboard Images
 
@@ -706,7 +717,7 @@ ImPlatformDemo_Win32_DX12 --shader-async-test  # programs compiled asynchronousl
 ImPlatformDemo_Win32_DX12 --screenshot-test    # the main viewport captured and read back
 ImPlatformDemo_SDL3_OpenGL3 --pen-test         # SDL3: synthetic pen events come out as pen samples (exit 2 elsewhere)
 ImPlatformDemo_SDL3_OpenGL3 --touch-test       # two fingers touch, spread, turn and lift, then a trackpad pinch: touch points and gesture (exit 2 on GLFW)
-ImPlatformDemo_Win32_DX11 --drop-test          # a drag with a file and a URL enters, moves, drops, leaves: the drop events (exit 2 on GLFW)
+ImPlatformDemo_Win32_DX11 --drop-test          # a drag with a file and a URL enters, moves, drops, leaves; on Windows a file and a text are dragged out and dropped back (moves the mouse cursor); exit 2 on GLFW off Windows
 ImPlatformDemo_Win32_DX11 --window-test        # fullscreen and back, always on top, icon; prints the system theme
 ImPlatformDemo_Win32_DX11 --clipboard-test     # an image to the clipboard and back (it replaces the clipboard's content); prints the system theme
 ImPlatformDemo_GLFW_OpenGL3 --drag-rect-test   # the move / resize arithmetic of the borderless GLFW window, without a window
@@ -794,11 +805,11 @@ The library has been tested with the following configurations:
 - DirectX 9 shaders are shader model 3: no integer or bit operations, no texel loads, `nointerpolation` varyings are interpolated
 - OpenGL3 multi-viewport with custom shaders may have minor offset issues in some edge cases
 - Custom titlebar on stock GLFW: the window is moved and resized by ImPlatform, without the system's window snapping (TheCherno's fork with `IM_THE_CHERNO_GLFW3` gives native hit-testing)
-- Pen input is on Win32 and SDL3 only (GLFW and SDL2 have no pen API); touch input on Win32, SDL2 and SDL3 (GLFW has no touch API)
-- Drops from other applications: the main window only; GLFW and SDL2 report them at the release, GLFW files only; nothing can be dragged out of the application
-- Clipboard images on Linux need libpng 1.6 and, with GLFW or SDL2, libX11 at run time; an image over 16 MB of PNG is not handed to other applications there
+- Off Windows, pen input needs SDL3 and touch input SDL2 or SDL3 (GLFW has neither there, SDL2 no pen)
+- Off Windows, GLFW and SDL2 report a drop at the release (GLFW: files only), and nothing can be dragged out of the application
+- Clipboard images on Linux need libpng 1.6 and, with GLFW or SDL2, libX11 at run time
 - The macOS theme, clipboard image and trackpad gestures compile in CI but have not run on a Mac with a display
-- A trackpad's pinch is recognized on Win32 as the Ctrl-marked wheel messages a precision touchpad sends; it has not been tried on a touchpad. Linux reports one through SDL 3.4+ only
+- A trackpad's pinch is recognized on Windows as the Ctrl-marked wheel messages a precision touchpad sends; it has not been tried on a touchpad. Linux reports one through SDL 3.4+ only
 - `ImPlatform_CopyBackbuffer()` is DirectX 11 only; `ImPlatform_CaptureViewport()` covers DirectX 9, 11, 12, OpenGL and Vulkan (main viewport only on DirectX 12 and Vulkan)
 
 ## Contributing

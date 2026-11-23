@@ -1571,10 +1571,11 @@ typedef void (*ImPlatform_DropFileCallback)(const char* path, ImVec2 pos, void* 
 // Pass NULL to unregister and disable drop acceptance.
 IMPLATFORM_API void ImPlatform_SetDropFileCallback(ImPlatform_DropFileCallback callback, void* user_data);
 
-// Everything a drag from another application does over the main window. A drop is a Begin event, one File or Text
-// event per item, then an End event. Win32 and SDL3 report the drag before the button is released: Begin comes when
-// it enters the window, Position events follow it, and an End event without items means it left or was cancelled.
-// SDL2 and GLFW report a drop at the release only (GLFW: files only).
+// Everything a drag from another application does over the application's windows. A drop is a Begin event, one
+// File or Text event per item, then an End event. Windows (every window library: an OLE drop target) and SDL3 report
+// the drag before the button is released: Begin comes when it enters a window, Position events follow it, and an End
+// event without items means it left or was cancelled. Elsewhere SDL2 and GLFW report a drop at the release only
+// (GLFW: files only). On Windows and with SDL3, Dear ImGui's platform windows (multi-viewports) take drops too.
 // ImPlatform passes on what the drag carries and nothing more: a link or an image dragged from a browser comes as
 // Text holding its URL (downloading it is the application's work), a file from a file manager as File.
 typedef enum ImPlatform_DropEventType {
@@ -1588,7 +1589,8 @@ typedef enum ImPlatform_DropEventType {
 typedef struct ImPlatform_DropEvent {
     ImPlatform_DropEventType type;
     const char*              text;  // File, Text: valid during the callback. NULL for the other events.
-    ImVec2                   pos;   // Position, File, Text: client-area coordinates (same space as ImGui::GetMousePos()).
+    ImVec2                   pos;   // Position, File, Text: the space of ImGui::GetMousePos(): client-area coordinates of
+                                    // the main window, or desktop coordinates when multi-viewports are enabled.
 } ImPlatform_DropEvent;
 
 typedef void (*ImPlatform_DropCallback)(const ImPlatform_DropEvent* event, void* user_data);
@@ -1599,14 +1601,23 @@ IMPLATFORM_API void ImPlatform_SetDropCallback(ImPlatform_DropCallback callback,
 
 #endif // IMPLATFORM_APP_SUPPORT_DROP_FILE
 
+// Dragging out of the application: files (UTF-8 paths) and / or text that another application takes where the user
+// drops them. Call it while a mouse button is held, when a drag that started in the application should leave it (the
+// mouse left the window during an ImGui drag, for instance). It returns when the drag ends: true when it was dropped
+// on something that took it. The application's frames stop meanwhile; the system draws the drag.
+// Windows (every window library); ImPlatform_SupportsDragOut() is false elsewhere and the call returns false.
+IMPLATFORM_API bool ImPlatform_SupportsDragOut(void);
+IMPLATFORM_API bool ImPlatform_DragOut(const char* const* file_paths, int file_count, const char* text);
+
 // ============================================================================
 // Pen / Stylus Input API
 // ============================================================================
 // Pressure and tilt from pen digitizers (Dear ImGui carries no pressure axis). Pen moves still reach ImGui as mouse
 // events; this adds the pen-only axes and every hardware sample between frames (coalesced history).
-// Implemented on Win32 (Windows Ink pointer messages: WM_POINTER*, GetPointerPenInfoHistory: every hardware sample)
-// and on SDL3 (its pen events, on Windows, Linux and macOS: one sample per event, each carrying the last value of the
-// axes SDL reports separately; the main window only). Other platforms report ImPlatform_SupportsPen() == false.
+// Implemented on Windows with every window library (Windows Ink pointer messages of the main window: WM_POINTER*,
+// GetPointerPenInfoHistory: every hardware sample) and on SDL3 (its pen events, on Windows, Linux and macOS: one
+// sample per event, each carrying the last value of the axes SDL reports separately; the main window only). Other
+// platforms report ImPlatform_SupportsPen() == false.
 
 typedef struct ImPlatform_PenSample {
     float  x, y;            // Client-area coordinates (same space as ImGui::GetMousePos()).
@@ -1637,11 +1648,13 @@ IMPLATFORM_API double ImPlatform_GetPenClock(void);
 // ============================================================================
 // The fingers on a touch screen and what they do together: pan, pinch, turn. Touches still reach ImGui as mouse events
 // (the first finger moves and clicks); this adds the other fingers and the gesture, computed the same way on every
-// platform from the finger positions. Implemented on Win32 (pointer messages: WM_POINTER*) and on SDL2 and SDL3 (their
-// finger events), for the main window. Other platforms report ImPlatform_SupportsTouch() == false.
-// A pinch on a trackpad comes as the gesture's zoom with finger_count 0 (Win32: a precision touchpad, a wheel notch
-// being a zoom of 2^(1/4); macOS: with every window library, and the two-finger turn as its rotation; SDL 3.4 and
-// later: its pinch events). The trackpad's two-finger pan is the mouse wheel ImGui receives.
+// platform from the finger positions. Implemented on Windows with every window library (pointer messages:
+// WM_POINTER*; SDL2 and SDL3: their finger events) and on SDL2 and SDL3 elsewhere, for the main window. Other
+// platforms report ImPlatform_SupportsTouch() == false.
+// A pinch on a trackpad comes as the gesture's zoom with finger_count 0 (Windows with Win32, GLFW or SDL2: a
+// precision touchpad, a wheel notch being a zoom of 2^(1/4); macOS: with every window library, and the two-finger turn
+// as its rotation; SDL 3.4 and later: its pinch events). The trackpad's two-finger pan is the mouse wheel ImGui
+// receives.
 
 typedef struct ImPlatform_TouchPoint {
     unsigned long long id;  // The same from the finger's contact to its lift.
@@ -2033,6 +2046,12 @@ IMPLATFORM_API void ImPlatform_SetDropCallback(ImPlatform_DropCallback callback,
 // Internal helper: fires the user's drop callbacks (called from platform backends)
 void ImPlatform_NotifyDrop(ImPlatform_DropEventType type, const char* utf8, ImVec2 client_pos)
 {
+    // Dear ImGui's mouse space: desktop coordinates once multi-viewports are enabled
+    if (ImGui::GetCurrentContext() && (ImGui::GetIO().ConfigFlags & ImGuiConfigFlags_ViewportsEnable))
+    {
+        client_pos.x += ImGui::GetMainViewport()->Pos.x;
+        client_pos.y += ImGui::GetMainViewport()->Pos.y;
+    }
     if (g_DropCallback)
     {
         const ImPlatform_DropEvent event = { type, utf8, client_pos };
@@ -2072,7 +2091,9 @@ void ImPlatform_Pen_Leave(void)
 
 IMPLATFORM_API bool ImPlatform_SupportsPen(void)
 {
-#if IM_CURRENT_PLATFORM == IM_PLATFORM_WIN32 || IM_CURRENT_PLATFORM == IM_PLATFORM_SDL3
+    // Windows: the pointer messages of the window, whichever library made it (ImPlatform_native.cpp)
+#if IM_CURRENT_PLATFORM == IM_PLATFORM_WIN32 || IM_CURRENT_PLATFORM == IM_PLATFORM_SDL3 \
+    || (defined(_WIN32) && (IM_CURRENT_PLATFORM == IM_PLATFORM_GLFW || IM_CURRENT_PLATFORM == IM_PLATFORM_SDL2))
     return true;
 #else
     return false;
@@ -2101,13 +2122,13 @@ IMPLATFORM_API int ImPlatform_ConsumePenSamples(ImPlatform_PenSample* out, int m
 
 IMPLATFORM_API double ImPlatform_GetPenClock(void)
 {
-#if IM_CURRENT_PLATFORM == IM_PLATFORM_WIN32
+#if IM_CURRENT_PLATFORM == IM_PLATFORM_SDL3
+    return (double)SDL_GetTicksNS() * 1e-9;
+#elif defined(_WIN32)
     LARGE_INTEGER now, freq;
     ::QueryPerformanceCounter(&now);
     ::QueryPerformanceFrequency(&freq);
     return (double)now.QuadPart / (double)freq.QuadPart;
-#elif IM_CURRENT_PLATFORM == IM_PLATFORM_SDL3
-    return (double)SDL_GetTicksNS() * 1e-9;
 #else
     return ImGui::GetTime();
 #endif
@@ -2195,7 +2216,8 @@ void ImPlatform_Touch_Rotate(float degrees)
 
 IMPLATFORM_API bool ImPlatform_SupportsTouch(void)
 {
-#if IM_CURRENT_PLATFORM == IM_PLATFORM_WIN32 || IM_CURRENT_PLATFORM == IM_PLATFORM_SDL2 || IM_CURRENT_PLATFORM == IM_PLATFORM_SDL3
+#if IM_CURRENT_PLATFORM == IM_PLATFORM_WIN32 || IM_CURRENT_PLATFORM == IM_PLATFORM_SDL2 || IM_CURRENT_PLATFORM == IM_PLATFORM_SDL3 \
+    || (defined(_WIN32) && IM_CURRENT_PLATFORM == IM_PLATFORM_GLFW)
     return true;
 #else
     return false;

@@ -345,8 +345,19 @@ IMPLATFORM_API bool ImPlatform_PlatformEvents(void)
                 : event.type == SDL_EVENT_DROP_FILE ? ImPlatform_DropEvent_File
                 : event.type == SDL_EVENT_DROP_TEXT ? ImPlatform_DropEvent_Text : ImPlatform_DropEvent_End;
             const bool item = type == ImPlatform_DropEvent_File || type == ImPlatform_DropEvent_Text;
+            // From the window the drag is over (one of Dear ImGui's platform windows, perhaps) to the main window
+            ImVec2 pos(event.drop.x, event.drop.y);
+            SDL_Window* over = SDL_GetWindowFromID(event.drop.windowID);
+            if (over && over != g_AppData.pWindow)
+            {
+                int ox = 0, oy = 0, mx = 0, my = 0;
+                SDL_GetWindowPosition(over, &ox, &oy);
+                SDL_GetWindowPosition(g_AppData.pWindow, &mx, &my);
+                pos.x += (float)(ox - mx);
+                pos.y += (float)(oy - my);
+            }
             if (!item || event.drop.data)
-                ImPlatform_NotifyDrop(type, item ? event.drop.data : NULL, ImVec2(event.drop.x, event.drop.y));
+                ImPlatform_NotifyDrop(type, item ? event.drop.data : NULL, pos);
         }
 #endif
     }

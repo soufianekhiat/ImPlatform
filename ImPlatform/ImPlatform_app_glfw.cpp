@@ -269,6 +269,7 @@ IMPLATFORM_API void ImPlatform_ShutdownPostGfxAPI(void)
 // ImPlatform API - DestroyWindow
 IMPLATFORM_API void ImPlatform_DestroyWindow(void)
 {
+    ImPlatform_Native_Shutdown();
     glfwDestroyWindow(g_AppData.pWindow);
     g_AppData.pWindow = NULL;
     glfwTerminate();
@@ -353,6 +354,11 @@ void ImPlatform_App_OnDropFileCallbackChanged(bool has_callback)
     g_AppData.bDropFileEnabled = has_callback;
     if (g_AppData.pWindow)
         glfwSetDropCallback(g_AppData.pWindow, has_callback ? glfw_drop_callback : NULL);
+#ifdef _WIN32
+    // Windows: the window is made an OLE drop target, which reports the drag while it hovers and carries text. GLFW's
+    // callback, files at the release, stays for a thread that has no OLE.
+    ImPlatform_Native_AcceptDrops(has_callback);
+#endif
 }
 #endif // IMPLATFORM_APP_SUPPORT_DROP_FILE
 

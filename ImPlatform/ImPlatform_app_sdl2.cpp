@@ -337,6 +337,7 @@ IMPLATFORM_API void ImPlatform_DestroyWindow(void)
     }
 #endif
 
+    ImPlatform_Native_Shutdown();
     if (g_AppData.pWindow)
     {
         SDL_DestroyWindow(g_AppData.pWindow);
@@ -351,6 +352,11 @@ void ImPlatform_App_OnDropFileCallbackChanged(bool has_callback)
 {
     for (Uint32 type = SDL_DROPFILE; type <= SDL_DROPCOMPLETE; ++type)
         SDL_EventState(type, has_callback ? SDL_ENABLE : SDL_DISABLE);
+#ifdef _WIN32
+    // Windows: the window is made an OLE drop target, which reports the drag while it hovers and carries text. SDL2's
+    // events, files at the release, stay for a thread that has no OLE.
+    ImPlatform_Native_AcceptDrops(has_callback);
+#endif
 }
 #endif // IMPLATFORM_APP_SUPPORT_DROP_FILE
 

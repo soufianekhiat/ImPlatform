@@ -50,6 +50,12 @@ Changes since 2.0.0 (the `v2` branch), in progress on the `v3` branch.
   system itself, so they do not depend on what GLFW, SDL2 or SDL3 expose. macOS: CoreFoundation, the pasteboard,
   ImageIO and the Objective-C runtime, from C++. Linux: libdbus, libpng and libX11, loaded at run time (no new build
   dependency). macOS builds link the ApplicationServices framework.
+- **Windows, whichever library made the window**: the Windows Ink pen, the touch points, the trackpad pinch and the
+  OLE drop target of the Win32 backend are those of a GLFW or SDL2 window too (`ImPlatform_native.cpp`; SDL3 reads them
+  itself). GLFW gains pen and touch there, SDL2 the pen, and both report a drag while it hovers and take dropped text.
+- **Drops on Dear ImGui's platform windows** (multi-viewports) on Windows and with SDL3.
+- **Dragging out of the application**: `ImPlatform_DragOut()` gives files and text to the application the user drops
+  them on (Windows; `ImPlatform_SupportsDragOut()`). Demo `--drop-test` drags out and drops on its own window.
 - **Win32 + Vulkan** build configuration (Sharpmake `Win32_Vulkan`, CMake `ImPlatformDemo_Win32_Vulkan`, CI) and
   `IM_TARGET_WIN32_VULKAN`.
 - **Borderless window on stock GLFW** is resized by its edges (`ImPlatform_BorderlessParams::resizeBorderSize`,
@@ -75,6 +81,8 @@ Changes since 2.0.0 (the `v2` branch), in progress on the `v3` branch.
 - New source file `ImPlatform/ImPlatform_shader_common.cpp` (included by `ImPlatform.h`; listed in `CMakeLists.txt`).
 
 ### Fixed
+- The position of a drop is in the space of `ImGui::GetMousePos()`, as documented: with multi-viewports enabled it was
+  still relative to the main window.
 - `ImPlatform_UpdateVertexBuffer()` / `ImPlatform_UpdateIndexBuffer()` took their last two arguments as (count, offset)
   on DirectX 9, 10, 11, 12, Vulkan and WebGPU, against the header's (offset, count) that OpenGL and Metal followed: a
   call written for the header updated nothing there. Every backend now follows the header; a call that passed
