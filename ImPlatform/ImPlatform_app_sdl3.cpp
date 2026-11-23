@@ -286,7 +286,7 @@ IMPLATFORM_API bool ImPlatform_PlatformEvents(void)
     while (SDL_PollEvent(&event))
     {
         ImGui_ImplSDL3_ProcessEvent(&event);
-        if (event.type >= SDL_EVENT_PEN_FIRST && event.type <= SDL_EVENT_PEN_LAST)
+        if (event.type >= SDL_EVENT_PEN_PROXIMITY_IN && event.type <= SDL_EVENT_PEN_AXIS)
             ImPlatform_SDL3_PenEvent(event);
         if (event.type == SDL_EVENT_QUIT)
         {
