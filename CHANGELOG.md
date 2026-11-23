@@ -39,11 +39,12 @@ Changes since 2.0.0 (the `v2` branch), in progress on the `v3` branch.
   committed resource per buffer, no deferred release, no wait), and a Stream buffer drawn in a later frame without an
   update draws nothing there. Vulkan retires destroyed buffers and takes them again once the frames that could draw
   them have completed: `ImPlatform_DestroyVertexBuffer()` / `ImPlatform_DestroyIndexBuffer()` no longer wait for the
-  device. DirectX 9, 10 and 11 keep destroyed Stream buffers for the next one of a close size, which discards them.
+  device. DirectX 9, 10, 11, Metal and WebGPU keep destroyed Stream buffers for the next one of a close size.
 - **`ImPlatform_UpdateVertexBuffer()` / `ImPlatform_UpdateIndexBuffer()` may be called every frame**, and between two
   draws of a frame: draws already recorded keep the content they were recorded with. DirectX 12, Vulkan and Metal wrote
   into memory the GPU could still be reading; they now write another version of the buffer and take it back once the
-  frames that read it have completed. On DirectX 10 and 11 Dynamic buffers are updated by `UpdateSubresource`, on
+  frames that read it have completed. WebGPU applied an update to the draws already recorded in the frame; it writes
+  another buffer too. On DirectX 10 and 11 Dynamic buffers are updated by `UpdateSubresource`, on
   DirectX 9 they are in the managed pool: a partial update is ordered with the draws as a whole one is. Demo
   `--buffer-update-test`, `--mesh-stream-test`.
 - DirectX 10, 11 and 12 share one HLSL compile function (`ImPlatform_D3DCompileShader` in `ImPlatform_Internal.h`):

@@ -691,9 +691,10 @@ IMPLATFORM_API void ImPlatform_PopSampler(void);
 // Stream: content for one frame. It holds for the draws recorded in the frame the buffer was created in, or last
 // updated as a whole in. Create it each frame (destroying it once its draws are recorded frees the handle only), or
 // keep the handle and update the whole buffer each frame. DirectX 12 takes its memory from the per-frame upload arena:
-// no resource is created or released and nothing waits for the GPU; DirectX 9, 10, 11 and Vulkan give a destroyed
-// Stream buffer to the next one of a close size. Drawn in a later frame without an update, a Stream buffer draws
-// nothing on DirectX 12 (the other backends keep its content, which is not to be relied on).
+// no resource is created or released and nothing waits for the GPU; DirectX 9, 10, 11, Vulkan, Metal and WebGPU give
+// a destroyed Stream buffer to the next one of a close size (OpenGL leaves that to the driver: creating a buffer there
+// is the upload). Drawn in a later frame without an update, a Stream buffer draws nothing on DirectX 12 (the other
+// backends keep its content, which is not to be relied on).
 typedef enum ImPlatform_BufferUsage {
     ImPlatform_BufferUsage_Static,
     ImPlatform_BufferUsage_Dynamic,
@@ -761,11 +762,10 @@ IMPLATFORM_API ImPlatform_VertexBuffer ImPlatform_CreateVertexBuffer(
 // count: Number of vertices to update; the rest of the buffer keeps its content
 // Returns: true on success, false on failure
 // Draws already recorded, in this frame or in frames the GPU has not finished, keep the content they were recorded
-// with, so a buffer may be updated every frame and between two draws of a frame: DirectX 12, Vulkan and Metal write
-// another version of the buffer while the current one may still be read and take it back once those frames have
-// completed; DirectX 9, 10, 11 and OpenGL order the update with the draws. Limits: on WebGPU an update applies to
-// every draw of the frame. A Stream buffer takes an update of the whole buffer only once it was drawn (DirectX 9, 10,
-// 11) or once its frame has passed (DirectX 12).
+// with, so a buffer may be updated every frame and between two draws of a frame: DirectX 12, Vulkan, Metal and WebGPU
+// write another version of the buffer while the current one may still be read (and take it back once those frames
+// have completed); DirectX 9, 10, 11 and OpenGL order the update with the draws. A Stream buffer takes an update of
+// the whole buffer only once it was drawn (DirectX 9, 10, 11) or once its frame has passed (DirectX 12).
 IMPLATFORM_API bool ImPlatform_UpdateVertexBuffer(
     ImPlatform_VertexBuffer buffer,
     const void* vertex_data,

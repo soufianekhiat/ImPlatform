@@ -759,8 +759,10 @@ IMPLATFORM_API bool ImPlatform_GfxAPISwapBuffer(void)
 }
 
 // ImPlatform API - ShutdownGfxAPI
+static void ImPlatform_WGPU_ReleaseStreamBuffers();
 IMPLATFORM_API void ImPlatform_ShutdownGfxAPI(void)
 {
+    ImPlatform_WGPU_ReleaseStreamBuffers();
     if (g_DefaultSampler)
     {
         wgpuSamplerRelease(g_DefaultSampler);
@@ -1514,9 +1516,15 @@ IMPLATFORM_API void ImPlatform_DestroyTexture(ImTextureID texture_id)
 // Custom Vertex/Index Buffer Management API - WebGPU
 // ============================================================================
 
+// The queue applies a write at once, ahead of the commands being recorded: a buffer drawn in the frame being recorded
+// is left to those draws and its handle gets another buffer, the previous content copied on the queue first when the
+// update is partial. Destroyed Stream buffers are kept for the next Stream buffer of a close size, once the frame
+// that drew them is over: buffers created and destroyed every frame create no WebGPU buffer.
 struct ImPlatform_VertexBufferData_WebGPU
 {
     WGPUBuffer buffer;
+    uint64_t capacity;      // Of 'buffer', in bytes
+    int drawn;              // The last frame a draw of it was recorded in
     ImPlatform_VertexBufferDesc desc;
     ImPlatform_VertexAttribute* attributes;
 };
@@ -1524,19 +1532,119 @@ struct ImPlatform_VertexBufferData_WebGPU
 struct ImPlatform_IndexBufferData_WebGPU
 {
     WGPUBuffer buffer;
+    uint64_t capacity;
+    int drawn;
     ImPlatform_IndexBufferDesc desc;
 };
+
+struct ImPlatform_StreamBuffer_WebGPU
+{
+    WGPUBuffer buffer;
+    uint64_t capacity;
+    bool index;
+    int drawn;
+    int frame;              // The frame it was destroyed in
+};
+static ImVector<ImPlatform_StreamBuffer_WebGPU> g_StreamBuffers;
+
+// A buffer of 'size' bytes holding 'data' (NULL: left unwritten): for a Stream buffer, a destroyed one when one fits.
+static WGPUBuffer ImPlatform_WGPU_NewBuffer(const void* data, uint64_t size, bool index, bool stream, uint64_t* capacity)
+{
+    if (!size || !g_GfxData.device || !g_GfxData.queue)
+        return nullptr;
+    const int frame = ImGui::GetFrameCount();
+    // Queue writes take sizes that are multiples of 4: other sizes get a buffer of their own, written while mapped.
+    for (int i = stream && (size & 3) == 0 ? g_StreamBuffers.Size - 1 : -1; i >= 0; i--)
+    {
+        const ImPlatform_StreamBuffer_WebGPU b = g_StreamBuffers[i];
+        if (b.index == index && b.capacity >= size && b.capacity / 2 <= size && b.drawn != frame)
+        {
+            g_StreamBuffers.erase(g_StreamBuffers.Data + i);
+            if (data)
+                wgpuQueueWriteBuffer(g_GfxData.queue, b.buffer, 0, data, (size_t)size);
+            *capacity = b.capacity;
+            return b.buffer;
+        }
+        if (frame - b.frame > 240)      // Not taken for a while
+        {
+            wgpuBufferRelease(b.buffer);
+            g_StreamBuffers.erase(g_StreamBuffers.Data + i);
+        }
+    }
+    WGPUBufferDescriptor buf_desc = {};
+    buf_desc.usage = (index ? WGPUBufferUsage_Index : WGPUBufferUsage_Vertex) | WGPUBufferUsage_CopyDst | WGPUBufferUsage_CopySrc;
+    buf_desc.size = (size + 3) & ~(uint64_t)3;
+    buf_desc.mappedAtCreation = data != nullptr;
+    WGPUBuffer buffer = wgpuDeviceCreateBuffer(g_GfxData.device, &buf_desc);
+    if (!buffer)
+        return nullptr;
+    if (data)
+    {
+        void* mapped = wgpuBufferGetMappedRange(buffer, 0, (size_t)buf_desc.size);
+        if (mapped)
+            memcpy(mapped, data, (size_t)size);
+        wgpuBufferUnmap(buffer);
+    }
+    *capacity = buf_desc.size;
+    return buffer;
+}
+
+static void ImPlatform_WGPU_ReleaseBuffer(WGPUBuffer buffer, uint64_t capacity, bool index, bool stream, int drawn)
+{
+    if (!buffer)
+        return;
+    if (stream)
+    {
+        const ImPlatform_StreamBuffer_WebGPU b = { buffer, capacity, index, drawn, ImGui::GetFrameCount() };
+        g_StreamBuffers.push_back(b);
+    }
+    else
+        wgpuBufferRelease(buffer);      // The commands that draw it keep it alive
+}
+
+static void ImPlatform_WGPU_ReleaseStreamBuffers()
+{
+    for (const ImPlatform_StreamBuffer_WebGPU& b : g_StreamBuffers)
+        wgpuBufferRelease(b.buffer);
+    g_StreamBuffers.clear();
+}
+
+// size: of the buffer's content.
+static bool ImPlatform_WGPU_UpdateBuffer(WGPUBuffer* buffer, uint64_t* capacity, int* drawn, bool index, bool stream,
+                                         const void* data, uint64_t at, uint64_t bytes, uint64_t size)
+{
+    if (!*buffer || !g_GfxData.queue || !g_GfxData.device)
+        return false;
+    if (*drawn == ImGui::GetFrameCount())
+    {
+        uint64_t next_capacity = 0;
+        WGPUBuffer next = ImPlatform_WGPU_NewBuffer(nullptr, size, index, stream, &next_capacity);
+        if (!next)
+            return false;
+        if (bytes != size)
+        {
+            // The rest of the content: copied on the queue now, as the write below is.
+            WGPUCommandEncoderDescriptor enc_desc = {};
+            WGPUCommandEncoder encoder = wgpuDeviceCreateCommandEncoder(g_GfxData.device, &enc_desc);
+            wgpuCommandEncoderCopyBufferToBuffer(encoder, *buffer, 0, next, 0, *capacity < next_capacity ? *capacity : next_capacity);
+            WGPUCommandBufferDescriptor cmd_desc = {};
+            WGPUCommandBuffer cmd = wgpuCommandEncoderFinish(encoder, &cmd_desc);
+            wgpuQueueSubmit(g_GfxData.queue, 1, &cmd);
+            wgpuCommandBufferRelease(cmd);
+            wgpuCommandEncoderRelease(encoder);
+        }
+        ImPlatform_WGPU_ReleaseBuffer(*buffer, *capacity, index, stream, *drawn);
+        *buffer = next;
+        *capacity = next_capacity;
+        *drawn = 0;
+    }
+    wgpuQueueWriteBuffer(g_GfxData.queue, *buffer, at, data, (size_t)bytes);
+    return true;
+}
 
 // Currently bound buffers (for DrawIndexed)
 static ImPlatform_VertexBufferData_WebGPU* g_BoundVertexBuffer = nullptr;
 static ImPlatform_IndexBufferData_WebGPU* g_BoundIndexBuffer = nullptr;
-
-static WGPUBufferUsage ImPlatform_GetWGPUBufferUsage(ImPlatform_BufferUsage usage, WGPUBufferUsage bind)
-{
-    WGPUBufferUsage flags = bind | WGPUBufferUsage_CopyDst;
-    (void)usage; // WebGPU doesn't distinguish Static/Dynamic/Stream in buffer creation
-    return flags;
-}
 
 IMPLATFORM_API ImPlatform_VertexBuffer ImPlatform_CreateVertexBuffer(const void* vertex_data, const ImPlatform_VertexBufferDesc* desc)
 {
@@ -1555,26 +1663,14 @@ IMPLATFORM_API ImPlatform_VertexBuffer ImPlatform_CreateVertexBuffer(const void*
         vb->desc.attributes = vb->attributes;
     }
 
-    size_t byte_size = (size_t)desc->vertex_count * desc->vertex_stride;
-
-    WGPUBufferDescriptor buf_desc = {};
-    buf_desc.usage = ImPlatform_GetWGPUBufferUsage(desc->usage, WGPUBufferUsage_Vertex);
-    buf_desc.size = byte_size;
-    buf_desc.mappedAtCreation = true;
-
-    vb->buffer = wgpuDeviceCreateBuffer(g_GfxData.device, &buf_desc);
+    vb->buffer = ImPlatform_WGPU_NewBuffer(vertex_data, (uint64_t)desc->vertex_count * desc->vertex_stride, false,
+                                           desc->usage == ImPlatform_BufferUsage_Stream, &vb->capacity);
     if (!vb->buffer)
     {
         delete[] vb->attributes;
         delete vb;
         return NULL;
     }
-
-    // Copy initial data
-    void* mapped = wgpuBufferGetMappedRange(vb->buffer, 0, byte_size);
-    if (mapped)
-        memcpy(mapped, vertex_data, byte_size);
-    wgpuBufferUnmap(vb->buffer);
 
     return (ImPlatform_VertexBuffer)vb;
 }
@@ -1585,11 +1681,11 @@ IMPLATFORM_API bool ImPlatform_UpdateVertexBuffer(ImPlatform_VertexBuffer vertex
         return false;
 
     ImPlatform_VertexBufferData_WebGPU* vb = (ImPlatform_VertexBufferData_WebGPU*)vertex_buffer;
-    size_t byte_offset = (size_t)offset * vb->desc.vertex_stride;
-    size_t byte_size = (size_t)vertex_count * vb->desc.vertex_stride;
-
-    wgpuQueueWriteBuffer(g_GfxData.queue, vb->buffer, byte_offset, vertex_data, byte_size);
-    return true;
+    if ((uint64_t)offset + vertex_count > vb->desc.vertex_count)
+        return false;
+    const uint64_t stride = vb->desc.vertex_stride;
+    return ImPlatform_WGPU_UpdateBuffer(&vb->buffer, &vb->capacity, &vb->drawn, false, vb->desc.usage == ImPlatform_BufferUsage_Stream,
+                                        vertex_data, offset * stride, vertex_count * stride, vb->desc.vertex_count * stride);
 }
 
 IMPLATFORM_API void ImPlatform_DestroyVertexBuffer(ImPlatform_VertexBuffer vertex_buffer)
@@ -1598,7 +1694,9 @@ IMPLATFORM_API void ImPlatform_DestroyVertexBuffer(ImPlatform_VertexBuffer verte
         return;
 
     ImPlatform_VertexBufferData_WebGPU* vb = (ImPlatform_VertexBufferData_WebGPU*)vertex_buffer;
-    if (vb->buffer) wgpuBufferRelease(vb->buffer);
+    if (g_BoundVertexBuffer == vb)
+        g_BoundVertexBuffer = nullptr;
+    ImPlatform_WGPU_ReleaseBuffer(vb->buffer, vb->capacity, false, vb->desc.usage == ImPlatform_BufferUsage_Stream, vb->drawn);
     delete[] vb->attributes;
     delete vb;
 }
@@ -1613,24 +1711,13 @@ IMPLATFORM_API ImPlatform_IndexBuffer ImPlatform_CreateIndexBuffer(const void* i
     ib->desc = *desc;
 
     unsigned int index_size = (desc->format == ImPlatform_IndexFormat_UInt16) ? sizeof(uint16_t) : sizeof(uint32_t);
-    size_t byte_size = (size_t)desc->index_count * index_size;
-
-    WGPUBufferDescriptor buf_desc = {};
-    buf_desc.usage = ImPlatform_GetWGPUBufferUsage(desc->usage, WGPUBufferUsage_Index);
-    buf_desc.size = byte_size;
-    buf_desc.mappedAtCreation = true;
-
-    ib->buffer = wgpuDeviceCreateBuffer(g_GfxData.device, &buf_desc);
+    ib->buffer = ImPlatform_WGPU_NewBuffer(index_data, (uint64_t)desc->index_count * index_size, true,
+                                           desc->usage == ImPlatform_BufferUsage_Stream, &ib->capacity);
     if (!ib->buffer)
     {
         delete ib;
         return NULL;
     }
-
-    void* mapped = wgpuBufferGetMappedRange(ib->buffer, 0, byte_size);
-    if (mapped)
-        memcpy(mapped, index_data, byte_size);
-    wgpuBufferUnmap(ib->buffer);
 
     return (ImPlatform_IndexBuffer)ib;
 }
@@ -1641,12 +1728,11 @@ IMPLATFORM_API bool ImPlatform_UpdateIndexBuffer(ImPlatform_IndexBuffer index_bu
         return false;
 
     ImPlatform_IndexBufferData_WebGPU* ib = (ImPlatform_IndexBufferData_WebGPU*)index_buffer;
-    unsigned int index_size = (ib->desc.format == ImPlatform_IndexFormat_UInt16) ? sizeof(uint16_t) : sizeof(uint32_t);
-    size_t byte_offset = (size_t)offset * index_size;
-    size_t byte_size = (size_t)index_count * index_size;
-
-    wgpuQueueWriteBuffer(g_GfxData.queue, ib->buffer, byte_offset, index_data, byte_size);
-    return true;
+    if ((uint64_t)offset + index_count > ib->desc.index_count)
+        return false;
+    const uint64_t index_size = (ib->desc.format == ImPlatform_IndexFormat_UInt16) ? sizeof(uint16_t) : sizeof(uint32_t);
+    return ImPlatform_WGPU_UpdateBuffer(&ib->buffer, &ib->capacity, &ib->drawn, true, ib->desc.usage == ImPlatform_BufferUsage_Stream,
+                                        index_data, offset * index_size, index_count * index_size, ib->desc.index_count * index_size);
 }
 
 IMPLATFORM_API void ImPlatform_DestroyIndexBuffer(ImPlatform_IndexBuffer index_buffer)
@@ -1655,7 +1741,9 @@ IMPLATFORM_API void ImPlatform_DestroyIndexBuffer(ImPlatform_IndexBuffer index_b
         return;
 
     ImPlatform_IndexBufferData_WebGPU* ib = (ImPlatform_IndexBufferData_WebGPU*)index_buffer;
-    if (ib->buffer) wgpuBufferRelease(ib->buffer);
+    if (g_BoundIndexBuffer == ib)
+        g_BoundIndexBuffer = nullptr;
+    ImPlatform_WGPU_ReleaseBuffer(ib->buffer, ib->capacity, true, ib->desc.usage == ImPlatform_BufferUsage_Stream, ib->drawn);
     delete ib;
 }
 
@@ -1703,6 +1791,7 @@ IMPLATFORM_API void ImPlatform_DrawIndexed(unsigned int primitive_type, unsigned
 
     if (g_BoundVertexBuffer && g_BoundVertexBuffer->buffer)
     {
+        g_BoundVertexBuffer->drawn = ImGui::GetFrameCount();
         size_t vb_size = (size_t)g_BoundVertexBuffer->desc.vertex_count * g_BoundVertexBuffer->desc.vertex_stride;
         wgpuRenderPassEncoderSetVertexBuffer(pass, 0, g_BoundVertexBuffer->buffer, 0, vb_size);
     }
@@ -1713,6 +1802,7 @@ IMPLATFORM_API void ImPlatform_DrawIndexed(unsigned int primitive_type, unsigned
             ? WGPUIndexFormat_Uint16 : WGPUIndexFormat_Uint32;
         unsigned int index_size = (g_BoundIndexBuffer->desc.format == ImPlatform_IndexFormat_UInt16) ? 2 : 4;
         size_t ib_size = (size_t)g_BoundIndexBuffer->desc.index_count * index_size;
+        g_BoundIndexBuffer->drawn = ImGui::GetFrameCount();
         wgpuRenderPassEncoderSetIndexBuffer(pass, g_BoundIndexBuffer->buffer, fmt, 0, ib_size);
         if (index_count == 0 && start_index < g_BoundIndexBuffer->desc.index_count)
             index_count = g_BoundIndexBuffer->desc.index_count - start_index;     // The rest of the buffer

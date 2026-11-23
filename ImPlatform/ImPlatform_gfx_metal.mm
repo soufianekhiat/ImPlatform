@@ -411,9 +411,10 @@ IMPLATFORM_API bool ImPlatform_GfxAPISwapBuffer(void)
 }
 
 // ImPlatform API - ShutdownGfxAPI
+static void ImPlatform_Metal_ReleaseRetiredBuffers();
 IMPLATFORM_API void ImPlatform_ShutdownGfxAPI(void)
 {
-    // Nothing special needed
+    ImPlatform_Metal_ReleaseRetiredBuffers();
 }
 
 // ImPlatform API - ShutdownWindow
@@ -1601,11 +1602,16 @@ IMPLATFORM_API void ImPlatform_EndCustomShader(ImDrawList* draw)
 // ============================================================================
 
 // Shared storage buffers, drawn by ImPlatform_DrawIndexed inside a draw callback with the program bound last there.
-// An update of a buffer drawn since it was last written goes to a copy: the frames that drew it keep the previous one.
+// The MTLBuffer under a handle changes: an update of a buffer that frames in flight may still draw writes another
+// one, and a destroyed or replaced buffer is retired, not released. Once the frames that could draw it have completed,
+// a retired buffer goes to the next buffer it is large enough for, so buffers created, updated or destroyed every frame
+// settle on a few MTLBuffers per frame in flight.
+// shortcut: frames are counted by ImGui::GetFrameCount(); without frames nothing retired is taken again or released.
 struct ImPlatform_BufferData_Metal
 {
     void* buffer;                               // id<MTLBuffer> (retained)
-    bool drawn;                                 // A draw of it was recorded since it was last written
+    size_t size;                                // Of the content, in bytes; the MTLBuffer may be larger
+    int drawn;                                  // The last frame a draw of it was recorded in; 0: none since it was written
     ImPlatform_VertexBufferDesc vb_desc;        // vertex buffer: its layout (attributes copied below)
     ImPlatform_VertexAttribute attributes[16];
     ImGuiID layout;                             // hash of the attributes and stride: the pipeline cache key
@@ -1625,20 +1631,77 @@ static void* ImPlatform_Metal_NewBuffer(const void* data, size_t size)
     return buffer ? (__bridge_retained void*)buffer : nullptr;
 }
 
-// Leaves in data->buffer memory no recorded draw reads: command buffers retain the buffers they draw, so a drawn one is
-// left to them and replaced by a copy.
-// shortcut: one MTLBuffer per update of a drawn buffer; pool them if their allocation shows in a profile.
-static bool ImPlatform_Metal_WritableBuffer(ImPlatform_BufferData_Metal* data)
+static const int g_MetalFramesInFlightMax = 8;     // A layer keeps fewer drawables in flight
+struct ImPlatform_RetiredBuffer_Metal
 {
-    if (!data->drawn)
+    void* buffer;       // id<MTLBuffer> (retained)
+    size_t capacity;
+    int frame;          // The frame it was retired in
+};
+static ImVector<ImPlatform_RetiredBuffer_Metal> g_MetalRetiredBuffers;
+
+// A buffer of at least 'size' bytes that no frame in flight draws: a retired one of a close size, or a new one.
+// Retired buffers nothing took for a while are released on the way.
+static void* ImPlatform_Metal_AcquireBuffer(size_t size)
+{
+    const int frame = ImGui::GetFrameCount();
+    for (int i = g_MetalRetiredBuffers.Size - 1; i >= 0; i--)
+    {
+        const ImPlatform_RetiredBuffer_Metal r = g_MetalRetiredBuffers[i];
+        if (frame - r.frame <= g_MetalFramesInFlightMax)
+            continue;
+        if (r.capacity >= size && r.capacity / 2 <= size)
+        {
+            g_MetalRetiredBuffers.erase(g_MetalRetiredBuffers.Data + i);
+            return r.buffer;
+        }
+        if (frame - r.frame > 240)
+        {
+            CFRelease(r.buffer);
+            g_MetalRetiredBuffers.erase(g_MetalRetiredBuffers.Data + i);
+        }
+    }
+    return ImPlatform_Metal_NewBuffer(nullptr, size);
+}
+
+// Frames in flight may still draw it: it stays alive for them.
+static void ImPlatform_Metal_RetireBuffer(void* buffer)
+{
+    id<MTLBuffer> mtl = (__bridge id<MTLBuffer>)buffer;
+    const ImPlatform_RetiredBuffer_Metal r = { buffer, (size_t)mtl.length, ImGui::GetFrameCount() };
+    g_MetalRetiredBuffers.push_back(r);
+}
+
+// At shutdown.
+static void ImPlatform_Metal_ReleaseRetiredBuffers()
+{
+    for (const ImPlatform_RetiredBuffer_Metal& r : g_MetalRetiredBuffers)
+        CFRelease(r.buffer);
+    g_MetalRetiredBuffers.clear();
+}
+
+// A handle's first buffer, holding 'bytes' (nullptr: left unwritten).
+static void* ImPlatform_Metal_CreateBuffer(const void* bytes, size_t size)
+{
+    void* buffer = ImPlatform_Metal_AcquireBuffer(size);
+    if (buffer && bytes)
+        memcpy(((__bridge id<MTLBuffer>)buffer).contents, bytes, size);
+    return buffer;
+}
+
+// Leaves in data->buffer memory no frame in flight reads. whole: every byte is about to be replaced.
+static bool ImPlatform_Metal_WritableBuffer(ImPlatform_BufferData_Metal* data, bool whole)
+{
+    if (!data->drawn || ImGui::GetFrameCount() - data->drawn > g_MetalFramesInFlightMax)
         return true;
-    id<MTLBuffer> previous = (__bridge id<MTLBuffer>)data->buffer;
-    void* copy = ImPlatform_Metal_NewBuffer(previous.contents, (size_t)previous.length);
-    if (!copy)
+    void* next = ImPlatform_Metal_AcquireBuffer(data->size);
+    if (!next)
         return false;
-    CFRelease(data->buffer);
-    data->buffer = copy;
-    data->drawn = false;
+    if (!whole)
+        memcpy(((__bridge id<MTLBuffer>)next).contents, ((__bridge id<MTLBuffer>)data->buffer).contents, data->size);
+    ImPlatform_Metal_RetireBuffer(data->buffer);
+    data->buffer = next;
+    data->drawn = 0;
     return true;
 }
 
@@ -1646,11 +1709,13 @@ IMPLATFORM_API ImPlatform_VertexBuffer ImPlatform_CreateVertexBuffer(const void*
 {
     if (!desc || !desc->vertex_count || !desc->vertex_stride || desc->attribute_count > 16)
         return nullptr;
-    void* buffer = ImPlatform_Metal_NewBuffer(vertex_data, (size_t)desc->vertex_count * desc->vertex_stride);
+    const size_t size = (size_t)desc->vertex_count * desc->vertex_stride;
+    void* buffer = ImPlatform_Metal_CreateBuffer(vertex_data, size);
     if (!buffer)
         return nullptr;
     ImPlatform_BufferData_Metal* data = new ImPlatform_BufferData_Metal();
     data->buffer = buffer;
+    data->size = size;
     data->vb_desc = *desc;
     for (unsigned int i = 0; i < desc->attribute_count; i++)
         data->attributes[i] = desc->attributes[i];
@@ -1665,7 +1730,8 @@ IMPLATFORM_API ImPlatform_VertexBuffer ImPlatform_CreateVertexBuffer(const void*
 IMPLATFORM_API bool ImPlatform_UpdateVertexBuffer(ImPlatform_VertexBuffer buffer, const void* vertex_data, unsigned int offset, unsigned int count)
 {
     ImPlatform_BufferData_Metal* data = (ImPlatform_BufferData_Metal*)buffer;
-    if (!data || !vertex_data || offset + count > data->vb_desc.vertex_count || !ImPlatform_Metal_WritableBuffer(data))
+    if (!data || !vertex_data || offset + count > data->vb_desc.vertex_count
+        || !ImPlatform_Metal_WritableBuffer(data, count == data->vb_desc.vertex_count))
         return false;
     id<MTLBuffer> mtl = (__bridge id<MTLBuffer>)data->buffer;
     memcpy((char*)mtl.contents + (size_t)offset * data->vb_desc.vertex_stride, vertex_data, (size_t)count * data->vb_desc.vertex_stride);
@@ -1679,7 +1745,7 @@ IMPLATFORM_API void ImPlatform_DestroyVertexBuffer(ImPlatform_VertexBuffer buffe
         return;
     if (g_MetalBoundVB == data) g_MetalBoundVB = nullptr;
     if (g_MetalBoundIB == data) g_MetalBoundIB = nullptr;
-    CFRelease(data->buffer);    // Command buffers that use it keep their own reference
+    ImPlatform_Metal_RetireBuffer(data->buffer);
     delete data;
 }
 
@@ -1688,11 +1754,12 @@ IMPLATFORM_API ImPlatform_IndexBuffer ImPlatform_CreateIndexBuffer(const void* i
     if (!desc || !desc->index_count)
         return nullptr;
     const size_t index_size = desc->format == ImPlatform_IndexFormat_UInt16 ? 2 : 4;
-    void* buffer = ImPlatform_Metal_NewBuffer(index_data, (size_t)desc->index_count * index_size);
+    void* buffer = ImPlatform_Metal_CreateBuffer(index_data, (size_t)desc->index_count * index_size);
     if (!buffer)
         return nullptr;
     ImPlatform_BufferData_Metal* data = new ImPlatform_BufferData_Metal();
     data->buffer = buffer;
+    data->size = (size_t)desc->index_count * index_size;
     data->index_format = desc->format;
     data->vb_desc.vertex_count = desc->index_count;     // The index count, for the bounds of UpdateIndexBuffer
     return data;
@@ -1701,7 +1768,8 @@ IMPLATFORM_API ImPlatform_IndexBuffer ImPlatform_CreateIndexBuffer(const void* i
 IMPLATFORM_API bool ImPlatform_UpdateIndexBuffer(ImPlatform_IndexBuffer buffer, const void* index_data, unsigned int offset, unsigned int count)
 {
     ImPlatform_BufferData_Metal* data = (ImPlatform_BufferData_Metal*)buffer;
-    if (!data || !index_data || offset + count > data->vb_desc.vertex_count || !ImPlatform_Metal_WritableBuffer(data))
+    if (!data || !index_data || offset + count > data->vb_desc.vertex_count
+        || !ImPlatform_Metal_WritableBuffer(data, count == data->vb_desc.vertex_count))
         return false;
     const size_t index_size = data->index_format == ImPlatform_IndexFormat_UInt16 ? 2 : 4;
     id<MTLBuffer> mtl = (__bridge id<MTLBuffer>)data->buffer;
@@ -1769,7 +1837,7 @@ IMPLATFORM_API void ImPlatform_DrawIndexed(unsigned int primitive_type, unsigned
         id<MTLRenderPipelineState> pipeline = ImPlatform_Metal_LayoutPipeline(g_MetalBoundProgram, vb);
         if (!pipeline)
             return;
-        vb->drawn = ib->drawn = true;
+        vb->drawn = ib->drawn = ImGui::GetFrameCount();
         id<MTLRenderCommandEncoder> encoder = (__bridge id<MTLRenderCommandEncoder>)g_CurrentRenderEncoder;
         [encoder setRenderPipelineState:pipeline];
         [encoder setVertexBuffer:(__bridge id<MTLBuffer>)vb->buffer offset:0 atIndex:0];
