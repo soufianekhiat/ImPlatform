@@ -18,6 +18,7 @@ ImPlatform is a platform abstraction layer that simplifies multiplatform develop
 - **Readback and Compute**: Texture readback (synchronous on every backend but WebGPU, asynchronous on DirectX 11/12) and compute dispatch on DirectX 11/12, Vulkan and OpenGL 4.3+
 - **Depth-Tested Meshes and Device Control**: Depth render textures, meshes with depth / blend / cull states, device loss and recreation (DirectX 11/12)
 - **Pen Input**: Pressure, tilt, barrel rotation and eraser (Win32 with coalesced samples; SDL3 on Windows, Linux and macOS)
+- **Touch Input**: the fingers on a touch screen and their gesture, pan, pinch zoom and rotation (Win32, SDL2, SDL3)
 - **Screenshots**: a viewport captured as a texture and read back as RGBA pixels (DirectX 9/11/12, OpenGL 3, Vulkan)
 - **Custom Graphics Backend**: `IM_GFX_CUSTOM` keeps the platform layer and lets the application provide the renderer
 - **Custom Title Bar**: Optional borderless window with custom titlebar rendering (Win32, GLFW, SDL2, SDL3)
@@ -382,6 +383,34 @@ is captured by passing its viewport, except on Vulkan. Writing an image file fro
 application (`stb_image_write`, for instance). `ImPlatformDemo --screenshot-test` checks a capture of the main
 viewport.
 
+#### Pen and Touch Input
+
+Dear ImGui sees a pen or a finger as the mouse. These calls give what the mouse does not carry, the same way on every
+platform that has it (`ImPlatform_SupportsPen()`: Win32, SDL3; `ImPlatform_SupportsTouch()`: Win32, SDL2, SDL3):
+
+```cpp
+// Pen: every sample since the previous call (pressure, tilt, rotation, eraser, contact)
+ImPlatform_PenSample samples[64];
+int count = ImPlatform_ConsumePenSamples(samples, 64);
+
+// Touch: what the fingers did since the previous call, once a frame
+ImPlatform_TouchGesture gesture;
+if (ImPlatform_ConsumeTouchGesture(&gesture) && gesture.finger_count >= 2)
+{
+    view_offset += ImVec2(gesture.pan_x, gesture.pan_y);
+    view_scale *= gesture.zoom;         // around (gesture.x, gesture.y), the centroid of the fingers
+    view_angle += gesture.rotation;     // degrees, clockwise
+}
+
+// The fingers themselves
+ImPlatform_TouchPoint fingers[10];
+int finger_count = ImPlatform_GetTouchPoints(fingers, 10);
+```
+
+Positions are client-area coordinates of the main window. One finger pans too (`finger_count == 1`); ImGui receives
+it as a mouse drag, so applications usually act on two fingers or more. Taps, long presses and swipes are not
+recognized: a tap arrives as a mouse click.
+
 #### Custom Title Bar (when `IMPLATFORM_APP_SUPPORT_CUSTOM_TITLEBAR` is enabled)
 
 ```cpp
@@ -597,6 +626,7 @@ ImPlatformDemo_Win32_DX12 --blend-test         # one program drawn with six blen
 ImPlatformDemo_Win32_DX12 --shader-async-test  # programs compiled asynchronously, a defines permutation, the log of a shader that fails
 ImPlatformDemo_Win32_DX12 --screenshot-test    # the main viewport captured and read back
 ImPlatformDemo_SDL3_OpenGL3 --pen-test         # SDL3: synthetic pen events come out as pen samples (exit 2 elsewhere)
+ImPlatformDemo_SDL3_OpenGL3 --touch-test       # two fingers touch, spread, turn and lift: touch points and gesture (exit 2 on GLFW)
 ImPlatformDemo_GLFW_OpenGL3 --drag-rect-test   # the move / resize arithmetic of the borderless GLFW window, without a window
 ```
 
@@ -681,7 +711,7 @@ The library has been tested with the following configurations:
 - DirectX 9 shaders are shader model 3: no integer or bit operations, no texel loads, `nointerpolation` varyings are interpolated
 - OpenGL3 multi-viewport with custom shaders may have minor offset issues in some edge cases
 - Custom titlebar on stock GLFW: the window is moved and resized by ImPlatform, without the system's window snapping (TheCherno's fork with `IM_THE_CHERNO_GLFW3` gives native hit-testing)
-- Pen input is on Win32 and SDL3 only (GLFW and SDL2 have no pen API)
+- Pen input is on Win32 and SDL3 only (GLFW and SDL2 have no pen API); touch input on Win32, SDL2 and SDL3 (GLFW has no touch API)
 - `ImPlatform_CopyBackbuffer()` is DirectX 11 only; `ImPlatform_CaptureViewport()` covers DirectX 9, 11, 12, OpenGL and Vulkan (main viewport only on DirectX 12 and Vulkan)
 
 ## Contributing

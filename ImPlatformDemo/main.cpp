@@ -1458,6 +1458,96 @@ static int ImPlatformDemo_PenTest()
 #endif
 }
 
+// --touch-test: two fingers that touch, move apart, turn and lift come out of ImPlatform_GetTouchPoints and
+// ImPlatform_ConsumeTouchGesture. On SDL2 and SDL3 they are finger events pushed on SDL's queue; on Win32 they are
+// given to the recognizer directly (a pointer message cannot be synthesized without injecting input into the desktop).
+// Exit code: 0 pass, 1 fail, 2 without touch input (GLFW).
+// phase 0: the finger touches, 1: it moves, 2: it lifts.
+static void TouchTestFinger( int id, float x, float y, int phase )
+{
+#if IM_CURRENT_PLATFORM == IM_PLATFORM_SDL3
+	SDL_Window* window = ImPlatform_App_GetSDL3Window();
+	int w = 1, h = 1;
+	SDL_GetWindowSize( window, &w, &h );
+	SDL_Event e;
+	SDL_zero( e );
+	e.type = phase == 0 ? SDL_EVENT_FINGER_DOWN : phase == 1 ? SDL_EVENT_FINGER_MOTION : SDL_EVENT_FINGER_UP;
+	e.tfinger.windowID = SDL_GetWindowID( window );
+	e.tfinger.fingerID = (SDL_FingerID)id;
+	e.tfinger.x = x / (float)w;
+	e.tfinger.y = y / (float)h;
+	e.tfinger.pressure = 0.5f;
+	SDL_PushEvent( &e );
+	ImPlatform_PlatformEvents();
+#elif IM_CURRENT_PLATFORM == IM_PLATFORM_SDL2
+	SDL_Window* window = ImPlatform_App_GetSDL2Window();
+	int w = 1, h = 1;
+	SDL_GetWindowSize( window, &w, &h );
+	SDL_Event e;
+	SDL_zero( e );
+	e.type = phase == 0 ? SDL_FINGERDOWN : phase == 1 ? SDL_FINGERMOTION : SDL_FINGERUP;
+	e.tfinger.windowID = SDL_GetWindowID( window );
+	e.tfinger.fingerId = (SDL_FingerID)id;
+	e.tfinger.x = x / (float)w;
+	e.tfinger.y = y / (float)h;
+	e.tfinger.pressure = 0.5f;
+	SDL_PushEvent( &e );
+	ImPlatform_PlatformEvents();
+#else
+	ImPlatform_Touch_Set( (unsigned long long)id, x, y, 0.5f, phase != 2 );
+#endif
+}
+
+// The gesture since the previous call against the expected one (positions within 0.05 pixel: SDL carries them as
+// fractions of the window).
+static bool TouchTestGesture( const char* step, bool want_result, int fingers, float x, float y, float pan_x, float pan_y, float zoom, float rotation )
+{
+	ImPlatform_TouchGesture g = {};
+	const bool result = ImPlatform_ConsumeTouchGesture( &g );
+	const float got[ 6 ] = { g.x, g.y, g.pan_x, g.pan_y, g.zoom * 100.0f, g.rotation }, want[ 6 ] = { x, y, pan_x, pan_y, zoom * 100.0f, rotation };
+	bool ok = result == want_result && g.finger_count == fingers;
+	for ( int i = 0; i < 6; ++i )
+		ok = ok && fabsf( got[ i ] - want[ i ] ) < 0.05f;
+	if ( !ok )
+		printf( "FAIL %s: result %d, %d fingers at (%g, %g), pan (%g, %g), zoom %g, rotation %g\n", step, (int)result, g.finger_count, g.x, g.y, g.pan_x, g.pan_y, g.zoom, g.rotation );
+	return ok;
+}
+
+static int ImPlatformDemo_TouchTest()
+{
+	if ( !ImPlatform_SupportsTouch() )
+	{
+		printf( "SKIP: no touch input on this platform\n" );
+		return 2;
+	}
+	ImPlatform_TouchPoint points[ 4 ];
+	TouchTestFinger( 1, 100.0f, 100.0f, 0 );
+	TouchTestFinger( 2, 200.0f, 100.0f, 0 );
+	bool ok = ImPlatform_GetTouchPoints( points, 4 ) == 2 && points[ 0 ].id == 1 && points[ 1 ].id == 2 && points[ 1 ].pressure == 0.5f
+			  && fabsf( points[ 1 ].x - 200.0f ) < 0.05f && fabsf( points[ 1 ].y - 100.0f ) < 0.05f;
+	if ( !ok )
+		printf( "FAIL: two fingers down are not the two touch points\n" );
+	ok = TouchTestGesture( "touch", true, 2, 150.0f, 100.0f, 0.0f, 0.0f, 1.0f, 0.0f ) && ok;			// Touching is not a pan
+	TouchTestFinger( 2, 300.0f, 100.0f, 1 );
+	ok = TouchTestGesture( "spread", true, 2, 200.0f, 100.0f, 50.0f, 0.0f, 2.0f, 0.0f ) && ok;			// Twice as far apart
+	TouchTestFinger( 2, 100.0f, 300.0f, 1 );
+	ok = TouchTestGesture( "turn", true, 2, 100.0f, 200.0f, -100.0f, 100.0f, 1.0f, 90.0f ) && ok;		// A quarter turn clockwise
+	TouchTestFinger( 2, 200.0f, 300.0f, 1 );
+	TouchTestFinger( 2, 100.0f, 300.0f, 1 );
+	ok = TouchTestGesture( "there and back", true, 2, 100.0f, 200.0f, 0.0f, 0.0f, 1.0f, 0.0f ) && ok;	// Moves between two calls add up
+	TouchTestFinger( 1, 100.0f, 100.0f, 2 );
+	ok = TouchTestGesture( "lift", true, 1, 100.0f, 300.0f, 0.0f, 0.0f, 1.0f, 0.0f ) && ok;			// Lifting is not a pan
+	ok = ImPlatform_GetTouchPoints( points, 4 ) == 1 && points[ 0 ].id == 2 && ok;
+	TouchTestFinger( 2, 110.0f, 300.0f, 1 );
+	TouchTestFinger( 2, 110.0f, 300.0f, 2 );
+	ok = TouchTestGesture( "one finger", true, 0, 0.0f, 0.0f, 10.0f, 0.0f, 1.0f, 0.0f ) && ok;			// Moved before it lifted
+	ok = TouchTestGesture( "none", false, 0, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f ) && ok;
+	ok = ImPlatform_GetTouchPoints( points, 4 ) == 0 && ok;
+	if ( ok )
+		printf( "PASS\n" );
+	return ok ? 0 : 1;
+}
+
 int main( int argc, char** argv )
 {
 #ifndef __EMSCRIPTEN__	// The self-tests and --dump-msl are not built for the web
@@ -1626,6 +1716,8 @@ int main( int argc, char** argv )
 		return ImPlatformDemo_ComputeTest( computeAsyncTest );
 	if ( argc > 1 && strcmp( argv[ 1 ], "--pen-test" ) == 0 )
 		return ImPlatformDemo_PenTest();
+	if ( argc > 1 && strcmp( argv[ 1 ], "--touch-test" ) == 0 )
+		return ImPlatformDemo_TouchTest();
 
 	// Create test textures using new Texture Creation API
 #ifdef IMGUI_HAS_TEXTURES

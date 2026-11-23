@@ -423,6 +423,10 @@ struct ImPlatform_GfxData_DX10* ImPlatform_Gfx_GetData_DX10(void);
 void ImPlatform_Pen_Push(const struct ImPlatform_PenSample* sample);
 void ImPlatform_Pen_Leave(void);
 
+// Touch input (ImPlatform.h implementation), fed by platform backends: a finger in contact at a client-area position
+// (down), or lifted.
+void ImPlatform_Touch_Set(unsigned long long id, float x, float y, float pressure, bool down);
+
 #if defined(IM_CURRENT_GFX) && (IM_CURRENT_GFX == IM_GFX_DIRECTX11)
 bool ImPlatform_Gfx_CreateDevice_DX11(void* hWnd, struct ImPlatform_GfxData_DX11* pData);
 void ImPlatform_Gfx_CleanupDevice_DX11(struct ImPlatform_GfxData_DX11* pData);

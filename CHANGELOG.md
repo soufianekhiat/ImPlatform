@@ -28,6 +28,10 @@ Changes since 2.0.0 (the `v2` branch), in progress on the `v3` branch.
   only on DirectX 12 and Vulkan). Demo `--screenshot-test`, `--screenshot-viewport-test`.
 - **Pen input on SDL3** (Windows, Linux, macOS) from its pen events: pressure, tilt, rotation, eraser, contact. Demo
   `--pen-test` (synthetic events).
+- **Touch input** (Win32 pointer messages, SDL2 and SDL3 finger events; main window): `ImPlatform_SupportsTouch()`,
+  `ImPlatform_GetTouchPoints()` gives the fingers in contact, `ImPlatform_ConsumeTouchGesture()` what they did since
+  the previous call: pan, pinch zoom and rotation, computed from the finger positions the same way on every platform.
+  Demo `--touch-test` (synthetic SDL finger events; the recognizer alone on Win32).
 - **Win32 + Vulkan** build configuration (Sharpmake `Win32_Vulkan`, CMake `ImPlatformDemo_Win32_Vulkan`, CI) and
   `IM_TARGET_WIN32_VULKAN`.
 - **Borderless window on stock GLFW** is resized by its edges (`ImPlatform_BorderlessParams::resizeBorderSize`,

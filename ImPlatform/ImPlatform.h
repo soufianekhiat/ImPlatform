@@ -1572,6 +1572,38 @@ IMPLATFORM_API int ImPlatform_ConsumePenSamples(ImPlatform_PenSample* out, int m
 IMPLATFORM_API double ImPlatform_GetPenClock(void);
 
 // ============================================================================
+// Touch Input API
+// ============================================================================
+// The fingers on a touch screen and what they do together: pan, pinch, turn. Touches still reach ImGui as mouse events
+// (the first finger moves and clicks); this adds the other fingers and the gesture, computed the same way on every
+// platform from the finger positions. Implemented on Win32 (pointer messages: WM_POINTER*) and on SDL2 and SDL3 (their
+// finger events), for the main window. Other platforms report ImPlatform_SupportsTouch() == false.
+
+typedef struct ImPlatform_TouchPoint {
+    unsigned long long id;  // The same from the finger's contact to its lift.
+    float x, y;             // Client-area coordinates (same space as ImGui::GetMousePos()).
+    float pressure;         // [0, 1]; -1 when the device reports none.
+} ImPlatform_TouchPoint;
+
+typedef struct ImPlatform_TouchGesture {
+    int   finger_count;     // Fingers in contact now.
+    float x, y;             // Their centroid, client-area coordinates; valid when finger_count > 0.
+    float pan_x, pan_y;     // Movement of the centroid, pixels.
+    float zoom;             // Factor by which the fingers moved apart (above 1) or together (below 1); 1 with one finger.
+    float rotation;         // Degrees the first two fingers turned, clockwise; 0 with one finger.
+} ImPlatform_TouchGesture;
+
+IMPLATFORM_API bool ImPlatform_SupportsTouch(void);
+
+// Copies the fingers in contact, in the order they touched. Returns the count written (10 fingers are tracked).
+IMPLATFORM_API int ImPlatform_GetTouchPoints(ImPlatform_TouchPoint* out, int max_count);
+
+// The gesture since the previous call: pan, zoom and rotation accumulate between two calls (call it once a frame).
+// A finger that touches or lifts moves the centroid without panning. Returns false when no finger is in contact and
+// none moved since the previous call. One finger pans too, as the mouse drag ImGui sees: test finger_count to tell.
+IMPLATFORM_API bool ImPlatform_ConsumeTouchGesture(ImPlatform_TouchGesture* out);
+
+// ============================================================================
 // DPI / High-DPI Support
 // ============================================================================
 
@@ -1965,6 +1997,111 @@ IMPLATFORM_API double ImPlatform_GetPenClock(void)
 #else
     return ImGui::GetTime();
 #endif
+}
+
+// ============================================================================
+// Touch Input Implementation (platform backends feed it through ImPlatform_Touch_Set in ImPlatform_Internal.h)
+// ============================================================================
+
+#include <math.h>
+
+#define IMPLATFORM_TOUCH_POINTS 10
+static ImPlatform_TouchPoint g_TouchPoints[IMPLATFORM_TOUCH_POINTS];
+static int                   g_TouchCount = 0;
+static float                 g_TouchPanX = 0.0f, g_TouchPanY = 0.0f, g_TouchZoom = 1.0f, g_TouchRotation = 0.0f;
+
+// m: the centroid of the fingers (x, y), their mean distance to it, the direction from the first to the second (radians).
+static void ImPlatform_Touch_Measure(float m[4])
+{
+    m[0] = m[1] = m[2] = m[3] = 0.0f;
+    for (int i = 0; i < g_TouchCount; ++i)
+    {
+        m[0] += g_TouchPoints[i].x / (float)g_TouchCount;
+        m[1] += g_TouchPoints[i].y / (float)g_TouchCount;
+    }
+    for (int i = 0; i < g_TouchCount; ++i)
+    {
+        const float dx = g_TouchPoints[i].x - m[0], dy = g_TouchPoints[i].y - m[1];
+        m[2] += sqrtf(dx * dx + dy * dy) / (float)g_TouchCount;
+    }
+    if (g_TouchCount >= 2)
+        m[3] = atan2f(g_TouchPoints[1].y - g_TouchPoints[0].y, g_TouchPoints[1].x - g_TouchPoints[0].x);
+}
+
+// A finger in contact at a position (down), or lifted. Only a finger that moves feeds the gesture: one that touches
+// or lifts changes the centroid and the spread without the hand moving.
+void ImPlatform_Touch_Set(unsigned long long id, float x, float y, float pressure, bool down)
+{
+    int i = 0;
+    while (i < g_TouchCount && g_TouchPoints[i].id != id)
+        ++i;
+    if (i < g_TouchCount && down)
+    {
+        float before[4], after[4];
+        ImPlatform_Touch_Measure(before);
+        g_TouchPoints[i].x = x;
+        g_TouchPoints[i].y = y;
+        g_TouchPoints[i].pressure = pressure;
+        ImPlatform_Touch_Measure(after);
+        g_TouchPanX += after[0] - before[0];
+        g_TouchPanY += after[1] - before[1];
+        if (g_TouchCount >= 2 && before[2] > 0.0f && after[2] > 0.0f)
+        {
+            float turn = (after[3] - before[3]) * 57.29578f;
+            turn -= 360.0f * floorf((turn + 180.0f) / 360.0f);     // The short way round: [-180, 180)
+            g_TouchZoom *= after[2] / before[2];
+            g_TouchRotation += turn;
+        }
+    }
+    else if (i < g_TouchCount)
+    {
+        for (; i + 1 < g_TouchCount; ++i)       // The fingers after it keep their order.
+            g_TouchPoints[i] = g_TouchPoints[i + 1];
+        g_TouchCount--;
+    }
+    else if (down && g_TouchCount < IMPLATFORM_TOUCH_POINTS)
+    {
+        const ImPlatform_TouchPoint point = { id, x, y, pressure };
+        g_TouchPoints[g_TouchCount++] = point;
+    }
+}
+
+IMPLATFORM_API bool ImPlatform_SupportsTouch(void)
+{
+#if IM_CURRENT_PLATFORM == IM_PLATFORM_WIN32 || IM_CURRENT_PLATFORM == IM_PLATFORM_SDL2 || IM_CURRENT_PLATFORM == IM_PLATFORM_SDL3
+    return true;
+#else
+    return false;
+#endif
+}
+
+IMPLATFORM_API int ImPlatform_GetTouchPoints(ImPlatform_TouchPoint* out, int max_count)
+{
+    int n = 0;
+    while (out && n < max_count && n < g_TouchCount)
+    {
+        out[n] = g_TouchPoints[n];
+        n++;
+    }
+    return n;
+}
+
+IMPLATFORM_API bool ImPlatform_ConsumeTouchGesture(ImPlatform_TouchGesture* out)
+{
+    if (!out)
+        return false;
+    float m[4];
+    ImPlatform_Touch_Measure(m);
+    out->finger_count = g_TouchCount;
+    out->x = m[0];
+    out->y = m[1];
+    out->pan_x = g_TouchPanX;
+    out->pan_y = g_TouchPanY;
+    out->zoom = g_TouchZoom;
+    out->rotation = g_TouchRotation;
+    g_TouchPanX = g_TouchPanY = g_TouchRotation = 0.0f;
+    g_TouchZoom = 1.0f;
+    return out->finger_count > 0 || out->pan_x != 0.0f || out->pan_y != 0.0f || out->zoom != 1.0f || out->rotation != 0.0f;
 }
 
 // ============================================================================

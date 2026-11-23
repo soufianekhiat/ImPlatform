@@ -238,6 +238,15 @@ IMPLATFORM_API bool ImPlatform_PlatformEvents(void)
     while (SDL_PollEvent(&event))
     {
         ImGui_ImplSDL2_ProcessEvent(&event);
+        if (event.type == SDL_FINGERDOWN || event.type == SDL_FINGERUP || event.type == SDL_FINGERMOTION)
+        {
+            // Fingers on the main window; SDL gives their position as a fraction of it. One that goes to another
+            // window counts as lifted. Observed only: SDL also sends the first finger as a mouse.
+            int w = 0, h = 0;
+            SDL_GetWindowSize(g_AppData.pWindow, &w, &h);
+            ImPlatform_Touch_Set((unsigned long long)event.tfinger.fingerId, event.tfinger.x * (float)w, event.tfinger.y * (float)h, event.tfinger.pressure,
+                                 event.type != SDL_FINGERUP && event.tfinger.windowID == SDL_GetWindowID(g_AppData.pWindow));
+        }
         if (event.type == SDL_QUIT)
         {
             g_AppData.bDone = true;

@@ -60,13 +60,33 @@ static void ImPlatform_Win32_PenMessage(HWND hWnd, WPARAM wParam)
     }
 }
 
+// A finger on the touch screen: in contact at a position, or lifted (a finger that hovers counts as lifted).
+static void ImPlatform_Win32_TouchMessage(HWND hWnd, UINT msg, WPARAM wParam)
+{
+    const UINT32 id = GET_POINTERID_WPARAM(wParam);
+    POINTER_INPUT_TYPE type = PT_POINTER;
+    POINTER_TOUCH_INFO touch = {};
+    if (!::GetPointerType(id, &type) || type != PT_TOUCH || !::GetPointerTouchInfo(id, &touch))
+        return;
+    POINT pt = touch.pointerInfo.ptPixelLocation;
+    ::ScreenToClient(hWnd, &pt);
+    ImPlatform_Touch_Set(id, (float)pt.x, (float)pt.y, (touch.touchMask & TOUCH_MASK_PRESSURE) ? (float)touch.pressure / 1024.0f : -1.0f,
+                         msg != WM_POINTERUP && (touch.pointerInfo.pointerFlags & POINTER_FLAG_INCONTACT) != 0);
+}
+
 // Win32 message handler
 static LRESULT WINAPI WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
 {
     if (msg == WM_POINTERDOWN || msg == WM_POINTERUPDATE || msg == WM_POINTERUP)
+    {
         ImPlatform_Win32_PenMessage(hWnd, wParam);     // Observed only: the messages still reach ImGui and DefWindowProc.
+        ImPlatform_Win32_TouchMessage(hWnd, msg, wParam);
+    }
     else if (msg == WM_POINTERLEAVE || msg == WM_POINTERCAPTURECHANGED)
+    {
         ImPlatform_Pen_Leave();
+        ImPlatform_Touch_Set(GET_POINTERID_WPARAM(wParam), 0.0f, 0.0f, 0.0f, false);   // Nothing to lift when it is the pen's
+    }
 
     if (ImGui_ImplWin32_WndProcHandler(hWnd, msg, wParam, lParam))
         return true;
