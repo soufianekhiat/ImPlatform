@@ -93,6 +93,8 @@ static LRESULT WINAPI WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
             ImPlatform_Gfx_SetSize_OpenGL3(uWidth, uHeight);
 #elif defined(IM_CURRENT_GFX) && (IM_CURRENT_GFX == IM_GFX_CUSTOM)
             ImPlatform_Gfx_OnResize_Custom(uWidth, uHeight);
+#else
+            (void)uWidth; (void)uHeight;    // Vulkan and WebGPU read the client size each frame
 #endif
         }
         return 0;

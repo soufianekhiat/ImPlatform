@@ -37,6 +37,23 @@ static inline void ImPlatform_RenderPassLists(ImDrawData* draw_data, RenderFn re
     }
 }
 
+// A window rectangle (x, y, width, height) dragged by (dx, dy) from where it was at the mouse press. edges: 1 left,
+// 2 right, 4 top, 8 bottom (the dragged edges move, the opposite ones stay, the size never goes below the minimum);
+// 16: the whole window moves.
+static inline void ImPlatform_DragRect(int edges, const int start[4], int dx, int dy, int min_w, int min_h, int out[4])
+{
+    int l = start[0], t = start[1], r = start[0] + start[2], b = start[1] + start[3];
+    if (edges & 16) { l += dx; r += dx; t += dy; b += dy; }
+    if (edges & 1)  l = l + dx < r - min_w ? l + dx : r - min_w;
+    if (edges & 2)  r = r + dx > l + min_w ? r + dx : l + min_w;
+    if (edges & 4)  t = t + dy < b - min_h ? t + dy : b - min_h;
+    if (edges & 8)  b = b + dy > t + min_h ? b + dy : t + min_h;
+    out[0] = l;
+    out[1] = t;
+    out[2] = r - l;
+    out[3] = b - t;
+}
+
 // Platform-specific includes
 #if defined(IM_CURRENT_PLATFORM) && (IM_CURRENT_PLATFORM == IM_PLATFORM_WIN32)
     #include <windows.h>
@@ -146,10 +163,12 @@ struct ImPlatform_AppData_GLFW {
     ImVec2 vEndCustomToolBar;
     float fCustomTitleBarHeight;
 
-    // Software drag state (for borderless without TheCherno's GLFW fork)
-    bool bDragging;
-    double fDragStartX, fDragStartY;
-    int iWinStartX, iWinStartY;
+    // Software move and resize of the borderless window (without TheCherno's GLFW fork): ImPlatform_DragRect edges
+    int iDragEdges;                     // Being dragged since the mouse press; 0: none
+    int iHoverEdges;                    // Resize edges under the cursor or being dragged (the mouse cursor's shape)
+    bool bMouseWasDown;
+    double fDragStartX, fDragStartY;    // Cursor at the press, screen coordinates
+    int iWinStart[4];                   // Window x, y, width, height at the press
 
     // File drop support
     bool bDropFileEnabled;

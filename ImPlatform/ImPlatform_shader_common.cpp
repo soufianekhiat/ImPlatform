@@ -34,24 +34,44 @@ IMPLATFORM_API ImPlatform_BlendDesc ImPlatform_BlendDesc_Preset(ImPlatform_Blend
     case ImPlatform_BlendPreset_Premultiplied:
         b.src_color = ImPlatform_BlendFactor_One;
         break;
-    case ImPlatform_BlendPreset_Additive:
-        b.dst_color = ImPlatform_BlendFactor_One;
-        b.src_alpha = ImPlatform_BlendFactor_Zero;
-        b.dst_alpha = ImPlatform_BlendFactor_One;
-        break;
-    case ImPlatform_BlendPreset_Multiply:
-        b.src_color = ImPlatform_BlendFactor_DstColor;
-        b.dst_color = ImPlatform_BlendFactor_Zero;
-        b.src_alpha = ImPlatform_BlendFactor_Zero;
-        b.dst_alpha = ImPlatform_BlendFactor_One;
-        break;
     case ImPlatform_BlendPreset_Opaque:
         b.enable = false;
+        break;
+    case ImPlatform_BlendPreset_Subtractive:
+        b.op_color = ImPlatform_BlendOp_RevSubtract;
+        // fallthrough
+    case ImPlatform_BlendPreset_Additive:
+        b.dst_color = ImPlatform_BlendFactor_One;
+        break;
+    case ImPlatform_BlendPreset_Multiplicative:
+        b.src_color = ImPlatform_BlendFactor_DstColor;
+        b.dst_color = ImPlatform_BlendFactor_Zero;
+        break;
+    case ImPlatform_BlendPreset_Screen:
+        b.src_color = ImPlatform_BlendFactor_One;
+        b.dst_color = ImPlatform_BlendFactor_InvSrcColor;
+        break;
+    case ImPlatform_BlendPreset_Darken:
+        b.op_color = ImPlatform_BlendOp_Min;
+        break;
+    case ImPlatform_BlendPreset_Lighten:
+        b.op_color = ImPlatform_BlendOp_Max;
         break;
     default:
         break;
     }
+    if (preset >= ImPlatform_BlendPreset_Additive)      // These keep the target's alpha
+    {
+        b.src_alpha = ImPlatform_BlendFactor_Zero;
+        b.dst_alpha = ImPlatform_BlendFactor_One;
+    }
     return b;
+}
+
+IMPLATFORM_API bool ImPlatform_SetShaderProgramBlendPreset(ImPlatform_ShaderProgram program, ImPlatform_BlendPreset preset)
+{
+    const ImPlatform_BlendDesc blend = ImPlatform_BlendDesc_Preset(preset);
+    return ImPlatform_SetShaderProgramBlend(program, &blend);
 }
 
 // ============================================================================
@@ -60,7 +80,8 @@ IMPLATFORM_API ImPlatform_BlendDesc ImPlatform_BlendDesc_Preset(ImPlatform_Blend
 
 struct ImPlatform_ShaderJobData
 {
-    ImPlatform_ShaderDesc    desc[2];           // Vertex, fragment: their pointers are into the strings below
+    int                      stages;            // 2: a program (vertex, fragment); 1: one shader (compute)
+    ImPlatform_ShaderDesc    desc[2];           // Their pointers are into the strings below
     std::string              source[2], entry[2], cache_key[2], bytecode[2];
     bool                     list_source;       // A failure's log ends with the numbered source (generated shaders)
     ImPlatform_Shader        shaders[2];
@@ -77,8 +98,8 @@ struct ImPlatform_ShaderJobData
 // Creates the shaders and the program of a job whose compilation has ended (graphics thread).
 static void ImPlatform_ShaderJobFinish(ImPlatform_ShaderJobData* job)
 {
-    static const char* const names[2] = { "vertex", "fragment" };
-    for (int i = 0; i < 2; i++)
+    const char* const names[2] = { job->stages == 1 ? "compute" : "vertex", "fragment" };
+    for (int i = 0; i < job->stages; i++)
     {
         ImPlatform_ShaderDesc desc = job->desc[i];
         bool failed = false;
@@ -110,7 +131,7 @@ static void ImPlatform_ShaderJobFinish(ImPlatform_ShaderJobData* job)
         if (failed && job->list_source && job->desc[i].source_code)
             ImPlatform_AppendNumberedSource(job->log, job->desc[i].source_code);
     }
-    if (job->shaders[0] && job->shaders[1])
+    if (job->stages == 2 && job->shaders[0] && job->shaders[1])
     {
 #if IM_CURRENT_GFX != IM_GFX_CUSTOM
         ImPlatform_ShaderLogBuffer().clear();
@@ -119,8 +140,9 @@ static void ImPlatform_ShaderJobFinish(ImPlatform_ShaderJobData* job)
         if (!job->program)
             job->log.appendf("program: %s\n", ImPlatform_GetShaderLog());
     }
-    job->status = job->program ? ImPlatform_ShaderStatus_Ready : ImPlatform_ShaderStatus_Failed;
-    if (!job->program)
+    const bool ready = job->stages == 1 ? job->shaders[0] != NULL : job->program != NULL;
+    job->status = ready ? ImPlatform_ShaderStatus_Ready : ImPlatform_ShaderStatus_Failed;
+    if (!ready)
         fprintf(stderr, "[ImPlatform] shader job failed:\n%s", job->log.c_str());
 }
 
@@ -177,19 +199,21 @@ static ImPlatform_ShaderCompiler& ImPlatform_GetShaderCompiler()
 }
 #endif // IMPLATFORM_SHADER_COMPILE_THREAD
 
+// fragment_desc NULL: a job for the one shader of vertex_desc (a compute shader).
 ImPlatform_ShaderJob ImPlatform_ShaderJobCreate(const ImPlatform_ShaderDesc* vertex_desc, const ImPlatform_ShaderDesc* fragment_desc,
                                                 bool list_source)
 {
-    if (!vertex_desc || !fragment_desc)
+    if (!vertex_desc)
         return NULL;
     ImPlatform_ShaderJobData* job = new ImPlatform_ShaderJobData();
+    job->stages = fragment_desc ? 2 : 1;
     job->list_source = list_source;
     job->status = ImPlatform_ShaderStatus_Compiling;
     const ImPlatform_ShaderDesc* in[2] = { vertex_desc, fragment_desc };
 #ifdef IMPLATFORM_SHADER_COMPILE_THREAD
     bool queued = false;
 #endif
-    for (int i = 0; i < 2; i++)
+    for (int i = 0; i < job->stages; i++)
     {
         // The defines are applied here: the worker allocates nothing through Dear ImGui.
         ImPlatform_ShaderDesc with;
@@ -232,8 +256,21 @@ ImPlatform_ShaderJob ImPlatform_ShaderJobCreate(const ImPlatform_ShaderDesc* ver
 IMPLATFORM_API ImPlatform_ShaderJob ImPlatform_CreateShaderProgramAsync(const ImPlatform_ShaderDesc* vertex_desc,
                                                                        const ImPlatform_ShaderDesc* fragment_desc)
 {
-    return ImPlatform_ShaderJobCreate(vertex_desc, fragment_desc, false);
+    return vertex_desc && fragment_desc ? ImPlatform_ShaderJobCreate(vertex_desc, fragment_desc, false) : NULL;
 }
+
+#if IMPLATFORM_GFX_SUPPORT_COMPUTE
+IMPLATFORM_API ImPlatform_ShaderJob ImPlatform_CreateComputeShaderAsync(const ImPlatform_ShaderDesc* desc)
+{
+    return desc && desc->stage == ImPlatform_ShaderStage_Compute ? ImPlatform_ShaderJobCreate(desc, NULL, false) : NULL;
+}
+
+IMPLATFORM_API ImPlatform_Shader ImPlatform_GetShaderJobShader(ImPlatform_ShaderJob job_handle)
+{
+    ImPlatform_ShaderJobData* job = (ImPlatform_ShaderJobData*)job_handle;
+    return job && job->stages == 1 && ImPlatform_GetShaderJobStatus(job, NULL) == ImPlatform_ShaderStatus_Ready ? job->shaders[0] : NULL;
+}
+#endif
 
 IMPLATFORM_API ImPlatform_ShaderStatus ImPlatform_GetShaderJobStatus(ImPlatform_ShaderJob job_handle, ImPlatform_ShaderProgram* out_program)
 {

@@ -795,15 +795,6 @@ IMPLATFORM_API void ImPlatform_GetBackbufferSize(unsigned int* width, unsigned i
 }
 
 // ============================================================================
-// Custom Vertex/Index Buffer Management API - DirectX 12
-// ============================================================================
-// Note: DX12 implementations are stubs - full implementation requires:
-// - Command allocator/list management
-// - Upload heaps for buffer data
-// - Resource barriers and transitions
-// - Descriptor heaps for SRVs/CBVs
-
-// ============================================================================
 // Custom Shader System API - DirectX 12
 // ============================================================================
 
@@ -2801,6 +2792,44 @@ IMPLATFORM_API bool ImPlatform_DispatchCompute(ImPlatform_Shader compute_shader,
         g_P12_Timer.count += 2;
     }
     return true;        // Textures keep their states for the next dispatch; resting states return at submission.
+}
+
+// The fence value of the work list the dispatch was submitted with, on the device generation it belongs to (as
+// ImP12_Readback: after device loss or recreation the value says nothing about the dispatch).
+struct ImPlatform_ComputeDispatch_t
+{
+    UINT64 fence;
+    UINT64 generation;
+};
+
+IMPLATFORM_API ImPlatform_ComputeDispatch ImPlatform_DispatchComputeAsync(ImPlatform_Shader compute_shader, const ImTextureID* inputs,
+                                               unsigned int input_count, const ImTextureID* outputs, unsigned int output_count,
+                                               const void* constants, unsigned int constants_size, unsigned int groups_x,
+                                               unsigned int groups_y, unsigned int groups_z)
+{
+    if (!ImPlatform_DispatchCompute(compute_shader, inputs, input_count, outputs, output_count, constants, constants_size,
+                                    groups_x, groups_y, groups_z))
+        return NULL;
+    // Submitted now, not with the frame: the GPU starts on it at once, and its fence value is known.
+    const UINT64 fence = ImP12_Flush();
+    if (!fence)
+        return NULL;
+    ImPlatform_ComputeDispatch_t* dispatch = new ImPlatform_ComputeDispatch_t();
+    dispatch->fence = fence;
+    dispatch->generation = g_P12_Generation;
+    return dispatch;
+}
+
+IMPLATFORM_API int ImPlatform_PollComputeDispatch(ImPlatform_ComputeDispatch dispatch)
+{
+    if (!dispatch || dispatch->generation != g_P12_Generation || !g_GfxData.pDevice || g_GfxData.pDevice->GetDeviceRemovedReason() != S_OK)
+        return -1;
+    return ImP12_Done(dispatch->fence) ? 1 : 0;
+}
+
+IMPLATFORM_API void ImPlatform_ReleaseComputeDispatch(ImPlatform_ComputeDispatch dispatch)
+{
+    delete dispatch;
 }
 
 IMPLATFORM_API void ImPlatform_GfxDebugGpuTimer(bool enable)

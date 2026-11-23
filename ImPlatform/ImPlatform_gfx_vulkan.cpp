@@ -1398,7 +1398,7 @@ static VkSubpassDependency ImPlatform_PassDependency()
     return dep;
 }
 
-static VkCommandBuffer ImPlatform_Vulkan_BeginOneShot();
+static VkCommandBuffer ImPlatform_Vulkan_BeginOneShot(bool own = false);
 static bool ImPlatform_Vulkan_EndOneShot(VkCommandBuffer cb);
 static void ImPlatform_Vulkan_ImageBarrier(VkCommandBuffer cb, VkImage image, VkImageLayout from, VkImageLayout to,
                                            VkPipelineStageFlags dst_stage, VkAccessFlags dst_access);
@@ -3039,8 +3039,14 @@ IMPLATFORM_API void ImPlatform_PopSampler(void)
 // ImPlatform_CreateTexture): simple and ordered with frames, at the cost of a GPU sync per call.
 enum { ImPlatform_Vulkan_MaxComputeInputs = 8, ImPlatform_Vulkan_MaxComputeOutputs = 8 };
 
-static VkCommandBuffer ImPlatform_Vulkan_BeginOneShot()
+// A command buffer of the upload pool (created on first use), begun for one submission: the shared one, which the
+// caller submits and waits for (ImPlatform_Vulkan_EndOneShot), or with 'own' a new one the caller frees.
+static VkCommandBuffer ImPlatform_Vulkan_BeginOneShot(bool own)
 {
+    VkCommandBufferAllocateInfo cb_info = {};
+    cb_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+    cb_info.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    cb_info.commandBufferCount = 1;
     if (g_UploadCommandPool == VK_NULL_HANDLE)
     {
         VkCommandPoolCreateInfo pool_info = {};
@@ -3049,19 +3055,24 @@ static VkCommandBuffer ImPlatform_Vulkan_BeginOneShot()
         pool_info.queueFamilyIndex = g_QueueFamily;
         if (vkCreateCommandPool(g_GfxData.device, &pool_info, g_Allocator, &g_UploadCommandPool) != VK_SUCCESS)
             return VK_NULL_HANDLE;
-        VkCommandBufferAllocateInfo cb_info = {};
-        cb_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
         cb_info.commandPool = g_UploadCommandPool;
-        cb_info.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-        cb_info.commandBufferCount = 1;
         if (vkAllocateCommandBuffers(g_GfxData.device, &cb_info, &g_UploadCommandBuffer) != VK_SUCCESS)
             return VK_NULL_HANDLE;
     }
-    vkResetCommandBuffer(g_UploadCommandBuffer, 0);
+    VkCommandBuffer cb = g_UploadCommandBuffer;
+    cb_info.commandPool = g_UploadCommandPool;
+    if (own && vkAllocateCommandBuffers(g_GfxData.device, &cb_info, &cb) != VK_SUCCESS)
+        return VK_NULL_HANDLE;
+    if (!own)
+        vkResetCommandBuffer(cb, 0);
     VkCommandBufferBeginInfo begin_info = {};
     begin_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
     begin_info.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-    return vkBeginCommandBuffer(g_UploadCommandBuffer, &begin_info) == VK_SUCCESS ? g_UploadCommandBuffer : VK_NULL_HANDLE;
+    if (vkBeginCommandBuffer(cb, &begin_info) == VK_SUCCESS)
+        return cb;
+    if (own)
+        vkFreeCommandBuffers(g_GfxData.device, g_UploadCommandPool, 1, &cb);
+    return VK_NULL_HANDLE;
 }
 static bool ImPlatform_Vulkan_EndOneShot(VkCommandBuffer cb)
 {
@@ -3308,11 +3319,25 @@ static bool ImPlatform_Vulkan_ComputeLayout()
     return vkCreatePipelineLayout(g_GfxData.device, &pi, g_Allocator, &g_ComputePipelineLayout) == VK_SUCCESS;
 }
 
-IMPLATFORM_API bool ImPlatform_DispatchCompute(ImPlatform_Shader compute_shader,
-                                               const ImTextureID* inputs, unsigned int input_count,
-                                               const ImTextureID* outputs, unsigned int output_count,
-                                               const void* constants, unsigned int constants_size,
-                                               unsigned int groups_x, unsigned int groups_y, unsigned int groups_z)
+// What an asynchronous dispatch keeps until it has completed: its own command buffer, the fence its submission signals,
+// and the descriptor pool and constants its commands read.
+struct ImPlatform_ComputeDispatch_t
+{
+    VkCommandBuffer  cb;
+    VkFence          fence;
+    VkDescriptorPool pool;
+    VkBuffer         ubo;
+    VkDeviceMemory   ubo_mem;
+};
+
+// Records and submits one dispatch. Without 'async' it waits for the queue and frees what the dispatch used; with it,
+// the submission signals async->fence and 'async' keeps those objects (ImPlatform_ReleaseComputeDispatch frees them).
+static bool ImPlatform_Vulkan_Dispatch(ImPlatform_Shader compute_shader,
+                                       const ImTextureID* inputs, unsigned int input_count,
+                                       const ImTextureID* outputs, unsigned int output_count,
+                                       const void* constants, unsigned int constants_size,
+                                       unsigned int groups_x, unsigned int groups_y, unsigned int groups_z,
+                                       ImPlatform_ComputeDispatch_t* async)
 {
     ImPlatform_ShaderData_Vulkan* cs = (ImPlatform_ShaderData_Vulkan*)compute_shader;
     if (!cs || cs->stage != ImPlatform_ShaderStage_Compute || !cs->shaderModule || !g_GfxData.device
@@ -3374,7 +3399,8 @@ IMPLATFORM_API bool ImPlatform_DispatchCompute(ImPlatform_Shader compute_shader,
             vkUnmapMemory(g_GfxData.device, ubo_mem);
         }
     }
-    VkCommandBuffer cb = ok ? ImPlatform_Vulkan_BeginOneShot() : VK_NULL_HANDLE;
+    VkCommandBuffer cb = ok ? ImPlatform_Vulkan_BeginOneShot(async != NULL) : VK_NULL_HANDLE;
+    VkFence fence = VK_NULL_HANDLE;
     if (cb)
     {
         VkWriteDescriptorSet w[1 + ImPlatform_Vulkan_MaxComputeInputs + ImPlatform_Vulkan_MaxComputeOutputs] = {};
@@ -3419,14 +3445,91 @@ IMPLATFORM_API bool ImPlatform_DispatchCompute(ImPlatform_Shader compute_shader,
         mb.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
         mb.dstAccessMask = VK_ACCESS_MEMORY_READ_BIT;
         vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 1, &mb, 0, NULL, 0, NULL);
-        ok = ImPlatform_Vulkan_EndOneShot(cb);
+        if (!async)
+            ok = ImPlatform_Vulkan_EndOneShot(cb);
+        else
+        {
+            // Submitted without waiting: the queue runs it before the frames submitted later.
+            VkFenceCreateInfo fi = {};
+            fi.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+            VkSubmitInfo submit_info = {};
+            submit_info.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+            submit_info.commandBufferCount = 1;
+            submit_info.pCommandBuffers = &cb;
+            ok = vkEndCommandBuffer(cb) == VK_SUCCESS
+              && vkCreateFence(g_GfxData.device, &fi, g_Allocator, &fence) == VK_SUCCESS
+              && vkQueueSubmit(g_GfxData.queue, 1, &submit_info, fence) == VK_SUCCESS;
+        }
     }
     else
         ok = false;
+    if (async && ok)
+    {
+        async->cb = cb;
+        async->fence = fence;
+        async->pool = pool;
+        async->ubo = ubo;
+        async->ubo_mem = ubo_mem;
+        return true;
+    }
+    if (fence)
+        vkDestroyFence(g_GfxData.device, fence, g_Allocator);
+    if (async && cb)
+        vkFreeCommandBuffers(g_GfxData.device, g_UploadCommandPool, 1, &cb);
     if (ubo)
         ImPlatform_Vulkan_DestroyHostBuffer(ubo, ubo_mem);
     vkDestroyDescriptorPool(g_GfxData.device, pool, g_Allocator);
     return ok;
+}
+
+IMPLATFORM_API bool ImPlatform_DispatchCompute(ImPlatform_Shader compute_shader,
+                                               const ImTextureID* inputs, unsigned int input_count,
+                                               const ImTextureID* outputs, unsigned int output_count,
+                                               const void* constants, unsigned int constants_size,
+                                               unsigned int groups_x, unsigned int groups_y, unsigned int groups_z)
+{
+    return ImPlatform_Vulkan_Dispatch(compute_shader, inputs, input_count, outputs, output_count, constants, constants_size,
+                                      groups_x, groups_y, groups_z, NULL);
+}
+
+IMPLATFORM_API ImPlatform_ComputeDispatch ImPlatform_DispatchComputeAsync(ImPlatform_Shader compute_shader,
+                                               const ImTextureID* inputs, unsigned int input_count,
+                                               const ImTextureID* outputs, unsigned int output_count,
+                                               const void* constants, unsigned int constants_size,
+                                               unsigned int groups_x, unsigned int groups_y, unsigned int groups_z)
+{
+    ImPlatform_ComputeDispatch_t* dispatch = IM_NEW(ImPlatform_ComputeDispatch_t)();
+    if (ImPlatform_Vulkan_Dispatch(compute_shader, inputs, input_count, outputs, output_count, constants, constants_size,
+                                   groups_x, groups_y, groups_z, dispatch))
+        return dispatch;
+    IM_DELETE(dispatch);
+    return NULL;
+}
+
+IMPLATFORM_API int ImPlatform_PollComputeDispatch(ImPlatform_ComputeDispatch dispatch)
+{
+    if (!dispatch || !g_GfxData.device)
+        return -1;
+    const VkResult state = vkGetFenceStatus(g_GfxData.device, dispatch->fence);
+    return state == VK_SUCCESS ? 1 : state == VK_NOT_READY ? 0 : -1;
+}
+
+// shortcut: a dispatch released before it has completed is waited for (its command buffer, descriptors and constants
+// are in use until then); queue them for a later release if applications drop long dispatches.
+IMPLATFORM_API void ImPlatform_ReleaseComputeDispatch(ImPlatform_ComputeDispatch dispatch)
+{
+    if (!dispatch)
+        return;
+    if (g_GfxData.device)
+    {
+        vkWaitForFences(g_GfxData.device, 1, &dispatch->fence, VK_TRUE, UINT64_MAX);
+        vkDestroyFence(g_GfxData.device, dispatch->fence, g_Allocator);
+        vkFreeCommandBuffers(g_GfxData.device, g_UploadCommandPool, 1, &dispatch->cb);
+        if (dispatch->ubo)
+            ImPlatform_Vulkan_DestroyHostBuffer(dispatch->ubo, dispatch->ubo_mem);
+        vkDestroyDescriptorPool(g_GfxData.device, dispatch->pool, g_Allocator);
+    }
+    IM_DELETE(dispatch);
 }
 
 // ---- Direct draws from draw callbacks ----------------------------------------------------------------------------

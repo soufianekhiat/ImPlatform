@@ -232,6 +232,15 @@ IMPLATFORM_API bool ImPlatform_BeginCustomTitleBar(float fHeight)
     pData->bTitleBarHovered = ImGui::IsItemHovered();
     pData->vEndCustomToolBar = ImGui::GetCursorPos();
     pData->fCustomTitleBarHeight = fHeight;
+#ifndef IM_THE_CHERNO_GLFW3
+    // The resize borders of the borderless window (ImPlatform_PlatformEvents): left 1, right 2, top 4, bottom 8
+    if (const int edges = pData->iHoverEdges)
+    {
+        const bool horizontal = (edges & 3) != 0, vertical = (edges & 12) != 0;
+        ImGui::SetMouseCursor(!vertical ? ImGuiMouseCursor_ResizeEW : !horizontal ? ImGuiMouseCursor_ResizeNS
+                              : ((edges & 1) != 0) == ((edges & 4) != 0) ? ImGuiMouseCursor_ResizeNWSE : ImGuiMouseCursor_ResizeNESW);
+    }
+#endif
 
 #elif defined(IM_CURRENT_PLATFORM) && (IM_CURRENT_PLATFORM == IM_PLATFORM_SDL2)
     ImPlatform_AppData_SDL2* pData = ImPlatform_App_GetData_SDL2();

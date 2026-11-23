@@ -65,7 +65,7 @@ namespace ImPlatform
         {
             var targets = new List<ImPlatformTarget>();
 
-            foreach (Gfx gfx in new[] { Gfx.DX9, Gfx.DX10, Gfx.DX11, Gfx.DX12, Gfx.OpenGL3 })
+            foreach (Gfx gfx in new[] { Gfx.DX9, Gfx.DX10, Gfx.DX11, Gfx.DX12, Gfx.OpenGL3, Gfx.Vulkan })
                 targets.Add(new ImPlatformTarget(Platform.win64, DevEnv.vs2022, App.Win32, gfx));
             foreach (Gfx gfx in new[] { Gfx.OpenGL3, Gfx.Vulkan })
                 targets.Add(new ImPlatformTarget(Platform.win64, DevEnv.vs2022, App.GLFW, gfx));

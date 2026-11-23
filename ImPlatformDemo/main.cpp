@@ -737,33 +737,28 @@ static int CheckDirectDrawTest()
 	return bad ? 1 : 0;
 }
 
-// --blend-test: the gradient program drawn twice over opaque gray (64) with a constant color (0.5, 0.25, 0, 1), its
-// blending set from a draw callback before each half (ImPlatform_SetShaderProgramBlend is read when the program is
-// bound): additive on the left (gray plus the color), multiply on the right (gray times the color). Both keep the
-// target's alpha. Exit code as above.
+// --blend-test: the gradient program drawn in six 10 pixel columns over opaque gray (64) with a constant color
+// (0.5, 0.25, 0, 1), its blending set by name from a draw callback before each column
+// (ImPlatform_SetShaderProgramBlendPreset is read when the program is bound): additive, subtractive, multiplicative,
+// screen, darken, lighten. All keep the target's alpha. Exit code as above.
 static RenderPassScene g_BlendTest;
-struct BlendTestHalf
+static const ImPlatform_BlendPreset g_BlendTestPresets[ 6 ] = { ImPlatform_BlendPreset_Additive, ImPlatform_BlendPreset_Subtractive,
+																 ImPlatform_BlendPreset_Multiplicative, ImPlatform_BlendPreset_Screen,
+																 ImPlatform_BlendPreset_Darken, ImPlatform_BlendPreset_Lighten };
+static void SetBlendTestPreset( const ImDrawList*, const ImDrawCmd* cmd )
 {
-	ImVec4					Colors[ 2 ];
-	ImPlatform_BlendPreset	Preset;
-};
-static void SetBlendTestHalf( const ImDrawList*, const ImDrawCmd* cmd )
-{
-	const BlendTestHalf* half = (const BlendTestHalf*)cmd->UserCallbackData;
-	const ImPlatform_BlendDesc blend = ImPlatform_BlendDesc_Preset( half->Preset );
-	ImPlatform_SetShaderProgramBlend( g_ShaderTestProgram, &blend );
-	ImPlatform_SetShaderUniform( g_ShaderTestProgram, "pixelBuffer", half->Colors, sizeof( half->Colors ) );
+	static const ImVec4 colors[ 2 ] = { ImVec4( 0.5f, 0.25f, 0, 1 ), ImVec4( 0.5f, 0.25f, 0, 1 ) };
+	ImPlatform_SetShaderProgramBlendPreset( g_ShaderTestProgram, *(const ImPlatform_BlendPreset*)cmd->UserCallbackData );
+	ImPlatform_SetShaderUniform( g_ShaderTestProgram, "pixelBuffer", colors, sizeof( colors ) );
 }
 static void DrawBlendTest( ImDrawList* dl )
 {
-	static const BlendTestHalf halves[ 2 ] = { { { ImVec4( 0.5f, 0.25f, 0, 1 ), ImVec4( 0.5f, 0.25f, 0, 1 ) }, ImPlatform_BlendPreset_Additive },
-											   { { ImVec4( 0.5f, 0.25f, 0, 1 ), ImVec4( 0.5f, 0.25f, 0, 1 ) }, ImPlatform_BlendPreset_Multiply } };
 	dl->AddRectFilled( ImVec2( 0, 0 ), ImVec2( 64, 64 ), IM_COL32( 64, 64, 64, 255 ) );
-	for ( int i = 0; i < 2; i++ )
+	for ( int i = 0; i < 6; i++ )
 	{
-		dl->AddCallback( SetBlendTestHalf, (void*)&halves[ i ] );
+		dl->AddCallback( SetBlendTestPreset, (void*)&g_BlendTestPresets[ i ] );
 		ImPlatform_BeginCustomShader( dl, g_ShaderTestProgram );
-		dl->AddImage( ImGui::GetIO().Fonts->TexRef, ImVec2( 32.0f * i, 0 ), ImVec2( 32.0f * i + 32.0f, 64 ) );
+		dl->AddImage( ImGui::GetIO().Fonts->TexRef, ImVec2( 10.0f * i, 0 ), ImVec2( 10.0f * i + 10.0f, 64 ) );
 		ImPlatform_EndCustomShader( dl );
 	}
 }
@@ -776,9 +771,11 @@ static int CheckBlendTest()
 		printf( "SKIP: no readback of the pass target\n" );
 		return 2;
 	}
-	// 64 + 128, 64 + 64, 64 + 0 | 64 * 0.5, 64 * 0.25, 64 * 0
-	const RenderPassProbe probes[] = { { 16, 32, { 192, 128, 64, 255 } }, { 48, 32, { 32, 16, 0, 255 } } };
-	const int bad = CheckRenderPassProbes( "blend", px, 64, probes, 2, 4 );
+	// Target (64, 64, 64), source (128, 64, 0): sum, difference, product, screen 128 + 64 * (1 - 0.5), minimum, maximum
+	const RenderPassProbe probes[] = { { 5, 32, { 192, 128, 64, 255 } }, { 15, 32, { 0, 0, 64, 255 } }, { 25, 32, { 32, 16, 0, 255 } },
+									   { 35, 32, { 160, 112, 64, 255 } }, { 45, 32, { 64, 64, 0, 255 } }, { 55, 32, { 128, 64, 64, 255 } },
+									   { 62, 32, { 64, 64, 64, 255 } } };
+	const int bad = CheckRenderPassProbes( "blend", px, 64, probes, 7, 4 );
 	if ( !bad )
 		printf( "PASS\n" );
 	return bad ? 1 : 0;
@@ -917,6 +914,75 @@ static void DestroyAsyncTest()
 #endif
 #endif // IMPLATFORM_GFX_SUPPORT_CUSTOM_SHADER
 
+#if defined( IMGUI_HAS_TEXTURES ) && !defined( __EMSCRIPTEN__ )
+// --screenshot-test: a red and a blue square drawn on top of the main viewport, the viewport captured
+// (ImPlatform_CaptureViewport) and read back (ImPlatform_ReadCapture): the capture has the size of the back buffer and
+// both squares at their place, as RGBA. Exit code as above.
+static ImTextureID g_Screenshot = 0;
+static unsigned int g_ScreenshotW = 0, g_ScreenshotH = 0;
+static ImVec2 g_ScreenshotScale;
+static bool QueueScreenshotTest()
+{
+#if IMPLATFORM_GFX_SUPPORT_RENDER_TARGETS && IMPLATFORM_GFX_SUPPORT_READBACK
+	ImGuiViewport* viewport = ImGui::GetMainViewport();
+	ImDrawList* dl = ImGui::GetForegroundDrawList( viewport );
+	const ImVec2 o = viewport->Pos;
+	dl->AddRectFilled( ImVec2( o.x + 16, o.y + 16 ), ImVec2( o.x + 48, o.y + 48 ), IM_COL32( 255, 0, 0, 255 ) );
+	dl->AddRectFilled( ImVec2( o.x + 64, o.y + 16 ), ImVec2( o.x + 96, o.y + 48 ), IM_COL32( 0, 0, 255, 255 ) );
+	g_ScreenshotScale = viewport->FramebufferScale;
+	g_Screenshot = ImPlatform_CaptureViewport( nullptr, &g_ScreenshotW, &g_ScreenshotH );
+	return g_Screenshot != 0;
+#else
+	return false;
+#endif
+}
+
+static int CheckScreenshotTest()
+{
+#if IMPLATFORM_GFX_SUPPORT_RENDER_TARGETS && IMPLATFORM_GFX_SUPPORT_READBACK
+	unsigned int bw = 0, bh = 0;
+	ImPlatform_GetBackbufferSize( &bw, &bh );
+	ImVector<unsigned char> px;
+	px.resize( (int)( g_ScreenshotW * g_ScreenshotH * 4 ) );
+	int bad = 0;
+	if ( !ImPlatform_ReadCapture( g_Screenshot, g_ScreenshotW, g_ScreenshotH, px.Data, (size_t)px.Size ) )
+	{
+		printf( "FAIL: ImPlatform_ReadCapture\n" );
+		return 1;
+	}
+	if ( g_ScreenshotW != bw || g_ScreenshotH != bh )
+	{
+		printf( "FAIL: capture %ux%u, back buffer %ux%u\n", g_ScreenshotW, g_ScreenshotH, bw, bh );
+		++bad;
+	}
+	const struct { float x, y; int rgba[ 4 ]; } probes[] = { { 32, 32, { 255, 0, 0, 255 } }, { 80, 32, { 0, 0, 255, 255 } } };
+	for ( const auto& p : probes )
+	{
+		const unsigned int x = (unsigned int)( p.x * g_ScreenshotScale.x ), y = (unsigned int)( p.y * g_ScreenshotScale.y );
+		if ( x >= g_ScreenshotW || y >= g_ScreenshotH )
+		{
+			printf( "FAIL: probe (%u, %u) outside the %ux%u capture\n", x, y, g_ScreenshotW, g_ScreenshotH );
+			++bad;
+			continue;
+		}
+		const unsigned char* q = px.Data + ( (size_t)y * g_ScreenshotW + x ) * 4;
+		for ( int c = 0; c < 4; ++c )
+			if ( abs( (int)q[ c ] - p.rgba[ c ] ) > 3 )
+			{
+				printf( "FAIL at (%u, %u): got %d %d %d %d, expected %d %d %d %d\n", x, y, q[ 0 ], q[ 1 ], q[ 2 ], q[ 3 ], p.rgba[ 0 ], p.rgba[ 1 ], p.rgba[ 2 ], p.rgba[ 3 ] );
+				++bad;
+				break;
+			}
+	}
+	if ( !bad )
+		printf( "PASS (%ux%u)\n", g_ScreenshotW, g_ScreenshotH );
+	return bad ? 1 : 0;
+#else
+	return 2;
+#endif
+}
+#endif
+
 #if IMPLATFORM_GFX_SUPPORT_COMPUTE
 #if IM_CURRENT_GFX == IM_GFX_OPENGL3
 #include "shaders/compute_test.glsl.h"
@@ -926,13 +992,26 @@ static void DestroyAsyncTest()
 #include "shaders/compute_test.hlsl.h"
 #endif
 #endif
+#if IMPLATFORM_GFX_SUPPORT_ASYNC_COMPUTE
+#include <chrono>
+#include <thread>
+#endif
 // --compute-test: storage texture + compute dispatch + readback, the same check on every backend.
 // Reads an input texture (t0), writes a storage texture (u0) with a constant from b0, reads it back.
+// --compute-async-test (async): the same with the shader from ImPlatform_CreateComputeShaderAsync and the dispatch from
+// ImPlatform_DispatchComputeAsync, each polled until it is ready (no frame is rendered meanwhile: polling alone must
+// make them complete).
 // Exit code: 0 pass, 1 fail, 2 unsupported here.
-static int ImPlatformDemo_ComputeTest()
+static int ImPlatformDemo_ComputeTest( bool async )
 {
 	printf( "compute test: readback=%d compute=%d\n", (int)ImPlatform_SupportsReadback(), (int)ImPlatform_SupportsCompute() );
-	if ( !ImPlatform_SupportsReadback() )
+	bool supported = ImPlatform_SupportsReadback();
+#if IMPLATFORM_GFX_SUPPORT_ASYNC_COMPUTE
+	supported = supported && ( !async || ImPlatform_SupportsCompute() );
+#else
+	supported = supported && !async;
+#endif
+	if ( !supported )
 	{
 		printf( "SKIP: not supported on this backend\n" );
 		return 2;
@@ -977,11 +1056,39 @@ static int ImPlatformDemo_ComputeTest()
 	sd.entry_point = "cs_main";
 	sd.source_code = compute_test_hlsl;
 #endif
-	ImPlatform_Shader cs = ImPlatform_CreateShader( &sd );
 	const float params[ 4 ] = { 0.0f, 0.0f, 0.5f, 0.0f };
-	const bool dispatched = cs && input && output
-		&& ImPlatform_DispatchCompute( cs, &input, 1, &output, 1, params, sizeof( params ), N / 8, N / 8, 1 );
+	ImPlatform_Shader cs = nullptr;
+	bool dispatched = false;
+#if IMPLATFORM_GFX_SUPPORT_ASYNC_COMPUTE
+	ImPlatform_ShaderJob job = nullptr;
+	if ( async )
+	{
+		// Up to 10 seconds each, a millisecond between polls
+		int compile_polls = 0, dispatch_polls = 0, state = 0;
+		job = ImPlatform_CreateComputeShaderAsync( &sd );
+		while ( ImPlatform_GetShaderJobStatus( job, nullptr ) == ImPlatform_ShaderStatus_Compiling && ++compile_polls < 10000 )
+			std::this_thread::sleep_for( std::chrono::milliseconds( 1 ) );
+		cs = ImPlatform_GetShaderJobShader( job );
+		ImPlatform_ComputeDispatch dispatch = cs && input && output
+			? ImPlatform_DispatchComputeAsync( cs, &input, 1, &output, 1, params, sizeof( params ), N / 8, N / 8, 1 ) : nullptr;
+		while ( ( state = ImPlatform_PollComputeDispatch( dispatch ) ) == 0 && ++dispatch_polls < 10000 )
+			std::this_thread::sleep_for( std::chrono::milliseconds( 1 ) );
+		dispatched = state == 1;
+		ImPlatform_ReleaseComputeDispatch( dispatch );
+		printf( "async: %d polls while compiling (log \"%s\"), %d polls while dispatching, state %d\n", compile_polls,
+				ImPlatform_GetShaderJobLog( job ), dispatch_polls, state );
+	}
+	else
+#endif
+	{
+		cs = ImPlatform_CreateShader( &sd );
+		dispatched = cs && input && output
+			&& ImPlatform_DispatchCompute( cs, &input, 1, &output, 1, params, sizeof( params ), N / 8, N / 8, 1 );
+	}
 	const bool read = dispatched && DemoReadTexture( output, 0, 0, N, N, out_px, sizeof( out_px ) );
+#if IMPLATFORM_GFX_SUPPORT_ASYNC_COMPUTE
+	ImPlatform_DestroyShaderJob( job );		// With its compute shader
+#endif
 	printf( "shader=%d input=%d output=%d dispatched=%d read=%d\n", cs != NULL, input != (ImTextureID)0, output != (ImTextureID)0, (int)dispatched, (int)read );
 	int bad = read ? 0 : 1;
 	for ( unsigned int i = 0; read && i < N * N; ++i )
@@ -999,13 +1106,114 @@ static int ImPlatformDemo_ComputeTest()
 #endif
 }
 
+// --drag-rect-test: the arithmetic of the borderless GLFW window's software move and resize (ImPlatform_DragRect), without
+// a window: a move, edges that grow, and an edge dragged past the minimum size (the opposite edge stays). Exit code 0 / 1.
+static int ImPlatformDemo_DragRectTest()
+{
+	const int start[ 4 ] = { 100, 200, 400, 300 };	// x, y, width, height
+	const struct { int edges, dx, dy, want[ 4 ]; } cases[] = {
+		{ 16, 30, -20, { 130, 180, 400, 300 } },		// moved
+		{ 2 | 8, 50, 40, { 100, 200, 450, 340 } },		// right and bottom grow
+		{ 1 | 4, -50, -40, { 50, 160, 450, 340 } },		// left and top grow, the right and bottom edges stay
+		{ 1, 1000, 0, { 420, 200, 80, 300 } },			// left past the minimum width (80): the right edge stays at 500
+		{ 8, 0, -1000, { 100, 200, 400, 60 } },			// bottom past the minimum height (60)
+	};
+	int bad = 0;
+	for ( const auto& c : cases )
+	{
+		int out[ 4 ];
+		ImPlatform_DragRect( c.edges, start, c.dx, c.dy, 80, 60, out );
+		if ( memcmp( out, c.want, sizeof( out ) ) != 0 )
+		{
+			printf( "FAIL edges %d by (%d, %d): got %d %d %d %d\n", c.edges, c.dx, c.dy, out[ 0 ], out[ 1 ], out[ 2 ], out[ 3 ] );
+			++bad;
+		}
+	}
+	if ( !bad )
+		printf( "PASS\n" );
+	return bad ? 1 : 0;
+}
+
+// --pen-test: (SDL3) pen events pushed on SDL's queue come out of ImPlatform_ConsumePenSamples as samples: the axes
+// SDL reports one by one accumulate, the rotation is turned to [0, 360), contact follows the pen state, and leaving
+// proximity ends ImPlatform_GetPenState. Exit code: 0 pass, 1 fail, 2 where pen events cannot be synthesized.
+static int ImPlatformDemo_PenTest()
+{
+#if IM_CURRENT_PLATFORM == IM_PLATFORM_SDL3
+	const SDL_WindowID window = SDL_GetWindowID( ImPlatform_App_GetSDL3Window() );
+	SDL_Event e;
+	SDL_zero( e );
+	e.type = SDL_EVENT_PEN_PROXIMITY_IN;
+	e.pproximity.windowID = window;
+	SDL_PushEvent( &e );
+	const struct { SDL_PenAxis axis; float value; } axes[ 3 ] = { { SDL_PEN_AXIS_PRESSURE, 0.5f }, { SDL_PEN_AXIS_XTILT, 30.0f }, { SDL_PEN_AXIS_ROTATION, -90.0f } };
+	for ( const auto& a : axes )
+	{
+		SDL_zero( e );
+		e.type = SDL_EVENT_PEN_AXIS;
+		e.paxis.windowID = window;
+		e.paxis.x = 10.0f;
+		e.paxis.y = 20.0f;
+		e.paxis.axis = a.axis;
+		e.paxis.value = a.value;
+		SDL_PushEvent( &e );
+	}
+	SDL_zero( e );
+	e.type = SDL_EVENT_PEN_DOWN;
+	e.ptouch.windowID = window;
+	e.ptouch.x = 10.0f;
+	e.ptouch.y = 20.0f;
+	e.ptouch.pen_state = SDL_PEN_INPUT_DOWN | SDL_PEN_INPUT_ERASER_TIP;
+	e.ptouch.down = true;
+	SDL_PushEvent( &e );
+	SDL_zero( e );
+	e.type = SDL_EVENT_PEN_MOTION;
+	e.pmotion.windowID = window;
+	e.pmotion.x = 11.0f;
+	e.pmotion.y = 21.0f;
+	e.pmotion.pen_state = SDL_PEN_INPUT_DOWN;
+	SDL_PushEvent( &e );
+	SDL_zero( e );
+	e.type = SDL_EVENT_PEN_UP;
+	e.ptouch.windowID = window;
+	e.ptouch.x = 11.0f;
+	e.ptouch.y = 21.0f;
+	SDL_PushEvent( &e );
+	ImPlatform_PlatformEvents();
+
+	ImPlatform_PenSample s[ 16 ], state = {};
+	const int n = ImPlatform_ConsumePenSamples( s, 16 );
+	const bool in_range = ImPlatform_GetPenState( &state );
+	bool ok = ImPlatform_SupportsPen() && n == 6 && in_range;
+	ok = ok && s[ 0 ].pressure == 0.5f && !s[ 0 ].has_tilt && !s[ 0 ].has_rotation && !s[ 0 ].in_contact;
+	ok = ok && s[ 2 ].pressure == 0.5f && s[ 2 ].has_tilt && s[ 2 ].tilt_x == 30.0f && s[ 2 ].has_rotation && s[ 2 ].rotation == 270.0f;
+	ok = ok && s[ 3 ].in_contact && s[ 3 ].eraser && s[ 3 ].x == 10.0f && s[ 3 ].y == 20.0f;
+	ok = ok && s[ 4 ].in_contact && !s[ 4 ].eraser && s[ 4 ].x == 11.0f && s[ 4 ].y == 21.0f && s[ 4 ].time > 0.0;
+	ok = ok && !s[ 5 ].in_contact && !state.in_contact && state.pressure == 0.5f;
+	SDL_zero( e );
+	e.type = SDL_EVENT_PEN_PROXIMITY_OUT;
+	e.pproximity.windowID = window;
+	SDL_PushEvent( &e );
+	ImPlatform_PlatformEvents();
+	ok = ok && !ImPlatform_GetPenState( &state );
+	printf( ok ? "PASS\n" : "FAIL (%d samples, in range %d)\n", n, (int)in_range );
+	return ok ? 0 : 1;
+#else
+	printf( "SKIP: pen events are synthesized on SDL3 only (pen supported here: %d)\n", (int)ImPlatform_SupportsPen() );
+	return 2;
+#endif
+}
+
 int main( int argc, char** argv )
 {
 #ifndef __EMSCRIPTEN__	// The self-tests and --dump-msl are not built for the web
 	if ( argc > 3 && strcmp( argv[ 1 ], "--dump-msl" ) == 0 )
 		return DumpMSL( argv[ 2 ], argv[ 3 ] );
 #endif
-	const bool computeTest = argc > 1 && strcmp( argv[ 1 ], "--compute-test" ) == 0;
+	if ( argc > 1 && strcmp( argv[ 1 ], "--drag-rect-test" ) == 0 )
+		return ImPlatformDemo_DragRectTest();
+	const bool computeAsyncTest = argc > 1 && strcmp( argv[ 1 ], "--compute-async-test" ) == 0;
+	const bool computeTest = computeAsyncTest || ( argc > 1 && strcmp( argv[ 1 ], "--compute-test" ) == 0 );
 	const bool renderPassTest = argc > 1 && strcmp( argv[ 1 ], "--render-pass-test" ) == 0;
 	const bool shaderTest = argc > 1 && strcmp( argv[ 1 ], "--shader-test" ) == 0;
 	const bool directDrawTest = argc > 1 && strcmp( argv[ 1 ], "--direct-draw-test" ) == 0;
@@ -1014,8 +1222,9 @@ int main( int argc, char** argv )
 	const bool vertexInputsTest = argc > 1 && strcmp( argv[ 1 ], "--vertex-inputs-test" ) == 0;
 	const bool blendTest = argc > 1 && strcmp( argv[ 1 ], "--blend-test" ) == 0;
 	const bool asyncTest = argc > 1 && strcmp( argv[ 1 ], "--shader-async-test" ) == 0;
+	const bool screenshotTest = argc > 1 && strcmp( argv[ 1 ], "--screenshot-test" ) == 0;
 	const bool passTest = renderPassTest || shaderTest || directDrawTest || partsTest || texture3DTest || vertexInputsTest || blendTest
-						|| asyncTest;	// Tests read back a render pass
+						|| asyncTest || screenshotTest;	// Tests read back what a few frames rendered
 	int exitCode = 0;
 #ifndef __EMSCRIPTEN__
 	int renderPassFrame = 0;
@@ -1155,7 +1364,9 @@ int main( int argc, char** argv )
 		return 1;
 	}
 	if ( computeTest )
-		return ImPlatformDemo_ComputeTest();
+		return ImPlatformDemo_ComputeTest( computeAsyncTest );
+	if ( argc > 1 && strcmp( argv[ 1 ], "--pen-test" ) == 0 )
+		return ImPlatformDemo_PenTest();
 
 	// Create test textures using new Texture Creation API
 #ifdef IMGUI_HAS_TEXTURES
@@ -1431,22 +1642,19 @@ int main( int argc, char** argv )
 			ImGui::Begin("Custom Shader Support", nullptr, ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove);
 			ImGui::TextColored(ImVec4(1.0f, 0.5f, 0.0f, 1.0f), "Custom Shaders Not Supported");
 			ImGui::Separator();
-			ImGui::Text("The current graphics backend does not support custom shaders.");
-#if (IM_CURRENT_GFX == IM_GFX_DIRECTX9)
-			ImGui::Text("DirectX 9: Shader API requires D3DX which is deprecated.");
-#endif
-			ImGui::Text("Supported backends:");
-			ImGui::BulletText("OpenGL 3");
-			ImGui::BulletText("DirectX 10");
-			ImGui::BulletText("DirectX 11");
-			ImGui::BulletText("DirectX 12 (stub)");
-			ImGui::BulletText("Vulkan (stub)");
-			ImGui::BulletText("Metal (stub)");
-			ImGui::BulletText("WebGPU");
+			ImGui::Text("The current graphics backend does not support custom shaders.");	// Every built-in backend does
 			ImGui::End();
 		}
 #endif // IMPLATFORM_GFX_SUPPORT_CUSTOM_SHADER
 
+#if defined( IMGUI_HAS_TEXTURES ) && !defined( __EMSCRIPTEN__ )
+		if ( screenshotTest && renderPassFrame == 1 && !QueueScreenshotTest() )
+		{
+			printf( "SKIP: no viewport capture on this backend\n" );
+			exitCode = 2;
+			break;
+		}
+#endif
 		ImGui::Render();
 
 		ImPlatform_GfxAPIClear( clear_color );
@@ -1464,6 +1672,9 @@ int main( int argc, char** argv )
 #if defined( IMGUI_HAS_TEXTURES ) && !defined( __EMSCRIPTEN__ )
 		if ( passTest && !asyncCompiling && ++renderPassFrame == 3 )
 		{
+			if ( screenshotTest )
+				exitCode = CheckScreenshotTest();
+			else
 #if IMPLATFORM_GFX_SUPPORT_CUSTOM_SHADER
 			exitCode = shaderTest ? CheckShaderTest() : directDrawTest ? CheckDirectDrawTest() : partsTest ? CheckPartsTest()
 					 : texture3DTest ? CheckTexture3DTest() : vertexInputsTest ? CheckVertexInputsTest() : blendTest ? CheckBlendTest()
@@ -1505,6 +1716,8 @@ int main( int argc, char** argv )
 #ifdef IMGUI_HAS_TEXTURES
 	DestroyRenderPassScene( g_RenderPassDemo );
 #ifndef __EMSCRIPTEN__
+	if ( g_Screenshot )
+		ImPlatform_DestroyTexture( g_Screenshot );
 	DestroyRenderPassScene( g_RenderPassTest );
 	DestroyRenderPassScene( g_RenderPassComposite );
 #if IMPLATFORM_GFX_SUPPORT_CUSTOM_SHADER

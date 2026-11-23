@@ -394,6 +394,13 @@ if(IMPLATFORM_WINDOWS)
         endif()
     endif()
 
+    if(VULKAN_AVAILABLE)
+        implatform_add_config(implatform_win32_vulkan WIN32 VULKAN)
+        if(IMPLATFORM_BUILD_DEMO)
+            implatform_add_demo(ImPlatformDemo_Win32_Vulkan implatform_win32_vulkan)
+        endif()
+    endif()
+
     # SDL2 + DX11 on Windows
     if(SDL2_AVAILABLE)
         implatform_add_config(implatform_sdl2_dx11 SDL2 DX11)

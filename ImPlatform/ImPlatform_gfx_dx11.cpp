@@ -1933,6 +1933,51 @@ IMPLATFORM_API bool ImPlatform_DispatchCompute(ImPlatform_Shader compute_shader,
     return true;
 }
 
+// An event query ended after the dispatch: signaled once the GPU has executed everything before it.
+struct ImPlatform_ComputeDispatch_t
+{
+    ID3D11Query* done;
+};
+
+IMPLATFORM_API ImPlatform_ComputeDispatch ImPlatform_DispatchComputeAsync(ImPlatform_Shader compute_shader,
+                                               const ImTextureID* inputs, unsigned int input_count,
+                                               const ImTextureID* outputs, unsigned int output_count,
+                                               const void* constants, unsigned int constants_size,
+                                               unsigned int groups_x, unsigned int groups_y, unsigned int groups_z)
+{
+    const D3D11_QUERY_DESC qd = { D3D11_QUERY_EVENT, 0 };
+    ID3D11Query* done = NULL;
+    if (!g_GfxData.pDevice || FAILED(g_GfxData.pDevice->CreateQuery(&qd, &done)))
+        return NULL;
+    if (!ImPlatform_DispatchCompute(compute_shader, inputs, input_count, outputs, output_count, constants, constants_size,
+                                    groups_x, groups_y, groups_z))
+    {
+        done->Release();
+        return NULL;
+    }
+    g_GfxData.pDeviceContext->End(done);
+    ImPlatform_ComputeDispatch_t* dispatch = new ImPlatform_ComputeDispatch_t();
+    dispatch->done = done;
+    return dispatch;
+}
+
+IMPLATFORM_API int ImPlatform_PollComputeDispatch(ImPlatform_ComputeDispatch dispatch)
+{
+    if (!dispatch || !g_GfxData.pDeviceContext)
+        return -1;
+    // Without D3D11_ASYNC_GETDATA_DONOTFLUSH: the commands are flushed, so polling alone makes the dispatch progress.
+    const HRESULT hr = g_GfxData.pDeviceContext->GetData(dispatch->done, NULL, 0, 0);
+    return hr == S_OK ? 1 : hr == S_FALSE ? 0 : -1;
+}
+
+IMPLATFORM_API void ImPlatform_ReleaseComputeDispatch(ImPlatform_ComputeDispatch dispatch)
+{
+    if (!dispatch)
+        return;
+    dispatch->done->Release();
+    delete dispatch;
+}
+
 IMPLATFORM_API ImPlatform_ShaderProgram ImPlatform_CreateShaderProgram(ImPlatform_Shader vertex_shader, ImPlatform_Shader fragment_shader)
 {
     if (!vertex_shader || !fragment_shader)

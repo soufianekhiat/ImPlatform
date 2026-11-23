@@ -222,6 +222,63 @@ IMPLATFORM_API bool ImPlatform_PlatformContinue(void)
     return !g_AppData.bDone;
 }
 
+// Pen events of the main window, one sample per event: SDL reports the position (motion, touch) and each axis in its
+// own event, so the sample carries the last value of the others. Observed only: SDL also sends the pen as a mouse.
+static void ImPlatform_SDL3_PenEvent(const SDL_Event& event)
+{
+    static ImPlatform_PenSample pen = { 0.0f, 0.0f, -1.0f, 0.0f, 0.0f, 0.0, false, false, false, false, 0.0f };
+    SDL_PenInputFlags state = 0;
+    switch (event.type)
+    {
+    case SDL_EVENT_PEN_PROXIMITY_IN:
+        pen.pressure = -1.0f;       // Until the pen reports each axis
+        pen.has_tilt = pen.has_rotation = false;
+        return;
+    case SDL_EVENT_PEN_PROXIMITY_OUT:
+        ImPlatform_Pen_Leave();
+        return;
+    case SDL_EVENT_PEN_MOTION:
+        if (event.pmotion.windowID != SDL_GetWindowID(g_AppData.pWindow))
+            return;
+        pen.x = event.pmotion.x;
+        pen.y = event.pmotion.y;
+        state = event.pmotion.pen_state;
+        break;
+    case SDL_EVENT_PEN_DOWN:
+    case SDL_EVENT_PEN_UP:
+        if (event.ptouch.windowID != SDL_GetWindowID(g_AppData.pWindow))
+            return;
+        pen.x = event.ptouch.x;
+        pen.y = event.ptouch.y;
+        state = event.ptouch.pen_state;
+        break;
+    case SDL_EVENT_PEN_AXIS:
+        if (event.paxis.windowID != SDL_GetWindowID(g_AppData.pWindow))
+            return;
+        pen.x = event.paxis.x;
+        pen.y = event.paxis.y;
+        state = event.paxis.pen_state;
+        switch (event.paxis.axis)
+        {
+        case SDL_PEN_AXIS_PRESSURE: pen.pressure = event.paxis.value; break;
+        case SDL_PEN_AXIS_XTILT:    pen.tilt_x = event.paxis.value; pen.has_tilt = true; break;
+        case SDL_PEN_AXIS_YTILT:    pen.tilt_y = event.paxis.value; pen.has_tilt = true; break;
+        case SDL_PEN_AXIS_ROTATION: // SDL: [-180, 180) clockwise from up
+            pen.rotation = event.paxis.value < 0.0f ? event.paxis.value + 360.0f : event.paxis.value;
+            pen.has_rotation = true;
+            break;
+        default: return;            // Distance, slider, barrel pressure: not part of a sample
+        }
+        break;
+    default:
+        return;
+    }
+    pen.in_contact = (state & SDL_PEN_INPUT_DOWN) != 0;
+    pen.eraser = (state & SDL_PEN_INPUT_ERASER_TIP) != 0;
+    pen.time = (double)event.common.timestamp * 1e-9;   // SDL_GetTicksNS, the clock of ImPlatform_GetPenClock
+    ImPlatform_Pen_Push(&pen);
+}
+
 // ImPlatform API - PlatformEvents
 IMPLATFORM_API bool ImPlatform_PlatformEvents(void)
 {
@@ -229,6 +286,8 @@ IMPLATFORM_API bool ImPlatform_PlatformEvents(void)
     while (SDL_PollEvent(&event))
     {
         ImGui_ImplSDL3_ProcessEvent(&event);
+        if (event.type >= SDL_EVENT_PEN_FIRST && event.type <= SDL_EVENT_PEN_LAST)
+            ImPlatform_SDL3_PenEvent(event);
         if (event.type == SDL_EVENT_QUIT)
         {
             g_AppData.bDone = true;

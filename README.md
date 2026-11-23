@@ -17,9 +17,10 @@ ImPlatform is a platform abstraction layer that simplifies multiplatform develop
 - **Direct Draws from Draw Callbacks**: switch to a render texture, copy the current target, draw a quad or your own vertex buffers with a custom shader and pushed constants (DirectX 9/11/12, OpenGL 3, Vulkan; DirectX 10 and WebGPU without target switches or copies; Metal draws vertex buffers)
 - **Readback and Compute**: Texture readback (synchronous on every backend but WebGPU, asynchronous on DirectX 11/12) and compute dispatch on DirectX 11/12, Vulkan and OpenGL 4.3+
 - **Depth-Tested Meshes and Device Control**: Depth render textures, meshes with depth / blend / cull states, device loss and recreation (DirectX 11/12)
-- **Pen Input**: Pressure, tilt, barrel rotation, eraser and coalesced samples (Win32)
+- **Pen Input**: Pressure, tilt, barrel rotation and eraser (Win32 with coalesced samples; SDL3 on Windows, Linux and macOS)
+- **Screenshots**: a viewport captured as a texture and read back as RGBA pixels (DirectX 9/11/12, OpenGL 3, Vulkan)
 - **Custom Graphics Backend**: `IM_GFX_CUSTOM` keeps the platform layer and lets the application provide the renderer
-- **Custom Title Bar**: Optional borderless window with custom titlebar rendering (Win32, GLFW*)
+- **Custom Title Bar**: Optional borderless window with custom titlebar rendering (Win32, GLFW, SDL2, SDL3)
 - **Flexible Configuration**: Define platform and graphics API at compile time with feature flags
 
 ## Quick Start
@@ -211,8 +212,12 @@ ps_desc.defines = "CLIP;MODE=2";     // #define CLIP  and  #define MODE 2
 **Blending.** A program draws with Dear ImGui's blending (straight alpha) unless it is given its own:
 
 ```cpp
-ImPlatform_BlendDesc blend = ImPlatform_BlendDesc_Preset(ImPlatform_BlendPreset_Additive);  // or Alpha, Premultiplied, Multiply, Opaque
-blend.op_alpha = ImPlatform_BlendOp_Max;                                                    // any factor / operation
+// By name: Alpha, Premultiplied, Opaque, Additive, Subtractive, Multiplicative, Screen, Darken, Lighten
+ImPlatform_SetShaderProgramBlendPreset(program, ImPlatform_BlendPreset_Additive);
+
+// Or any factors and operations, starting from a preset or from scratch
+ImPlatform_BlendDesc blend = ImPlatform_BlendDesc_Preset(ImPlatform_BlendPreset_Additive);
+blend.op_alpha = ImPlatform_BlendOp_Max;
 ImPlatform_SetShaderProgramBlend(program, &blend);                                          // NULL: Dear ImGui's again
 ```
 
@@ -307,6 +312,30 @@ if (ImPlatform_SupportsReadback())
 Shader bindings per backend are listed above `ImPlatform_DispatchCompute` in `ImPlatform.h`.
 `ImPlatformDemo --compute-test` runs the same dispatch + readback check on any backend (exit code 0 pass, 1 fail, 2 unsupported).
 
+**Asynchronous compute** (every backend with compute). A compute shader can be compiled without blocking, like a
+program, and a dispatch can be polled for completion instead of waited for:
+
+```cpp
+static ImPlatform_ShaderJob job = ImPlatform_CreateComputeShaderAsync(&cs_desc);   // worker thread on DirectX 11 / 12
+static ImPlatform_ComputeDispatch dispatch = NULL;
+if (!dispatch)
+    if (ImPlatform_Shader cs = ImPlatform_GetShaderJobShader(job))                 // NULL until the job is ready
+        dispatch = ImPlatform_DispatchComputeAsync(cs, &in, 1, &out, 1, &params, sizeof(params), w / 8, h / 8, 1);
+
+if (ImPlatform_PollComputeDispatch(dispatch) == 1)   // 1 completed, 0 not yet, -1 error (or no dispatch yet)
+    ImGui::Image(out, size);
+else
+    ImGui::TextUnformatted("Computing...");
+...
+ImPlatform_ReleaseComputeDispatch(dispatch);
+ImPlatform_DestroyShaderJob(job);                    // With its compute shader
+```
+
+`ImPlatform_DispatchComputeAsync()` never waits for the GPU (on Vulkan, `ImPlatform_DispatchCompute()` does). GPU work
+completes in order, so for a chain of dispatches only the last one needs a handle. The dispatch runs on the same GPU
+queue as the frames: a long one still delays the frames submitted after it. `ImPlatformDemo --compute-async-test`
+checks both.
+
 #### Render passes
 
 Dear ImGui draw data rendered into a render texture before the frame, by the backend's own ImGui renderer (draw
@@ -332,6 +361,27 @@ WebGPU and Metal (premultiplied alpha through blend states, or a copy of ImGui's
 `ImPlatformDemo --render-pass-test` checks a pass target and a premultiplied composite by readback (exit code 0 pass,
 1 fail, 2 unsupported).
 
+#### Screenshots
+
+The image of a viewport as rendered this frame, as a texture and as pixels (DirectX 9, 11, 12, OpenGL, Vulkan: the
+backends with `IMPLATFORM_GFX_SUPPORT_RENDER_TARGETS` and `_READBACK`):
+
+```cpp
+// During the frame, after the windows were submitted and before ImGui::Render()
+unsigned int w, h;
+ImTextureID capture = ImPlatform_CaptureViewport(NULL, &w, &h);   // NULL: the main viewport
+
+// After the frame was rendered
+std::vector<unsigned char> rgba(w * h * 4);
+ImPlatform_ReadCapture(capture, w, h, rgba.data(), rgba.size()); // RGBA8, rows top-down, alpha 255
+ImPlatform_DestroyTexture(capture);
+```
+
+The capture is a render texture, so it can also be drawn (`ImGui::Image`) as a thumbnail. A secondary platform window
+is captured by passing its viewport, except on Vulkan. Writing an image file from the pixels is left to the
+application (`stb_image_write`, for instance). `ImPlatformDemo --screenshot-test` checks a capture of the main
+viewport.
+
 #### Custom Title Bar (when `IMPLATFORM_APP_SUPPORT_CUSTOM_TITLEBAR` is enabled)
 
 ```cpp
@@ -354,7 +404,7 @@ if (ImPlatform_BeginCustomTitleBar(32.0f))
 ImPlatform_EndCustomTitleBar();
 ```
 
-**Note**: Custom titlebar on GLFW requires [TheCherno's GLFW fork](https://github.com/TheCherno/glfw/tree/dev) and defining `IMPLATFORM_APP_SUPPORT_CUSTOM_TITLEBAR=1` and `IM_THE_CHERNO_GLFW3`.
+**Note**: On GLFW the custom titlebar works with stock GLFW: the window is created undecorated and ImPlatform moves it while the titlebar is dragged and resizes it by its edges (`ImPlatform_BorderlessParams::resizeBorderSize`), without the system's window snapping. [TheCherno's GLFW fork](https://github.com/TheCherno/glfw/tree/dev) with `IM_THE_CHERNO_GLFW3` defined gives native titlebar hit-testing instead. Win32, SDL2 and SDL3 hit-test natively (move and resize borders).
 
 ## Platform & Graphics API Defines
 
@@ -405,6 +455,7 @@ between backends:
 | `RENDER_TARGETS` | `Push/PopRenderTarget`, `CopyCurrentTarget`, `DrawQuadNow` | x | | x | x | x | x | | |
 | `READBACK` | `ReadTexture` | x | x | x | x | x | x | x | |
 | `ASYNC_READBACK` | `BeginReadTexture`, `Poll/Map/ReleaseReadback` | | | x | x | | | | |
+| `ASYNC_COMPUTE` | `DispatchComputeAsync`, `Poll/ReleaseComputeDispatch` | | | x | x | 4.3+ | x | | |
 | `COMPUTE` | `CreateStorageTexture`, `DispatchCompute` | | | x | x | 4.3+ | x | | |
 | `DEPTH_DRAW` | `CreateRenderTextureWithDepth`, `DrawMesh` | | | x | x | | | | |
 | `DEVICE_CONTROL` | `GfxDeviceLost`, `GfxRecreateDevice`, `GfxAdapterName`, testing aids | | | x | x | | | | |
@@ -431,7 +482,7 @@ void ImPlatform_Gfx_OnResize_Custom(unsigned int uWidth, unsigned int uHeight);
 
 The `IMPLATFORM_GFX_SUPPORT_*` feature flags and API groups default to 1 and can each be predefined to 0
 to describe what the application's backend supports (a group set to 0 is neither declared nor needed). With GLFW the window is created with
-`GLFW_NO_API`. The asynchronous shader jobs and `ImPlatform_BlendDesc_Preset` stay ImPlatform's: a job calls the
+`GLFW_NO_API`. The asynchronous shader jobs, `ImPlatform_BlendDesc_Preset` and `ImPlatform_SetShaderProgramBlendPreset` stay ImPlatform's: a job calls the
 application's `ImPlatform_CreateShader` and `ImPlatform_CreateShaderProgram` when it is created.
 
 ### Predefined Combinations
@@ -443,6 +494,7 @@ IM_TARGET_WIN32_DX10
 IM_TARGET_WIN32_DX11
 IM_TARGET_WIN32_DX12
 IM_TARGET_WIN32_OPENGL3
+IM_TARGET_WIN32_VULKAN
 
 IM_TARGET_GLFW_OPENGL3
 IM_TARGET_GLFW_VULKAN
@@ -463,13 +515,13 @@ Usage example with predefined target:
 
 | Platform/API | OpenGL 3 | DX9 | DX10 | DX11 | DX12 | Vulkan | Metal | WebGPU |
 |--------------|----------|-----|------|------|------|--------|-------|--------|
-| Win32        | ✅       | ✅  | ✅   | ✅   | ✅   | ⚠️     | ❌    | ❌     |
+| Win32        | ✅       | ✅  | ✅   | ✅   | ✅   | ✅     | ❌    | ❌     |
 | GLFW         | ✅       | ❌  | ❌   | ❌   | ❌   | ✅     | ✅    | ✅     |
 | SDL2         | ✅       | ❌  | ❌   | ✅   | ❌   | ✅     | ✅    | ❌     |
 | SDL3         | ✅       | ❌  | ❌   | ✅   | ❌   | ✅     | ✅    | ❌     |
 | Apple        | ❌       | ❌  | ❌   | ❌   | ❌   | ❌     | ✅    | ❌     |
 
-Legend: ✅ Implemented | ⚠️ Partial (no build configuration) | ❌ Not Implemented. GLFW + WebGPU is the Emscripten build.
+Legend: ✅ Implemented | ❌ Not Implemented. GLFW + WebGPU is the Emscripten build.
 
 ## Building the Demo
 
@@ -490,7 +542,7 @@ Executables are written to `bin/<platform>/ImPlatformDemo_<Platform>_<Gfx>`. One
 
 | OS | Configurations |
 |----|----------------|
-| Windows | `Win32_DX9`, `Win32_DX10`, `Win32_DX11`, `Win32_DX12`, `Win32_OpenGL3`, `GLFW_OpenGL3`, `GLFW_Vulkan`, `SDL2_DX11`, `SDL2_OpenGL3`, `SDL2_Vulkan`, `SDL3_DX11`, `SDL3_OpenGL3`, `SDL3_Vulkan` |
+| Windows | `Win32_DX9`, `Win32_DX10`, `Win32_DX11`, `Win32_DX12`, `Win32_OpenGL3`, `Win32_Vulkan`, `GLFW_OpenGL3`, `GLFW_Vulkan`, `SDL2_DX11`, `SDL2_OpenGL3`, `SDL2_Vulkan`, `SDL3_DX11`, `SDL3_OpenGL3`, `SDL3_Vulkan` |
 | Linux | `GLFW_OpenGL3`, `GLFW_Vulkan`, `SDL2_OpenGL3`, `SDL2_Vulkan`, `SDL3_OpenGL3`, `SDL3_Vulkan` |
 | macOS | `GLFW_OpenGL3`, `GLFW_Metal`, `SDL2_OpenGL3`, `SDL2_Metal`, `SDL3_OpenGL3`, `SDL3_Metal` |
 
@@ -532,14 +584,18 @@ The demo checks the readback/compute, render pass and custom shader paths of whi
 
 ```bash
 ImPlatformDemo_Win32_DX12 --compute-test       # dispatch + readback
+ImPlatformDemo_Win32_DX12 --compute-async-test # the same with the shader compiled asynchronously and the dispatch polled
 ImPlatformDemo_Win32_DX12 --render-pass-test   # render pass target and premultiplied composite
 ImPlatformDemo_Win32_DX12 --shader-test        # shaders/gradient.hlsl drawn into a render pass, read back
 ImPlatformDemo_Win32_DX12 --direct-draw-test   # from a draw callback: push a render target, push constants, DrawQuadNow
 ImPlatformDemo_Win32_DX12 --shader-parts-test  # a shader written as parts: parameters in both stages, varying, texture t1
 ImPlatformDemo_Win32_DX12 --texture3d-test     # a 2x2x2 texture at t1, sampled by shaders/volume_test.hlsl and by shader parts
 ImPlatformDemo_Win32_DX12 --vertex-inputs-test  # shader parts with their own vertex inputs and a flat int varying, DrawIndexed
-ImPlatformDemo_Win32_DX12 --blend-test         # one program drawn with additive then multiply blending, set from draw callbacks
+ImPlatformDemo_Win32_DX12 --blend-test         # one program drawn with six blend presets (additive to lighten), set by name from draw callbacks
 ImPlatformDemo_Win32_DX12 --shader-async-test  # programs compiled asynchronously, a defines permutation, the log of a shader that fails
+ImPlatformDemo_Win32_DX12 --screenshot-test    # the main viewport captured and read back
+ImPlatformDemo_SDL3_OpenGL3 --pen-test         # SDL3: synthetic pen events come out as pen samples (exit 2 elsewhere)
+ImPlatformDemo_GLFW_OpenGL3 --drag-rect-test   # the move / resize arithmetic of the borderless GLFW window, without a window
 ```
 
 Each prints PASS or FAIL and exits with 0 (pass), 1 (fail) or 2 (unsupported by the backend).
@@ -607,7 +663,7 @@ The library has been tested with the following configurations:
 - **DirectX 11** - Tested (self-tests, Win32, SDL2, SDL3)
 - **DirectX 12** - Tested (self-tests, Win32)
 - **OpenGL 3** - Tested (self-tests, Windows and Linux)
-- **Vulkan** - Tested (self-tests, Windows and Linux, GLFW, SDL2, SDL3)
+- **Vulkan** - Tested (self-tests, Windows and Linux, Win32, GLFW, SDL2, SDL3)
 - **Metal** - Builds in CI and the generated MSL compiles with the offline Metal compiler; not run on hardware yet
 - **WebGPU** - Basic testing (Emscripten + GLFW in Chrome)
 
@@ -622,7 +678,9 @@ The library has been tested with the following configurations:
 - WebGPU: no readback, and no render-target switch or copy (its render pass encoder belongs to Dear ImGui's backend)
 - DirectX 9 shaders are shader model 3: no integer or bit operations, no texel loads, `nointerpolation` varyings are interpolated
 - OpenGL3 multi-viewport with custom shaders may have minor offset issues in some edge cases
-- Custom titlebar on GLFW requires TheCherno's fork
+- Custom titlebar on stock GLFW: the window is moved and resized by ImPlatform, without the system's window snapping (TheCherno's fork with `IM_THE_CHERNO_GLFW3` gives native hit-testing)
+- Pen input is on Win32 and SDL3 only (GLFW and SDL2 have no pen API)
+- `ImPlatform_CopyBackbuffer()` is DirectX 11 only; `ImPlatform_CaptureViewport()` covers DirectX 9, 11, 12, OpenGL and Vulkan (main viewport only on Vulkan)
 
 ## Contributing
 

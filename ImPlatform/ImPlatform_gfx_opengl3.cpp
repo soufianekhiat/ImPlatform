@@ -2787,6 +2787,61 @@ IMPLATFORM_API bool ImPlatform_DispatchCompute(ImPlatform_Shader compute_shader,
     return true;
 }
 
+// A fence sync object (OpenGL 3.2) created after the dispatch: signaled once the GPU has executed everything before it.
+typedef GLsync (APIENTRYP PFNIMPGLFENCESYNCPROC)(GLenum, GLbitfield);
+typedef GLenum (APIENTRYP PFNIMPGLCLIENTWAITSYNCPROC)(GLsync, GLbitfield, GLuint64);
+typedef void (APIENTRYP PFNIMPGLDELETESYNCPROC)(GLsync);
+static PFNIMPGLFENCESYNCPROC      glFenceSync_Ptr      = NULL;
+static PFNIMPGLCLIENTWAITSYNCPROC glClientWaitSync_Ptr = NULL;
+static PFNIMPGLDELETESYNCPROC     glDeleteSync_Ptr     = NULL;
+
+struct ImPlatform_ComputeDispatch_t
+{
+    GLsync sync;
+};
+
+IMPLATFORM_API ImPlatform_ComputeDispatch ImPlatform_DispatchComputeAsync(ImPlatform_Shader compute_shader,
+                                               const ImTextureID* inputs, unsigned int input_count,
+                                               const ImTextureID* outputs, unsigned int output_count,
+                                               const void* constants, unsigned int constants_size,
+                                               unsigned int groups_x, unsigned int groups_y, unsigned int groups_z)
+{
+    if (!glFenceSync_Ptr)
+    {
+        glFenceSync_Ptr      = (PFNIMPGLFENCESYNCPROC)imgl3wGetProcAddress("glFenceSync");
+        glClientWaitSync_Ptr = (PFNIMPGLCLIENTWAITSYNCPROC)imgl3wGetProcAddress("glClientWaitSync");
+        glDeleteSync_Ptr     = (PFNIMPGLDELETESYNCPROC)imgl3wGetProcAddress("glDeleteSync");
+    }
+    if (!glFenceSync_Ptr || !glClientWaitSync_Ptr || !glDeleteSync_Ptr
+        || !ImPlatform_DispatchCompute(compute_shader, inputs, input_count, outputs, output_count, constants, constants_size,
+                                       groups_x, groups_y, groups_z))
+        return NULL;
+    const GLsync sync = glFenceSync_Ptr(0x9117 /* GL_SYNC_GPU_COMMANDS_COMPLETE */, 0);
+    if (!sync)
+        return NULL;
+    ImPlatform_ComputeDispatch_t* dispatch = new ImPlatform_ComputeDispatch_t();
+    dispatch->sync = sync;
+    return dispatch;
+}
+
+IMPLATFORM_API int ImPlatform_PollComputeDispatch(ImPlatform_ComputeDispatch dispatch)
+{
+    if (!dispatch)
+        return -1;
+    // No timeout: it only asks. GL_SYNC_FLUSH_COMMANDS_BIT flushes the commands, so polling alone makes the dispatch progress.
+    const GLenum state = glClientWaitSync_Ptr(dispatch->sync, 0x00000001 /* GL_SYNC_FLUSH_COMMANDS_BIT */, 0);
+    return state == 0x911A /* GL_ALREADY_SIGNALED */ || state == 0x911C /* GL_CONDITION_SATISFIED */ ? 1
+         : state == 0x911B /* GL_TIMEOUT_EXPIRED */ ? 0 : -1;
+}
+
+IMPLATFORM_API void ImPlatform_ReleaseComputeDispatch(ImPlatform_ComputeDispatch dispatch)
+{
+    if (!dispatch)
+        return;
+    glDeleteSync_Ptr(dispatch->sync);
+    delete dispatch;
+}
+
 IMPLATFORM_API void ImPlatform_DrawQuadNow(ImPlatform_ShaderProgram program, ImVec4 dst_rect, ImVec4 uv_rect)
 {
     if (!program)

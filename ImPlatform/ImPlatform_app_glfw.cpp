@@ -4,6 +4,7 @@
 #include "ImPlatform_Internal.h"
 
 #include <stdio.h>
+#include <string.h>
 
 #ifdef IM_PLATFORM_GLFW
 
@@ -204,28 +205,46 @@ IMPLATFORM_API bool ImPlatform_PlatformEvents(void)
 #endif
 
 #if IMPLATFORM_APP_SUPPORT_CUSTOM_TITLEBAR && !defined(IM_THE_CHERNO_GLFW3)
-    // Software drag for borderless window (when TheCherno's fork is not available)
-    if (g_AppData.bCustomTitleBar && g_BorderlessParams.allowMove)
+    // Software move and resize of the borderless window (stock GLFW has no hit-testing; TheCherno's fork does): a press
+    // on a resize border or on the titlebar starts a drag that lasts until the button is released.
+    if (g_AppData.bCustomTitleBar)
     {
-        int mouse_state = glfwGetMouseButton(g_AppData.pWindow, GLFW_MOUSE_BUTTON_LEFT);
-        if (mouse_state == GLFW_PRESS && g_AppData.bTitleBarHovered && !g_AppData.bDragging)
+        GLFWwindow* window = g_AppData.pWindow;
+        const bool down = glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
+        int win[4];
+        double cx, cy;
+        glfwGetWindowPos(window, &win[0], &win[1]);
+        glfwGetWindowSize(window, &win[2], &win[3]);
+        glfwGetCursorPos(window, &cx, &cy);        // Relative to the window
+        const int border = g_BorderlessParams.resizeBorderSize;
+        int edges = 0;
+        if (g_BorderlessParams.allowResize && !glfwGetWindowAttrib(window, GLFW_MAXIMIZED)
+            && cx >= 0 && cy >= 0 && cx < win[2] && cy < win[3])
+            edges = (cx < border ? 1 : 0) | (cx >= win[2] - border ? 2 : 0) | (cy < border ? 4 : 0) | (cy >= win[3] - border ? 8 : 0);
+        // Screen coordinates: they do not change when the window moves under a still cursor.
+        const double sx = win[0] + cx, sy = win[1] + cy;
+        if (!down)
+            g_AppData.iDragEdges = 0;
+        else if (!g_AppData.bMouseWasDown)
         {
-            g_AppData.bDragging = true;
-            glfwGetCursorPos(g_AppData.pWindow, &g_AppData.fDragStartX, &g_AppData.fDragStartY);
-            glfwGetWindowPos(g_AppData.pWindow, &g_AppData.iWinStartX, &g_AppData.iWinStartY);
+            g_AppData.iDragEdges = edges ? edges : (g_AppData.bTitleBarHovered && g_BorderlessParams.allowMove) ? 16 : 0;
+            g_AppData.fDragStartX = sx;
+            g_AppData.fDragStartY = sy;
+            memcpy(g_AppData.iWinStart, win, sizeof(win));
         }
-        else if (mouse_state == GLFW_PRESS && g_AppData.bDragging)
+        else if (g_AppData.iDragEdges)
         {
-            double curX, curY;
-            glfwGetCursorPos(g_AppData.pWindow, &curX, &curY);
-            int newX = g_AppData.iWinStartX + (int)(curX - g_AppData.fDragStartX);
-            int newY = g_AppData.iWinStartY + (int)(curY - g_AppData.fDragStartY);
-            glfwSetWindowPos(g_AppData.pWindow, newX, newY);
+            int rect[4];
+            ImPlatform_DragRect(g_AppData.iDragEdges, g_AppData.iWinStart, (int)(sx - g_AppData.fDragStartX), (int)(sy - g_AppData.fDragStartY),
+                                g_BorderlessParams.minWidth > 1 ? g_BorderlessParams.minWidth : 1,
+                                g_BorderlessParams.minHeight > 1 ? g_BorderlessParams.minHeight : 1, rect);
+            if (rect[0] != win[0] || rect[1] != win[1])
+                glfwSetWindowPos(window, rect[0], rect[1]);
+            if (rect[2] != win[2] || rect[3] != win[3])
+                glfwSetWindowSize(window, rect[2], rect[3]);
         }
-        else
-        {
-            g_AppData.bDragging = false;
-        }
+        g_AppData.bMouseWasDown = down;
+        g_AppData.iHoverEdges = g_AppData.iDragEdges ? (g_AppData.iDragEdges & 15) : edges;
     }
 #endif
 

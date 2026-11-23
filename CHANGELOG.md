@@ -5,9 +5,10 @@
 Changes since 2.0.0 (the `v2` branch), in progress on the `v3` branch.
 
 ### Added
-- **Blending of custom shader programs** on every backend: `ImPlatform_SetShaderProgramBlend()` with an
-  `ImPlatform_BlendDesc` (factors and operation for color and for alpha) or a preset from `ImPlatform_BlendDesc_Preset()`
-  (alpha, premultiplied, additive, multiply, opaque). It applies to the draw list commands of the program,
+- **Blending of custom shader programs** on every backend: by name with `ImPlatform_SetShaderProgramBlendPreset()`
+  (alpha, premultiplied, opaque, additive, subtractive, multiplicative, screen, darken, lighten), or
+  `ImPlatform_SetShaderProgramBlend()` with an `ImPlatform_BlendDesc` (factors and operation for color and for alpha;
+  `ImPlatform_BlendDesc_Preset()` gives a preset's). It applies to the draw list commands of the program,
   `ImPlatform_DrawIndexed()` and `ImPlatform_DrawQuadNow()`. Demo `--blend-test`.
 - **Shader compile errors for the application**: `ImPlatform_GetShaderLog()` returns the compiler's or linker's messages
   of the last create call that failed; for shader parts the generated source follows with line numbers.
@@ -17,12 +18,32 @@ Changes since 2.0.0 (the `v2` branch), in progress on the `v3` branch.
   `ImPlatform_CreateShaderProgramFromPartsAsync()` return a job at once, `ImPlatform_GetShaderJobStatus()` reports
   compiling, ready or failed and gives the program, `ImPlatform_GetShaderJobLog()` the messages. DirectX 10, 11 and 12
   compile the HLSL on a worker thread; the other backends compile inside the create call. Demo `--shader-async-test`.
+- **Asynchronous compute** on every backend with compute (DirectX 11, 12, OpenGL 4.3+, Vulkan):
+  `ImPlatform_CreateComputeShaderAsync()` compiles a compute shader as a job (`ImPlatform_GetShaderJobShader()` gives it
+  once ready), and `ImPlatform_DispatchComputeAsync()` returns a handle that `ImPlatform_PollComputeDispatch()` reports
+  completed, without ever waiting for the GPU (new group `IMPLATFORM_GFX_SUPPORT_ASYNC_COMPUTE`). Demo
+  `--compute-async-test`.
+- **Screenshots**: `ImPlatform_CaptureViewport()` returns a render texture that holds the image of a viewport once the
+  frame is rendered, `ImPlatform_ReadCapture()` its pixels as RGBA8 (DirectX 9, 11, 12, OpenGL, Vulkan; main viewport
+  only on Vulkan). Demo `--screenshot-test`.
+- **Pen input on SDL3** (Windows, Linux, macOS) from its pen events: pressure, tilt, rotation, eraser, contact. Demo
+  `--pen-test` (synthetic events).
+- **Win32 + Vulkan** build configuration (Sharpmake `Win32_Vulkan`, CMake `ImPlatformDemo_Win32_Vulkan`, CI) and
+  `IM_TARGET_WIN32_VULKAN`.
+- **Borderless window on stock GLFW** is resized by its edges (`ImPlatform_BorderlessParams::resizeBorderSize`,
+  `allowResize`), with the matching mouse cursors. Demo `--drag-rect-test`.
 
 ### Changed
 - DirectX 10, 11 and 12 share one HLSL compile function (`ImPlatform_D3DCompileShader` in `ImPlatform_Internal.h`):
   DirectX 10 and 12 print the compile time of a shader as DirectX 11 did.
 - An `IM_GFX_CUSTOM` application also provides `ImPlatform_GetShaderLog()` and `ImPlatform_SetShaderProgramBlend()`.
 - New source file `ImPlatform/ImPlatform_shader_common.cpp` (included by `ImPlatform.h`; listed in `CMakeLists.txt`).
+
+### Fixed
+- The titlebar drag of the borderless window on stock GLFW compared cursor positions relative to the window it was
+  moving. It now works in screen coordinates and starts only on a press.
+- The Emscripten build of the demo referenced `--dump-msl`, which is not compiled there.
+- README: the custom titlebar does not require TheCherno's GLFW fork; SDL2 and SDL3 have it too.
 
 ## 2.0.0
 

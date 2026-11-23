@@ -17,7 +17,7 @@
 //     as usual. Feature flags below default to "supported" and can be predefined to 0.
 //
 // Or use predefined combinations:
-//   IM_TARGET_WIN32_DX11, IM_TARGET_WIN32_DX12, IM_TARGET_WIN32_OPENGL3
+//   IM_TARGET_WIN32_DX11, IM_TARGET_WIN32_DX12, IM_TARGET_WIN32_OPENGL3, IM_TARGET_WIN32_VULKAN
 //   IM_TARGET_GLFW_OPENGL3, IM_TARGET_GLFW_VULKAN, IM_TARGET_GLFW_METAL
 //   IM_TARGET_APPLE_METAL
 //
@@ -256,6 +256,10 @@
     #ifndef IMPLATFORM_GFX_SUPPORT_COMPUTE
         #define IMPLATFORM_GFX_SUPPORT_COMPUTE IMPLATFORM_GFX_IN(IM_GFX_DIRECTX11 | IM_GFX_DIRECTX12 | IM_GFX_OPENGL3 | IM_GFX_VULKAN)
     #endif
+    // ImPlatform_DispatchComputeAsync / PollComputeDispatch / ReleaseComputeDispatch
+    #ifndef IMPLATFORM_GFX_SUPPORT_ASYNC_COMPUTE
+        #define IMPLATFORM_GFX_SUPPORT_ASYNC_COMPUTE IMPLATFORM_GFX_IN(IM_GFX_DIRECTX11 | IM_GFX_DIRECTX12 | IM_GFX_OPENGL3 | IM_GFX_VULKAN)
+    #endif
     // ImPlatform_CreateRenderTextureWithDepth, ImPlatform_DrawMesh
     #ifndef IMPLATFORM_GFX_SUPPORT_DEPTH_DRAW
         #define IMPLATFORM_GFX_SUPPORT_DEPTH_DRAW IMPLATFORM_GFX_IN(IM_GFX_DIRECTX11 | IM_GFX_DIRECTX12)
@@ -307,6 +311,7 @@
 #define IM_TARGET_WIN32_DX11        ( IM_PLATFORM_WIN32 | IM_GFX_DIRECTX11 )
 #define IM_TARGET_WIN32_DX12        ( IM_PLATFORM_WIN32 | IM_GFX_DIRECTX12 )
 #define IM_TARGET_WIN32_OPENGL3     ( IM_PLATFORM_WIN32 | IM_GFX_OPENGL3 )
+#define IM_TARGET_WIN32_VULKAN      ( IM_PLATFORM_WIN32 | IM_GFX_VULKAN )
 
 #define IM_TARGET_APPLE_METAL       ( IM_PLATFORM_APPLE | IM_GFX_METAL )
 
@@ -940,9 +945,15 @@ typedef struct ImPlatform_BlendDesc {
 typedef enum ImPlatform_BlendPreset {
     ImPlatform_BlendPreset_Alpha,         // Straight alpha "over" (Dear ImGui's): SrcAlpha, InvSrcAlpha; alpha One, InvSrcAlpha
     ImPlatform_BlendPreset_Premultiplied, // Premultiplied alpha "over": One, InvSrcAlpha
-    ImPlatform_BlendPreset_Additive,      // SrcAlpha, One; alpha Zero, One (the target's alpha is kept)
-    ImPlatform_BlendPreset_Multiply,      // DstColor, Zero; alpha Zero, One (the target's alpha is kept)
     ImPlatform_BlendPreset_Opaque,        // No blending
+    // The following keep the target's alpha (alpha Zero, One). Additive and Subtractive fade with the source alpha;
+    // the others take the source color as it is.
+    ImPlatform_BlendPreset_Additive,      // target + source: SrcAlpha, One
+    ImPlatform_BlendPreset_Subtractive,   // target - source: SrcAlpha, One, RevSubtract
+    ImPlatform_BlendPreset_Multiplicative,// target * source: DstColor, Zero
+    ImPlatform_BlendPreset_Screen,        // 1 - (1 - target) * (1 - source): One, InvSrcColor
+    ImPlatform_BlendPreset_Darken,        // min(source, target)
+    ImPlatform_BlendPreset_Lighten,       // max(source, target)
 } ImPlatform_BlendPreset;
 IMPLATFORM_API ImPlatform_BlendDesc ImPlatform_BlendDesc_Preset(ImPlatform_BlendPreset preset);
 
@@ -955,6 +966,11 @@ IMPLATFORM_API ImPlatform_BlendDesc ImPlatform_BlendDesc_Preset(ImPlatform_Blend
 IMPLATFORM_API bool ImPlatform_SetShaderProgramBlend(
     ImPlatform_ShaderProgram program,
     const ImPlatform_BlendDesc* blend
+);
+// The same by name: ImPlatform_SetShaderProgramBlendPreset(program, ImPlatform_BlendPreset_Additive).
+IMPLATFORM_API bool ImPlatform_SetShaderProgramBlendPreset(
+    ImPlatform_ShaderProgram program,
+    ImPlatform_BlendPreset preset
 );
 
 #if IMPLATFORM_GFX_SUPPORT_VERTEX_BUFFERS
@@ -1179,6 +1195,13 @@ IMPLATFORM_API ImPlatform_ShaderJob ImPlatform_CreateShaderProgramAsync(const Im
 // The same from shader parts: both stages are generated here and compiled like the descriptors above.
 IMPLATFORM_API ImPlatform_ShaderJob ImPlatform_CreateShaderProgramFromPartsAsync(const ImPlatform_ShaderParts* parts);
 #endif
+#if IMPLATFORM_GFX_SUPPORT_COMPUTE
+// The same for one compute shader (stage ImPlatform_ShaderStage_Compute). Once ImPlatform_GetShaderJobStatus(job, NULL)
+// is Ready, ImPlatform_GetShaderJobShader gives the shader for ImPlatform_DispatchCompute (NULL before, and for a
+// program's job); the job owns it. Its pipeline is still created by the first dispatch (DirectX 12, Vulkan, OpenGL).
+IMPLATFORM_API ImPlatform_ShaderJob ImPlatform_CreateComputeShaderAsync(const ImPlatform_ShaderDesc* desc);
+IMPLATFORM_API ImPlatform_Shader ImPlatform_GetShaderJobShader(ImPlatform_ShaderJob job);
+#endif
 // The state of a job, e.g. once per frame. When the compilation has ended, the first call creates the program (device
 // objects are created here, on the graphics thread). Ready: *out_program (optional) receives the program, the same on
 // every call and valid until ImPlatform_DestroyShaderJob; otherwise it receives NULL. Failed: see
@@ -1222,6 +1245,21 @@ IMPLATFORM_API int  ImPlatform_MapReadback(ImPlatform_Readback readback, const v
 IMPLATFORM_API void ImPlatform_ReleaseReadback(ImPlatform_Readback readback);
 #endif
 
+#if IMPLATFORM_GFX_SUPPORT_RENDER_TARGETS && IMPLATFORM_GFX_SUPPORT_READBACK
+// Screenshots: the image of a viewport as rendered this frame (NULL: the main viewport; with multi-viewports, a
+// secondary platform window, except on Vulkan where those are rendered by Dear ImGui's backend).
+// ImPlatform_CaptureViewport: call it during the frame, once what is to be captured has been submitted and before
+// ImGui::Render(). It adds a draw callback at the end of the viewport's foreground draw list (what that list receives
+// afterwards is not captured) and returns a render texture of the viewport's size in pixels (*out_width, *out_height)
+// that holds the image once the frame has been rendered: draw it (a thumbnail), read it with ImPlatform_ReadCapture,
+// destroy it with ImPlatform_DestroyTexture after the frame. 0 when the viewport has no size.
+// ImPlatform_ReadCapture: after the frame was rendered (ImPlatform_GfxAPIRender; ImPlatform_GfxViewportPost for a
+// secondary viewport), the pixels as RGBA8, rows top-down, alpha 255. out_size >= width * height * 4. Writing an image
+// file from them is left to the application.
+IMPLATFORM_API ImTextureID ImPlatform_CaptureViewport(ImGuiViewport* viewport, unsigned int* out_width, unsigned int* out_height);
+IMPLATFORM_API bool ImPlatform_ReadCapture(ImTextureID capture, unsigned int width, unsigned int height, void* out_rgba, size_t out_size);
+#endif
+
 IMPLATFORM_API bool ImPlatform_SupportsCompute(void);
 
 #if IMPLATFORM_GFX_SUPPORT_COMPUTE
@@ -1237,12 +1275,31 @@ IMPLATFORM_API ImTextureID ImPlatform_CreateStorageTexture(const void* pixel_dat
 // SPIR-V (Vulkan), all in set 0: constants -> uniform buffer at binding 0, inputs -> combined image samplers at
 // bindings 1..8 (linear clamp), outputs -> storage images at bindings 9..16; entry point "main".
 // Call outside the ImGui render callbacks (e.g. before ImGui::Render); work is ordered with later drawing.
-// DirectX 12 and Vulkan wait for the dispatch to complete before returning.
+// Vulkan waits for the dispatch to complete before returning (ImPlatform_DispatchComputeAsync does not).
 IMPLATFORM_API bool ImPlatform_DispatchCompute(ImPlatform_Shader compute_shader,
                                                const ImTextureID* inputs, unsigned int input_count,
                                                const ImTextureID* outputs, unsigned int output_count,
                                                const void* constants, unsigned int constants_size,
                                                unsigned int groups_x, unsigned int groups_y, unsigned int groups_z);
+#endif
+
+typedef struct ImPlatform_ComputeDispatch_t* ImPlatform_ComputeDispatch;
+#if IMPLATFORM_GFX_SUPPORT_ASYNC_COMPUTE
+// ImPlatform_DispatchCompute that never waits for the GPU and returns a handle to ask whether the dispatch has
+// completed, e.g. to show "computing" until an output is ready to be drawn or read back:
+//   static ImPlatform_ComputeDispatch dispatch = ImPlatform_DispatchComputeAsync(cs, &in, 1, &out, 1, NULL, 0, w / 8, h / 8, 1);
+//   if (ImPlatform_PollComputeDispatch(dispatch) == 1) ImGui::Image(out, size); else ImGui::TextUnformatted("Computing");
+// NULL when the dispatch fails. GPU work completes in order: for a chain of dispatches, poll the last one. The
+// dispatch runs on the queue of the frames, so a long one still delays the frames submitted after it.
+IMPLATFORM_API ImPlatform_ComputeDispatch ImPlatform_DispatchComputeAsync(ImPlatform_Shader compute_shader,
+                                               const ImTextureID* inputs, unsigned int input_count,
+                                               const ImTextureID* outputs, unsigned int output_count,
+                                               const void* constants, unsigned int constants_size,
+                                               unsigned int groups_x, unsigned int groups_y, unsigned int groups_z);
+// 1: completed (the outputs are written), 0: not yet, -1: error (NULL handle, device lost). Does not wait.
+IMPLATFORM_API int  ImPlatform_PollComputeDispatch(ImPlatform_ComputeDispatch dispatch);
+// Frees the handle, completed or not: the dispatch itself still runs. Vulkan waits for a dispatch that has not completed.
+IMPLATFORM_API void ImPlatform_ReleaseComputeDispatch(ImPlatform_ComputeDispatch dispatch);
 #endif
 
 // ============================================================================
@@ -1471,11 +1528,12 @@ IMPLATFORM_API void ImPlatform_SetDropFileCallback(ImPlatform_DropFileCallback c
 // ============================================================================
 // Pressure and tilt from pen digitizers (Dear ImGui carries no pressure axis). Pen moves still reach ImGui as mouse
 // events; this adds the pen-only axes and every hardware sample between frames (coalesced history).
-// Implemented on Win32 (Windows Ink pointer messages: WM_POINTER*, GetPointerPenInfoHistory); other platforms
-// report ImPlatform_SupportsPen() == false.
+// Implemented on Win32 (Windows Ink pointer messages: WM_POINTER*, GetPointerPenInfoHistory: every hardware sample)
+// and on SDL3 (its pen events, on Windows, Linux and macOS: one sample per event, each carrying the last value of the
+// axes SDL reports separately; the main window only). Other platforms report ImPlatform_SupportsPen() == false.
 
 typedef struct ImPlatform_PenSample {
-    float  x, y;            // Client-area pixels (same space as ImGui::GetMousePos()).
+    float  x, y;            // Client-area coordinates (same space as ImGui::GetMousePos()).
     float  pressure;        // [0, 1]; -1 when the device reports none.
     float  tilt_x, tilt_y;  // Degrees in [-90, 90] (+x right, +y toward the user); valid when has_tilt.
     double time;            // Seconds on ImPlatform_GetPenClock()'s clock.
@@ -1853,7 +1911,7 @@ void ImPlatform_Pen_Leave(void)
 
 IMPLATFORM_API bool ImPlatform_SupportsPen(void)
 {
-#if IM_CURRENT_PLATFORM == IM_PLATFORM_WIN32
+#if IM_CURRENT_PLATFORM == IM_PLATFORM_WIN32 || IM_CURRENT_PLATFORM == IM_PLATFORM_SDL3
     return true;
 #else
     return false;
@@ -1887,6 +1945,8 @@ IMPLATFORM_API double ImPlatform_GetPenClock(void)
     ::QueryPerformanceCounter(&now);
     ::QueryPerformanceFrequency(&freq);
     return (double)now.QuadPart / (double)freq.QuadPart;
+#elif IM_CURRENT_PLATFORM == IM_PLATFORM_SDL3
+    return (double)SDL_GetTicksNS() * 1e-9;
 #else
     return ImGui::GetTime();
 #endif
@@ -1895,6 +1955,60 @@ IMPLATFORM_API double ImPlatform_GetPenClock(void)
 // ============================================================================
 // Common Helper Functions (C++ inline implementations)
 // ============================================================================
+
+#if IMPLATFORM_GFX_SUPPORT_RENDER_TARGETS && IMPLATFORM_GFX_SUPPORT_READBACK
+struct ImPlatform_CaptureRequest
+{
+    ImTextureID texture;
+    int         width, height;
+};
+
+IMPLATFORM_API ImTextureID ImPlatform_CaptureViewport(ImGuiViewport* viewport, unsigned int* out_width, unsigned int* out_height)
+{
+    if (!viewport)
+        viewport = ImGui::GetMainViewport();
+    ImPlatform_CaptureRequest request = {};
+    request.width = (int)(viewport->Size.x * viewport->FramebufferScale.x);
+    request.height = (int)(viewport->Size.y * viewport->FramebufferScale.y);
+    if (out_width)  *out_width = (unsigned int)(request.width > 0 ? request.width : 0);
+    if (out_height) *out_height = (unsigned int)(request.height > 0 ? request.height : 0);
+    if (request.width <= 0 || request.height <= 0)
+        return 0;
+    ImPlatform_TextureDesc desc = ImPlatform_TextureDesc_Default((unsigned int)request.width, (unsigned int)request.height);
+    desc.format = ImPlatform_GetRenderPassFormat();     // The format of the viewport's target: a plain copy
+    request.texture = ImPlatform_CreateRenderTexture(&desc);
+    if (!request.texture)
+        return 0;
+    // The request is copied into the draw list: the callback runs when the viewport is rendered.
+    ImGui::GetForegroundDrawList(viewport)->AddCallback([](const ImDrawList*, const ImDrawCmd* cmd)
+    {
+        ImPlatform_CaptureRequest r;
+        memcpy(&r, cmd->UserCallbackData, sizeof(r));
+        ImPlatform_CopyCurrentTarget(r.texture, 0, 0, r.width, r.height, 0, 0);
+    }, &request, sizeof(request));
+    return request.texture;
+}
+
+IMPLATFORM_API bool ImPlatform_ReadCapture(ImTextureID capture, unsigned int width, unsigned int height, void* out_rgba, size_t out_size)
+{
+    const size_t count = (size_t)width * height;
+    if (!capture || !out_rgba || !count || out_size < count * 4 || !ImPlatform_ReadTexture(capture, 0, 0, width, height, out_rgba, out_size))
+        return false;
+    const bool bgra = ImPlatform_GetRenderPassFormat() == ImPlatform_PixelFormat_BGRA8;
+    unsigned char* p = (unsigned char*)out_rgba;
+    for (size_t i = 0; i < count; i++, p += 4)
+    {
+        if (bgra)
+        {
+            const unsigned char blue = p[0];
+            p[0] = p[2];
+            p[2] = blue;
+        }
+        p[3] = 255;     // The target's alpha is not coverage
+    }
+    return true;
+}
+#endif
 
 // Helper function to draw a content-region quad with a custom shader
 // This must be called from within an ImGui window context (after ImGui::Begin)

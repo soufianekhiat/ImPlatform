@@ -820,9 +820,8 @@ IMPLATFORM_API void ImPlatform_DestroyTexture(ImTextureID texture_id)
 }
 
 // ============================================================================
-// Custom Vertex/Index Buffer Management API - Metal (Stubs)
+// Custom Vertex/Index Buffer Management API - Metal
 // ============================================================================
-
 
 // Vertex buffers are with the custom shaders below (they draw on the render encoder of the draw callback).
 // shortcut: no direct draws or render target stack on Metal yet (IMPLATFORM_GFX_SUPPORT_DIRECT_DRAW, _RENDER_TARGETS);
