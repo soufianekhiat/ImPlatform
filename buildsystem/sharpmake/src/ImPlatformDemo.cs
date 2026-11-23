@@ -218,7 +218,8 @@ namespace ImPlatform
             conf.Defines.Add("_DEBUG");
             conf.AdditionalCompilerOptions.Add("-I/opt/homebrew/include", "-I/usr/local/include");
             conf.AdditionalLinkerOptions.Add("-L/opt/homebrew/lib", "-L/usr/local/lib", "-Wl,-rpath,/opt/homebrew/lib", "-Wl,-rpath,/usr/local/lib");
-            conf.XcodeSystemFrameworks.Add("Cocoa", "IOKit", "CoreVideo");
+            // ApplicationServices: the pasteboard, CoreGraphics and ImageIO of ImPlatform_native.cpp
+            conf.XcodeSystemFrameworks.Add("Cocoa", "IOKit", "CoreVideo", "ApplicationServices");
 
             switch (target.App)
             {

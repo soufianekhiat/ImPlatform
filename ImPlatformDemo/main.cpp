@@ -1543,8 +1543,234 @@ static int ImPlatformDemo_TouchTest()
 	ok = TouchTestGesture( "one finger", true, 0, 0.0f, 0.0f, 10.0f, 0.0f, 1.0f, 0.0f ) && ok;			// Moved before it lifted
 	ok = TouchTestGesture( "none", false, 0, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f ) && ok;
 	ok = ImPlatform_GetTouchPoints( points, 4 ) == 0 && ok;
+	// A trackpad's pinch is the gesture's zoom, without fingers
+#if IM_CURRENT_PLATFORM == IM_PLATFORM_WIN32
+	// What a precision touchpad sends: a wheel notch marked Ctrl while the key is up (keep it up during the test)
+	SendMessageW( ImPlatform_App_GetHWND(), WM_MOUSEWHEEL, MAKEWPARAM( MK_CONTROL, WHEEL_DELTA ), 0 );
+	ok = TouchTestGesture( "pinch", true, 0, 0.0f, 0.0f, 0.0f, 0.0f, 1.189207f, 0.0f ) && ok;
+#elif IM_CURRENT_PLATFORM == IM_PLATFORM_SDL3
+#if SDL_VERSION_ATLEAST( 3, 4, 0 )
+	SDL_Event pinch;
+	SDL_zero( pinch );
+	pinch.type = SDL_EVENT_PINCH_UPDATE;
+	pinch.pinch.scale = 1.5f;
+	SDL_PushEvent( &pinch );
+	ImPlatform_PlatformEvents();
+	ok = TouchTestGesture( "pinch", true, 0, 0.0f, 0.0f, 0.0f, 0.0f, 1.5f, 0.0f ) && ok;
+#endif
+#endif
 	if ( ok )
 		printf( "PASS\n" );
+	return ok ? 0 : 1;
+}
+
+// --drop-test: a drag from another application comes out of the ImPlatform_SetDropCallback callback as events, and
+// each file out of the ImPlatform_SetDropFileCallback one. SDL2 and SDL3: drop events pushed on SDL's queue. Win32: a
+// data object holding a file and a URL handed to the window's drop target, entering, moving and dropping, then
+// entering and leaving. Exit code: 0 pass, 1 fail, 2 on GLFW (nothing can hand it a drop).
+#if IMPLATFORM_APP_SUPPORT_DROP_FILE && ( IM_CURRENT_PLATFORM == IM_PLATFORM_WIN32 || IM_CURRENT_PLATFORM == IM_PLATFORM_SDL2 || IM_CURRENT_PLATFORM == IM_PLATFORM_SDL3 )
+#define DEMO_DROP_TEST 1
+static ImVec2 g_DropTestPos;
+static void DropTestCallback( const ImPlatform_DropEvent* event, void* user_data )
+{
+	static const char* const names[ 5 ] = { "B", "P", "F", "T", "E" };
+	char* log = (char*)user_data;
+	const size_t used = strlen( log );
+	if ( event->text )
+		snprintf( log + used, 512 - used, "%s:%s ", names[ event->type ], event->text );
+	else
+		snprintf( log + used, 512 - used, "%s ", names[ event->type ] );
+	if ( event->type == ImPlatform_DropEvent_Position )
+		g_DropTestPos = event->pos;
+}
+static void DropTestFileCallback( const char*, ImVec2, void* user_data )
+{
+	++*(int*)user_data;
+}
+#if IM_CURRENT_PLATFORM == IM_PLATFORM_WIN32
+#include <shlobj.h>
+static HGLOBAL DropTestMemory( const void* bytes, size_t size )
+{
+	HGLOBAL memory = GlobalAlloc( GMEM_MOVEABLE, size );
+	memcpy( GlobalLock( memory ), bytes, size );
+	GlobalUnlock( memory );
+	return memory;
+}
+#endif
+#else
+#define DEMO_DROP_TEST 0
+#endif
+
+static int ImPlatformDemo_DropTest()
+{
+#if DEMO_DROP_TEST
+	static char log[ 512 ];
+	int files = 0;
+	bool at = true;		// The position reported while the drag moved, where the platform reports one
+	ImPlatform_SetDropCallback( DropTestCallback, log );
+	ImPlatform_SetDropFileCallback( DropTestFileCallback, &files );
+#if IM_CURRENT_PLATFORM == IM_PLATFORM_SDL3
+	const char* want = "B P F:a.png T:https://example.com/i.png E ";
+	const struct { Uint32 type; const char* data; } events[ 5 ] = { { SDL_EVENT_DROP_BEGIN, nullptr }, { SDL_EVENT_DROP_POSITION, nullptr },
+		{ SDL_EVENT_DROP_FILE, "a.png" }, { SDL_EVENT_DROP_TEXT, "https://example.com/i.png" }, { SDL_EVENT_DROP_COMPLETE, nullptr } };
+	for ( const auto& d : events )
+	{
+		SDL_Event e;
+		SDL_zero( e );
+		e.type = d.type;
+		e.drop.windowID = SDL_GetWindowID( ImPlatform_App_GetSDL3Window() );
+		e.drop.x = 30.0f;
+		e.drop.y = 40.0f;
+		e.drop.data = d.data;
+		SDL_PushEvent( &e );
+	}
+	ImPlatform_PlatformEvents();
+	at = g_DropTestPos.x == 30.0f && g_DropTestPos.y == 40.0f;
+#elif IM_CURRENT_PLATFORM == IM_PLATFORM_SDL2
+	const char* want = "B F:a.png T:https://example.com/i.png E ";
+	const struct { Uint32 type; const char* data; } events[ 4 ] = { { SDL_DROPBEGIN, nullptr }, { SDL_DROPFILE, "a.png" },
+		{ SDL_DROPTEXT, "https://example.com/i.png" }, { SDL_DROPCOMPLETE, nullptr } };
+	for ( const auto& d : events )
+	{
+		SDL_Event e;
+		SDL_zero( e );
+		e.type = d.type;
+		e.drop.windowID = SDL_GetWindowID( ImPlatform_App_GetSDL2Window() );
+		e.drop.file = d.data ? SDL_strdup( d.data ) : nullptr;	// The event loop frees it
+		SDL_PushEvent( &e );
+	}
+	ImPlatform_PlatformEvents();
+#else
+	const char* want = "B P P F:C:\\a.png T:https://example.com/i.png E B P E ";
+	IDropTarget* target = (IDropTarget*)ImPlatform_Win32_GetDropTarget();
+	IDataObject* data = nullptr;
+	if ( FAILED( SHCreateDataObject( nullptr, 0, nullptr, nullptr, IID_IDataObject, (void**)&data ) ) )
+	{
+		printf( "FAIL: no data object\n" );
+		return 1;
+	}
+	const wchar_t url[] = L"https://example.com/i.png";
+	struct { DROPFILES header; wchar_t paths[ 10 ]; } drop = {};	// The path and the list's two terminators
+	drop.header.pFiles = sizeof( DROPFILES );
+	drop.header.fWide = TRUE;
+	memcpy( drop.paths, L"C:\\a.png", sizeof( L"C:\\a.png" ) );
+	FORMATETC format = { CF_UNICODETEXT, nullptr, DVASPECT_CONTENT, -1, TYMED_HGLOBAL };
+	STGMEDIUM medium = {};
+	medium.tymed = TYMED_HGLOBAL;
+	medium.hGlobal = DropTestMemory( url, sizeof( url ) );
+	data->SetData( &format, &medium, TRUE );	// TRUE: the object owns the memory
+	format.cfFormat = CF_HDROP;
+	medium.hGlobal = DropTestMemory( &drop, sizeof( drop ) );
+	data->SetData( &format, &medium, TRUE );
+	POINT client = { 30, 40 };
+	ClientToScreen( ImPlatform_App_GetHWND(), &client );
+	const POINTL pt = { client.x, client.y };
+	DWORD effect = DROPEFFECT_COPY;
+	target->DragEnter( data, 0, pt, &effect );
+	target->DragOver( 0, pt, &effect );
+	const bool copy = effect == DROPEFFECT_COPY;
+	target->Drop( data, 0, pt, &effect );
+	target->DragEnter( data, 0, pt, &effect );
+	target->DragLeave();
+	data->Release();
+	at = copy && g_DropTestPos.x == 30.0f && g_DropTestPos.y == 40.0f;
+#endif
+	ImPlatform_SetDropCallback( nullptr, nullptr );
+	ImPlatform_SetDropFileCallback( nullptr, nullptr );
+	const bool ok = strcmp( log, want ) == 0 && files == 1 && at;
+	printf( ok ? "PASS\n" : "FAIL: events \"%s\", %d files, position %d\n", log, files, (int)at );
+	return ok ? 0 : 1;
+#else
+	printf( "SKIP: a drop cannot be synthesized on this platform\n" );
+	return 2;
+#endif
+}
+
+// --window-test: the window goes fullscreen (larger than it was, ImPlatform_IsFullscreen) and comes back to its size;
+// always on top and the icon are set, and the system theme is printed. Exit code: 0 pass, 1 fail, 2 without the calls.
+#if IMPLATFORM_APP_SUPPORT_WINDOW_STATE
+#include <chrono>
+#include <thread>
+static void WindowTestSize( int* w, int* h )
+{
+	// Some window systems apply a change later: let their events through first
+	for ( int i = 0; i < 30; ++i )
+	{
+		ImPlatform_PlatformEvents();
+		std::this_thread::sleep_for( std::chrono::milliseconds( 10 ) );
+	}
+#if IM_CURRENT_PLATFORM == IM_PLATFORM_WIN32
+	RECT rect = {};
+	GetClientRect( ImPlatform_App_GetHWND(), &rect );
+	*w = rect.right;
+	*h = rect.bottom;
+#elif IM_CURRENT_PLATFORM == IM_PLATFORM_GLFW
+	glfwGetWindowSize( ImPlatform_App_GetGLFWWindow(), w, h );
+#elif IM_CURRENT_PLATFORM == IM_PLATFORM_SDL2
+	SDL_GetWindowSize( ImPlatform_App_GetSDL2Window(), w, h );
+#else
+	SDL_GetWindowSize( ImPlatform_App_GetSDL3Window(), w, h );
+#endif
+}
+#endif
+
+static int ImPlatformDemo_WindowTest()
+{
+	static const char* const themes[ 3 ] = { "unknown", "light", "dark" };
+	printf( "system theme: %s\n", themes[ ImPlatform_GetSystemTheme() ] );
+#if IMPLATFORM_APP_SUPPORT_WINDOW_STATE
+	unsigned char icon[ 16 * 16 * 4 ];
+	for ( int i = 0; i < 16 * 16; ++i )
+	{
+		icon[ i * 4 + 0 ] = 255;
+		icon[ i * 4 + 1 ] = (unsigned char)( i % 16 * 16 );
+		icon[ i * 4 + 2 ] = 0;
+		icon[ i * 4 + 3 ] = 255;
+	}
+	int w[ 3 ] = {}, h[ 3 ] = {};
+	WindowTestSize( &w[ 0 ], &h[ 0 ] );
+	const bool icon_set = ImPlatform_SetWindowIcon( icon, 16, 16 );
+	ImPlatform_SetAlwaysOnTop( true );
+#if IM_CURRENT_PLATFORM == IM_PLATFORM_WIN32
+	const bool on_top = ( GetWindowLong( ImPlatform_App_GetHWND(), GWL_EXSTYLE ) & WS_EX_TOPMOST ) != 0;
+#else
+	const bool on_top = true;
+#endif
+	ImPlatform_SetAlwaysOnTop( false );
+	ImPlatform_SetFullscreen( true );
+	WindowTestSize( &w[ 1 ], &h[ 1 ] );
+	const bool fullscreen = ImPlatform_IsFullscreen();
+	ImPlatform_SetFullscreen( false );
+	WindowTestSize( &w[ 2 ], &h[ 2 ] );
+	const bool ok = icon_set && on_top && fullscreen && !ImPlatform_IsFullscreen() && w[ 1 ] >= w[ 0 ] && h[ 1 ] >= h[ 0 ]
+					&& ( w[ 1 ] > w[ 0 ] || h[ 1 ] > h[ 0 ] ) && w[ 2 ] == w[ 0 ] && h[ 2 ] == h[ 0 ];
+	printf( ok ? "PASS\n" : "FAIL: icon %d, on top %d, fullscreen %d, %dx%d then %dx%d then %dx%d\n", (int)icon_set, (int)on_top, (int)fullscreen,
+			w[ 0 ], h[ 0 ], w[ 1 ], h[ 1 ], w[ 2 ], h[ 2 ] );
+	return ok ? 0 : 1;
+#else
+	printf( "SKIP: no window state calls on this platform\n" );
+	return 2;
+#endif
+}
+
+// --clipboard-test: an image put on the clipboard with ImPlatform_SetClipboardImage comes back with its size and its
+// pixels; the system theme is printed. It replaces what the clipboard held, and needs no window but on SDL3. Exit
+// code: 0 pass, 1 fail, 2 where the clipboard takes no image.
+static int ImPlatformDemo_ClipboardTest()
+{
+	static const char* const themes[ 3 ] = { "unknown", "light", "dark" };
+	printf( "system theme: %s\n", themes[ ImPlatform_GetSystemTheme() ] );
+	if ( !ImPlatform_SupportsClipboardImage() )
+	{
+		printf( "SKIP: no clipboard image on this system\n" );
+		return 2;
+	}
+	const unsigned char image[ 3 * 2 * 4 ] = { 255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 10, 20, 30, 255, 40, 50, 60, 255, 70, 80, 90, 255 };
+	unsigned char back[ sizeof( image ) ] = {};
+	int w = 0, h = 0;
+	const bool ok = ImPlatform_SetClipboardImage( image, 3, 2 ) && ImPlatform_GetClipboardImageSize( &w, &h ) && w == 3 && h == 2
+					&& ImPlatform_GetClipboardImage( back, w, h ) && memcmp( image, back, sizeof( image ) ) == 0;
+	printf( ok ? "PASS\n" : "FAIL: %dx%d, first pixel %d %d %d %d\n", w, h, back[ 0 ], back[ 1 ], back[ 2 ], back[ 3 ] );
 	return ok ? 0 : 1;
 }
 
@@ -1556,6 +1782,10 @@ int main( int argc, char** argv )
 #endif
 	if ( argc > 1 && strcmp( argv[ 1 ], "--drag-rect-test" ) == 0 )
 		return ImPlatformDemo_DragRectTest();
+#if IM_CURRENT_PLATFORM != IM_PLATFORM_SDL3	// SDL3 carries the clipboard itself, once its window exists
+	if ( argc > 1 && strcmp( argv[ 1 ], "--clipboard-test" ) == 0 )
+		return ImPlatformDemo_ClipboardTest();
+#endif
 	const bool computeAsyncTest = argc > 1 && strcmp( argv[ 1 ], "--compute-async-test" ) == 0;
 	const bool computeTest = computeAsyncTest || ( argc > 1 && strcmp( argv[ 1 ], "--compute-test" ) == 0 );
 	const bool renderPassTest = argc > 1 && strcmp( argv[ 1 ], "--render-pass-test" ) == 0;
@@ -1718,6 +1948,12 @@ int main( int argc, char** argv )
 		return ImPlatformDemo_PenTest();
 	if ( argc > 1 && strcmp( argv[ 1 ], "--touch-test" ) == 0 )
 		return ImPlatformDemo_TouchTest();
+	if ( argc > 1 && strcmp( argv[ 1 ], "--drop-test" ) == 0 )
+		return ImPlatformDemo_DropTest();
+	if ( argc > 1 && strcmp( argv[ 1 ], "--clipboard-test" ) == 0 )
+		return ImPlatformDemo_ClipboardTest();
+	if ( argc > 1 && strcmp( argv[ 1 ], "--window-test" ) == 0 )
+		return ImPlatformDemo_WindowTest();
 
 	// Create test textures using new Texture Creation API
 #ifdef IMGUI_HAS_TEXTURES

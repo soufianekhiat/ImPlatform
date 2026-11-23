@@ -24,6 +24,9 @@ static SDL_HitTestResult SDLCALL sdl2_hit_test_callback(SDL_Window* window, cons
 {
     ImPlatform_AppData_SDL2* app = (ImPlatform_AppData_SDL2*)data;
 
+    if (SDL_GetWindowFlags(window) & SDL_WINDOW_FULLSCREEN)
+        return SDL_HITTEST_NORMAL;      // No border to resize by, no titlebar to move by
+
     int w, h;
     SDL_GetWindowSize(window, &w, &h);
 
@@ -235,6 +238,7 @@ IMPLATFORM_API bool ImPlatform_PlatformContinue(void)
 IMPLATFORM_API bool ImPlatform_PlatformEvents(void)
 {
     SDL_Event event;
+    ImPlatform_Native_Pump();
     while (SDL_PollEvent(&event))
     {
         ImGui_ImplSDL2_ProcessEvent(&event);
@@ -277,11 +281,17 @@ IMPLATFORM_API bool ImPlatform_PlatformEvents(void)
         }
 #endif
 #if IMPLATFORM_APP_SUPPORT_DROP_FILE
-        if (event.type == SDL_DROPFILE && event.drop.file)
+        if (event.type >= SDL_DROPFILE && event.type <= SDL_DROPCOMPLETE)
         {
+            // SDL2 reports a drop at the release, without a position: the mouse's
             int mx = 0, my = 0;
             SDL_GetMouseState(&mx, &my);
-            ImPlatform_NotifyFileDrop(event.drop.file, ImVec2((float)mx, (float)my));
+            const ImPlatform_DropEventType type = event.type == SDL_DROPBEGIN ? ImPlatform_DropEvent_Begin
+                : event.type == SDL_DROPFILE ? ImPlatform_DropEvent_File
+                : event.type == SDL_DROPTEXT ? ImPlatform_DropEvent_Text : ImPlatform_DropEvent_End;
+            const bool item = type == ImPlatform_DropEvent_File || type == ImPlatform_DropEvent_Text;
+            if (!item || event.drop.file)
+                ImPlatform_NotifyDrop(type, item ? event.drop.file : NULL, ImVec2((float)mx, (float)my));
             SDL_free(event.drop.file);
         }
 #endif
@@ -339,8 +349,35 @@ IMPLATFORM_API void ImPlatform_DestroyWindow(void)
 #if IMPLATFORM_APP_SUPPORT_DROP_FILE
 void ImPlatform_App_OnDropFileCallbackChanged(bool has_callback)
 {
-    SDL_EventState(SDL_DROPFILE, has_callback ? SDL_ENABLE : SDL_DISABLE);
+    for (Uint32 type = SDL_DROPFILE; type <= SDL_DROPCOMPLETE; ++type)
+        SDL_EventState(type, has_callback ? SDL_ENABLE : SDL_DISABLE);
 }
 #endif // IMPLATFORM_APP_SUPPORT_DROP_FILE
+
+#if IMPLATFORM_APP_SUPPORT_WINDOW_STATE
+IMPLATFORM_API void ImPlatform_SetFullscreen(bool fullscreen)
+{
+    SDL_SetWindowFullscreen(g_AppData.pWindow, fullscreen ? SDL_WINDOW_FULLSCREEN_DESKTOP : 0);
+}
+
+IMPLATFORM_API bool ImPlatform_IsFullscreen(void)
+{
+    return (SDL_GetWindowFlags(g_AppData.pWindow) & SDL_WINDOW_FULLSCREEN) != 0;
+}
+
+IMPLATFORM_API void ImPlatform_SetAlwaysOnTop(bool on_top)
+{
+    SDL_SetWindowAlwaysOnTop(g_AppData.pWindow, on_top ? SDL_TRUE : SDL_FALSE);
+}
+
+IMPLATFORM_API bool ImPlatform_SetWindowIcon(const unsigned char* rgba, int width, int height)
+{
+    SDL_Surface* icon = rgba ? SDL_CreateRGBSurfaceWithFormatFrom(const_cast<unsigned char*>(rgba), width, height, 32, width * 4, SDL_PIXELFORMAT_RGBA32) : NULL;
+    if (icon)
+        SDL_SetWindowIcon(g_AppData.pWindow, icon);
+    SDL_FreeSurface(icon);
+    return icon != NULL;
+}
+#endif // IMPLATFORM_APP_SUPPORT_WINDOW_STATE
 
 #endif // IM_CURRENT_PLATFORM == IM_PLATFORM_SDL2

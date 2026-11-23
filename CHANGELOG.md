@@ -31,7 +31,25 @@ Changes since 2.0.0 (the `v2` branch), in progress on the `v3` branch.
 - **Touch input** (Win32 pointer messages, SDL2 and SDL3 finger events; main window): `ImPlatform_SupportsTouch()`,
   `ImPlatform_GetTouchPoints()` gives the fingers in contact, `ImPlatform_ConsumeTouchGesture()` what they did since
   the previous call: pan, pinch zoom and rotation, computed from the finger positions the same way on every platform.
+  A trackpad's pinch comes through the same gesture as its zoom (Win32 precision touchpads, macOS with every window
+  library, where the two-finger turn is its rotation, SDL 3.4 and later).
   Demo `--touch-test` (synthetic SDL finger events; the recognizer alone on Win32).
+- **Drag and drop from other applications**: `ImPlatform_SetDropCallback()` receives every event of a drag over the
+  main window: begin, position, one event per dropped file and per dropped text (a URL for a link or an image dragged
+  from a browser), end. Win32 (an OLE drop target) and SDL3 report the drag while it hovers; SDL2 and GLFW at the
+  release. `ImPlatform_SetDropFileCallback()` still receives each file. Demo `--drop-test`.
+- **Window state** (`IMPLATFORM_APP_SUPPORT_WINDOW_STATE`: Win32, GLFW, SDL2, SDL3): `ImPlatform_SetFullscreen()` /
+  `ImPlatform_IsFullscreen()` (borderless, on the monitor the window is on), `ImPlatform_SetAlwaysOnTop()`,
+  `ImPlatform_SetWindowIcon()` from RGBA pixels. Demo `--window-test`.
+- **System theme**: `ImPlatform_GetSystemTheme()` gives the user's light or dark mode on Windows, macOS and Linux
+  (the settings portal).
+- **Clipboard images**: `ImPlatform_SetClipboardImage()`, `ImPlatform_GetClipboardImageSize()`,
+  `ImPlatform_GetClipboardImage()` as RGBA pixels on Windows, macOS and Linux; `ImPlatform_SupportsClipboardImage()`
+  tells whether the system has what it takes. Demo `--clipboard-test`.
+- **`ImPlatform_native.cpp`**: the theme, the clipboard image and the macOS trackpad gestures are taken from the
+  system itself, so they do not depend on what GLFW, SDL2 or SDL3 expose. macOS: CoreFoundation, the pasteboard,
+  ImageIO and the Objective-C runtime, from C++. Linux: libdbus, libpng and libX11, loaded at run time (no new build
+  dependency). macOS builds link the ApplicationServices framework.
 - **Win32 + Vulkan** build configuration (Sharpmake `Win32_Vulkan`, CMake `ImPlatformDemo_Win32_Vulkan`, CI) and
   `IM_TARGET_WIN32_VULKAN`.
 - **Borderless window on stock GLFW** is resized by its edges (`ImPlatform_BorderlessParams::resizeBorderSize`,

@@ -7,9 +7,11 @@
 
 #include "../imgui/backends/imgui_impl_win32.h"
 #include <tchar.h>
+#include <math.h>     // For powf
 #include <windowsx.h>  // For GET_X_LPARAM, GET_Y_LPARAM
 #if IMPLATFORM_APP_SUPPORT_DROP_FILE
 #include <shellapi.h>  // For DragAcceptFiles, DragQueryFileW, DragFinish
+#include <ole2.h>      // For IDropTarget, RegisterDragDrop
 #endif
 
 // Global state
@@ -74,9 +76,141 @@ static void ImPlatform_Win32_TouchMessage(HWND hWnd, UINT msg, WPARAM wParam)
                          msg != WM_POINTERUP && (touch.pointerInfo.pointerFlags & POINTER_FLAG_INCONTACT) != 0);
 }
 
+static DWORD g_FullscreenStyle = 0;     // The window's style before it went fullscreen; 0 while it is not
+
+#if IMPLATFORM_APP_SUPPORT_DROP_FILE
+// The files of a drop, one File event each.
+static void ImPlatform_Win32_NotifyDroppedFiles(HDROP hDrop, ImVec2 pos)
+{
+    const UINT count = ::DragQueryFileW(hDrop, 0xFFFFFFFF, NULL, 0);
+    for (UINT i = 0; i < count; ++i)
+    {
+        wchar_t wpath[32767];
+        ::DragQueryFileW(hDrop, i, wpath, 32767);
+        char utf8path[32767 * 3];
+        ::WideCharToMultiByte(CP_UTF8, 0, wpath, -1, utf8path, sizeof(utf8path), NULL, NULL);
+        ImPlatform_NotifyDrop(ImPlatform_DropEvent_File, utf8path, pos);
+    }
+}
+
+// Drags from other applications over the main window (OLE): reported when they enter, as they move, and when they
+// drop their files and text or leave.
+struct ImPlatform_DropTarget_Win32 : IDropTarget
+{
+    bool bAccepted;     // The drag over the window carries files or text
+
+    static ImVec2 ClientPos(POINTL pt)
+    {
+        POINT p = { pt.x, pt.y };
+        ::ScreenToClient(g_AppData.hWnd, &p);
+        return ImVec2((float)p.x, (float)p.y);
+    }
+    static FORMATETC Format(CLIPFORMAT format)
+    {
+        const FORMATETC f = { format, NULL, DVASPECT_CONTENT, -1, TYMED_HGLOBAL };
+        return f;
+    }
+
+    HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid, void** object) override
+    {
+        const bool mine = IsEqualIID(riid, IID_IUnknown) || IsEqualIID(riid, IID_IDropTarget);
+        *object = mine ? this : NULL;
+        return mine ? S_OK : E_NOINTERFACE;
+    }
+    ULONG STDMETHODCALLTYPE AddRef() override { return 1; }     // Static storage: not counted
+    ULONG STDMETHODCALLTYPE Release() override { return 1; }
+
+    HRESULT STDMETHODCALLTYPE DragEnter(IDataObject* data, DWORD keys, POINTL pt, DWORD* effect) override
+    {
+        FORMATETC files = Format(CF_HDROP), text = Format(CF_UNICODETEXT);
+        bAccepted = data->QueryGetData(&files) == S_OK || data->QueryGetData(&text) == S_OK;
+        if (bAccepted)
+            ImPlatform_NotifyDrop(ImPlatform_DropEvent_Begin, NULL, ClientPos(pt));
+        return DragOver(keys, pt, effect);
+    }
+    HRESULT STDMETHODCALLTYPE DragOver(DWORD, POINTL pt, DWORD* effect) override
+    {
+        if (bAccepted)
+            ImPlatform_NotifyDrop(ImPlatform_DropEvent_Position, NULL, ClientPos(pt));
+        *effect = bAccepted ? DROPEFFECT_COPY : DROPEFFECT_NONE;
+        return S_OK;
+    }
+    HRESULT STDMETHODCALLTYPE DragLeave() override
+    {
+        if (bAccepted)
+            ImPlatform_NotifyDrop(ImPlatform_DropEvent_End, NULL, ImVec2(0.0f, 0.0f));
+        bAccepted = false;
+        return S_OK;
+    }
+    HRESULT STDMETHODCALLTYPE Drop(IDataObject* data, DWORD, POINTL pt, DWORD* effect) override
+    {
+        *effect = bAccepted ? DROPEFFECT_COPY : DROPEFFECT_NONE;
+        if (!bAccepted)
+            return S_OK;
+        const ImVec2 pos = ClientPos(pt);
+        FORMATETC files = Format(CF_HDROP), text = Format(CF_UNICODETEXT);
+        STGMEDIUM medium;
+        if (data->GetData(&files, &medium) == S_OK)
+        {
+            ImPlatform_Win32_NotifyDroppedFiles((HDROP)medium.hGlobal, pos);
+            ::ReleaseStgMedium(&medium);
+        }
+        if (data->GetData(&text, &medium) == S_OK)
+        {
+            if (const wchar_t* wide = (const wchar_t*)::GlobalLock(medium.hGlobal))
+            {
+                ImVector<char> utf8;
+                utf8.resize(::WideCharToMultiByte(CP_UTF8, 0, wide, -1, NULL, 0, NULL, NULL));
+                ::WideCharToMultiByte(CP_UTF8, 0, wide, -1, utf8.Data, utf8.Size, NULL, NULL);
+                ::GlobalUnlock(medium.hGlobal);
+                if (utf8.Size > 1)
+                    ImPlatform_NotifyDrop(ImPlatform_DropEvent_Text, utf8.Data, pos);
+            }
+            ::ReleaseStgMedium(&medium);
+        }
+        bAccepted = false;
+        ImPlatform_NotifyDrop(ImPlatform_DropEvent_End, NULL, pos);
+        return S_OK;
+    }
+};
+static ImPlatform_DropTarget_Win32 g_DropTarget;
+static bool g_DropRegistered = false;   // g_DropTarget is the window's drop target
+static bool g_OleInitialized = false;
+
+void* ImPlatform_Win32_GetDropTarget(void)
+{
+    return static_cast<IDropTarget*>(&g_DropTarget);
+}
+
+// Makes the window take drops, or refuse them.
+static void ImPlatform_Win32_AcceptDrops(bool accept)
+{
+    if (!g_AppData.hWnd)
+        return;
+    if (g_DropRegistered)
+        ::RevokeDragDrop(g_AppData.hWnd);
+    g_DropRegistered = false;
+    ::DragAcceptFiles(g_AppData.hWnd, FALSE);
+    if (!accept)
+        return;
+    if (!g_OleInitialized)
+        g_OleInitialized = SUCCEEDED(::OleInitialize(NULL));
+    g_DropRegistered = g_OleInitialized && SUCCEEDED(::RegisterDragDrop(g_AppData.hWnd, &g_DropTarget));
+    if (!g_DropRegistered)
+        ::DragAcceptFiles(g_AppData.hWnd, TRUE);    // A thread in the multithreaded apartment has no OLE: files, at the release (WM_DROPFILES)
+}
+#endif // IMPLATFORM_APP_SUPPORT_DROP_FILE
+
 // Win32 message handler
 static LRESULT WINAPI WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
 {
+    // A pinch on a precision touchpad arrives as a wheel message marked Ctrl while the key is up. It is the gesture's
+    // zoom, and no scroll for ImGui.
+    if (msg == WM_MOUSEWHEEL && (GET_KEYSTATE_WPARAM(wParam) & MK_CONTROL) && ::GetKeyState(VK_CONTROL) >= 0)
+    {
+        ImPlatform_Touch_Zoom(powf(2.0f, (float)GET_WHEEL_DELTA_WPARAM(wParam) / (4.0f * (float)WHEEL_DELTA)));
+        return 0;
+    }
     if (msg == WM_POINTERDOWN || msg == WM_POINTERUPDATE || msg == WM_POINTERUP)
     {
         ImPlatform_Win32_PenMessage(hWnd, wParam);     // Observed only: the messages still reach ImGui and DefWindowProc.
@@ -160,7 +294,7 @@ static LRESULT WINAPI WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
         break;
 
     case WM_NCHITTEST:
-        if (g_AppData.bCustomTitleBar)
+        if (g_AppData.bCustomTitleBar && !g_FullscreenStyle)    // Fullscreen: no border to resize by, no titlebar to move by
         {
             // Allow resizing from borders when not maximized
             if (!ImPlatform_IsMaximized())
@@ -260,20 +394,15 @@ static LRESULT WINAPI WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
 #endif
 
 #if IMPLATFORM_APP_SUPPORT_DROP_FILE
-    case WM_DROPFILES:
+    case WM_DROPFILES:  // Only where the window could not be made an OLE drop target
         {
             HDROP hDrop = (HDROP)wParam;
-            UINT count = ::DragQueryFileW(hDrop, 0xFFFFFFFF, NULL, 0);
             POINT pt = {};
             ::DragQueryPoint(hDrop, &pt);  // client-space coordinates
-            for (UINT i = 0; i < count; ++i)
-            {
-                wchar_t wpath[32767];
-                ::DragQueryFileW(hDrop, i, wpath, 32767);
-                char utf8path[32767 * 3];
-                ::WideCharToMultiByte(CP_UTF8, 0, wpath, -1, utf8path, sizeof(utf8path), NULL, NULL);
-                ImPlatform_NotifyFileDrop(utf8path, ImVec2((float)pt.x, (float)pt.y));
-            }
+            const ImVec2 pos((float)pt.x, (float)pt.y);
+            ImPlatform_NotifyDrop(ImPlatform_DropEvent_Begin, NULL, pos);
+            ImPlatform_Win32_NotifyDroppedFiles(hDrop, pos);
+            ImPlatform_NotifyDrop(ImPlatform_DropEvent_End, NULL, pos);
             ::DragFinish(hDrop);
             return 0;
         }
@@ -381,7 +510,7 @@ IMPLATFORM_API bool ImPlatform_ShowWindow(void)
     ::UpdateWindow(g_AppData.hWnd);
 #if IMPLATFORM_APP_SUPPORT_DROP_FILE
     if (g_AppData.bDropFileEnabled)
-        ::DragAcceptFiles(g_AppData.hWnd, TRUE);
+        ImPlatform_Win32_AcceptDrops(true);
 #endif
     return true;
 }
@@ -433,10 +562,107 @@ IMPLATFORM_API void ImPlatform_ShutdownPostGfxAPI(void)
 }
 
 // ImPlatform API - DestroyWindow
+#if IMPLATFORM_APP_SUPPORT_WINDOW_STATE
+static HICON g_WindowIcon = NULL;
+
+IMPLATFORM_API void ImPlatform_SetFullscreen(bool fullscreen)
+{
+    static WINDOWPLACEMENT placement = { sizeof(WINDOWPLACEMENT) };
+    HWND hWnd = g_AppData.hWnd;
+    if (!hWnd || fullscreen == ImPlatform_IsFullscreen())
+        return;
+    if (fullscreen)
+    {
+        MONITORINFO mi = { sizeof(MONITORINFO) };
+        ::GetWindowPlacement(hWnd, &placement);
+        ::GetMonitorInfo(::MonitorFromWindow(hWnd, MONITOR_DEFAULTTONEAREST), &mi);
+        g_FullscreenStyle = (DWORD)::GetWindowLong(hWnd, GWL_STYLE);
+        ::SetWindowLong(hWnd, GWL_STYLE, (LONG)((g_FullscreenStyle & ~(DWORD)WS_OVERLAPPEDWINDOW) | WS_POPUP));
+        ::SetWindowPos(hWnd, HWND_TOP, mi.rcMonitor.left, mi.rcMonitor.top, mi.rcMonitor.right - mi.rcMonitor.left,
+                       mi.rcMonitor.bottom - mi.rcMonitor.top, SWP_NOOWNERZORDER | SWP_FRAMECHANGED);
+    }
+    else
+    {
+        ::SetWindowLong(hWnd, GWL_STYLE, (LONG)g_FullscreenStyle);
+        g_FullscreenStyle = 0;
+        ::SetWindowPlacement(hWnd, &placement);
+        ::SetWindowPos(hWnd, NULL, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOOWNERZORDER | SWP_FRAMECHANGED);
+    }
+}
+
+IMPLATFORM_API bool ImPlatform_IsFullscreen(void)
+{
+    return g_FullscreenStyle != 0;
+}
+
+IMPLATFORM_API void ImPlatform_SetAlwaysOnTop(bool on_top)
+{
+    ::SetWindowPos(g_AppData.hWnd, on_top ? HWND_TOPMOST : HWND_NOTOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+}
+
+IMPLATFORM_API bool ImPlatform_SetWindowIcon(const unsigned char* rgba, int width, int height)
+{
+    if (!g_AppData.hWnd || !rgba || width <= 0 || height <= 0)
+        return false;
+    BITMAPV5HEADER bi;
+    memset(&bi, 0, sizeof(bi));
+    bi.bV5Size = sizeof(bi);
+    bi.bV5Width = width;
+    bi.bV5Height = -height;     // Rows top-down
+    bi.bV5Planes = 1;
+    bi.bV5BitCount = 32;
+    bi.bV5Compression = BI_BITFIELDS;
+    bi.bV5RedMask = 0x00ff0000;
+    bi.bV5GreenMask = 0x0000ff00;
+    bi.bV5BlueMask = 0x000000ff;
+    bi.bV5AlphaMask = 0xff000000;
+    unsigned char* bgra = NULL;
+    HDC dc = ::GetDC(NULL);
+    ICONINFO info = { TRUE, 0, 0, ::CreateBitmap(width, height, 1, 1, NULL),
+                      ::CreateDIBSection(dc, (BITMAPINFO*)&bi, DIB_RGB_COLORS, (void**)&bgra, NULL, 0) };
+    ::ReleaseDC(NULL, dc);
+    HICON icon = NULL;
+    if (info.hbmMask && info.hbmColor && bgra)
+    {
+        for (int i = 0; i < width * height; ++i, rgba += 4, bgra += 4)
+        {
+            bgra[0] = rgba[2];
+            bgra[1] = rgba[1];
+            bgra[2] = rgba[0];
+            bgra[3] = rgba[3];
+        }
+        icon = ::CreateIconIndirect(&info);     // It keeps copies of the two bitmaps
+    }
+    if (info.hbmMask)
+        ::DeleteObject(info.hbmMask);
+    if (info.hbmColor)
+        ::DeleteObject(info.hbmColor);
+    if (!icon)
+        return false;
+    ::SendMessageW(g_AppData.hWnd, WM_SETICON, ICON_BIG, (LPARAM)icon);
+    ::SendMessageW(g_AppData.hWnd, WM_SETICON, ICON_SMALL, (LPARAM)icon);
+    if (g_WindowIcon)
+        ::DestroyIcon(g_WindowIcon);
+    g_WindowIcon = icon;
+    return true;
+}
+#endif // IMPLATFORM_APP_SUPPORT_WINDOW_STATE
+
 IMPLATFORM_API void ImPlatform_DestroyWindow(void)
 {
+#if IMPLATFORM_APP_SUPPORT_DROP_FILE
+    ImPlatform_Win32_AcceptDrops(false);
+    if (g_OleInitialized)
+        ::OleUninitialize();
+    g_OleInitialized = false;
+#endif
     ::DestroyWindow(g_AppData.hWnd);
     ::UnregisterClassW(g_AppData.wc.lpszClassName, g_AppData.wc.hInstance);
+#if IMPLATFORM_APP_SUPPORT_WINDOW_STATE
+    if (g_WindowIcon)
+        ::DestroyIcon(g_WindowIcon);
+    g_WindowIcon = NULL;
+#endif
 }
 
 // Internal API - Get HWND
@@ -461,8 +687,7 @@ ImPlatform_AppData_Win32* ImPlatform_App_GetData_Win32(void)
 void ImPlatform_App_OnDropFileCallbackChanged(bool has_callback)
 {
     g_AppData.bDropFileEnabled = has_callback;
-    if (g_AppData.hWnd)
-        ::DragAcceptFiles(g_AppData.hWnd, has_callback ? TRUE : FALSE);
+    ImPlatform_Win32_AcceptDrops(has_callback);
 }
 #endif // IMPLATFORM_APP_SUPPORT_DROP_FILE
 

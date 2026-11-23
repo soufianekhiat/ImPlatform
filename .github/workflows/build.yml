@@ -409,7 +409,7 @@ jobs:
           cd bin/Linux
           status=0
           for demo in ImPlatformDemo_*; do
-            for test in compute-test compute-async-test render-pass-test shader-test direct-draw-test shader-parts-test texture3d-test vertex-inputs-test buffer-update-test mesh-stream-test blend-test shader-async-test screenshot-test screenshot-viewport-test pen-test touch-test drag-rect-test; do
+            for test in compute-test compute-async-test render-pass-test shader-test direct-draw-test shader-parts-test texture3d-test vertex-inputs-test buffer-update-test mesh-stream-test blend-test shader-async-test screenshot-test screenshot-viewport-test pen-test touch-test drop-test window-test clipboard-test drag-rect-test; do
               set +e
               timeout 120 xvfb-run -a -s "-screen 0 1280x800x24" ./$demo --$test > test.log 2>&1
               code=$?
@@ -564,7 +564,7 @@ jobs:
         run: |
           status=0
           for demo in $(find bin -name "ImPlatformDemo_GLFW_*" -type f -perm +111); do
-            for test in compute-test compute-async-test render-pass-test shader-test direct-draw-test shader-parts-test texture3d-test vertex-inputs-test buffer-update-test mesh-stream-test blend-test shader-async-test screenshot-test screenshot-viewport-test pen-test touch-test drag-rect-test; do
+            for test in compute-test compute-async-test render-pass-test shader-test direct-draw-test shader-parts-test texture3d-test vertex-inputs-test buffer-update-test mesh-stream-test blend-test shader-async-test screenshot-test screenshot-viewport-test pen-test touch-test drop-test window-test clipboard-test drag-rect-test; do
               set +e
               (cd "$(dirname "$demo")" && perl -e 'alarm 120; exec @ARGV' "./$(basename "$demo")" --$test) > test.log 2>&1
               code=$?

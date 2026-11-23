@@ -298,6 +298,21 @@
     #endif
 #endif
 
+// Fullscreen, always on top and the window icon: the desktop platform backends.
+#ifndef IMPLATFORM_APP_SUPPORT_WINDOW_STATE
+    #if defined(IM_CURRENT_PLATFORM)
+        #if !defined(__EMSCRIPTEN__) && \
+            ((IM_CURRENT_PLATFORM == IM_PLATFORM_WIN32) || \
+             (IM_CURRENT_PLATFORM == IM_PLATFORM_GLFW)  || \
+             (IM_CURRENT_PLATFORM == IM_PLATFORM_SDL2)  || \
+             (IM_CURRENT_PLATFORM == IM_PLATFORM_SDL3))
+            #define IMPLATFORM_APP_SUPPORT_WINDOW_STATE 1
+        #else
+            #define IMPLATFORM_APP_SUPPORT_WINDOW_STATE 0
+        #endif
+    #endif
+#endif
+
 #define IM_PLATFORM_WIN32   ( ( 1u << 0u ) << 16u )
 #define IM_PLATFORM_GLFW    ( ( 1u << 1u ) << 16u )
 #define IM_PLATFORM_SDL2    ( ( 1u << 2u ) << 16u )
@@ -1520,7 +1535,27 @@ IMPLATFORM_API ImPlatform_BorderlessParams ImPlatform_GetBorderlessParams(void);
 #endif // IMPLATFORM_APP_SUPPORT_CUSTOM_TITLEBAR
 
 // ============================================================================
-// File Drag-and-Drop API
+// Window State API
+// ============================================================================
+
+#if IMPLATFORM_APP_SUPPORT_WINDOW_STATE
+
+// Fullscreen without a display mode change: the window covers the monitor it is on, undecorated. false gives it back
+// its place, size and decoration.
+IMPLATFORM_API void ImPlatform_SetFullscreen(bool fullscreen);
+IMPLATFORM_API bool ImPlatform_IsFullscreen(void);
+
+// Keeps the window above the other windows.
+IMPLATFORM_API void ImPlatform_SetAlwaysOnTop(bool on_top);
+
+// The window's icon (title bar, task bar, window switcher) from RGBA8 pixels, rows top-down; the pixels are copied.
+// Returns false when the icon could not be made. macOS and Wayland show the application's icon whatever is set here.
+IMPLATFORM_API bool ImPlatform_SetWindowIcon(const unsigned char* rgba, int width, int height);
+
+#endif // IMPLATFORM_APP_SUPPORT_WINDOW_STATE
+
+// ============================================================================
+// Drag-and-Drop API (drags that come from other applications)
 // ============================================================================
 
 #if IMPLATFORM_APP_SUPPORT_DROP_FILE
@@ -1535,6 +1570,32 @@ typedef void (*ImPlatform_DropFileCallback)(const char* path, ImVec2 pos, void* 
 // Enables OS drop acceptance on the window when a non-NULL callback is set.
 // Pass NULL to unregister and disable drop acceptance.
 IMPLATFORM_API void ImPlatform_SetDropFileCallback(ImPlatform_DropFileCallback callback, void* user_data);
+
+// Everything a drag from another application does over the main window. A drop is a Begin event, one File or Text
+// event per item, then an End event. Win32 and SDL3 report the drag before the button is released: Begin comes when
+// it enters the window, Position events follow it, and an End event without items means it left or was cancelled.
+// SDL2 and GLFW report a drop at the release only (GLFW: files only).
+// ImPlatform passes on what the drag carries and nothing more: a link or an image dragged from a browser comes as
+// Text holding its URL (downloading it is the application's work), a file from a file manager as File.
+typedef enum ImPlatform_DropEventType {
+    ImPlatform_DropEvent_Begin,     // A drag entered the window, or a drop starts.
+    ImPlatform_DropEvent_Position,  // The drag moved over the window.
+    ImPlatform_DropEvent_File,      // text: the UTF-8 path of a dropped file.
+    ImPlatform_DropEvent_Text,      // text: dropped UTF-8 text.
+    ImPlatform_DropEvent_End        // The drop is complete, or the drag left the window.
+} ImPlatform_DropEventType;
+
+typedef struct ImPlatform_DropEvent {
+    ImPlatform_DropEventType type;
+    const char*              text;  // File, Text: valid during the callback. NULL for the other events.
+    ImVec2                   pos;   // Position, File, Text: client-area coordinates (same space as ImGui::GetMousePos()).
+} ImPlatform_DropEvent;
+
+typedef void (*ImPlatform_DropCallback)(const ImPlatform_DropEvent* event, void* user_data);
+
+// Registers the callback of every drop event (NULL: none). It may be set beside ImPlatform_SetDropFileCallback(),
+// which still receives each file. The window accepts drops while either callback is set.
+IMPLATFORM_API void ImPlatform_SetDropCallback(ImPlatform_DropCallback callback, void* user_data);
 
 #endif // IMPLATFORM_APP_SUPPORT_DROP_FILE
 
@@ -1578,6 +1639,9 @@ IMPLATFORM_API double ImPlatform_GetPenClock(void);
 // (the first finger moves and clicks); this adds the other fingers and the gesture, computed the same way on every
 // platform from the finger positions. Implemented on Win32 (pointer messages: WM_POINTER*) and on SDL2 and SDL3 (their
 // finger events), for the main window. Other platforms report ImPlatform_SupportsTouch() == false.
+// A pinch on a trackpad comes as the gesture's zoom with finger_count 0 (Win32: a precision touchpad, a wheel notch
+// being a zoom of 2^(1/4); macOS: with every window library, and the two-finger turn as its rotation; SDL 3.4 and
+// later: its pinch events). The trackpad's two-finger pan is the mouse wheel ImGui receives.
 
 typedef struct ImPlatform_TouchPoint {
     unsigned long long id;  // The same from the finger's contact to its lift.
@@ -1602,6 +1666,39 @@ IMPLATFORM_API int ImPlatform_GetTouchPoints(ImPlatform_TouchPoint* out, int max
 // A finger that touches or lifts moves the centroid without panning. Returns false when no finger is in contact and
 // none moved since the previous call. One finger pans too, as the mouse drag ImGui sees: test finger_count to tell.
 IMPLATFORM_API bool ImPlatform_ConsumeTouchGesture(ImPlatform_TouchGesture* out);
+
+// ============================================================================
+// System Theme and Clipboard Image API
+// ============================================================================
+
+typedef enum ImPlatform_SystemTheme {
+    ImPlatform_SystemTheme_Unknown,
+    ImPlatform_SystemTheme_Light,
+    ImPlatform_SystemTheme_Dark
+} ImPlatform_SystemTheme;
+
+// The light or dark mode the user chose for applications, asked of the system itself: Windows, macOS, and Linux
+// desktops with the settings portal (libdbus loaded at run time; SDL3 answers in its place). Unknown where the system
+// does not tell. Call it once a frame and compare to follow a change: macOS and Linux are asked once a second at most.
+IMPLATFORM_API ImPlatform_SystemTheme ImPlatform_GetSystemTheme(void);
+
+// An image on the system clipboard as RGBA8 pixels, rows top-down (text goes through ImGui::SetClipboardText()).
+// Windows and macOS with every window library; Linux through libpng and the X11 clipboard, both loaded at run time
+// (SDL3: SDL's clipboard, once the window exists). ImPlatform_SupportsClipboardImage() tells whether this system has
+// what it takes; the calls return false otherwise. On Linux the image stays on the clipboard while the application
+// runs, as any X11 selection does.
+IMPLATFORM_API bool ImPlatform_SupportsClipboardImage(void);
+
+// Replaces the clipboard's content by the image; the pixels are copied.
+IMPLATFORM_API bool ImPlatform_SetClipboardImage(const unsigned char* rgba, int width, int height);
+
+// The size of the image on the clipboard. Returns false when the clipboard holds none.
+IMPLATFORM_API bool ImPlatform_GetClipboardImageSize(int* width, int* height);
+
+// Copies the image on the clipboard into rgba (width * height * 4 bytes), for the size the call of
+// ImPlatform_GetClipboardImageSize() before it gave. Alpha is 255: the clipboard's bitmaps carry none that can be
+// relied on.
+IMPLATFORM_API bool ImPlatform_GetClipboardImage(unsigned char* rgba, int width, int height);
 
 // ============================================================================
 // DPI / High-DPI Support
@@ -1764,6 +1861,9 @@ IMPLATFORM_API bool ImPlatform_SupportsDepthDraw(void) { return false; }
 // Shader compile log, blend presets, asynchronous program compilation
 #include "ImPlatform_shader_common.cpp"
 
+// The system theme, clipboard images and macOS gestures, taken from the system rather than the window library
+#include "ImPlatform_native.cpp"
+
 // ============================================================================
 // Borderless Params Implementation
 // ============================================================================
@@ -1913,19 +2013,33 @@ void ImPlatform_NotifyDpiChange(float new_scale)
 #if IMPLATFORM_APP_SUPPORT_DROP_FILE
 static ImPlatform_DropFileCallback g_DropFileCallback = NULL;
 static void* g_DropFileCallbackUserData = NULL;
+static ImPlatform_DropCallback g_DropCallback = NULL;
+static void* g_DropCallbackUserData = NULL;
 
 IMPLATFORM_API void ImPlatform_SetDropFileCallback(ImPlatform_DropFileCallback callback, void* user_data)
 {
     g_DropFileCallback = callback;
     g_DropFileCallbackUserData = user_data;
-    ImPlatform_App_OnDropFileCallbackChanged(callback != NULL);
+    ImPlatform_App_OnDropFileCallbackChanged(g_DropFileCallback != NULL || g_DropCallback != NULL);
 }
 
-// Internal helper: fire the user's drop callback (called from platform backends)
-void ImPlatform_NotifyFileDrop(const char* utf8_path, ImVec2 client_pos)
+IMPLATFORM_API void ImPlatform_SetDropCallback(ImPlatform_DropCallback callback, void* user_data)
 {
-    if (g_DropFileCallback)
-        g_DropFileCallback(utf8_path, client_pos, g_DropFileCallbackUserData);
+    g_DropCallback = callback;
+    g_DropCallbackUserData = user_data;
+    ImPlatform_App_OnDropFileCallbackChanged(g_DropFileCallback != NULL || g_DropCallback != NULL);
+}
+
+// Internal helper: fires the user's drop callbacks (called from platform backends)
+void ImPlatform_NotifyDrop(ImPlatform_DropEventType type, const char* utf8, ImVec2 client_pos)
+{
+    if (g_DropCallback)
+    {
+        const ImPlatform_DropEvent event = { type, utf8, client_pos };
+        g_DropCallback(&event, g_DropCallbackUserData);
+    }
+    if (type == ImPlatform_DropEvent_File && g_DropFileCallback)
+        g_DropFileCallback(utf8, client_pos, g_DropFileCallbackUserData);
 }
 #endif // IMPLATFORM_APP_SUPPORT_DROP_FILE
 
@@ -2064,6 +2178,19 @@ void ImPlatform_Touch_Set(unsigned long long id, float x, float y, float pressur
         const ImPlatform_TouchPoint point = { id, x, y, pressure };
         g_TouchPoints[g_TouchCount++] = point;
     }
+}
+
+// A pinch or a turn the platform reports itself (trackpads). Fingers on a touch screen give them through their moves.
+void ImPlatform_Touch_Zoom(float factor)
+{
+    if (g_TouchCount == 0 && factor > 0.0f)
+        g_TouchZoom *= factor;
+}
+
+void ImPlatform_Touch_Rotate(float degrees)
+{
+    if (g_TouchCount == 0)
+        g_TouchRotation += degrees;
 }
 
 IMPLATFORM_API bool ImPlatform_SupportsTouch(void)

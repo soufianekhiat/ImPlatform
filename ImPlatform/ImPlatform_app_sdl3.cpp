@@ -23,6 +23,9 @@ static SDL_HitTestResult SDLCALL sdl3_hit_test_callback(SDL_Window* window, cons
 {
     ImPlatform_AppData_SDL3* app = (ImPlatform_AppData_SDL3*)data;
 
+    if (SDL_GetWindowFlags(window) & SDL_WINDOW_FULLSCREEN)
+        return SDL_HITTEST_NORMAL;      // No border to resize by, no titlebar to move by
+
     int w, h;
     SDL_GetWindowSize(window, &w, &h);
 
@@ -283,6 +286,7 @@ static void ImPlatform_SDL3_PenEvent(const SDL_Event& event)
 IMPLATFORM_API bool ImPlatform_PlatformEvents(void)
 {
     SDL_Event event;
+    ImPlatform_Native_Pump();
     while (SDL_PollEvent(&event))
     {
         ImGui_ImplSDL3_ProcessEvent(&event);
@@ -328,11 +332,21 @@ IMPLATFORM_API bool ImPlatform_PlatformEvents(void)
             ImPlatform_Gfx_OnResize_Custom((unsigned int)fb_w, (unsigned int)fb_h);
         }
 #endif
+#if SDL_VERSION_ATLEAST(3, 4, 0)
+        if (event.type == SDL_EVENT_PINCH_UPDATE)
+            ImPlatform_Touch_Zoom(event.pinch.scale);       // A trackpad's pinch
+#endif
 #if IMPLATFORM_APP_SUPPORT_DROP_FILE
-        if (event.type == SDL_EVENT_DROP_FILE && event.drop.data)
+        if (event.type >= SDL_EVENT_DROP_FILE && event.type <= SDL_EVENT_DROP_POSITION)
         {
-            // SDL3 provides drop position directly in the event (window-local coordinates)
-            ImPlatform_NotifyFileDrop(event.drop.data, ImVec2(event.drop.x, event.drop.y));
+            // SDL gives the position in the window the drag is over (not with the begin event)
+            const ImPlatform_DropEventType type = event.type == SDL_EVENT_DROP_BEGIN ? ImPlatform_DropEvent_Begin
+                : event.type == SDL_EVENT_DROP_POSITION ? ImPlatform_DropEvent_Position
+                : event.type == SDL_EVENT_DROP_FILE ? ImPlatform_DropEvent_File
+                : event.type == SDL_EVENT_DROP_TEXT ? ImPlatform_DropEvent_Text : ImPlatform_DropEvent_End;
+            const bool item = type == ImPlatform_DropEvent_File || type == ImPlatform_DropEvent_Text;
+            if (!item || event.drop.data)
+                ImPlatform_NotifyDrop(type, item ? event.drop.data : NULL, ImVec2(event.drop.x, event.drop.y));
         }
 #endif
     }
@@ -389,8 +403,34 @@ IMPLATFORM_API void ImPlatform_DestroyWindow(void)
 #if IMPLATFORM_APP_SUPPORT_DROP_FILE
 void ImPlatform_App_OnDropFileCallbackChanged(bool has_callback)
 {
-    SDL_SetEventEnabled(SDL_EVENT_DROP_FILE, has_callback);
+    for (Uint32 type = SDL_EVENT_DROP_FILE; type <= SDL_EVENT_DROP_POSITION; ++type)
+        SDL_SetEventEnabled(type, has_callback);
 }
 #endif // IMPLATFORM_APP_SUPPORT_DROP_FILE
+
+#if IMPLATFORM_APP_SUPPORT_WINDOW_STATE
+IMPLATFORM_API void ImPlatform_SetFullscreen(bool fullscreen)
+{
+    SDL_SetWindowFullscreen(g_AppData.pWindow, fullscreen);     // No mode was set: the desktop's, borderless
+}
+
+IMPLATFORM_API bool ImPlatform_IsFullscreen(void)
+{
+    return (SDL_GetWindowFlags(g_AppData.pWindow) & SDL_WINDOW_FULLSCREEN) != 0;
+}
+
+IMPLATFORM_API void ImPlatform_SetAlwaysOnTop(bool on_top)
+{
+    SDL_SetWindowAlwaysOnTop(g_AppData.pWindow, on_top);
+}
+
+IMPLATFORM_API bool ImPlatform_SetWindowIcon(const unsigned char* rgba, int width, int height)
+{
+    SDL_Surface* icon = rgba ? SDL_CreateSurfaceFrom(width, height, SDL_PIXELFORMAT_RGBA32, const_cast<unsigned char*>(rgba), width * 4) : NULL;
+    const bool ok = icon && SDL_SetWindowIcon(g_AppData.pWindow, icon);
+    SDL_DestroySurface(icon);
+    return ok;
+}
+#endif // IMPLATFORM_APP_SUPPORT_WINDOW_STATE
 
 #endif // IM_CURRENT_PLATFORM == IM_PLATFORM_SDL3

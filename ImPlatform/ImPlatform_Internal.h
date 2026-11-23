@@ -359,7 +359,11 @@ extern ImPlatform_BorderlessParams g_BorderlessParams;
 #endif
 
 #if IMPLATFORM_APP_SUPPORT_DROP_FILE
-void ImPlatform_NotifyFileDrop(const char* utf8_path, ImVec2 client_pos);
+// A drop event for the application's callbacks (utf8: the path of a File event, the text of a Text event).
+void ImPlatform_NotifyDrop(ImPlatform_DropEventType type, const char* utf8, ImVec2 client_pos);
+#if defined(IM_CURRENT_PLATFORM) && (IM_CURRENT_PLATFORM == IM_PLATFORM_WIN32)
+void* ImPlatform_Win32_GetDropTarget(void);     // The main window's IDropTarget
+#endif
 #endif
 
 // Called when the drop file callback is registered or cleared.
@@ -426,6 +430,11 @@ void ImPlatform_Pen_Leave(void);
 // Touch input (ImPlatform.h implementation), fed by platform backends: a finger in contact at a client-area position
 // (down), or lifted.
 void ImPlatform_Touch_Set(unsigned long long id, float x, float y, float pressure, bool down);
+// A pinch reported as a zoom factor, a turn in degrees clockwise (trackpads); ignored while fingers are in contact.
+void ImPlatform_Touch_Zoom(float factor);
+void ImPlatform_Touch_Rotate(float degrees);
+// ImPlatform_native.cpp: what the system libraries need between two frames. Called by ImPlatform_PlatformEvents.
+void ImPlatform_Native_Pump(void);
 
 #if defined(IM_CURRENT_GFX) && (IM_CURRENT_GFX == IM_GFX_DIRECTX11)
 bool ImPlatform_Gfx_CreateDevice_DX11(void* hWnd, struct ImPlatform_GfxData_DX11* pData);

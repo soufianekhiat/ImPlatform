@@ -38,8 +38,10 @@ static void glfw_drop_callback(GLFWwindow* window, int count, const char** paths
     double cx = 0.0, cy = 0.0;
     glfwGetCursorPos(window, &cx, &cy);
     ImVec2 pos((float)cx, (float)cy);
+    ImPlatform_NotifyDrop(ImPlatform_DropEvent_Begin, NULL, pos);
     for (int i = 0; i < count; ++i)
-        ImPlatform_NotifyFileDrop(paths[i], pos);
+        ImPlatform_NotifyDrop(ImPlatform_DropEvent_File, paths[i], pos);
+    ImPlatform_NotifyDrop(ImPlatform_DropEvent_End, NULL, pos);
 }
 #endif
 
@@ -194,6 +196,7 @@ IMPLATFORM_API bool ImPlatform_PlatformContinue(void)
 IMPLATFORM_API bool ImPlatform_PlatformEvents(void)
 {
     glfwPollEvents();
+    ImPlatform_Native_Pump();
 
 #ifndef __EMSCRIPTEN__
     // Handle minimize
@@ -206,8 +209,8 @@ IMPLATFORM_API bool ImPlatform_PlatformEvents(void)
 
 #if IMPLATFORM_APP_SUPPORT_CUSTOM_TITLEBAR && !defined(IM_THE_CHERNO_GLFW3)
     // Software move and resize of the borderless window (stock GLFW has no hit-testing; TheCherno's fork does): a press
-    // on a resize border or on the titlebar starts a drag that lasts until the button is released.
-    if (g_AppData.bCustomTitleBar)
+    // on a resize border or on the titlebar starts a drag that lasts until the button is released. Not in fullscreen.
+    if (g_AppData.bCustomTitleBar && !glfwGetWindowMonitor(g_AppData.pWindow))
     {
         GLFWwindow* window = g_AppData.pWindow;
         const bool down = glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
@@ -270,6 +273,61 @@ IMPLATFORM_API void ImPlatform_DestroyWindow(void)
     g_AppData.pWindow = NULL;
     glfwTerminate();
 }
+
+#if IMPLATFORM_APP_SUPPORT_WINDOW_STATE
+IMPLATFORM_API void ImPlatform_SetFullscreen(bool fullscreen)
+{
+    static int restore[4];      // The window's position and size before it went fullscreen
+    GLFWwindow* window = g_AppData.pWindow;
+    if (!window || fullscreen == ImPlatform_IsFullscreen())
+        return;
+    if (!fullscreen)
+    {
+        glfwSetWindowMonitor(window, NULL, restore[0], restore[1], restore[2], restore[3], 0);
+        return;
+    }
+    glfwGetWindowPos(window, &restore[0], &restore[1]);
+    glfwGetWindowSize(window, &restore[2], &restore[3]);
+    // The monitor that holds the window's center, at the mode it is in
+    const int cx = restore[0] + restore[2] / 2, cy = restore[1] + restore[3] / 2;
+    int count = 0;
+    GLFWmonitor** monitors = glfwGetMonitors(&count);
+    GLFWmonitor* monitor = glfwGetPrimaryMonitor();
+    for (int i = 0; i < count; ++i)
+    {
+        int mx = 0, my = 0;
+        glfwGetMonitorPos(monitors[i], &mx, &my);
+        const GLFWvidmode* mode = glfwGetVideoMode(monitors[i]);
+        if (mode && cx >= mx && cx < mx + mode->width && cy >= my && cy < my + mode->height)
+            monitor = monitors[i];
+    }
+    if (const GLFWvidmode* mode = monitor ? glfwGetVideoMode(monitor) : NULL)
+        glfwSetWindowMonitor(window, monitor, 0, 0, mode->width, mode->height, mode->refreshRate);
+}
+
+IMPLATFORM_API bool ImPlatform_IsFullscreen(void)
+{
+    return g_AppData.pWindow && glfwGetWindowMonitor(g_AppData.pWindow) != NULL;
+}
+
+IMPLATFORM_API void ImPlatform_SetAlwaysOnTop(bool on_top)
+{
+#if GLFW_VERSION_MAJOR > 3 || (GLFW_VERSION_MAJOR == 3 && GLFW_VERSION_MINOR >= 3)
+    glfwSetWindowAttrib(g_AppData.pWindow, GLFW_FLOATING, on_top ? GLFW_TRUE : GLFW_FALSE);
+#else
+    (void)on_top;   // GLFW 3.2 sets it at creation only
+#endif
+}
+
+IMPLATFORM_API bool ImPlatform_SetWindowIcon(const unsigned char* rgba, int width, int height)
+{
+    if (!g_AppData.pWindow || !rgba || width <= 0 || height <= 0)
+        return false;
+    const GLFWimage image = { width, height, const_cast<unsigned char*>(rgba) };
+    glfwSetWindowIcon(g_AppData.pWindow, 1, &image);
+    return true;
+}
+#endif // IMPLATFORM_APP_SUPPORT_WINDOW_STATE
 
 // Internal API - Get DPI scale
 float ImPlatform_App_GetDpiScale_GLFW(void)

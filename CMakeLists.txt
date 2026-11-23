@@ -129,6 +129,7 @@ set(IMPLATFORM_COMMON_SOURCES
     ${IMPLATFORM_DIR}/ImPlatform_titlebar.cpp
     ${IMPLATFORM_DIR}/ImPlatform_shader_parts.cpp
     ${IMPLATFORM_DIR}/ImPlatform_shader_common.cpp
+    ${IMPLATFORM_DIR}/ImPlatform_native.cpp
 )
 
 # Platform-specific sources
@@ -327,10 +328,13 @@ function(implatform_add_config TARGET_NAME PLATFORM GFX)
         find_library(COCOA_FRAMEWORK Cocoa REQUIRED)
         find_library(IOKIT_FRAMEWORK IOKit REQUIRED)
         find_library(COREVIDEO_FRAMEWORK CoreVideo REQUIRED)
+        # ImPlatform_native.cpp: the pasteboard, CoreGraphics and ImageIO
+        find_library(APPLICATIONSERVICES_FRAMEWORK ApplicationServices REQUIRED)
         target_link_libraries(${TARGET_NAME} PUBLIC
             ${COCOA_FRAMEWORK}
             ${IOKIT_FRAMEWORK}
             ${COREVIDEO_FRAMEWORK}
+            ${APPLICATIONSERVICES_FRAMEWORK}
         )
     endif()
 

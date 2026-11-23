@@ -24,14 +24,21 @@ without freezing the frame, and report their errors to the application. The full
   may be called every frame on Dynamic buffers: draws already recorded keep their content.
 - **Pen input on SDL3** (Windows, Linux, macOS), beside Win32.
 - **Touch input** on Win32, SDL2 and SDL3: the fingers in contact (`ImPlatform_GetTouchPoints()`) and their gesture,
-  pan, pinch zoom and rotation (`ImPlatform_ConsumeTouchGesture()`).
+  pan, pinch zoom and rotation (`ImPlatform_ConsumeTouchGesture()`), which also carries a trackpad's pinch.
+- **Drag and drop from other applications**: `ImPlatform_SetDropCallback()` reports a drag as it hovers (Win32, SDL3)
+  and what it drops: files, and text or URLs.
+- **Window state**: borderless fullscreen, always on top, window icon. **System theme**: the user's light or dark
+  mode. **Clipboard images** as RGBA pixels. The last two are taken from Windows, macOS and Linux themselves,
+  whatever the window library.
 - **Borderless window on stock GLFW**: moved and resized by its edges without TheCherno's fork.
 - **Win32 + Vulkan** is a built and tested configuration.
 
 ## Upgrading from 2.0.0
 
-- **Separately compiled sources**: add `ImPlatform/ImPlatform_shader_common.cpp` (applications that only define
-  `IMPLATFORM_IMPLEMENTATION` get it through `ImPlatform.h`). It uses `std::thread` on DirectX 10, 11 and 12.
+- **Separately compiled sources**: add `ImPlatform/ImPlatform_shader_common.cpp` and
+  `ImPlatform/ImPlatform_native.cpp` (applications that only define `IMPLATFORM_IMPLEMENTATION` get them through
+  `ImPlatform.h`). The first uses `std::thread` on DirectX 10, 11 and 12.
+- **macOS**: link the ApplicationServices framework.
 - **`IM_GFX_CUSTOM` backends** provide two more functions, `ImPlatform_GetShaderLog()` and
   `ImPlatform_SetShaderProgramBlend()`, and the group `IMPLATFORM_GFX_SUPPORT_ASYNC_COMPUTE` (three functions) unless
   they define it to 0.
@@ -49,7 +56,7 @@ without freezing the frame, and report their errors to the application. The full
 
 - The demo's self-tests, in addition to those of 2.0.0: `--blend-test`, `--shader-async-test`, `--compute-async-test`,
   `--screenshot-test`, `--screenshot-viewport-test`, `--buffer-update-test`, `--mesh-stream-test`, `--pen-test`
-  (synthetic SDL3 pen events), `--touch-test` (synthetic SDL finger events) and `--drag-rect-test`. They pass on Windows (Win32 with
+  (synthetic SDL3 pen events), `--touch-test` (synthetic SDL finger events), `--drop-test`, `--window-test`, `--clipboard-test` and `--drag-rect-test`. They pass on Windows (Win32 with
   DirectX 9, 10, 11, 12, OpenGL and Vulkan; GLFW with OpenGL and Vulkan) and on Linux with Mesa (GLFW, SDL2 and SDL3
   with OpenGL and Vulkan), where the backend has the feature.
 - CI builds every Windows, Linux and macOS configuration with both Sharpmake and CMake and runs the self-tests on
