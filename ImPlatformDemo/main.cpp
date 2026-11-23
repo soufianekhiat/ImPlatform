@@ -1515,10 +1515,12 @@ int main( int argc, char** argv )
 #endif
 
 		// Custom Title Bar (using Em-based sizing for DPI independence)
+		float grid_top = 0.0f;	// The window grid starts below the titlebar, which it would cover
 #if IMPLATFORM_APP_SUPPORT_CUSTOM_TITLEBAR
 		if ( ImPlatform_CustomTitleBarEnabled() )
 		{
 			float titleBarHeight = ImPlatform_EmSize(2.0f);
+			grid_top = titleBarHeight;
 			if ( ImPlatform_BeginCustomTitleBar( titleBarHeight ) )
 			{
 				ImGui::Text("ImPlatform Demo");
@@ -1541,10 +1543,10 @@ int main( int argc, char** argv )
 		// Calculate 2x2 grid layout to fill the display
 		ImVec2 display_size = io.DisplaySize;
 		float half_width = display_size.x * 0.5f;
-		float half_height = display_size.y * 0.5f;
+		float half_height = ( display_size.y - grid_top ) * 0.5f;
 
 		// Bottom-right: Dear ImGui Demo
-		ImGui::SetNextWindowPos(ImVec2(half_width, half_height), ImGuiCond_Always);
+		ImGui::SetNextWindowPos(ImVec2(half_width, grid_top + half_height), ImGuiCond_Always);
 		ImGui::SetNextWindowSize(ImVec2(half_width, half_height), ImGuiCond_Always);
 		bool show = true;
 		ImGui::ShowDemoWindow( &show );
@@ -1553,7 +1555,7 @@ int main( int argc, char** argv )
 #ifdef IMGUI_HAS_TEXTURES
 		if (img && img_white)
 		{
-			ImGui::SetNextWindowPos(ImVec2(half_width, 0), ImGuiCond_Always);
+			ImGui::SetNextWindowPos(ImVec2(half_width, grid_top), ImGuiCond_Always);
 			ImGui::SetNextWindowSize(ImVec2(half_width, half_height), ImGuiCond_Always);
 			ImGui::Begin("ImPlatform Texture API Demo", nullptr, ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove);
 			ImGui::Text("Checkerboard texture created with ImPlatform_CreateTexture:");
@@ -1580,7 +1582,7 @@ int main( int argc, char** argv )
 		// Custom Shader Demo Window 1: Arrow SDF Shape (Top-left)
 		if (arrow_program)
 		{
-			ImGui::SetNextWindowPos(ImVec2(0, 0), ImGuiCond_Always);
+			ImGui::SetNextWindowPos(ImVec2(0, grid_top), ImGuiCond_Always);
 			ImGui::SetNextWindowSize(ImVec2(half_width, half_height), ImGuiCond_Always);
 			ImGui::Begin("Custom Shader: Arrow SDF", nullptr, ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove);
 			ImGui::Text("This demonstrates a custom shader with SDF rendering.");
@@ -1603,7 +1605,7 @@ int main( int argc, char** argv )
 		// Custom Shader Demo Window 2: Linear Gradient (Bottom-left)
 		if (gradient_program && !shaderTest && !directDrawTest)		// The tests set their own constants
 		{
-			ImGui::SetNextWindowPos(ImVec2(0, half_height), ImGuiCond_Always);
+			ImGui::SetNextWindowPos(ImVec2(0, grid_top + half_height), ImGuiCond_Always);
 			ImGui::SetNextWindowSize(ImVec2(half_width, half_height), ImGuiCond_Always);
 			ImGui::Begin("Custom Shader: Linear Gradient", nullptr, ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove);
 			ImGui::Text("This demonstrates a custom shader with adjustable colors.");
@@ -1637,8 +1639,8 @@ int main( int argc, char** argv )
 		// Show a message when custom shaders are not supported
 		// Top-left and bottom-left combined
 		{
-			ImGui::SetNextWindowPos(ImVec2(0, 0), ImGuiCond_Always);
-			ImGui::SetNextWindowSize(ImVec2(half_width, display_size.y), ImGuiCond_Always);
+			ImGui::SetNextWindowPos(ImVec2(0, grid_top), ImGuiCond_Always);
+			ImGui::SetNextWindowSize(ImVec2(half_width, display_size.y - grid_top), ImGuiCond_Always);
 			ImGui::Begin("Custom Shader Support", nullptr, ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove);
 			ImGui::TextColored(ImVec4(1.0f, 0.5f, 0.0f, 1.0f), "Custom Shaders Not Supported");
 			ImGui::Separator();
