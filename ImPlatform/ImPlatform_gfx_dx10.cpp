@@ -317,7 +317,7 @@ IMPLATFORM_API void ImPlatform_PushPremultipliedAlpha(ImDrawList* draw)
         FLOAT factor[4];
         UINT mask;
         g_GfxData.pDevice->OMGetBlendState(&old, factor, &mask);      // Adds a reference.
-        if (g_BlendDepth < IM_ARRAYSIZE(g_BlendStack))
+        if (g_BlendDepth < IM_COUNTOF(g_BlendStack))
             g_BlendStack[g_BlendDepth++] = old;
         else if (old)
             old->Release();
@@ -1171,7 +1171,7 @@ IMPLATFORM_API bool ImPlatform_CreateVertexInputLayout(ImPlatform_VertexBuffer v
         D3D10_INPUT_ELEMENT_DESC& e = layout[i];
         e.SemanticName = attr.semantic_name;
         e.SemanticIndex = semantic_index;
-        e.Format = formats[(int)attr.format < IM_ARRAYSIZE(formats) ? (int)attr.format : 3];
+        e.Format = formats[(int)attr.format < IM_COUNTOF(formats) ? (int)attr.format : 3];
         e.InputSlot = 0;
         e.AlignedByteOffset = attr.offset;
         e.InputSlotClass = D3D10_INPUT_PER_VERTEX_DATA;

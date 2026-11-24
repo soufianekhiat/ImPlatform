@@ -814,7 +814,7 @@ IMPLATFORM_API ImTextureID ImPlatform_CreateRenderTexture(const ImPlatform_Textu
 
 IMPLATFORM_API bool ImPlatform_PushRenderTarget(ImTextureID texture, bool clear)
 {
-    if (!texture || !g_GfxData.pDeviceContext || g_TargetDepth >= IM_ARRAYSIZE(g_TargetStack))
+    if (!texture || !g_GfxData.pDeviceContext || g_TargetDepth >= IM_COUNTOF(g_TargetStack))
         return false;
 
     ID3D11ShaderResourceView* pSRV = (ID3D11ShaderResourceView*)texture;
@@ -933,7 +933,7 @@ IMPLATFORM_API void ImPlatform_PushPremultipliedAlpha(ImDrawList* draw)
         FLOAT factor[4];
         UINT mask;
         g_GfxData.pDeviceContext->OMGetBlendState(&old, factor, &mask);     // Adds a reference.
-        if (g_BlendDepth < IM_ARRAYSIZE(g_BlendStack))
+        if (g_BlendDepth < IM_COUNTOF(g_BlendStack))
             g_BlendStack[g_BlendDepth++] = old;
         else if (old)
             old->Release();

@@ -797,8 +797,8 @@ The library has been tested with the following configurations:
 - **WebGPU** - Basic testing (Emscripten + GLFW in Chrome)
 
 ### Dear ImGui Version
-- **Tested with**: Dear ImGui v1.92.x (docking branch)
-- **Minimum required**: Dear ImGui v1.92.x
+- **Tested with**: Dear ImGui v1.93.0 (docking branch)
+- **Minimum required**: Dear ImGui v1.92.8
 - **Recommended**: Use the latest docking branch for full multi-viewport support
 
 ## Known Limitations

@@ -723,7 +723,7 @@ IMPLATFORM_API void ImPlatform_PushPremultipliedAlpha(ImDrawList* draw)
 {
     (draw ? draw : ImGui::GetWindowDrawList())->AddCallback([](const ImDrawList*, const ImDrawCmd*)
     {
-        if (g_BlendDepth < IM_ARRAYSIZE(g_BlendStack))
+        if (g_BlendDepth < IM_COUNTOF(g_BlendStack))
         {
             GLint* saved = g_BlendStack[g_BlendDepth++];
             glGetIntegerv(GL_BLEND_SRC_RGB, &saved[0]);
@@ -1359,7 +1359,7 @@ IMPLATFORM_API ImTextureID ImPlatform_CreateRenderTexture(const ImPlatform_Textu
 IMPLATFORM_API bool ImPlatform_PushRenderTarget(ImTextureID texture, bool clear)
 {
     const ImPlatform_FboFns_GL* fbo = ImPlatform_GL_Fbo();
-    if (!texture || !fbo || g_TargetDepth >= IM_ARRAYSIZE(g_TargetStack))
+    if (!texture || !fbo || g_TargetDepth >= IM_COUNTOF(g_TargetStack))
         return false;
     GLuint tex = (GLuint)(intptr_t)texture;
     ImPlatform_RTTracking_GL* entry = g_RTTrackingHead;

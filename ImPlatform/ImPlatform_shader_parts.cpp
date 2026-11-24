@@ -267,7 +267,7 @@ static void ImPlatform_PartsMSL(ImGuiTextBuffer& out, const ImPlatform_ShaderPar
     // ImpContext holds what the bodies see (MSL has no derived classes): ProjMtx, the parameter values, and the arrays
     // as pointers into the buffer (not copied).
     ImPlatform_PartsDecl params[64];
-    const int param_count = has_params ? ImPlatform_ParseDecls(parts->params, params, IM_ARRAYSIZE(params)) : 0;
+    const int param_count = has_params ? ImPlatform_ParseDecls(parts->params, params, IM_COUNTOF(params)) : 0;
     out.append("struct ImpVertex { float4x4 ProjMtx; };\nstruct ImpParams {\n");
     for (int i = 0; i < param_count; i++)
         out.appendf("    %s%s;\n", strcmp(params[i].type, "float3") == 0 ? "packed_" : "", params[i].decl);
@@ -353,7 +353,7 @@ IMPLATFORM_API bool ImPlatform_ParseShaderParts(char* text, ImPlatform_ShaderPar
         if (strncmp(line, "//@", 3) == 0)
         {
             const size_t len = strcspn(line + 3, " \t\r\n");
-            for (int i = 0; i < IM_ARRAYSIZE(names); i++)
+            for (int i = 0; i < IM_COUNTOF(names); i++)
                 if (len == strlen(names[i]) && strncmp(line + 3, names[i], len) == 0)
                 {
                     *line = 0;      // Ends the previous section
@@ -400,9 +400,9 @@ IMPLATFORM_API int ImPlatform_GenerateShaderSource(const ImPlatform_ShaderParts*
     if (!parts || (stage != ImPlatform_ShaderStage_Vertex && stage != ImPlatform_ShaderStage_Fragment))
         return -1;
     ImPlatform_PartsDecl varyings[8];
-    const int varying_count = ImPlatform_ParseDecls(parts->varyings, varyings, IM_ARRAYSIZE(varyings));
+    const int varying_count = ImPlatform_ParseDecls(parts->varyings, varyings, IM_COUNTOF(varyings));
     ImPlatform_PartsDecl inputs[16];
-    const int input_count = ImPlatform_ParseDecls(parts->vertex_inputs, inputs, IM_ARRAYSIZE(inputs));
+    const int input_count = ImPlatform_ParseDecls(parts->vertex_inputs, inputs, IM_COUNTOF(inputs));
     for (int i = 0; i < input_count; i++)
         if (!inputs[i].semantic[0])
             snprintf(inputs[i].semantic, sizeof(inputs[i].semantic), "TEXCOORD%d", i);
