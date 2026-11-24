@@ -693,6 +693,7 @@ IMPLATFORM_API void ImPlatform_DestroyTexture(
 // (ImGuiPlatformIO::DrawCallback_SetSamplerLinear/Nearest): the filter is honored but the wrap mode stays clamp.
 // On DX12 the sampler is part of the pipeline: between ImPlatform_BeginCustomShader() and ImPlatform_EndCustomShader()
 // the program keeps its own (linear, clamped), and a sampler pushed there applies from the end of the scope.
+// A sampler pushed around a custom shader is still the one of the draws after ImPlatform_EndCustomShader().
 //
 // Example:
 //   ImPlatform_PushSampler(ImPlatform_TextureFilter_Nearest, ImPlatform_TextureWrap_Clamp);
@@ -700,6 +701,10 @@ IMPLATFORM_API void ImPlatform_DestroyTexture(
 //   ImPlatform_PopSampler();
 IMPLATFORM_API void ImPlatform_PushSampler(ImPlatform_TextureFilter filter, ImPlatform_TextureWrap wrap);
 IMPLATFORM_API void ImPlatform_PopSampler(void);
+// The same on a draw list (NULL: the current window's, as above): a render pass's list, a viewport's background list.
+// Push and pop on the same list. These two are the ones a graphics backend implements.
+IMPLATFORM_API void ImPlatform_PushSamplerEx(ImDrawList* draw, ImPlatform_TextureFilter filter, ImPlatform_TextureWrap wrap);
+IMPLATFORM_API void ImPlatform_PopSamplerEx(ImDrawList* draw);
 
 // ============================================================================
 // Custom Vertex/Index Buffer Management API
@@ -1097,7 +1102,9 @@ IMPLATFORM_API void ImPlatform_BeginCustomShader(
     ImDrawList* draw,
     ImPlatform_ShaderProgram shader
 );
-// Activate a custom shader immediately (for use inside draw callbacks)
+// Activate a custom shader immediately (for use inside draw callbacks), for the application's own draws
+// (ImPlatform_DrawIndexed). On DirectX 9 with Dear ImGui 1.93.1 and later, Dear ImGui's own draws take a program from
+// ImPlatform_BeginCustomShader() only: their pre-transformed vertices need the declaration it sets.
 IMPLATFORM_API void ImPlatform_BeginCustomShader_Render(ImPlatform_ShaderProgram program);
 
 // Upload per-draw-call shader constants and bind them for the next draw.
@@ -1942,6 +1949,20 @@ IMPLATFORM_API void ImPlatform_SetBorderlessParams(const ImPlatform_BorderlessPa
 #endif
 }
 #endif // IMPLATFORM_APP_SUPPORT_CUSTOM_TITLEBAR
+
+// ============================================================================
+// Sampler override on the current window's draw list
+// ============================================================================
+
+IMPLATFORM_API void ImPlatform_PushSampler(ImPlatform_TextureFilter filter, ImPlatform_TextureWrap wrap)
+{
+    ImPlatform_PushSamplerEx(NULL, filter, wrap);
+}
+
+IMPLATFORM_API void ImPlatform_PopSampler(void)
+{
+    ImPlatform_PopSamplerEx(NULL);
+}
 
 // ============================================================================
 // DPI Support Implementation

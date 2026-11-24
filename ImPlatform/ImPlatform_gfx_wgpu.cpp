@@ -1319,7 +1319,9 @@ IMPLATFORM_API void ImPlatform_PushPremultipliedAlpha(ImDrawList* draw)
 {
     if (!ImPlatform_PremultipliedPipeline())
         return;
-    (draw ? draw : ImGui::GetWindowDrawList())->AddCallback([](const ImDrawList*, const ImDrawCmd*)
+    ImDrawList* list = draw ? draw : ImGui::GetWindowDrawList();
+    ImPlatform_ScopePush(list, -1);
+    list->AddCallback([](const ImDrawList*, const ImDrawCmd*)
     {
         ImGui_ImplWGPU_RenderState* rs = (ImGui_ImplWGPU_RenderState*)ImGui::GetPlatformIO().Renderer_RenderState;
         if (rs && rs->RenderPassEncoder)
@@ -1329,8 +1331,11 @@ IMPLATFORM_API void ImPlatform_PushPremultipliedAlpha(ImDrawList* draw)
 
 IMPLATFORM_API void ImPlatform_PopPremultipliedAlpha(ImDrawList* draw)
 {
-    if (g_PremultipliedPipeline)
-        (draw ? draw : ImGui::GetWindowDrawList())->AddCallback(ImGui::GetPlatformIO().DrawCallback_ResetRenderState, NULL);
+    if (!g_PremultipliedPipeline)
+        return;
+    ImDrawList* list = draw ? draw : ImGui::GetWindowDrawList();
+    ImPlatform_ScopePop(list, false);
+    list->AddCallback(ImGui::GetPlatformIO().DrawCallback_ResetRenderState, NULL);
 }
 
 IMPLATFORM_API ImTextureID ImPlatform_CreateRenderTexture(const ImPlatform_TextureDesc* desc)
@@ -2528,7 +2533,7 @@ IMPLATFORM_API void ImPlatform_EndCustomShader(ImDrawList* draw)
 
     draw->AddCallback([](const ImDrawList*, const ImDrawCmd*) { g_BoundProgram = nullptr; }, NULL);
     draw->AddCallback(ImGui::GetPlatformIO().DrawCallback_ResetRenderState, NULL);
-    ImPlatform_ReapplySampler_StdCallbacks(draw);      // The reset set the linear sampler
+    ImPlatform_ScopesReapply(draw);     // The reset ended the sampler and premultiplied alpha scopes open here
 }
 
 // b1 for the draws that follow in this draw callback, and for Dear ImGui's draws after it until a program is bound again.
@@ -2579,14 +2584,14 @@ static WGPURenderPipeline ImPlatform_WGPU_LayoutPipeline(ImPlatform_ShaderProgra
 // which switches between its linear/nearest common bind groups.
 // Only the filter is honored: the wrap mode stays clamp.
 
-IMPLATFORM_API void ImPlatform_PushSampler(ImPlatform_TextureFilter filter, ImPlatform_TextureWrap /*wrap*/)
+IMPLATFORM_API void ImPlatform_PushSamplerEx(ImDrawList* draw, ImPlatform_TextureFilter filter, ImPlatform_TextureWrap wrap)
 {
-    ImPlatform_PushSampler_StdCallbacks(filter);
+    ImPlatform_PushSampler_StdCallbacks(draw, filter, wrap);
 }
 
-IMPLATFORM_API void ImPlatform_PopSampler(void)
+IMPLATFORM_API void ImPlatform_PopSamplerEx(ImDrawList* draw)
 {
-    ImPlatform_PopSampler_StdCallbacks();
+    ImPlatform_PopSampler_StdCallbacks(draw);
 }
 
 // shortcut: no render-target stack, current-target copy or immediate quad (IMPLATFORM_GFX_SUPPORT_RENDER_TARGETS). Dear ImGui's backend keeps drawing with

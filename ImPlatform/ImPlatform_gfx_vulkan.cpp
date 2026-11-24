@@ -1847,14 +1847,22 @@ static ImPlatform_ShaderProgram ImPlatform_UnpremultiplyProgram()
 
 IMPLATFORM_API void ImPlatform_PushPremultipliedAlpha(ImDrawList* draw)
 {
+    ImDrawList* list = draw ? draw : ImGui::GetWindowDrawList();
     if (ImPlatform_ShaderProgram program = ImPlatform_UnpremultiplyProgram())
-        ImPlatform_BeginCustomShader(draw ? draw : ImGui::GetWindowDrawList(), program);
+    {
+        ImPlatform_ScopePush(list, -1);
+        ImPlatform_BeginCustomShader(list, program);
+    }
 }
 
 IMPLATFORM_API void ImPlatform_PopPremultipliedAlpha(ImDrawList* draw)
 {
+    ImDrawList* list = draw ? draw : ImGui::GetWindowDrawList();
     if (g_UnpremultiplyProgram)
-        ImPlatform_EndCustomShader(draw ? draw : ImGui::GetWindowDrawList());
+    {
+        ImPlatform_ScopePop(list, false);       // Before the end, which sets again the scopes still open
+        ImPlatform_EndCustomShader(list);
+    }
 }
 
 static void ImPlatform_ReleaseRenderPasses()
@@ -3120,7 +3128,7 @@ IMPLATFORM_API void ImPlatform_EndCustomShader(ImDrawList* draw)
 
     draw->AddCallback([](const ImDrawList*, const ImDrawCmd*) { g_BoundShaderProgram = NULL; }, NULL);
     draw->AddCallback(ImGui::GetPlatformIO().DrawCallback_ResetRenderState, NULL);
-    ImPlatform_ReapplySampler_StdCallbacks(draw);      // The reset set the linear sampler
+    ImPlatform_ScopesReapply(draw);     // The reset ended the sampler and premultiplied alpha scopes open here
 }
 
 // b1 for the draws that follow in this draw callback, and for Dear ImGui's draws after it until a program is bound again
@@ -3151,14 +3159,14 @@ IMPLATFORM_API void ImPlatform_PopShaderConstants(void* handle)
 // which binds its own linear/nearest VK_DESCRIPTOR_TYPE_SAMPLER descriptor sets.
 // Only the filter is honored: the wrap mode stays clamp.
 
-IMPLATFORM_API void ImPlatform_PushSampler(ImPlatform_TextureFilter filter, ImPlatform_TextureWrap /*wrap*/)
+IMPLATFORM_API void ImPlatform_PushSamplerEx(ImDrawList* draw, ImPlatform_TextureFilter filter, ImPlatform_TextureWrap wrap)
 {
-    ImPlatform_PushSampler_StdCallbacks(filter);
+    ImPlatform_PushSampler_StdCallbacks(draw, filter, wrap);
 }
 
-IMPLATFORM_API void ImPlatform_PopSampler(void)
+IMPLATFORM_API void ImPlatform_PopSamplerEx(ImDrawList* draw)
 {
-    ImPlatform_PopSampler_StdCallbacks();
+    ImPlatform_PopSampler_StdCallbacks(draw);
 }
 
 // ============================================================================

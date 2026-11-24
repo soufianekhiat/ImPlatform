@@ -303,9 +303,11 @@ IMPLATFORM_API bool ImPlatform_GfxAPISwapBuffer(void)
 }
 
 // ImPlatform API - ShutdownGfxAPI
+static void ImP9_ReleaseImGuiDeclaration();
 IMPLATFORM_API void ImPlatform_ShutdownGfxAPI(void)
 {
     ImPlatform_DX9_ReleaseStreamBuffers();
+    ImP9_ReleaseImGuiDeclaration();
 }
 
 // ImPlatform API - ShutdownWindow
@@ -666,7 +668,9 @@ static int   g_BlendDepth = 0;
 
 IMPLATFORM_API void ImPlatform_PushPremultipliedAlpha(ImDrawList* draw)
 {
-    (draw ? draw : ImGui::GetWindowDrawList())->AddCallback([](const ImDrawList*, const ImDrawCmd*)
+    ImDrawList* list = draw ? draw : ImGui::GetWindowDrawList();
+    ImPlatform_ScopePush(list, -1);
+    list->AddCallback([](const ImDrawList*, const ImDrawCmd*)
     {
         DWORD src = D3DBLEND_SRCALPHA;
         g_GfxData.pDevice->GetRenderState(D3DRS_SRCBLEND, &src);
@@ -678,7 +682,9 @@ IMPLATFORM_API void ImPlatform_PushPremultipliedAlpha(ImDrawList* draw)
 
 IMPLATFORM_API void ImPlatform_PopPremultipliedAlpha(ImDrawList* draw)
 {
-    (draw ? draw : ImGui::GetWindowDrawList())->AddCallback([](const ImDrawList*, const ImDrawCmd*)
+    ImDrawList* list = draw ? draw : ImGui::GetWindowDrawList();
+    ImPlatform_ScopePop(list, false);
+    list->AddCallback([](const ImDrawList*, const ImDrawCmd*)
     {
         if (g_BlendDepth > 0)
             g_GfxData.pDevice->SetRenderState(D3DRS_SRCBLEND, g_BlendStack[--g_BlendDepth]);
@@ -748,11 +754,13 @@ IMPLATFORM_API void ImPlatform_DestroyTexture(ImTextureID texture_id)
     pTexture->Release();
 }
 
-IMPLATFORM_API void ImPlatform_PushSampler(ImPlatform_TextureFilter filter, ImPlatform_TextureWrap wrap)
+IMPLATFORM_API void ImPlatform_PushSamplerEx(ImDrawList* draw, ImPlatform_TextureFilter filter, ImPlatform_TextureWrap wrap)
 {
     // Encode filter+wrap as a small int passed through UserCallbackData
     uintptr_t encoded = (uintptr_t)(((int)filter << 8) | (int)wrap);
-    ImGui::GetWindowDrawList()->AddCallback(
+    ImDrawList* list = draw ? draw : ImGui::GetWindowDrawList();
+    ImPlatform_ScopePush(list, ((int)filter << 8) | (int)wrap);
+    list->AddCallback(
         [](const ImDrawList*, const ImDrawCmd* cmd) {
             if (!g_GfxData.pDevice) return;
             // Save current state
@@ -780,9 +788,11 @@ IMPLATFORM_API void ImPlatform_PushSampler(ImPlatform_TextureFilter filter, ImPl
         }, (void*)encoded);
 }
 
-IMPLATFORM_API void ImPlatform_PopSampler(void)
+IMPLATFORM_API void ImPlatform_PopSamplerEx(ImDrawList* draw)
 {
-    ImGui::GetWindowDrawList()->AddCallback(
+    ImDrawList* list = draw ? draw : ImGui::GetWindowDrawList();
+    ImPlatform_ScopePop(list, true);
+    list->AddCallback(
         [](const ImDrawList*, const ImDrawCmd*) {
             if (!g_GfxData.pDevice || g_SamplerDepth <= 0) return;
             const auto& e = g_SamplerStack[--g_SamplerDepth];
@@ -980,6 +990,7 @@ IMPLATFORM_API bool ImPlatform_UpdateVertexBuffer(ImPlatform_VertexBuffer vertex
 // recorded here, and DrawIndexed binds them for its draw and restores the previous ones.
 static ImPlatform_BufferData_DX9* g_P9_VB = NULL;
 static ImPlatform_BufferData_DX9* g_P9_IB = NULL;
+static void ImP9_Reproject(bool own_vertices);
 
 IMPLATFORM_API void ImPlatform_DestroyVertexBuffer(ImPlatform_VertexBuffer vertex_buffer)
 {
@@ -1088,6 +1099,7 @@ IMPLATFORM_API void ImPlatform_DrawIndexed(unsigned int primitive_type, unsigned
     if (!g_P9_VB || !g_P9_IB)
         return;
     LPDIRECT3DDEVICE9 dev = g_GfxData.pDevice;
+    ImP9_Reproject(true);
     IDirect3DVertexBuffer9* prev_vb = NULL;
     UINT prev_offset = 0, prev_stride = 0;
     IDirect3DIndexBuffer9* prev_ib = NULL;
@@ -1114,6 +1126,7 @@ IMPLATFORM_API void ImPlatform_DrawIndexed(unsigned int primitive_type, unsigned
     if (prev_vb) prev_vb->Release();
     if (prev_ib) prev_ib->Release();
     if (prev_decl) prev_decl->Release();
+    ImP9_Reproject(false);
 }
 
 // ============================================================================
@@ -1160,6 +1173,24 @@ struct ImP9_PushedConstants
 static ImP9_PushedConstants* g_P9_Pushed = NULL;
 static ImPlatform_ShaderProgramData_DX9* g_P9_Bound = NULL;     // Program bound by the last draw callback or direct draw
 static D3DMATRIX g_P9_BoundProjection = {};
+// Since Dear ImGui 1.93.1 its DX9 backend sends pre-transformed vertices (D3DFVF_XYZRHW), which Direct3D gives to no
+// vertex shader. A program bound for Dear ImGui's draws (ImPlatform_BeginCustomShader) declares them as plain positions
+// instead: they are in the target's pixels, moved half a pixel, so its projection has the translation of that space,
+// while the vertex buffers of the application stay in Dear ImGui's coordinates and take the projection the backend set
+// (ImP9_Reproject). ImPlatform_EndCustomShader puts Dear ImGui's format back: its reset callback does not set it.
+// A program bound with ImPlatform_BeginCustomShader_Render or ImPlatform_UseShaderProgram is for the application's
+// own draws: the format is left alone, and Dear ImGui's draws would not run its vertex shader.
+static IDirect3DVertexDeclaration9* g_P9_ImGuiDeclaration = NULL;
+static DWORD g_P9_ImGuiFVF = 0;                 // Dear ImGui's format while the declaration stands in for it
+static bool g_P9_Pretransformed = false;        // The bound program has the projection of the pre-transformed vertices
+static D3DMATRIX g_P9_TargetProjection = {};    // D3DTS_PROJECTION when it was bound
+
+static void ImP9_ReleaseImGuiDeclaration()
+{
+    if (g_P9_ImGuiDeclaration)
+        g_P9_ImGuiDeclaration->Release();
+    g_P9_ImGuiDeclaration = NULL;
+}
 
 // The constant table of shader model 3 bytecode (D3DXSHADER_CONSTANTTABLE / D3DXSHADER_CONSTANTINFO, d3dx9shader.h).
 struct ImP9_CTab { DWORD Size, Creator, Version, Constants, ConstantInfo, Flags, Target; };
@@ -1404,6 +1435,18 @@ static void ImP9_BindProgram(ImPlatform_ShaderProgramData_DX9* pd, const D3DMATR
     }
     g_P9_Bound = pd;
     g_P9_BoundProjection = projection;
+    g_P9_Pretransformed = false;
+}
+
+// b0 of the bound program for the application's vertices (Dear ImGui's coordinates), or back for Dear ImGui's
+static void ImP9_Reproject(bool own_vertices)
+{
+    if (!g_P9_Bound || !g_P9_Pretransformed)
+        return;
+    const D3DMATRIX& projection = own_vertices ? g_P9_TargetProjection : g_P9_BoundProjection;
+    const ImVector<unsigned char>& params = g_P9_Pushed ? g_P9_Pushed->data : g_P9_Bound->params;
+    ImP9_UploadConstants(g_P9_Bound->vs, projection, params);
+    ImP9_UploadConstants(g_P9_Bound->ps, projection, params);
 }
 
 // Render states set when the program is bound; Dear ImGui's reset callback restores its own.
@@ -1413,14 +1456,51 @@ IMPLATFORM_API bool ImPlatform_SetShaderProgramBlend(ImPlatform_ShaderProgram pr
     return pd && ImPlatform_BlendKey(blend, &pd->blend);
 }
 
-IMPLATFORM_API void ImPlatform_UseShaderProgram(ImPlatform_ShaderProgram program)
+// imgui_draws: bound for the draws of Dear ImGui that follow (a draw list's custom shader scope)
+static void ImP9_UseProgram(ImPlatform_ShaderProgramData_DX9* pd, bool imgui_draws)
 {
-    ImPlatform_ShaderProgramData_DX9* pd = (ImPlatform_ShaderProgramData_DX9*)program;
     if (!pd || !g_GfxData.pDevice)
         return;
+    LPDIRECT3DDEVICE9 dev = g_GfxData.pDevice;
     D3DMATRIX projection;
-    g_GfxData.pDevice->GetTransform(D3DTS_PROJECTION, &projection);    // Set by Dear ImGui's DX9 backend for the target
+    dev->GetTransform(D3DTS_PROJECTION, &projection);      // Set by Dear ImGui's DX9 backend for the target
+    const D3DMATRIX target_projection = projection;
+
+    // Pre-transformed vertices: Dear ImGui's format, or the declaration an earlier bind replaced it with
+    DWORD fvf = 0;
+    IDirect3DVertexDeclaration9* declaration = NULL;
+    dev->GetFVF(&fvf);
+    dev->GetVertexDeclaration(&declaration);
+    const bool replaced = declaration && declaration == g_P9_ImGuiDeclaration;
+    const bool pretransformed = imgui_draws && ((fvf & D3DFVF_POSITION_MASK) == D3DFVF_XYZRHW || replaced);
+    if (declaration)
+        declaration->Release();
+    if (pretransformed)
+    {
+        if (!replaced)
+            g_P9_ImGuiFVF = fvf;
+        if (!g_P9_ImGuiDeclaration)
+        {
+            const D3DVERTEXELEMENT9 elements[] = {
+                { 0, 0,  D3DDECLTYPE_FLOAT4,   D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_POSITION, 0 },
+                { 0, 16, D3DDECLTYPE_D3DCOLOR, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_COLOR,    0 },
+                { 0, 20, D3DDECLTYPE_FLOAT2,   D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_TEXCOORD, 0 },
+                D3DDECL_END() };
+            dev->CreateVertexDeclaration(elements, &g_P9_ImGuiDeclaration);
+        }
+        if (g_P9_ImGuiDeclaration)
+            dev->SetVertexDeclaration(g_P9_ImGuiDeclaration);
+        projection._41 = -1.0f;     // (0, 0) of the target at the top left of clip space
+        projection._42 = 1.0f;
+    }
     ImP9_BindProgram(pd, projection, false);
+    g_P9_Pretransformed = pretransformed;
+    g_P9_TargetProjection = target_projection;
+}
+
+IMPLATFORM_API void ImPlatform_UseShaderProgram(ImPlatform_ShaderProgram program)
+{
+    ImP9_UseProgram((ImPlatform_ShaderProgramData_DX9*)program, false);
 }
 
 IMPLATFORM_API bool ImPlatform_SetShaderUniform(ImPlatform_ShaderProgram program, const char* /*name*/, const void* data, unsigned int size)
@@ -1512,7 +1592,7 @@ IMPLATFORM_API void ImPlatform_EndUniformBlock(ImPlatform_ShaderProgram program)
 // ImDrawCallback handler to activate a custom shader; Dear ImGui's DrawCallback_ResetRenderState unbinds it.
 static void ImPlatform_SetCustomShader(const ImDrawList* /*parent_list*/, const ImDrawCmd* cmd)
 {
-    ImPlatform_UseShaderProgram((ImPlatform_ShaderProgram)cmd->UserCallbackData);
+    ImP9_UseProgram((ImPlatform_ShaderProgramData_DX9*)cmd->UserCallbackData, true);
 }
 
 // Activate a custom shader immediately (for use inside draw callbacks).
@@ -1539,9 +1619,15 @@ IMPLATFORM_API void ImPlatform_EndCustomShader(ImDrawList* draw)
     {
         g_P9_Bound = NULL;      // Unbound by the reset
         if (g_GfxData.pDevice)
+        {
             g_GfxData.pDevice->SetRenderState(D3DRS_BLENDOPALPHA, D3DBLENDOP_ADD);     // Not part of Dear ImGui's reset
+            if (g_P9_ImGuiFVF)
+                g_GfxData.pDevice->SetFVF(g_P9_ImGuiFVF);       // Nor is its vertex format
+        }
+        g_P9_ImGuiFVF = 0;
     }, NULL);
     draw->AddCallback(ImGui::GetPlatformIO().DrawCallback_ResetRenderState, NULL);
+    ImPlatform_ScopesReapply(draw);     // The reset ended the sampler and premultiplied alpha scopes open here
 }
 
 // b1 of the direct draws (and of the bound program) until popped.
@@ -1691,16 +1777,26 @@ IMPLATFORM_API void ImPlatform_DrawQuadNow(ImPlatform_ShaderProgram program, ImV
         { { dst_rect.z, dst_rect.w, 0.0f }, 0xFFFFFFFF, { uv_rect.z, uv_rect.w } },
         { { dst_rect.x, dst_rect.w, 0.0f }, 0xFFFFFFFF, { uv_rect.x, uv_rect.w } },
     };
-    // DrawPrimitiveUP leaves stream 0 unbound, and Dear ImGui binds its vertex buffer once per draw data, not in the
-    // render state its reset callback sets: it is put back here.
+    // DrawPrimitiveUP leaves stream 0 unbound, and Dear ImGui sets its vertex buffer and its vertex format once per
+    // draw data, not in the render state its reset callback sets: they are put back here.
     IDirect3DVertexBuffer9* vb = NULL;
     UINT vb_offset = 0, vb_stride = 0;
+    IDirect3DVertexDeclaration9* declaration = NULL;
+    DWORD fvf = 0;
     g_GfxData.pDevice->GetStreamSource(0, &vb, &vb_offset, &vb_stride);
+    g_GfxData.pDevice->GetVertexDeclaration(&declaration);
+    g_GfxData.pDevice->GetFVF(&fvf);
     g_GfxData.pDevice->SetFVF(D3DFVF_XYZ | D3DFVF_DIFFUSE | D3DFVF_TEX1);
     g_GfxData.pDevice->DrawPrimitiveUP(D3DPT_TRIANGLEFAN, 2, quad, sizeof(Vertex));
     g_GfxData.pDevice->SetStreamSource(0, vb, vb_offset, vb_stride);
+    if (fvf)
+        g_GfxData.pDevice->SetFVF(fvf);
+    else
+        g_GfxData.pDevice->SetVertexDeclaration(declaration);
     if (vb)
         vb->Release();
+    if (declaration)
+        declaration->Release();
 }
 
 #endif // IM_GFX_DIRECTX9

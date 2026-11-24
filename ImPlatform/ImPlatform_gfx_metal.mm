@@ -1565,7 +1565,9 @@ IMPLATFORM_API void ImPlatform_PushPremultipliedAlpha(ImDrawList* draw)
 {
     if (!ImPlatform_PremultipliedPipeline())
         return;
-    (draw ? draw : ImGui::GetWindowDrawList())->AddCallback([](const ImDrawList*, const ImDrawCmd*)
+    ImDrawList* list = draw ? draw : ImGui::GetWindowDrawList();
+    ImPlatform_ScopePush(list, -1);
+    list->AddCallback([](const ImDrawList*, const ImDrawCmd*)
     {
         id<MTLRenderCommandEncoder> encoder = (__bridge id<MTLRenderCommandEncoder>)g_CurrentRenderEncoder;
         if (encoder)
@@ -1575,8 +1577,11 @@ IMPLATFORM_API void ImPlatform_PushPremultipliedAlpha(ImDrawList* draw)
 
 IMPLATFORM_API void ImPlatform_PopPremultipliedAlpha(ImDrawList* draw)
 {
-    if (g_PremultipliedPipeline)
-        (draw ? draw : ImGui::GetWindowDrawList())->AddCallback(ImGui::GetPlatformIO().DrawCallback_ResetRenderState, NULL);
+    if (!g_PremultipliedPipeline)
+        return;
+    ImDrawList* list = draw ? draw : ImGui::GetWindowDrawList();
+    ImPlatform_ScopePop(list, false);
+    list->AddCallback(ImGui::GetPlatformIO().DrawCallback_ResetRenderState, NULL);
 }
 
 static void ImPlatform_RenderDrawDataWrapper(ImDrawData* draw_data, id<MTLCommandBuffer> commandBuffer, id<MTLRenderCommandEncoder> renderEncoder)
@@ -1665,6 +1670,7 @@ IMPLATFORM_API void ImPlatform_EndCustomShader(ImDrawList* draw)
 
     draw->AddCallback([](const ImDrawList*, const ImDrawCmd*) { g_MetalBoundProgram = nullptr; }, NULL);   // Unbound by the reset
     draw->AddCallback(ImGui::GetPlatformIO().DrawCallback_ResetRenderState, NULL);
+    ImPlatform_ScopesReapply(draw);     // The reset ended the sampler and premultiplied alpha scopes open here
 }
 
 // ============================================================================
@@ -1924,10 +1930,12 @@ IMPLATFORM_API void ImPlatform_DrawIndexed(unsigned int primitive_type, unsigned
 // Sampler Override API - Metal
 // ============================================================================
 
-IMPLATFORM_API void ImPlatform_PushSampler(ImPlatform_TextureFilter filter, ImPlatform_TextureWrap wrap)
+IMPLATFORM_API void ImPlatform_PushSamplerEx(ImDrawList* draw, ImPlatform_TextureFilter filter, ImPlatform_TextureWrap wrap)
 {
     uintptr_t encoded = (uintptr_t)(((int)filter << 8) | (int)wrap);
-    ImGui::GetWindowDrawList()->AddCallback(
+    ImDrawList* list = draw ? draw : ImGui::GetWindowDrawList();
+    ImPlatform_ScopePush(list, ((int)filter << 8) | (int)wrap);
+    list->AddCallback(
         [](const ImDrawList*, const ImDrawCmd* cmd) {
             @autoreleasepool {
                 id<MTLRenderCommandEncoder> encoder = (__bridge id<MTLRenderCommandEncoder>)g_CurrentRenderEncoder;
@@ -1945,9 +1953,11 @@ IMPLATFORM_API void ImPlatform_PushSampler(ImPlatform_TextureFilter filter, ImPl
         }, (void*)encoded);
 }
 
-IMPLATFORM_API void ImPlatform_PopSampler(void)
+IMPLATFORM_API void ImPlatform_PopSamplerEx(ImDrawList* draw)
 {
-    ImGui::GetWindowDrawList()->AddCallback(
+    ImDrawList* list = draw ? draw : ImGui::GetWindowDrawList();
+    ImPlatform_ScopePop(list, true);
+    list->AddCallback(
         [](const ImDrawList*, const ImDrawCmd*) {
             @autoreleasepool {
                 id<MTLRenderCommandEncoder> encoder = (__bridge id<MTLRenderCommandEncoder>)g_CurrentRenderEncoder;

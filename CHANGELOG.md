@@ -33,6 +33,9 @@ Changes since 2.0.0 (the `v2` branch), in progress on the `v3` branch.
   windows. It has the system's titlebar: the custom titlebar, file drop and window state calls are not declared
   there. The file is Objective-C++ with ARC and needs the GameController framework. `ImPlatform_app_apple.mm` was
   an unfinished file that no configuration built.
+- **Samplers on any draw list**: `ImPlatform_PushSamplerEx()` / `ImPlatform_PopSamplerEx()` take the draw list, so a
+  render pass's list can change its sampler (`ImPlatform_PushSampler()` reaches the current window's only). Demo
+  `--sampler-test`: nearest and linear rows read back, on every backend with readback.
 - **Touch input** (Win32 pointer messages, SDL2 and SDL3 finger events; main window): `ImPlatform_SupportsTouch()`,
   `ImPlatform_GetTouchPoints()` gives the fingers in contact, `ImPlatform_ConsumeTouchGesture()` what they did since
   the previous call: pan, pinch zoom and rotation, computed from the finger positions the same way on every platform.
@@ -86,8 +89,19 @@ Changes since 2.0.0 (the `v2` branch), in progress on the `v3` branch.
   another buffer too. On DirectX 10 and 11 Dynamic buffers are updated by `UpdateSubresource`, on
   DirectX 9 they are not dynamic buffers: a partial update is ordered with the draws as a whole one is. Demo
   `--buffer-update-test`, `--mesh-stream-test`.
-- **Dear ImGui 1.93.0** (docking) is the version of the `imgui` submodule. ImPlatform needs 1.92.8 or later: it uses
-  `ImGui::GetPlatformIO().DrawCallback_ResetRenderState` and `IM_COUNTOF`.
+- **Dear ImGui's docking branch after 1.93.0** (1.93.1 WIP, on the way to 1.94) is the version of the `imgui`
+  submodule. ImPlatform needs 1.92.8 or later: it uses `ImGui::GetPlatformIO().DrawCallback_ResetRenderState` and
+  `IM_COUNTOF`.
+- DirectX 9 with Dear ImGui 1.93.1 and later, whose backend sends pre-transformed vertices that Direct3D gives to no
+  vertex shader: a program of `ImPlatform_BeginCustomShader()` declares them as plain positions, in the pixels of the
+  target, and `ImPlatform_EndCustomShader()` puts Dear ImGui's format back. A program bound with
+  `ImPlatform_BeginCustomShader_Render()` or `ImPlatform_UseShaderProgram()` is for the application's own draws there:
+  Dear ImGui's draws would not run its vertex shader. The vertex format of both versions is handled.
+- DirectX 12: the waits on the frame's fence and on the swap chain end when the device is lost, as in Dear ImGui's
+  example, instead of blocking forever.
+- **`ImPlatform_PushSampler()` / `ImPlatform_PopSampler()` are implemented once**, on
+  `ImPlatform_PushSamplerEx()` / `ImPlatform_PopSamplerEx()`: an `IM_GFX_CUSTOM` application provides those two
+  instead (the same functions with the draw list as first argument, NULL for the current window's).
 - **DirectX 9 creates a Direct3D 9Ex device**: a reset (every resize of the window) keeps the textures, render textures
   and buffers. Direct3D 9Ex has no managed pool: ImPlatform's textures and buffers are in the default pool, and what an
   application creates itself on `ImPlatform_GfxData_DX9::pDevice` must be too.
@@ -111,7 +125,8 @@ Changes since 2.0.0 (the `v2` branch), in progress on the `v3` branch.
   "no GPU" while the device was never created.
 - DirectX 9: resizing the window while a render texture existed failed the device reset (an assertion in debug
   builds). A render texture larger than the window can be drawn into (the window's depth buffer is unbound meanwhile).
-  `ImPlatform_DrawQuadNow()` left the vertex stream unbound, which dropped the rest of the frame's interface.
+  `ImPlatform_DrawQuadNow()` left the vertex stream unbound, which dropped the rest of the frame's interface; it also
+  puts back the vertex format, which Dear ImGui sets once per draw data.
 - DirectX 12: `ImPlatform_ShutdownWindow()` forgets the viewport render callback it wrapped, so the device can be
   initialized again.
 - The DPI callback on GLFW reports the scale Dear ImGui's backend uses (1 on macOS and Wayland, where the framebuffer
@@ -119,6 +134,10 @@ Changes since 2.0.0 (the `v2` branch), in progress on the `v3` branch.
   SDL3 it is now called when the window moves to a display of another scale.
 - Custom titlebar: the main viewport's work area is shortened by the titlebar's height; it only moved down, so a
   window fitted to the work area ran past the bottom of the window.
+- `ImPlatform_EndCustomShader()` no longer ends the sampler and the premultiplied alpha scopes it is inside of: its
+  reset of the render state went back to the linear sampler and to straight alpha blending for the draws that followed,
+  on every backend. The scopes open on a draw list are recorded as it is built, and the end of a custom shader sets
+  the innermost of each again.
 - Vulkan: the pipelines of a custom shader program are kept per target format instead of per render pass. Every
   resize of the window and every render texture has a render pass of its own, so the pipelines added up, and one could
   be matched to a new render pass that reused the handle of a destroyed one.
@@ -132,8 +151,6 @@ Changes since 2.0.0 (the `v2` branch), in progress on the `v3` branch.
 - DirectX 12: `ImPlatform_PushSampler()` / `ImPlatform_PopSampler()` between `ImPlatform_BeginCustomShader()` and
   `ImPlatform_EndCustomShader()` bound Dear ImGui's pipeline in place of the program's. The program keeps its sampler,
   and the pushed one applies from the end of the scope.
-- DirectX 12, Vulkan, WebGPU: `ImPlatform_EndCustomShader()` sets the pushed sampler again; its reset of the render
-  state went back to the linear one.
 - DirectX 9: `ImPlatform_GfxAPIRender()` draws nothing when the frame's `BeginScene` failed; it read draw data that
   was not rendered.
 - `ImPlatform.h` says what the filter and wrap members of `ImPlatform_TextureDesc` apply to: not to `ImGui::Image()`,

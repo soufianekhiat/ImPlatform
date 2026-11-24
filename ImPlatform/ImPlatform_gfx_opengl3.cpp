@@ -723,7 +723,9 @@ static int   g_BlendDepth = 0;
 
 IMPLATFORM_API void ImPlatform_PushPremultipliedAlpha(ImDrawList* draw)
 {
-    (draw ? draw : ImGui::GetWindowDrawList())->AddCallback([](const ImDrawList*, const ImDrawCmd*)
+    ImDrawList* list = draw ? draw : ImGui::GetWindowDrawList();
+    ImPlatform_ScopePush(list, -1);
+    list->AddCallback([](const ImDrawList*, const ImDrawCmd*)
     {
         if (g_BlendDepth < IM_COUNTOF(g_BlendStack))
         {
@@ -739,7 +741,9 @@ IMPLATFORM_API void ImPlatform_PushPremultipliedAlpha(ImDrawList* draw)
 
 IMPLATFORM_API void ImPlatform_PopPremultipliedAlpha(ImDrawList* draw)
 {
-    (draw ? draw : ImGui::GetWindowDrawList())->AddCallback([](const ImDrawList*, const ImDrawCmd*)
+    ImDrawList* list = draw ? draw : ImGui::GetWindowDrawList();
+    ImPlatform_ScopePop(list, false);
+    list->AddCallback([](const ImDrawList*, const ImDrawCmd*)
     {
         if (g_BlendDepth <= 0)
             return;
@@ -2581,6 +2585,7 @@ IMPLATFORM_API void ImPlatform_EndCustomShader(ImDrawList* draw)
         return;
 
     draw->AddCallback(ImGui::GetPlatformIO().DrawCallback_ResetRenderState, NULL);
+    ImPlatform_ScopesReapply(draw);     // The reset ended the sampler and premultiplied alpha scopes open here
 }
 
 // ------------------- Readback and compute (GL 4.3 for compute) -------------------
@@ -2932,10 +2937,12 @@ IMPLATFORM_API void ImPlatform_PopShaderConstants(void* handle)
 // Sampler Override API - OpenGL3
 // ============================================================================
 
-IMPLATFORM_API void ImPlatform_PushSampler(ImPlatform_TextureFilter filter, ImPlatform_TextureWrap wrap)
+IMPLATFORM_API void ImPlatform_PushSamplerEx(ImDrawList* draw, ImPlatform_TextureFilter filter, ImPlatform_TextureWrap wrap)
 {
     uintptr_t encoded = (uintptr_t)(((int)filter << 8) | (int)wrap);
-    ImGui::GetWindowDrawList()->AddCallback(
+    ImDrawList* list = draw ? draw : ImGui::GetWindowDrawList();
+    ImPlatform_ScopePush(list, ((int)filter << 8) | (int)wrap);
+    list->AddCallback(
         [](const ImDrawList*, const ImDrawCmd* cmd) {
             if (!glBindSampler_Ptr || !glGenSamplers_Ptr) return;
             // Save current binding onto the stack
@@ -2953,9 +2960,11 @@ IMPLATFORM_API void ImPlatform_PushSampler(ImPlatform_TextureFilter filter, ImPl
         }, (void*)encoded);
 }
 
-IMPLATFORM_API void ImPlatform_PopSampler(void)
+IMPLATFORM_API void ImPlatform_PopSamplerEx(ImDrawList* draw)
 {
-    ImGui::GetWindowDrawList()->AddCallback(
+    ImDrawList* list = draw ? draw : ImGui::GetWindowDrawList();
+    ImPlatform_ScopePop(list, true);
+    list->AddCallback(
         [](const ImDrawList*, const ImDrawCmd*) {
             if (!glBindSampler_Ptr || g_SamplerDepth <= 0) return;
             glBindSampler_Ptr(0, g_SamplerStack[--g_SamplerDepth]);

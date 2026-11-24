@@ -154,15 +154,32 @@ static void CreateRenderTarget()
     }
 }
 
+// Waits for every handle, without waiting forever on a lost device (same as upstream example_win32_directx12): a
+// removed device never signals its fence or the swap chain's waitable object again. False: the device is lost, or the
+// wait failed.
+static bool ImP12_WaitForObjects(HANDLE* handles, UINT count)
+{
+    for (;;)
+    {
+        const DWORD result = ::WaitForMultipleObjects(count, handles, TRUE, 1000);     // A wait that times out consumes no signal
+        if (result != WAIT_TIMEOUT)
+            return result != WAIT_FAILED;
+        if (!g_GfxData.pDevice || FAILED(g_GfxData.pDevice->GetDeviceRemovedReason()))
+            return false;
+    }
+}
+
 // Wait for all command lists submitted to the queue so far to complete (same as upstream example_win32_directx12)
 static void WaitForPendingOperations()
 {
     if (!g_GfxData.pCommandQueue || !g_GfxData.pFence || !g_GfxData.hFenceEvent)
         return; // Device creation failed half-way
-    g_GfxData.pCommandQueue->Signal(g_GfxData.pFence, ++g_GfxData.uFenceLastSignaledValue);
+    if (FAILED(g_GfxData.pCommandQueue->Signal(g_GfxData.pFence, ++g_GfxData.uFenceLastSignaledValue)))
+        return; // Device lost: nothing left to wait for
 
-    g_GfxData.pFence->SetEventOnCompletion(g_GfxData.uFenceLastSignaledValue, g_GfxData.hFenceEvent);
-    ::WaitForSingleObject(g_GfxData.hFenceEvent, INFINITE);
+    if (FAILED(g_GfxData.pFence->SetEventOnCompletion(g_GfxData.uFenceLastSignaledValue, g_GfxData.hFenceEvent)))
+        return;
+    ImP12_WaitForObjects(&g_GfxData.hFenceEvent, 1);
 }
 
 static void CleanupRenderTarget()
@@ -183,15 +200,17 @@ static void CleanupRenderTarget()
 static ImPlatform_FrameContext_DX12* WaitForNextFrameContext()
 {
     ImPlatform_FrameContext_DX12* frameCtx = &g_GfxData.frameContext[g_GfxData.uFrameIndex % IM_DX12_NUM_FRAMES_IN_FLIGHT];
-    if (g_GfxData.pFence->GetCompletedValue() < frameCtx->uFenceValue)
+    // On a lost device the waits give up and the frame goes on: its calls fail without effect, and the application
+    // sees ImPlatform_GfxDeviceLost().
+    if (g_GfxData.pFence->GetCompletedValue() < frameCtx->uFenceValue
+        && SUCCEEDED(g_GfxData.pFence->SetEventOnCompletion(frameCtx->uFenceValue, g_GfxData.hFenceEvent)))
     {
-        g_GfxData.pFence->SetEventOnCompletion(frameCtx->uFenceValue, g_GfxData.hFenceEvent);
         HANDLE waitableObjects[] = { g_GfxData.hSwapChainWaitableObject, g_GfxData.hFenceEvent };
-        ::WaitForMultipleObjects(2, waitableObjects, TRUE, INFINITE);
+        ImP12_WaitForObjects(waitableObjects, 2);
     }
     else
     {
-        ::WaitForSingleObject(g_GfxData.hSwapChainWaitableObject, INFINITE);
+        ImP12_WaitForObjects(&g_GfxData.hSwapChainWaitableObject, 1);
     }
 
     return frameCtx;
@@ -1136,9 +1155,8 @@ IMPLATFORM_API void ImPlatform_DestroyShaderProgram(ImPlatform_ShaderProgram pro
             HANDLE hEvent = CreateEvent(nullptr, FALSE, FALSE, nullptr);
             if (hEvent)
             {
-                g_GfxData.pCommandQueue->Signal(pFence, 1);
-                pFence->SetEventOnCompletion(1, hEvent);
-                WaitForSingleObject(hEvent, INFINITE);
+                if (SUCCEEDED(g_GfxData.pCommandQueue->Signal(pFence, 1)) && SUCCEEDED(pFence->SetEventOnCompletion(1, hEvent)))
+                    ImP12_WaitForObjects(&hEvent, 1);
                 CloseHandle(hEvent);
             }
             pFence->Release();
@@ -1431,7 +1449,7 @@ IMPLATFORM_API void ImPlatform_EndCustomShader(ImDrawList* draw)
     draw->AddCallback([](const ImDrawList*, const ImDrawCmd*) { g_P12_Program = NULL; }, NULL);
     draw->AddCallback(ImGui::GetPlatformIO().DrawCallback_ResetRenderState, NULL);
     g_P12_ScopeOpen = false;
-    ImPlatform_ReapplySampler_StdCallbacks(draw);
+    ImPlatform_ScopesReapply(draw);     // The reset ended the sampler and premultiplied alpha scopes open here
 }
 
 // Premultiplied alpha: blending is part of the pipeline states, so an ImGui-layout program un-premultiplies the texels
@@ -1477,14 +1495,22 @@ static ImPlatform_ShaderProgram ImPlatform_UnpremultiplyProgram()
 
 IMPLATFORM_API void ImPlatform_PushPremultipliedAlpha(ImDrawList* draw)
 {
+    ImDrawList* list = draw ? draw : ImGui::GetWindowDrawList();
     if (ImPlatform_ShaderProgram program = ImPlatform_UnpremultiplyProgram())
-        ImPlatform_BeginCustomShader(draw ? draw : ImGui::GetWindowDrawList(), program);
+    {
+        ImPlatform_ScopePush(list, -1);
+        ImPlatform_BeginCustomShader(list, program);
+    }
 }
 
 IMPLATFORM_API void ImPlatform_PopPremultipliedAlpha(ImDrawList* draw)
 {
+    ImDrawList* list = draw ? draw : ImGui::GetWindowDrawList();
     if (g_UnpremultiplyProgram)
-        ImPlatform_EndCustomShader(draw ? draw : ImGui::GetWindowDrawList());
+    {
+        ImPlatform_ScopePop(list, false);       // Before the end, which sets again the scopes still open
+        ImPlatform_EndCustomShader(list);
+    }
 }
 
 static void ImPlatform_ReleaseRenderPasses()
@@ -1510,14 +1536,14 @@ static void ImPlatform_ReleaseRenderPasses()
 // take the place of a custom program's. Inside a custom shader scope a push or a pop is recorded only: the program
 // keeps its own sampler (linear, clamped), and the scope's end sets the sampler pushed at that point.
 
-IMPLATFORM_API void ImPlatform_PushSampler(ImPlatform_TextureFilter filter, ImPlatform_TextureWrap /*wrap*/)
+IMPLATFORM_API void ImPlatform_PushSamplerEx(ImDrawList* draw, ImPlatform_TextureFilter filter, ImPlatform_TextureWrap wrap)
 {
-    ImPlatform_PushSampler_StdCallbacks(filter, !g_P12_ScopeOpen);
+    ImPlatform_PushSampler_StdCallbacks(draw, filter, wrap, !g_P12_ScopeOpen);
 }
 
-IMPLATFORM_API void ImPlatform_PopSampler(void)
+IMPLATFORM_API void ImPlatform_PopSamplerEx(ImDrawList* draw)
 {
-    ImPlatform_PopSampler_StdCallbacks(!g_P12_ScopeOpen);
+    ImPlatform_PopSampler_StdCallbacks(draw, !g_P12_ScopeOpen);
 }
 
 
@@ -1543,8 +1569,8 @@ namespace
     {
         if (ImP12_Done(v))
             return;
-        g_GfxData.pFence->SetEventOnCompletion(v, g_GfxData.hFenceEvent);
-        ::WaitForSingleObject(g_GfxData.hFenceEvent, INFINITE);
+        if (SUCCEEDED(g_GfxData.pFence->SetEventOnCompletion(v, g_GfxData.hFenceEvent)))
+            ImP12_WaitForObjects(&g_GfxData.hFenceEvent, 1);
     }
 
     struct ImP12_Simple_Alloc       // Fixed-size descriptor heap with a free list (CPU-only or shader-visible).

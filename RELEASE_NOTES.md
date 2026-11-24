@@ -41,14 +41,16 @@ without freezing the frame, and report their errors to the application. The full
   `ImPlatform/ImPlatform_native.cpp` (applications that only define `IMPLATFORM_IMPLEMENTATION` get them through
   `ImPlatform.h`). The first uses `std::thread` on DirectX 10, 11 and 12.
 - **macOS**: link the ApplicationServices framework.
-- **Dear ImGui**: 1.92.8 or later (the submodule is 1.93.0, docking).
+- **Dear ImGui**: 1.92.8 or later (the submodule is the docking branch after 1.93.0).
 - **DirectX 9** is a Direct3D 9Ex device: resources an application creates itself on the device go in
   `D3DPOOL_DEFAULT` (there is no managed pool), and they stay valid across a reset.
 - **DirectX 12**: the sampler `s0` of a custom shader program clamps; a shader that relied on it wrapping needs its
   own texture coordinates wrapped (`frac`).
 - **`IM_GFX_CUSTOM` backends** provide two more functions, `ImPlatform_GetShaderLog()` and
   `ImPlatform_SetShaderProgramBlend()`, and the group `IMPLATFORM_GFX_SUPPORT_ASYNC_COMPUTE` (three functions) unless
-  they define it to 0.
+  they define it to 0. Their `ImPlatform_PushSampler()` / `ImPlatform_PopSampler()` become
+  `ImPlatform_PushSamplerEx()` / `ImPlatform_PopSamplerEx()`, with the draw list as first argument (NULL: the
+  current window's).
 - **`ImPlatform_ShaderDesc`** has a new last member, `defines`: descriptors that are zero-initialized need no change.
 - **`ImPlatform_UpdateVertexBuffer()` / `ImPlatform_UpdateIndexBuffer()`** take (offset, count) on every backend, as
   the header declares. DirectX 9, 10, 11, 12, Vulkan and WebGPU read them as (count, offset): swap the two arguments in
@@ -63,7 +65,7 @@ without freezing the frame, and report their errors to the application. The full
 
 - The demo's self-tests, in addition to those of 2.0.0: `--blend-test`, `--shader-async-test`, `--compute-async-test`,
   `--screenshot-test`, `--screenshot-viewport-test`, `--buffer-update-test`, `--mesh-stream-test`, `--pen-test`
-  (synthetic SDL3 pen events), `--touch-test` (synthetic SDL finger events), `--drop-test`, `--window-test`, `--clipboard-test` and `--drag-rect-test`. They pass on Windows (Win32 with
+  (synthetic SDL3 pen events), `--touch-test` (synthetic SDL finger events), `--sampler-test`, `--drop-test`, `--window-test`, `--clipboard-test` and `--drag-rect-test`. They pass on Windows (Win32 with
   DirectX 9, 10, 11, 12, OpenGL and Vulkan; GLFW with OpenGL and Vulkan) and on Linux with Mesa (GLFW, SDL2 and SDL3
   with OpenGL and Vulkan), where the backend has the feature.
 - CI builds every Windows, Linux and macOS configuration with both Sharpmake and CMake and runs the self-tests on

@@ -927,7 +927,9 @@ IMPLATFORM_API void ImPlatform_PushPremultipliedAlpha(ImDrawList* draw)
         desc.RenderTarget[0].RenderTargetWriteMask = D3D11_COLOR_WRITE_ENABLE_ALL;
         g_GfxData.pDevice->CreateBlendState(&desc, &g_PremultipliedBlend);
     }
-    (draw ? draw : ImGui::GetWindowDrawList())->AddCallback([](const ImDrawList*, const ImDrawCmd*)
+    ImDrawList* list = draw ? draw : ImGui::GetWindowDrawList();
+    ImPlatform_ScopePush(list, -1);
+    list->AddCallback([](const ImDrawList*, const ImDrawCmd*)
     {
         ID3D11BlendState* old = NULL;
         FLOAT factor[4];
@@ -944,7 +946,9 @@ IMPLATFORM_API void ImPlatform_PushPremultipliedAlpha(ImDrawList* draw)
 
 IMPLATFORM_API void ImPlatform_PopPremultipliedAlpha(ImDrawList* draw)
 {
-    (draw ? draw : ImGui::GetWindowDrawList())->AddCallback([](const ImDrawList*, const ImDrawCmd*)
+    ImDrawList* list = draw ? draw : ImGui::GetWindowDrawList();
+    ImPlatform_ScopePop(list, false);
+    list->AddCallback([](const ImDrawList*, const ImDrawCmd*)
     {
         if (g_BlendDepth <= 0)
             return;
@@ -1138,7 +1142,7 @@ IMPLATFORM_API void ImPlatform_DestroyTexture(ImTextureID texture_id)
     pSRV->Release();
 }
 
-IMPLATFORM_API void ImPlatform_PushSampler(ImPlatform_TextureFilter filter, ImPlatform_TextureWrap wrap)
+IMPLATFORM_API void ImPlatform_PushSamplerEx(ImDrawList* draw, ImPlatform_TextureFilter filter, ImPlatform_TextureWrap wrap)
 {
     int f = (filter == ImPlatform_TextureFilter_Linear) ? 1 : 0;
     int w = (int)wrap;
@@ -1146,7 +1150,9 @@ IMPLATFORM_API void ImPlatform_PushSampler(ImPlatform_TextureFilter filter, ImPl
     ID3D11SamplerState* s = g_Samplers[f][w];
     if (!s) return;
 
-    ImGui::GetWindowDrawList()->AddCallback(
+    ImDrawList* list = draw ? draw : ImGui::GetWindowDrawList();
+    ImPlatform_ScopePush(list, ((int)filter << 8) | (int)wrap);
+    list->AddCallback(
         [](const ImDrawList*, const ImDrawCmd* cmd) {
             auto* rs = static_cast<ImGui_ImplDX11_RenderState*>(
                 ImGui::GetPlatformIO().Renderer_RenderState);
@@ -1161,9 +1167,11 @@ IMPLATFORM_API void ImPlatform_PushSampler(ImPlatform_TextureFilter filter, ImPl
         }, static_cast<void*>(s));
 }
 
-IMPLATFORM_API void ImPlatform_PopSampler(void)
+IMPLATFORM_API void ImPlatform_PopSamplerEx(ImDrawList* draw)
 {
-    ImGui::GetWindowDrawList()->AddCallback(
+    ImDrawList* list = draw ? draw : ImGui::GetWindowDrawList();
+    ImPlatform_ScopePop(list, true);
+    list->AddCallback(
         [](const ImDrawList*, const ImDrawCmd*) {
             auto* rs = static_cast<ImGui_ImplDX11_RenderState*>(
                 ImGui::GetPlatformIO().Renderer_RenderState);
@@ -2559,6 +2567,7 @@ IMPLATFORM_API void ImPlatform_EndCustomShader(ImDrawList* draw)
         return;
 
     draw->AddCallback(ImGui::GetPlatformIO().DrawCallback_ResetRenderState, NULL);
+    ImPlatform_ScopesReapply(draw);     // The reset ended the sampler and premultiplied alpha scopes open here
 }
 
 #endif // IM_GFX_DIRECTX11

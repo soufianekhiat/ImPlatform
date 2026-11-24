@@ -593,7 +593,7 @@ none of its graphics backends. The application links its own implementation of t
 entry points (`ImPlatform_InitGfxAPI`, `ImPlatform_GfxAPINewFrame`, `ImPlatform_GfxAPIRender`,
 `ImPlatform_GfxAPISwapBuffer`, textures, shaders with `ImPlatform_GetShaderLog` and `ImPlatform_SetShaderProgramBlend`,
 the render passes `ImPlatform_GetRenderPassFormat` / `QueueRenderPass` / `PushPremultipliedAlpha` /
-`PopPremultipliedAlpha`, the `Supports*` queries, and the functions of every optional group above that it keeps) plus:
+`PopPremultipliedAlpha`, the samplers `ImPlatform_PushSamplerEx` / `PopSamplerEx`, the `Supports*` queries, and the functions of every optional group above that it keeps) plus:
 
 ```cpp
 // Called by the platform layer (Win32, GLFW, SDL2, SDL3) when the window's framebuffer is resized.
@@ -707,6 +707,7 @@ ImPlatformDemo_Win32_DX12 --compute-test       # dispatch + readback
 ImPlatformDemo_Win32_DX12 --compute-async-test # the same with the shader compiled asynchronously and the dispatch polled
 ImPlatformDemo_Win32_DX12 --render-pass-test   # render pass target and premultiplied composite
 ImPlatformDemo_Win32_DX12 --shader-test        # shaders/gradient.hlsl drawn into a render pass, read back
+ImPlatformDemo_Win32_DX12 --sampler-test       # nearest and linear samplers on a render pass list; scopes kept across a custom shader
 ImPlatformDemo_Win32_DX12 --direct-draw-test   # from a draw callback: push a render target, push constants, DrawQuadNow
 ImPlatformDemo_Win32_DX12 --shader-parts-test  # a shader written as parts: parameters in both stages, varying, texture t1
 ImPlatformDemo_Win32_DX12 --texture3d-test     # a 2x2x2 texture at t1, sampled by shaders/volume_test.hlsl and by shader parts
@@ -797,7 +798,7 @@ The library has been tested with the following configurations:
 - **WebGPU** - Basic testing (Emscripten + GLFW in Chrome)
 
 ### Dear ImGui Version
-- **Tested with**: Dear ImGui v1.93.0 (docking branch)
+- **Tested with**: Dear ImGui docking branch after v1.93.0 (1.93.1 WIP)
 - **Minimum required**: Dear ImGui v1.92.8
 - **Recommended**: Use the latest docking branch for full multi-viewport support
 
@@ -806,6 +807,7 @@ The library has been tested with the following configurations:
 - macOS: the Metal self-tests run in CI on a virtual machine, with GLFW and with the Cocoa platform. OpenGL gets no pixel format there, the SDL configurations are only built, and nothing has been tried by hand on a Mac
 - WebGPU: no readback, and no render-target switch or copy (its render pass encoder belongs to Dear ImGui's backend)
 - Vulkan: at most 968 textures and render textures alive at once (the descriptor pool shared with Dear ImGui's backend); creating one more returns 0
+- DirectX 9 with Dear ImGui 1.93.1 and later: a custom program draws Dear ImGui's vertices when bound with `ImPlatform_BeginCustomShader` (a draw list scope); one bound with `ImPlatform_BeginCustomShader_Render` is for the application's own draws
 - DirectX 9 shaders are shader model 3: no integer or bit operations, no texel loads, `nointerpolation` varyings are interpolated
 - OpenGL3 multi-viewport with custom shaders may have minor offset issues in some edge cases
 - Custom titlebar on stock GLFW: the window is moved and resized by ImPlatform, without the system's window snapping (TheCherno's fork with `IM_THE_CHERNO_GLFW3` gives native hit-testing)

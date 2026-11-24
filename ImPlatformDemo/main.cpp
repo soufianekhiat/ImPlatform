@@ -353,6 +353,75 @@ static int CheckShaderTest()
 	return bad ? 1 : 0;
 }
 
+// --sampler-test: a texture of two texels, black and white, stretched over rows of a render pass target and read back.
+// With the nearest sampler pushed on the pass's draw list (ImPlatform_PushSamplerEx) a row has a step, without it a
+// ramp. A custom shader drawn inside the sampler scope, then inside a premultiplied alpha scope, leaves both in place
+// for the draws after ImPlatform_EndCustomShader (the last row: half transparent blue over gray). Exit code as above.
+static RenderPassScene g_SamplerTest;
+static ImTextureID g_SamplerTestTexels = 0, g_SamplerTestBlue = 0;
+static void DrawSamplerTestShader( ImDrawList* dl )
+{
+	static const ImVec4 colors[ 2 ] = { ImVec4( 1, 0, 0, 1 ), ImVec4( 0, 0, 1, 1 ) };
+	dl->AddCallback( SetShaderTestColors, (void*)colors );
+	ImPlatform_BeginCustomShader( dl, g_ShaderTestProgram );
+	dl->AddImage( ImGui::GetIO().Fonts->TexRef, ImVec2( 0, 48 ), ImVec2( 8, 64 ) );
+	ImPlatform_EndCustomShader( dl );
+}
+static void DrawSamplerTest( ImDrawList* dl )
+{
+	ImPlatform_PushSamplerEx( dl, ImPlatform_TextureFilter_Nearest, ImPlatform_TextureWrap_Clamp );
+	dl->AddImage( g_SamplerTestTexels, ImVec2( 0, 0 ), ImVec2( 64, 16 ) );
+	DrawSamplerTestShader( dl );
+	dl->AddImage( g_SamplerTestTexels, ImVec2( 0, 32 ), ImVec2( 64, 48 ) );
+	ImPlatform_PopSamplerEx( dl );
+	dl->AddImage( g_SamplerTestTexels, ImVec2( 0, 16 ), ImVec2( 64, 32 ) );
+	dl->AddRectFilled( ImVec2( 16, 48 ), ImVec2( 64, 64 ), IM_COL32( 100, 100, 100, 255 ) );
+	ImPlatform_PushPremultipliedAlpha( dl );
+	DrawSamplerTestShader( dl );
+	dl->AddImage( g_SamplerTestBlue, ImVec2( 16, 48 ), ImVec2( 64, 64 ) );
+	ImPlatform_PopPremultipliedAlpha( dl );
+}
+
+static bool CreateSamplerTest()
+{
+	const unsigned char texels[ 2 * 4 ] = { 0, 0, 0, 255, 255, 255, 255, 255 };
+	const unsigned char blue[ 4 ] = { 0, 0, 128, 128 };	// Premultiplied
+	ImPlatform_TextureDesc desc = ImPlatform_TextureDesc_Default( 2, 1 );
+	g_SamplerTestTexels = ImPlatform_CreateTexture( texels, &desc );
+	desc = ImPlatform_TextureDesc_Default( 1, 1 );
+	g_SamplerTestBlue = ImPlatform_CreateTexture( blue, &desc );
+	return g_ShaderTestProgram && g_SamplerTestTexels && g_SamplerTestBlue && QueueRenderPassScene( g_SamplerTest, 64, DrawSamplerTest );
+}
+
+static void DestroySamplerTest()
+{
+	if ( g_SamplerTestTexels )
+		ImPlatform_DestroyTexture( g_SamplerTestTexels );
+	if ( g_SamplerTestBlue )
+		ImPlatform_DestroyTexture( g_SamplerTestBlue );
+	g_SamplerTestTexels = g_SamplerTestBlue = 0;
+}
+
+static int CheckSamplerTest()
+{
+	static unsigned char px[ 64 * 64 * 4 ];
+	if ( !DemoReadTexture( g_SamplerTest.Target, 0, 0, 64, 64, px, sizeof( px ) ) )
+	{
+		printf( "SKIP: no readback of the pass target\n" );
+		return 2;
+	}
+	// The texel centers are at a quarter and three quarters of the row: columns 24 and 40 are 0.27 and 0.77 of the way
+	// between them. Blue at half coverage over gray (100) with premultiplied alpha is 128 + 100 * 127 / 255.
+	const RenderPassProbe probes[] = { { 24, 8, { 0, 0, 0, 255 } }, { 40, 8, { 255, 255, 255, 255 } },			// Nearest
+									   { 24, 24, { 68, 68, 68, 255 } }, { 40, 24, { 195, 195, 195, 255 } },		// Linear, after the pop
+									   { 24, 40, { 0, 0, 0, 255 } }, { 40, 40, { 255, 255, 255, 255 } },		// Nearest, after a custom shader
+									   { 40, 56, { 50, 50, 178, 255 } } };										// Premultiplied, after a custom shader
+	const int bad = CheckRenderPassProbes( "sampler", px, 64, probes, 7, 4 );
+	if ( !bad )
+		printf( "PASS\n" );
+	return bad ? 1 : 0;
+}
+
 // --buffer-update-test: a Dynamic and a Stream vertex buffer of one quad each (the vertex layout of shaders/gradient.hlsl)
 // drawn by ImPlatform_DrawIndexed from a draw callback into a render pass, three frames in a row. In a frame each buffer
 // is written (the quad without height, then its lower vertices as a partial update, which must keep the upper ones),
@@ -1961,6 +2030,7 @@ int main( int argc, char** argv )
 	const bool computeTest = computeAsyncTest || ( argc > 1 && strcmp( argv[ 1 ], "--compute-test" ) == 0 );
 	const bool renderPassTest = argc > 1 && strcmp( argv[ 1 ], "--render-pass-test" ) == 0;
 	const bool shaderTest = argc > 1 && strcmp( argv[ 1 ], "--shader-test" ) == 0;
+	const bool samplerTest = argc > 1 && strcmp( argv[ 1 ], "--sampler-test" ) == 0;
 	const bool directDrawTest = argc > 1 && strcmp( argv[ 1 ], "--direct-draw-test" ) == 0;
 	const bool partsTest = argc > 1 && strcmp( argv[ 1 ], "--shader-parts-test" ) == 0;
 	const bool texture3DTest = argc > 1 && strcmp( argv[ 1 ], "--texture3d-test" ) == 0;
@@ -1971,7 +2041,7 @@ int main( int argc, char** argv )
 	const bool asyncTest = argc > 1 && strcmp( argv[ 1 ], "--shader-async-test" ) == 0;
 	const bool screenshotViewportTest = argc > 1 && strcmp( argv[ 1 ], "--screenshot-viewport-test" ) == 0;
 	const bool screenshotTest = screenshotViewportTest || ( argc > 1 && strcmp( argv[ 1 ], "--screenshot-test" ) == 0 );
-	const bool passTest = renderPassTest || shaderTest || directDrawTest || partsTest || texture3DTest || vertexInputsTest || blendTest
+	const bool passTest = renderPassTest || shaderTest || samplerTest || directDrawTest || partsTest || texture3DTest || vertexInputsTest || blendTest
 						|| asyncTest || screenshotTest || bufferUpdateTest || meshStreamTest;	// Tests read back what a few frames rendered
 	int exitCode = 0;
 #ifndef __EMSCRIPTEN__
@@ -2217,6 +2287,18 @@ int main( int argc, char** argv )
 				break;
 			}
 		}
+		if ( samplerTest && renderPassFrame == 0 )
+		{
+#if IMPLATFORM_GFX_SUPPORT_CUSTOM_SHADER
+			g_ShaderTestProgram = gradient_program;
+			if ( !CreateSamplerTest() )
+#endif
+			{
+				printf( "SKIP: no custom shader or render pass on this backend\n" );
+				exitCode = 2;
+				break;
+			}
+		}
 		if ( vertexInputsTest && renderPassFrame == 0 && !CreateVertexInputsTest() )
 		{
 			printf( "SKIP: no shader parts with vertex buffers on this backend\n" );
@@ -2390,7 +2472,7 @@ int main( int argc, char** argv )
 		}
 
 		// Custom Shader Demo Window 2: Linear Gradient (Bottom-left)
-		if (gradient_program && !shaderTest && !directDrawTest && !bufferUpdateTest)		// The tests set their own constants
+		if (gradient_program && !shaderTest && !samplerTest && !directDrawTest && !bufferUpdateTest)		// The tests set their own constants
 		{
 			ImGui::SetNextWindowPos(ImVec2(0, grid_top + half_height), ImGuiCond_Always);
 			ImGui::SetNextWindowSize(ImVec2(half_width, half_height), ImGuiCond_Always);
@@ -2486,7 +2568,7 @@ int main( int argc, char** argv )
 				exitCode = CheckScreenshotTest();
 			else
 #if IMPLATFORM_GFX_SUPPORT_CUSTOM_SHADER
-			exitCode = shaderTest ? CheckShaderTest() : directDrawTest ? CheckDirectDrawTest() : partsTest ? CheckPartsTest()
+			exitCode = shaderTest ? CheckShaderTest() : samplerTest ? CheckSamplerTest() : directDrawTest ? CheckDirectDrawTest() : partsTest ? CheckPartsTest()
 					 : texture3DTest ? CheckTexture3DTest() : vertexInputsTest ? CheckVertexInputsTest() : blendTest ? CheckBlendTest()
 					 : asyncTest ? CheckAsyncTest() : bufferUpdateTest ? CheckBufferUpdateTest() : meshStreamTest ? CheckMeshStreamTest()
 					 : CheckRenderPassTest();
@@ -2533,6 +2615,8 @@ int main( int argc, char** argv )
 	DestroyRenderPassScene( g_RenderPassComposite );
 #if IMPLATFORM_GFX_SUPPORT_CUSTOM_SHADER
 	DestroyRenderPassScene( g_ShaderTest );
+	DestroyRenderPassScene( g_SamplerTest );
+	DestroySamplerTest();
 	DestroyRenderPassScene( g_PartsTest );
 	DestroyPartsTest();
 	DestroyRenderPassScene( g_Texture3DTest );

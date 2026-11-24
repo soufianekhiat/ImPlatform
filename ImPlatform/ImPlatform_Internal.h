@@ -508,6 +508,92 @@ struct ImPlatform_GfxData_WebGPU* ImPlatform_Gfx_GetData_WebGPU(void);
 #endif
 
 // ============================================================================
+// Sampler and premultiplied alpha scopes around custom shaders
+// ============================================================================
+// ImPlatform_EndCustomShader resets the render state, and with it the sampler and the blending of the scopes pushed
+// around the custom shader. The scopes open on each draw list are recorded as the lists are built, so the end of a
+// custom shader closes and opens again the innermost of each kind on its draw list: closing gives back what the scope
+// saved, opening sets its state again and saves the same.
+
+#ifdef __cplusplus
+struct ImPlatform_Scope
+{
+    ImDrawList* list;
+    int         frame;      // ImGui::GetFrameCount() when it was pushed
+    int         sampler;    // filter << 8 | wrap; -1: a premultiplied alpha scope
+};
+
+static inline ImVector<ImPlatform_Scope>& ImPlatform_Scopes()
+{
+    static ImVector<ImPlatform_Scope> scopes;
+    return scopes;
+}
+
+// While ImPlatform_ScopesReapply closes and opens scopes, which are neither new nor ended
+static inline bool& ImPlatform_ScopesReapplying()
+{
+    static bool reapplying = false;
+    return reapplying;
+}
+
+static inline void ImPlatform_ScopePush(ImDrawList* list, int sampler)
+{
+    if (ImPlatform_ScopesReapplying())
+        return;
+    ImVector<ImPlatform_Scope>& scopes = ImPlatform_Scopes();
+    const int frame = ImGui::GetFrameCount();
+    if (scopes.Size > 0 && scopes.back().frame != frame)
+        scopes.clear();     // Left open by an earlier frame
+    const ImPlatform_Scope scope = { list, frame, sampler };
+    scopes.push_back(scope);
+}
+
+static inline void ImPlatform_ScopePop(ImDrawList* list, bool sampler)
+{
+    if (ImPlatform_ScopesReapplying())
+        return;
+    ImVector<ImPlatform_Scope>& scopes = ImPlatform_Scopes();
+    for (int i = scopes.Size - 1; i >= 0; i--)
+        if (scopes[i].list == list && (scopes[i].sampler >= 0) == sampler)
+        {
+            scopes.erase(scopes.Data + i);
+            return;
+        }
+}
+
+// The premultiplied alpha scope first: where it is a program (DirectX 12, Vulkan) or a pipeline (Metal, WebGPU),
+// closing it resets the render state again.
+static inline void ImPlatform_ScopesReapply(ImDrawList* list)
+{
+    if (ImPlatform_ScopesReapplying())
+        return;
+    const int frame = ImGui::GetFrameCount();
+    int sampler = -1;
+    bool premultiplied = false;
+    for (const ImPlatform_Scope& scope : ImPlatform_Scopes())
+        if (scope.list == list && scope.frame == frame)
+        {
+            if (scope.sampler >= 0)
+                sampler = scope.sampler;
+            else
+                premultiplied = true;
+        }
+    ImPlatform_ScopesReapplying() = true;
+    if (premultiplied)
+    {
+        ImPlatform_PopPremultipliedAlpha(list);
+        ImPlatform_PushPremultipliedAlpha(list);
+    }
+    if (sampler >= 0)
+    {
+        ImPlatform_PopSamplerEx(list);
+        ImPlatform_PushSamplerEx(list, (ImPlatform_TextureFilter)(sampler >> 8), (ImPlatform_TextureWrap)(sampler & 0xFF));
+    }
+    ImPlatform_ScopesReapplying() = false;
+}
+#endif
+
+// ============================================================================
 // Sampler override using standard backend draw callbacks
 // ============================================================================
 // Since Dear ImGui 1.92.8 renderer backends provide backend-agnostic draw callbacks
@@ -517,7 +603,6 @@ struct ImPlatform_GfxData_WebGPU* ImPlatform_Gfx_GetData_WebGPU(void);
 // the filter is honored, the wrap mode stays at the backend default (clamp).
 // The stack is resolved at submission time, restoring Linear (backend default) when empty.
 // 'apply' false records the push or the pop without a callback (DirectX 12 inside a custom shader scope).
-// ImPlatform_EndCustomShader resets the render state, sampler included: it sets the pushed sampler again.
 
 #ifdef __cplusplus
 static inline ImVector<ImDrawCallback>& ImPlatform_StdSamplerStack()
@@ -526,31 +611,28 @@ static inline ImVector<ImDrawCallback>& ImPlatform_StdSamplerStack()
     return stack;
 }
 
-static inline void ImPlatform_PushSampler_StdCallbacks(ImPlatform_TextureFilter filter, bool apply = true)
+static inline void ImPlatform_PushSampler_StdCallbacks(ImDrawList* draw, ImPlatform_TextureFilter filter, ImPlatform_TextureWrap wrap, bool apply = true)
 {
+    ImDrawList* list = draw ? draw : ImGui::GetWindowDrawList();
+    ImPlatform_ScopePush(list, ((int)filter << 8) | (int)wrap);
     ImGuiPlatformIO& platform_io = ImGui::GetPlatformIO();
     ImDrawCallback callback = (filter == ImPlatform_TextureFilter_Nearest) ? platform_io.DrawCallback_SetSamplerNearest : platform_io.DrawCallback_SetSamplerLinear;
     ImPlatform_StdSamplerStack().push_back(callback);
     if (callback && apply)
-        ImGui::GetWindowDrawList()->AddCallback(callback);
+        list->AddCallback(callback);
 }
 
-static inline void ImPlatform_PopSampler_StdCallbacks(bool apply = true)
+static inline void ImPlatform_PopSampler_StdCallbacks(ImDrawList* draw, bool apply = true)
 {
+    ImDrawList* list = draw ? draw : ImGui::GetWindowDrawList();
+    ImPlatform_ScopePop(list, true);
     ImVector<ImDrawCallback>& stack = ImPlatform_StdSamplerStack();
     if (stack.Size == 0)
         return;
     stack.pop_back();
     ImDrawCallback callback = (stack.Size > 0) ? stack.back() : ImGui::GetPlatformIO().DrawCallback_SetSamplerLinear;
     if (callback && apply)
-        ImGui::GetWindowDrawList()->AddCallback(callback);
-}
-
-static inline void ImPlatform_ReapplySampler_StdCallbacks(ImDrawList* draw)
-{
-    const ImVector<ImDrawCallback>& stack = ImPlatform_StdSamplerStack();
-    if (stack.Size > 0 && stack.back())
-        draw->AddCallback(stack.back());
+        list->AddCallback(callback);
 }
 
 // The ImGui backends set the scissor for regular draws only: a callback that draws by itself (ImPlatform_DrawIndexed,
