@@ -57,8 +57,16 @@ static void OnDpiChanged(float new_scale, void* /*user_data*/)
 {
 	ImGuiStyle& style = ImGui::GetStyle();
 	style = ImGuiStyle(); // Reset to defaults
+	style.FrameRounding = style.GrabRounding = 3.0f;	// As at startup
 	style.ScaleAllSizes(new_scale);
 	style.FontScaleDpi = new_scale;
+#ifdef IMGUI_HAS_VIEWPORT
+	if ( ImGui::GetIO().ConfigFlags & ImGuiConfigFlags_ViewportsEnable )
+	{
+		style.WindowRounding = 0.0f;
+		style.Colors[ ImGuiCol_WindowBg ].w = 1.0f;
+	}
+#endif
 }
 
 #define IM_HAS_STBI 0
@@ -1458,6 +1466,60 @@ static int ImPlatformDemo_PenTest()
 #endif
 }
 
+// The "Gestures" window: the pan, zoom and rotation of ImPlatform_ConsumeTouchGesture (fingers on a touch screen, a
+// pinch or a turn on a trackpad) move, scale and turn a square. The mouse wheel is added up next to them: it is the
+// trackpad's two-finger pan, and what a pinch arrives as when the platform does not report it as one.
+static void GestureDemo()
+{
+	static ImVec2 pan( 0.0f, 0.0f );
+	static float zoom = 1.0f, rotation = 0.0f, wheel_x = 0.0f, wheel_y = 0.0f;
+	static int pinches = 0;
+	ImPlatform_TouchGesture gesture = {};
+	if ( ImPlatform_ConsumeTouchGesture( &gesture ) )
+	{
+		pan.x += gesture.pan_x;
+		pan.y += gesture.pan_y;
+		zoom *= gesture.zoom;
+		rotation += gesture.rotation;
+		if ( gesture.zoom != 1.0f || gesture.rotation != 0.0f )
+			++pinches;
+	}
+	wheel_x += ImGui::GetIO().MouseWheelH;
+	wheel_y += ImGui::GetIO().MouseWheel;
+
+	ImGui::SetNextWindowPos( ImGui::GetMainViewport()->GetCenter(), ImGuiCond_FirstUseEver, ImVec2( 0.5f, 0.5f ) );
+	ImGui::SetNextWindowSize( ImPlatform_EmToVec2( 26.0f, 24.0f ), ImGuiCond_FirstUseEver );
+	if ( ImGui::Begin( "Gestures" ) )
+	{
+		ImGui::TextWrapped( "Pinch on the trackpad, or use two fingers on a touch screen%s.", ImPlatform_SupportsTouch() ? "" : " (touch screens are not read on this platform)" );
+		ImGui::Text( "Zoom %.3f   Rotation %.1f deg   Pan (%.0f, %.0f)", zoom, rotation, pan.x, pan.y );
+		ImGui::Text( "Fingers %d   Frames with a pinch or a turn: %d", gesture.finger_count, pinches );
+		ImGui::Text( "Mouse wheel, added up: (%.2f, %.2f)", wheel_x, wheel_y );
+		if ( ImGui::Button( "Reset" ) )
+		{
+			pan = ImVec2( 0.0f, 0.0f );
+			zoom = 1.0f;
+			rotation = wheel_x = wheel_y = 0.0f;
+			pinches = 0;
+		}
+		const ImVec2 origin = ImGui::GetCursorScreenPos();
+		ImVec2 size = ImGui::GetContentRegionAvail();
+		size.x = size.x < 16.0f ? 16.0f : size.x;
+		size.y = size.y < 16.0f ? 16.0f : size.y;
+		ImGui::InvisibleButton( "canvas", size );
+		const ImVec2 center( origin.x + size.x * 0.5f + pan.x, origin.y + size.y * 0.5f + pan.y );
+		const float half = ImPlatform_EmSize( 3.0f ) * zoom, angle = rotation * 3.14159265f / 180.0f;
+		const float c = cosf( angle ) * half, s = sinf( angle ) * half;	// Clockwise: y points down
+		ImDrawList* draw = ImGui::GetWindowDrawList();
+		draw->PushClipRect( origin, ImVec2( origin.x + size.x, origin.y + size.y ), true );
+		draw->AddQuadFilled( ImVec2( center.x - c + s, center.y - s - c ), ImVec2( center.x + c + s, center.y + s - c ),
+							 ImVec2( center.x + c - s, center.y + s + c ), ImVec2( center.x - c - s, center.y - s + c ), IM_COL32( 80, 160, 255, 255 ) );
+		draw->AddLine( center, ImVec2( center.x + s, center.y - c ), IM_COL32_WHITE, 2.0f );	// The square's up
+		draw->PopClipRect();
+	}
+	ImGui::End();
+}
+
 // --touch-test: two fingers that touch, move apart, turn and lift come out of ImPlatform_GetTouchPoints and
 // ImPlatform_ConsumeTouchGesture. On SDL2 and SDL3 they are finger events pushed on SDL's queue; on Win32 they are
 // given to the recognizer directly (a pointer message cannot be synthesized without injecting input into the desktop).
@@ -1559,8 +1621,15 @@ static int ImPlatformDemo_TouchTest()
 #endif
 #elif defined( _WIN32 )
 	// What a precision touchpad sends to the window, whichever library made it: a wheel notch marked Ctrl while the key
-	// is up (keep it up during the test)
+	// is up. The key is marked up for this thread first: a window that opens while Ctrl is held elsewhere starts with
+	// it down.
 	ImPlatform_PlatformEvents();
+	BYTE keys[ 256 ];
+	if ( GetKeyboardState( keys ) )
+	{
+		keys[ VK_CONTROL ] = 0;
+		SetKeyboardState( keys );
+	}
 	SendMessageW( (HWND)ImPlatform_Native_MainWindow(), WM_MOUSEWHEEL, MAKEWPARAM( MK_CONTROL, WHEEL_DELTA ), 0 );
 	ok = TouchTestGesture( "pinch", true, 0, 0.0f, 0.0f, 0.0f, 0.0f, 1.189207f, 0.0f ) && ok;
 #endif
@@ -2011,6 +2080,7 @@ int main( int argc, char** argv )
 	// Setup DPI scaling (cross-platform)
 	ImGuiStyle& style = ImGui::GetStyle();
 	float dpi_scale = ImPlatform_GetDpiScale();
+	style.FrameRounding = style.GrabRounding = 3.0f;	// A little rounding, as Dear ImGui's examples
 	style.ScaleAllSizes(dpi_scale);
 	style.FontScaleDpi = dpi_scale;
 #ifdef IMGUI_HAS_DOCK
@@ -2363,6 +2433,9 @@ int main( int argc, char** argv )
 			ImGui::End();
 		}
 #endif // IMPLATFORM_GFX_SUPPORT_CUSTOM_SHADER
+
+		if ( !passTest )		// The tests read the frame back
+			GestureDemo();
 
 #if defined( IMGUI_HAS_TEXTURES ) && !defined( __EMSCRIPTEN__ )
 		ImGuiViewport* screenshotViewport = ImGui::GetMainViewport();
