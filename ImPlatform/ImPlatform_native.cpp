@@ -330,10 +330,12 @@ static void ImPlatform_Native_SyncDrops()
         g_DropOle = SUCCEEDED(::OleInitialize(NULL));
     ImVector<HWND> windows;
     windows.push_back(main);
+#ifdef IMGUI_HAS_VIEWPORT
     if (ImGui::GetCurrentContext() && (ImGui::GetIO().ConfigFlags & ImGuiConfigFlags_ViewportsEnable))
         for (ImGuiViewport* viewport : ImGui::GetPlatformIO().Viewports)
             if (viewport->PlatformHandleRaw && viewport->PlatformHandleRaw != (void*)main)
                 windows.push_back((HWND)viewport->PlatformHandleRaw);
+#endif
     for (HWND window : windows)
     {
         if (g_DropWindows.contains(window))

@@ -24,10 +24,12 @@ static void glfw_error_callback(int error, const char* description)
 #if GLFW_VERSION_MAJOR > 3 || (GLFW_VERSION_MAJOR == 3 && GLFW_VERSION_MINOR >= 3)
 static void glfw_content_scale_callback(GLFWwindow* window, float xscale, float yscale)
 {
-    (void)window;
+    (void)xscale;
     (void)yscale;
-    g_AppData.fDpiScale = xscale;
-    ImPlatform_NotifyDpiChange(xscale);
+    // The scale Dear ImGui's backend gives the window's monitor, as at creation: 1 where the framebuffer scale does
+    // the scaling (macOS, Wayland, the web), GLFW's content scale elsewhere.
+    g_AppData.fDpiScale = ImGui_ImplGlfw_GetContentScaleForWindow(window);
+    ImPlatform_NotifyDpiChange(g_AppData.fDpiScale);
 }
 #endif
 

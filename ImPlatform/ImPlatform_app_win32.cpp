@@ -70,7 +70,10 @@ static LRESULT WINAPI WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
             UINT dpi = HIWORD(wParam);
             g_AppData.fDpiScale = (float)dpi / 96.0f;
             // The Win32 backend already applies the suggested rectangle when io.ConfigDpiScaleViewports is enabled
-            bool backend_resizes = ImGui::GetCurrentContext() != NULL && ImGui::GetIO().ConfigDpiScaleViewports;
+            bool backend_resizes = false;
+#ifdef IMGUI_HAS_VIEWPORT
+            backend_resizes = ImGui::GetCurrentContext() != NULL && ImGui::GetIO().ConfigDpiScaleViewports;
+#endif
             if (!backend_resizes)
             {
                 RECT* const prcNewWindow = (RECT*)lParam;

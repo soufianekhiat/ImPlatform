@@ -272,7 +272,8 @@ IMPLATFORM_API void ImPlatform_EndCustomTitleBar(void)
     ImGui::Dummy(ImVec2(0, 0)); // Fix ImGui assertion: provide item after SetCursorPos
     ImGui::End();
     ImGuiViewport* pViewport = ImGui::GetMainViewport();
-    pViewport->WorkPos.y += pData->fCustomTitleBarHeight;
+    pViewport->WorkPos.y += pData->fCustomTitleBarHeight;      // The work area starts below the titlebar
+    pViewport->WorkSize.y -= pData->fCustomTitleBarHeight;     // and still ends at the bottom of the window
 
 #elif defined(IM_CURRENT_PLATFORM) && (IM_CURRENT_PLATFORM == IM_PLATFORM_GLFW)
     ImPlatform_AppData_GLFW* pData = ImPlatform_App_GetData_GLFW();
@@ -280,7 +281,8 @@ IMPLATFORM_API void ImPlatform_EndCustomTitleBar(void)
     ImGui::Dummy(ImVec2(0, 0)); // Fix ImGui assertion: provide item after SetCursorPos
     ImGui::End();
     ImGuiViewport* pViewport = ImGui::GetMainViewport();
-    pViewport->WorkPos.y += pData->fCustomTitleBarHeight;
+    pViewport->WorkPos.y += pData->fCustomTitleBarHeight;      // The work area starts below the titlebar
+    pViewport->WorkSize.y -= pData->fCustomTitleBarHeight;     // and still ends at the bottom of the window
 
 #elif defined(IM_CURRENT_PLATFORM) && (IM_CURRENT_PLATFORM == IM_PLATFORM_SDL2)
     ImPlatform_AppData_SDL2* pData = ImPlatform_App_GetData_SDL2();
@@ -288,7 +290,8 @@ IMPLATFORM_API void ImPlatform_EndCustomTitleBar(void)
     ImGui::Dummy(ImVec2(0, 0)); // Fix ImGui assertion: provide item after SetCursorPos
     ImGui::End();
     ImGuiViewport* pViewport = ImGui::GetMainViewport();
-    pViewport->WorkPos.y += pData->fCustomTitleBarHeight;
+    pViewport->WorkPos.y += pData->fCustomTitleBarHeight;      // The work area starts below the titlebar
+    pViewport->WorkSize.y -= pData->fCustomTitleBarHeight;     // and still ends at the bottom of the window
 
 #elif defined(IM_CURRENT_PLATFORM) && (IM_CURRENT_PLATFORM == IM_PLATFORM_SDL3)
     ImPlatform_AppData_SDL3* pData = ImPlatform_App_GetData_SDL3();
@@ -296,7 +299,8 @@ IMPLATFORM_API void ImPlatform_EndCustomTitleBar(void)
     ImGui::Dummy(ImVec2(0, 0)); // Fix ImGui assertion: provide item after SetCursorPos
     ImGui::End();
     ImGuiViewport* pViewport = ImGui::GetMainViewport();
-    pViewport->WorkPos.y += pData->fCustomTitleBarHeight;
+    pViewport->WorkPos.y += pData->fCustomTitleBarHeight;      // The work area starts below the titlebar
+    pViewport->WorkSize.y -= pData->fCustomTitleBarHeight;     // and still ends at the bottom of the window
 
 #endif
 }

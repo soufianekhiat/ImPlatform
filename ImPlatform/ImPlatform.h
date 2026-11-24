@@ -1124,7 +1124,7 @@ IMPLATFORM_API void ImPlatform_DrawCustomShaderQuad(
 // Draw a quad now (not queued in a draw list) with `program` and its pending uniforms / textures,
 // e.g. one pass of a blur cascade inside an ImDrawCallback:
 // dst_rect = (x0, y0, x1, y1) in pixels of the current target, uv_rect = (u0, v0, u1, v1).
-// Changes vertex / index buffers and shaders: follow it with ImDrawCallback_ResetRenderState
+// Changes vertex / index buffers and shaders: follow it with ImGui::GetPlatformIO().DrawCallback_ResetRenderState
 // (ImPlatform_EndCustomShader adds one) before Dear ImGui draws again.
 #if IMPLATFORM_GFX_SUPPORT_RENDER_TARGETS
 IMPLATFORM_API void ImPlatform_DrawQuadNow(ImPlatform_ShaderProgram program, ImVec4 dst_rect, ImVec4 uv_rect);
@@ -2050,11 +2050,13 @@ IMPLATFORM_API void ImPlatform_SetDropCallback(ImPlatform_DropCallback callback,
 void ImPlatform_NotifyDrop(ImPlatform_DropEventType type, const char* utf8, ImVec2 client_pos)
 {
     // Dear ImGui's mouse space: desktop coordinates once multi-viewports are enabled
+#ifdef IMGUI_HAS_VIEWPORT
     if (ImGui::GetCurrentContext() && (ImGui::GetIO().ConfigFlags & ImGuiConfigFlags_ViewportsEnable))
     {
         client_pos.x += ImGui::GetMainViewport()->Pos.x;
         client_pos.y += ImGui::GetMainViewport()->Pos.y;
     }
+#endif
     if (g_DropCallback)
     {
         const ImPlatform_DropEvent event = { type, utf8, client_pos };

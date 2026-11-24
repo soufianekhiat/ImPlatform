@@ -313,6 +313,17 @@ IMPLATFORM_API bool ImPlatform_PlatformEvents(void)
             g_AppData.bDone = true;
             return false;
         }
+        // The window moved to a display of another scale, or the scale of a display changed
+        if ((event.type == SDL_EVENT_WINDOW_DISPLAY_CHANGED && event.window.windowID == SDL_GetWindowID(g_AppData.pWindow)) ||
+            event.type == SDL_EVENT_DISPLAY_CONTENT_SCALE_CHANGED)
+        {
+            const float scale = SDL_GetDisplayContentScale(SDL_GetDisplayForWindow(g_AppData.pWindow));
+            if (scale > 0.0f && scale != g_AppData.fDpiScale)
+            {
+                g_AppData.fDpiScale = scale;
+                ImPlatform_NotifyDpiChange(scale);
+            }
+        }
 #if defined(IM_CURRENT_GFX) && (IM_CURRENT_GFX == IM_GFX_DIRECTX11)
         // Notify gfx backend of resize (same as upstream example_sdl3_directx11)
         if (event.type == SDL_EVENT_WINDOW_RESIZED &&
