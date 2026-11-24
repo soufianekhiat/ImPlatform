@@ -84,6 +84,15 @@
 
 #define IM_GFX_MASK         0x0000FFFFu
 
+// Defined before the IMPLATFORM_APP_SUPPORT_* flags, whose conditions compare IM_CURRENT_PLATFORM with them
+#define IM_PLATFORM_WIN32   ( ( 1u << 0u ) << 16u )
+#define IM_PLATFORM_GLFW    ( ( 1u << 1u ) << 16u )
+#define IM_PLATFORM_SDL2    ( ( 1u << 2u ) << 16u )
+#define IM_PLATFORM_SDL3    ( ( 1u << 3u ) << 16u )
+#define IM_PLATFORM_APPLE   ( ( 1u << 4u ) << 16u )     // macOS, a Cocoa window (with IM_GFX_METAL)
+
+#define IM_PLATFORM_MASK    0xFFFF0000u
+
 // Graphics API feature support flags
 // These indicate which features are supported by each backend
 #if defined(IM_CURRENT_GFX) && (IM_CURRENT_GFX == IM_GFX_CUSTOM)
@@ -312,14 +321,6 @@
         #endif
     #endif
 #endif
-
-#define IM_PLATFORM_WIN32   ( ( 1u << 0u ) << 16u )
-#define IM_PLATFORM_GLFW    ( ( 1u << 1u ) << 16u )
-#define IM_PLATFORM_SDL2    ( ( 1u << 2u ) << 16u )
-#define IM_PLATFORM_SDL3    ( ( 1u << 3u ) << 16u )
-#define IM_PLATFORM_APPLE   ( ( 1u << 4u ) << 16u )     // macOS, a Cocoa window (with IM_GFX_METAL)
-
-#define IM_PLATFORM_MASK    0xFFFF0000u
 
 // Predefined target combinations
 #define IM_TARGET_WIN32_DX10        ( IM_PLATFORM_WIN32 | IM_GFX_DIRECTX10 )
