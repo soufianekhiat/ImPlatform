@@ -652,6 +652,7 @@ IMPLATFORM_API bool ImPlatform_InitGfx(void)
 
     // Setup ImGui Vulkan backend
     ImGui_ImplVulkan_InitInfo init_info = {};
+    init_info.ApiVersion = VK_API_VERSION_1_1;      // The instance's
     init_info.Instance = g_GfxData.instance;
     init_info.PhysicalDevice = g_GfxData.physicalDevice;
     init_info.Device = g_GfxData.device;
@@ -3385,7 +3386,7 @@ static bool ImPlatform_Vulkan_ComputeLayout()
     if (!g_ComputeSampler && vkCreateSampler(g_GfxData.device, &si, g_Allocator, &g_ComputeSampler) != VK_SUCCESS)
         return false;
     VkDescriptorSetLayoutBinding b[1 + ImPlatform_Vulkan_MaxComputeInputs + ImPlatform_Vulkan_MaxComputeOutputs] = {};
-    for (uint32_t i = 0; i < IM_ARRAYSIZE(b); i++)
+    for (uint32_t i = 0; i < IM_COUNTOF(b); i++)
     {
         b[i].binding = i;
         b[i].descriptorType = i == 0 ? VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER
@@ -3396,7 +3397,7 @@ static bool ImPlatform_Vulkan_ComputeLayout()
     }
     VkDescriptorSetLayoutCreateInfo li = {};
     li.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-    li.bindingCount = IM_ARRAYSIZE(b);
+    li.bindingCount = IM_COUNTOF(b);
     li.pBindings = b;
     if (!g_ComputeSetLayout && vkCreateDescriptorSetLayout(g_GfxData.device, &li, g_Allocator, &g_ComputeSetLayout) != VK_SUCCESS)
         return false;

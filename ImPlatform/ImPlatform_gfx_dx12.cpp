@@ -638,6 +638,9 @@ IMPLATFORM_API void ImPlatform_ShutdownWindow(void)
 {
     g_P12_DeviceReady = false;
     ImGui_ImplDX12_Shutdown();
+#ifdef IMGUI_HAS_VIEWPORT
+    g_OriginalRendererRenderWindow = nullptr;   // ImPlatform_GfxViewportPost wraps the callback of the next backend init.
+#endif
     ImPlatform_Gfx_CleanupDevice_DX12(&g_GfxData);
 }
 
@@ -1054,16 +1057,16 @@ IMPLATFORM_API ImPlatform_ShaderProgram ImPlatform_CreateShaderProgram(ImPlatfor
     rootParameters[2].Descriptor.RegisterSpace = 0;
     rootParameters[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
 
-    // Static sampler
+    // Static sampler: Dear ImGui's (linear, clamped), which s0 is on the other backends
     D3D12_STATIC_SAMPLER_DESC sampler = {};
     sampler.Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
-    sampler.AddressU = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
-    sampler.AddressV = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
-    sampler.AddressW = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
+    sampler.AddressU = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+    sampler.AddressV = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+    sampler.AddressW = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
     sampler.MipLODBias = 0.f;
     sampler.ComparisonFunc = D3D12_COMPARISON_FUNC_ALWAYS;
     sampler.MinLOD = 0.f;
-    sampler.MaxLOD = 0.f;
+    sampler.MaxLOD = D3D12_FLOAT32_MAX;
     sampler.ShaderRegister = 0; // register(s0)
     sampler.RegisterSpace = 0;
     sampler.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;

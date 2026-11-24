@@ -18,8 +18,16 @@
     #import <Cocoa/Cocoa.h>
 #endif
 
+#if IM_CURRENT_PLATFORM == IM_PLATFORM_GLFW
+    #define GLFW_EXPOSE_NATIVE_COCOA
+    #include <GLFW/glfw3native.h>
+#endif
+
 // Global state
 static ImPlatform_GfxData_Metal g_GfxData = {};
+static void* g_MetalView = nullptr;                     // SDL_MetalView: the view SDL adds to its window for the layer
+static id<CAMetalDrawable> g_FrameDrawable = nil;       // The frame's drawable, from ImPlatform_GfxAPINewFrame to the present
+static id<MTLCommandBuffer> g_FrameCommandBuffer = nil; // The frame's commands, from ImPlatform_GfxAPIRender to the present
 unsigned int g_ImPlatform_BackbufferW = 0;
 unsigned int g_ImPlatform_BackbufferH = 0;
 
@@ -192,26 +200,17 @@ static void ImPlatform_Metal_DestroyBinaryArchive(void)
     g_MetalBinaryArchive = nullptr;
 }
 
-// Internal API - Create Metal device
-void* ImPlatform_Gfx_CreateDevice_Metal(void* pNSWindow, ImPlatform_GfxData_Metal* pData)
+// The device, the command queue and the frame's render pass descriptor, for a layer that draws in the window.
+static void* ImPlatform_Metal_CreateDevice(CAMetalLayer* layer, ImPlatform_GfxData_Metal* pData)
 {
     @autoreleasepool {
-        NSWindow* window = (__bridge NSWindow*)pNSWindow;
-
         // Create Metal device
         id<MTLDevice> device = MTLCreateSystemDefaultDevice();
-        if (!device)
+        if (!device || !layer)
             return nullptr;
 
-        // Create Metal layer
-        CAMetalLayer* layer = [CAMetalLayer layer];
         layer.device = device;
         layer.pixelFormat = MTLPixelFormatBGRA8Unorm;
-
-        // Set layer on window's content view
-        NSView* contentView = window.contentView;
-        contentView.layer = layer;
-        contentView.wantsLayer = YES;
 
         // Create command queue
         id<MTLCommandQueue> commandQueue = [device newCommandQueue];
@@ -233,6 +232,21 @@ void* ImPlatform_Gfx_CreateDevice_Metal(void* pNSWindow, ImPlatform_GfxData_Meta
     }
 }
 
+// Internal API - Create Metal device: a new layer becomes the layer of the window's content view
+void* ImPlatform_Gfx_CreateDevice_Metal(void* pNSWindow, ImPlatform_GfxData_Metal* pData)
+{
+    @autoreleasepool {
+        NSWindow* window = (__bridge NSWindow*)pNSWindow;
+        if (!window)
+            return nullptr;
+        CAMetalLayer* layer = [CAMetalLayer layer];
+        NSView* contentView = window.contentView;
+        contentView.layer = layer;
+        contentView.wantsLayer = YES;
+        return ImPlatform_Metal_CreateDevice(layer, pData);
+    }
+}
+
 // Internal API - Cleanup Metal device
 void ImPlatform_Gfx_CleanupDevice_Metal(ImPlatform_GfxData_Metal* pData)
 {
@@ -240,6 +254,8 @@ void ImPlatform_Gfx_CleanupDevice_Metal(ImPlatform_GfxData_Metal* pData)
         // Serialize and tear down the binary archive before the device goes away.
         ImPlatform_Metal_SaveBinaryArchive();
         ImPlatform_Metal_DestroyBinaryArchive();
+        g_FrameDrawable = nil;
+        g_FrameCommandBuffer = nil;
 
         if (pData->pRenderPassDescriptor)
         {
@@ -264,20 +280,46 @@ void ImPlatform_Gfx_CleanupDevice_Metal(ImPlatform_GfxData_Metal* pData)
             CFRelease(pData->pMetalDevice);
             pData->pMetalDevice = nullptr;
         }
+#if IM_CURRENT_PLATFORM == IM_PLATFORM_SDL2 || IM_CURRENT_PLATFORM == IM_PLATFORM_SDL3
+        if (g_MetalView)
+            SDL_Metal_DestroyView((SDL_MetalView)g_MetalView);
+        g_MetalView = nullptr;
+#endif
     }
 }
 
-// ImPlatform API - InitGfxAPI
+// ImPlatform API - InitGfxAPI. The layer comes from the window as in Dear ImGui's examples: a layer put on the content
+// view of GLFW's window, the layer of the view SDL adds to its window.
 IMPLATFORM_API bool ImPlatform_InitGfxAPI(void)
 {
-#ifdef IM_PLATFORM_APPLE
-    // TODO: Get NSWindow from Apple platform backend
-    // void* pNSWindow = ImPlatform_App_GetNSWindow();
-    // void* pLayer = ImPlatform_Gfx_CreateDevice_Metal(pNSWindow, &g_GfxData);
-    // return (pLayer != nullptr);
-    return false; // Not implemented - need Apple platform backend
+#if IM_CURRENT_PLATFORM == IM_PLATFORM_GLFW
+    return ImPlatform_Gfx_CreateDevice_Metal((__bridge void*)glfwGetCocoaWindow(ImPlatform_App_GetGLFWWindow()), &g_GfxData) != nullptr;
+#elif IM_CURRENT_PLATFORM == IM_PLATFORM_SDL2 || IM_CURRENT_PLATFORM == IM_PLATFORM_SDL3
+#if IM_CURRENT_PLATFORM == IM_PLATFORM_SDL2
+    g_MetalView = SDL_Metal_CreateView(ImPlatform_App_GetSDL2Window());
 #else
-    return false;
+    g_MetalView = SDL_Metal_CreateView(ImPlatform_App_GetSDL3Window());
+#endif
+    if (!g_MetalView)
+        return false;
+    return ImPlatform_Metal_CreateDevice((__bridge CAMetalLayer*)SDL_Metal_GetLayer((SDL_MetalView)g_MetalView), &g_GfxData) != nullptr;
+#else
+    return false;   // No window to take a layer from
+#endif
+}
+
+// The window's size in pixels: the size of the layer's drawables
+static void ImPlatform_Metal_FramebufferSize(int* width, int* height)
+{
+#if IM_CURRENT_PLATFORM == IM_PLATFORM_GLFW
+    glfwGetFramebufferSize(ImPlatform_App_GetGLFWWindow(), width, height);
+#elif IM_CURRENT_PLATFORM == IM_PLATFORM_SDL2
+    SDL_GetWindowSizeInPixels(ImPlatform_App_GetSDL2Window(), width, height);
+#elif IM_CURRENT_PLATFORM == IM_PLATFORM_SDL3
+    SDL_GetWindowSizeInPixels(ImPlatform_App_GetSDL3Window(), width, height);
+#else
+    (void)width;
+    (void)height;
 #endif
 }
 
@@ -322,8 +364,28 @@ IMPLATFORM_API bool ImPlatform_GfxCheck(void)
 IMPLATFORM_API void ImPlatform_GfxAPINewFrame(void)
 {
     @autoreleasepool {
+        // The frame's drawable first: Dear ImGui's backend reads the pixel format and sample count of the descriptor's
+        // texture to choose its pipeline. Without a drawable (no size yet) the frame is built but not rendered.
         CAMetalLayer* layer = (__bridge CAMetalLayer*)g_GfxData.pMetalLayer;
-        ImGui_ImplMetal_NewFrame((__bridge MTLRenderPassDescriptor*)g_GfxData.pRenderPassDescriptor);
+        MTLRenderPassDescriptor* renderPassDesc = (__bridge MTLRenderPassDescriptor*)g_GfxData.pRenderPassDescriptor;
+        int width = 0, height = 0;
+        ImPlatform_Metal_FramebufferSize(&width, &height);
+        g_FrameDrawable = nil;
+        if (width > 0 && height > 0)
+        {
+            layer.drawableSize = CGSizeMake(width, height);
+            g_ImPlatform_BackbufferW = (unsigned int)width;
+            g_ImPlatform_BackbufferH = (unsigned int)height;
+            g_FrameDrawable = [layer nextDrawable];
+        }
+        if (g_FrameDrawable)
+        {
+            renderPassDesc.colorAttachments[0].texture = g_FrameDrawable.texture;
+            renderPassDesc.colorAttachments[0].loadAction = MTLLoadActionClear;
+            renderPassDesc.colorAttachments[0].storeAction = MTLStoreActionStore;
+        }
+        if (renderPassDesc.colorAttachments[0].texture)
+            ImGui_ImplMetal_NewFrame(renderPassDesc);
     }
 }
 
@@ -331,14 +393,10 @@ IMPLATFORM_API void ImPlatform_GfxAPINewFrame(void)
 IMPLATFORM_API bool ImPlatform_GfxAPIClear(ImVec4 const vClearColor)
 {
     @autoreleasepool {
-        CAMetalLayer* layer = (__bridge CAMetalLayer*)g_GfxData.pMetalLayer;
-        id<CAMetalDrawable> drawable = [layer nextDrawable];
-        if (!drawable)
+        if (!g_FrameDrawable)
             return false;
 
         MTLRenderPassDescriptor* renderPassDesc = (__bridge MTLRenderPassDescriptor*)g_GfxData.pRenderPassDescriptor;
-        renderPassDesc.colorAttachments[0].texture = drawable.texture;
-        renderPassDesc.colorAttachments[0].loadAction = MTLLoadActionClear;
         renderPassDesc.colorAttachments[0].clearColor = MTLClearColorMake(
             vClearColor.x * vClearColor.w,
             vClearColor.y * vClearColor.w,
@@ -357,6 +415,8 @@ IMPLATFORM_API bool ImPlatform_GfxAPIRender(ImVec4 const vClearColor)
     @autoreleasepool {
         (void)vClearColor;
         ImPlatform_RunRenderPass();     // Queued by ImPlatform_QueueRenderPass(): committed before the frame.
+        if (!g_FrameDrawable)           // Nothing to render the frame to: see ImPlatform_GfxAPINewFrame
+            return false;
 
         id<MTLCommandQueue> commandQueue = (__bridge id<MTLCommandQueue>)g_GfxData.pCommandQueue;
         id<MTLCommandBuffer> commandBuffer = [commandQueue commandBuffer];
@@ -368,6 +428,7 @@ IMPLATFORM_API bool ImPlatform_GfxAPIRender(ImVec4 const vClearColor)
         ImPlatform_RenderDrawDataWrapper(ImGui::GetDrawData(), commandBuffer, renderEncoder);
 
         [renderEncoder endEncoding];
+        g_FrameCommandBuffer = commandBuffer;   // Presented and committed by ImPlatform_GfxAPISwapBuffer
 
         return true;
     }
@@ -397,16 +458,16 @@ IMPLATFORM_API void ImPlatform_GfxViewportPost(void)
 IMPLATFORM_API bool ImPlatform_GfxAPISwapBuffer(void)
 {
     @autoreleasepool {
-        CAMetalLayer* layer = (__bridge CAMetalLayer*)g_GfxData.pMetalLayer;
-        id<CAMetalDrawable> drawable = [layer nextDrawable];
-
-        id<MTLCommandQueue> commandQueue = (__bridge id<MTLCommandQueue>)g_GfxData.pCommandQueue;
-        id<MTLCommandBuffer> commandBuffer = [commandQueue commandBuffer];
-
-        [commandBuffer presentDrawable:drawable];
-        [commandBuffer commit];
-
-        return true;
+        // The commands of the frame present the drawable they rendered to
+        const bool rendered = g_FrameCommandBuffer != nil && g_FrameDrawable != nil;
+        if (rendered)
+        {
+            [g_FrameCommandBuffer presentDrawable:g_FrameDrawable];
+            [g_FrameCommandBuffer commit];
+        }
+        g_FrameCommandBuffer = nil;
+        g_FrameDrawable = nil;
+        return rendered;
     }
 }
 
@@ -1423,7 +1484,9 @@ static void ImPlatform_RunRenderPass()
         g_CurrentRenderEncoder = saved_encoder;
         [encoder endEncoding];
         [commandBuffer commit];
-        ImGui_ImplMetal_NewFrame((__bridge MTLRenderPassDescriptor*)g_GfxData.pRenderPassDescriptor);     // Back to the frame's.
+        MTLRenderPassDescriptor* frame_desc = (__bridge MTLRenderPassDescriptor*)g_GfxData.pRenderPassDescriptor;
+        if (frame_desc.colorAttachments[0].texture)
+            ImGui_ImplMetal_NewFrame(frame_desc);       // Back to the frame's.
     }
 }
 
@@ -1506,7 +1569,7 @@ IMPLATFORM_API void ImPlatform_PushPremultipliedAlpha(ImDrawList* draw)
 IMPLATFORM_API void ImPlatform_PopPremultipliedAlpha(ImDrawList* draw)
 {
     if (g_PremultipliedPipeline)
-        (draw ? draw : ImGui::GetWindowDrawList())->AddCallback(ImDrawCallback_ResetRenderState, NULL);
+        (draw ? draw : ImGui::GetWindowDrawList())->AddCallback(ImGui::GetPlatformIO().DrawCallback_ResetRenderState, NULL);
 }
 
 static void ImPlatform_RenderDrawDataWrapper(ImDrawData* draw_data, id<MTLCommandBuffer> commandBuffer, id<MTLRenderCommandEncoder> renderEncoder)
@@ -1806,7 +1869,7 @@ static id<MTLRenderPipelineState> ImPlatform_Metal_LayoutPipeline(ImPlatform_Sha
     for (unsigned int i = 0; i < vb->vb_desc.attribute_count; i++)
     {
         const int format = (int)vb->attributes[i].format;
-        vertexDescriptor.attributes[i].format = formats[format >= 0 && format < IM_ARRAYSIZE(formats) ? format : 3];
+        vertexDescriptor.attributes[i].format = formats[format >= 0 && format < IM_COUNTOF(formats) ? format : 3];
         vertexDescriptor.attributes[i].offset = vb->attributes[i].offset;
         vertexDescriptor.attributes[i].bufferIndex = 0;
     }
@@ -1816,7 +1879,7 @@ static id<MTLRenderPipelineState> ImPlatform_Metal_LayoutPipeline(ImPlatform_Sha
     id<MTLRenderPipelineState> pipeline = ImPlatform_Metal_CreatePipeline((__bridge id<MTLFunction>)program->mtlVertexFunction,
                                                                          (__bridge id<MTLFunction>)program->mtlFragmentFunction, vertexDescriptor,
                                                                          program->blend);
-    if (pipeline && program->layoutPipelineCount < IM_ARRAYSIZE(program->layoutPipelines))
+    if (pipeline && program->layoutPipelineCount < IM_COUNTOF(program->layoutPipelines))
     {
         program->layoutPipelines[program->layoutPipelineCount].layout = vb->layout;
         program->layoutPipelines[program->layoutPipelineCount++].pipeline = (__bridge_retained void*)pipeline;
@@ -1862,17 +1925,15 @@ IMPLATFORM_API void ImPlatform_PushSampler(ImPlatform_TextureFilter filter, ImPl
             @autoreleasepool {
                 id<MTLRenderCommandEncoder> encoder = (__bridge id<MTLRenderCommandEncoder>)g_CurrentRenderEncoder;
                 if (!encoder) return;
-                // Save current sampler (Metal has no query API — store nil to represent "default")
-                if (g_SamplerDepth < 8)
-                    g_SamplerStack[g_SamplerDepth++] = nullptr;
+                // The stack keeps what each level bound (Metal has no query of the bound sampler)
                 int enc = (int)(uintptr_t)cmd->UserCallbackData;
                 int f = (enc >> 8) & 0xFF;
                 int w = enc & 0xFF;
-                if (f < 2 && w < 3 && g_MetalSamplers[f][w])
-                {
-                    id<MTLSamplerState> s = (__bridge id<MTLSamplerState>)g_MetalSamplers[f][w];
-                    [encoder setFragmentSamplerState:s atIndex:0];
-                }
+                void* sampler = (f < 2 && w < 3 && g_MetalSamplers[f][w]) ? g_MetalSamplers[f][w] : g_MetalSamplers[1][0];
+                if (g_SamplerDepth < 8)
+                    g_SamplerStack[g_SamplerDepth++] = sampler;
+                if (sampler)
+                    [encoder setFragmentSamplerState:(__bridge id<MTLSamplerState>)sampler atIndex:0];
             }
         }, (void*)encoded);
 }
@@ -1884,9 +1945,11 @@ IMPLATFORM_API void ImPlatform_PopSampler(void)
             @autoreleasepool {
                 id<MTLRenderCommandEncoder> encoder = (__bridge id<MTLRenderCommandEncoder>)g_CurrentRenderEncoder;
                 if (!encoder || g_SamplerDepth <= 0) return;
-                void* saved = g_SamplerStack[--g_SamplerDepth];
-                id<MTLSamplerState> s = (__bridge id<MTLSamplerState>)saved;
-                [encoder setFragmentSamplerState:s atIndex:0];
+                // Back to the level below, or to the linear, clamped sampler Dear ImGui's shader reads at index 0
+                --g_SamplerDepth;
+                void* sampler = g_SamplerDepth > 0 ? g_SamplerStack[g_SamplerDepth - 1] : g_MetalSamplers[1][0];
+                if (sampler)
+                    [encoder setFragmentSamplerState:(__bridge id<MTLSamplerState>)sampler atIndex:0];
             }
         }, nullptr);
 }

@@ -41,6 +41,11 @@ without freezing the frame, and report their errors to the application. The full
   `ImPlatform/ImPlatform_native.cpp` (applications that only define `IMPLATFORM_IMPLEMENTATION` get them through
   `ImPlatform.h`). The first uses `std::thread` on DirectX 10, 11 and 12.
 - **macOS**: link the ApplicationServices framework.
+- **Dear ImGui**: 1.92.8 or later (the submodule is 1.93.0, docking).
+- **DirectX 9** is a Direct3D 9Ex device: resources an application creates itself on the device go in
+  `D3DPOOL_DEFAULT` (there is no managed pool), and they stay valid across a reset.
+- **DirectX 12**: the sampler `s0` of a custom shader program clamps; a shader that relied on it wrapping needs its
+  own texture coordinates wrapped (`frac`).
 - **`IM_GFX_CUSTOM` backends** provide two more functions, `ImPlatform_GetShaderLog()` and
   `ImPlatform_SetShaderProgramBlend()`, and the group `IMPLATFORM_GFX_SUPPORT_ASYNC_COMPUTE` (three functions) unless
   they define it to 0.
@@ -66,8 +71,8 @@ without freezing the frame, and report their errors to the application. The full
 
 ## Known limitations
 
-- Metal and macOS build and compile in CI but have not run on a Mac with a GPU; the blending, defines and log changes
-  of this version are untested there.
+- Metal and macOS build and compile in CI but have not run on a Mac with a GPU; the device creation, the frame and
+  the blending, defines and log changes of this version are untested there.
 - Shaders compile on a worker thread on DirectX 10, 11 and 12 only: elsewhere a job is ready or failed as soon as it
   is created, and Vulkan, DirectX 12 and OpenGL still create pipelines at the first draw or dispatch.
 - An asynchronous dispatch runs on the queue of the frames: a long one still delays the frames submitted after it.

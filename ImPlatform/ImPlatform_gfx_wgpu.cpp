@@ -482,19 +482,16 @@ bool ImPlatform_Gfx_CreateDevice_WebGPU(void* pWindow, ImPlatform_GfxData_WebGPU
     // 4. Get queue
     pData->queue = wgpuDeviceGetQueue(pData->device);
 
-    // 5. Select surface format from the surface capabilities.
-    // Prefer a non-sRGB 8-bit format: Dear ImGui colors are authored in gamma space.
+    // 5. Select surface format from the surface capabilities, in the order of Dear ImGui's examples: a non-sRGB 8-bit
+    // format first (Dear ImGui colors are authored in gamma space), then an sRGB one, then whatever comes first.
     WGPUSurfaceCapabilities surface_capabilities = {};
     wgpuSurfaceGetCapabilities(pData->surface, pData->adapter, &surface_capabilities);
+    const WGPUTextureFormat preferred[] = { WGPUTextureFormat_BGRA8Unorm, WGPUTextureFormat_RGBA8Unorm, WGPUTextureFormat_BGRA8UnormSrgb, WGPUTextureFormat_RGBA8UnormSrgb };
     pData->swapChainFormat = (surface_capabilities.formatCount > 0) ? surface_capabilities.formats[0] : WGPUTextureFormat_BGRA8Unorm;
-    for (size_t n = 0; n < surface_capabilities.formatCount; n++)
-    {
-        if (surface_capabilities.formats[n] == WGPUTextureFormat_BGRA8Unorm || surface_capabilities.formats[n] == WGPUTextureFormat_RGBA8Unorm)
-        {
-            pData->swapChainFormat = surface_capabilities.formats[n];
-            break;
-        }
-    }
+    for (int p = IM_COUNTOF(preferred) - 1; p >= 0; p--)        // The last match stays: the first available of the list
+        for (size_t n = 0; n < surface_capabilities.formatCount; n++)
+            if (surface_capabilities.formats[n] == preferred[p])
+                pData->swapChainFormat = preferred[p];
     wgpuSurfaceCapabilitiesFreeMembers(surface_capabilities);
 
     return true;
@@ -2566,7 +2563,7 @@ static WGPURenderPipeline ImPlatform_WGPU_LayoutPipeline(ImPlatform_ShaderProgra
     for (int i = 0; i < program_data->layoutPipelineCount; i++)
         if (program_data->layoutPipelines[i].layout == layout && program_data->layoutPipelines[i].topology == topology)
             return program_data->layoutPipelines[i].pipeline;
-    if (program_data->layoutPipelineCount == IM_ARRAYSIZE(program_data->layoutPipelines))
+    if (program_data->layoutPipelineCount == IM_COUNTOF(program_data->layoutPipelines))
         return nullptr;
     WGPURenderPipeline pipeline = ImPlatform_WGPU_CreatePipeline(program_data, vertices, topology);
     if (pipeline)
@@ -2600,8 +2597,9 @@ IMPLATFORM_API void ImPlatform_GetCurrentTargetSize(unsigned int* width, unsigne
 {
     const ImDrawData* d = g_CurrentDrawData;
     const bool rendering = d && ImGui::GetPlatformIO().Renderer_RenderState != NULL;
-    if (width) *width = rendering ? (unsigned int)(d->DisplaySize.x * d->FramebufferScale.x) : g_GfxData.uSurfaceWidth;
-    if (height) *height = rendering ? (unsigned int)(d->DisplaySize.y * d->FramebufferScale.y) : g_GfxData.uSurfaceHeight;
+    // Rounded as the backend rounds its viewport
+    if (width) *width = rendering ? (unsigned int)(d->DisplaySize.x * d->FramebufferScale.x + 0.5f) : g_GfxData.uSurfaceWidth;
+    if (height) *height = rendering ? (unsigned int)(d->DisplaySize.y * d->FramebufferScale.y + 0.5f) : g_GfxData.uSurfaceHeight;
 }
 
 #endif // IM_GFX_WGPU

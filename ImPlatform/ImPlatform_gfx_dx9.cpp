@@ -91,8 +91,13 @@ static void ImPlatform_UpdateBackbufferSize_DX9(ImPlatform_GfxData_DX9* pData)
 // Internal API - Create D3D9 device
 bool ImPlatform_Gfx_CreateDevice_DX9(HWND hWnd, ImPlatform_GfxData_DX9* pData)
 {
-    if ((pData->pD3D = Direct3DCreate9(D3D_SDK_VERSION)) == NULL)
+    // A Direct3D 9Ex device: its reset (every resize of the window) keeps the default pool resources, which the render
+    // textures are, and Dear ImGui's own textures and buffers. It has no managed pool: textures and buffers are
+    // created in the default one.
+    IDirect3D9Ex* d3d = NULL;
+    if (FAILED(Direct3DCreate9Ex(D3D_SDK_VERSION, &d3d)) || d3d == NULL)
         return false;
+    pData->pD3D = d3d;
 
     // Create the D3DDevice
     ZeroMemory(&pData->d3dpp, sizeof(pData->d3dpp));
@@ -103,8 +108,10 @@ bool ImPlatform_Gfx_CreateDevice_DX9(HWND hWnd, ImPlatform_GfxData_DX9* pData)
     pData->d3dpp.AutoDepthStencilFormat = D3DFMT_D16;
     pData->d3dpp.PresentationInterval = D3DPRESENT_INTERVAL_ONE; // Vsync
 
-    const HRESULT hr = pData->pD3D->CreateDevice(D3DADAPTER_DEFAULT, D3DDEVTYPE_HAL, hWnd, D3DCREATE_HARDWARE_VERTEXPROCESSING,
-                                                 &pData->d3dpp, &pData->pDevice);
+    IDirect3DDevice9Ex* device = NULL;
+    const HRESULT hr = d3d->CreateDeviceEx(D3DADAPTER_DEFAULT, D3DDEVTYPE_HAL, hWnd, D3DCREATE_HARDWARE_VERTEXPROCESSING,
+                                           &pData->d3dpp, NULL, &device);
+    pData->pDevice = device;
     if (FAILED(hr))
     {
         // D3DERR_NOTAVAILABLE / DEVICELOST also while the session is locked or the display is off
@@ -135,15 +142,14 @@ void ImPlatform_Gfx_CleanupDevice_DX9(ImPlatform_GfxData_DX9* pData)
     }
 }
 
-// Internal API - Reset D3D9 device
+// Internal API - Reset D3D9 device. The textures and buffers the application created stay valid (Direct3D 9Ex).
 void ImPlatform_DX9_ReleaseStreamBuffers();
 void ImPlatform_Gfx_ResetDevice_DX9(ImPlatform_GfxData_DX9* pData)
 {
     ImGui_ImplDX9_InvalidateDeviceObjects();
-    ImPlatform_DX9_ReleaseStreamBuffers();      // Default pool resources go before a reset
     HRESULT hr = pData->pDevice->Reset(&pData->d3dpp);
     if (hr == D3DERR_INVALIDCALL)
-        IM_ASSERT(0); // Reset fails while D3DPOOL_DEFAULT resources are still alive (e.g. ImPlatform render textures)
+        IM_ASSERT(0);
     // Always recreate device objects, same as upstream example_win32_directx9 (also recreates secondary viewports swapchains)
     ImGui_ImplDX9_CreateDeviceObjects();
     ImPlatform_UpdateBackbufferSize_DX9(pData);
@@ -394,7 +400,7 @@ IMPLATFORM_API ImTextureID ImPlatform_CreateTexture3D(const void* voxel_data, co
     int bytes_per_pixel;
     D3DFORMAT format = ImPlatform_GetD3D9Format(desc->format, &bytes_per_pixel);
     IDirect3DVolumeTexture9* tex = NULL;
-    if (FAILED(g_GfxData.pDevice->CreateVolumeTexture(desc->width, desc->height, desc->depth, 1, 0, format, D3DPOOL_MANAGED, &tex, NULL)) || !tex)
+    if (FAILED(g_GfxData.pDevice->CreateVolumeTexture(desc->width, desc->height, desc->depth, 1, D3DUSAGE_DYNAMIC, format, D3DPOOL_DEFAULT, &tex, NULL)) || !tex)
         return NULL;
     D3DLOCKED_BOX box;
     if (FAILED(tex->LockBox(0, &box, NULL, 0)))
@@ -426,11 +432,11 @@ IMPLATFORM_API ImTextureID ImPlatform_CreateTexture(const void* pixel_data, cons
     int bytes_per_pixel;
     D3DFORMAT format = ImPlatform_GetD3D9Format(desc->format, &bytes_per_pixel);
 
-    // Create texture
+    // Create texture (dynamic: a default pool texture is locked to be written)
     LPDIRECT3DTEXTURE9 pTexture = NULL;
     HRESULT hr = g_GfxData.pDevice->CreateTexture(
-        desc->width, desc->height, 1, 0,
-        format, D3DPOOL_MANAGED, &pTexture, NULL);
+        desc->width, desc->height, 1, D3DUSAGE_DYNAMIC,
+        format, D3DPOOL_DEFAULT, &pTexture, NULL);
 
     if (FAILED(hr) || !pTexture)
         return NULL;
@@ -635,17 +641,23 @@ static void ImPlatform_RunRenderPass()
         return;
     LPDIRECT3DDEVICE9 dev = g_GfxData.pDevice;
     IDirect3DSurface9* saved = NULL;
+    IDirect3DSurface9* saved_depth = NULL;
     dev->GetRenderTarget(0, &saved);
+    dev->GetDepthStencilSurface(&saved_depth);
     dev->SetTexture(0, NULL);       // Not bound as an input while it is the target.
     dev->SetRenderTarget(0, entry->pSurface);
+    dev->SetDepthStencilSurface(NULL);      // The window's depth buffer may be smaller than the target, which Direct3D 9 refuses
     if (g_PassClear)
         dev->Clear(0, NULL, D3DCLEAR_TARGET, D3DCOLOR_ARGB(0, 0, 0, 0), 1.0f, 0);
     if (draw_data->Textures == NULL)
         draw_data->Textures = &ImGui::GetPlatformIO().Textures;     // The frame's texture updates, before they are drawn.
     ImPlatform_RenderPassLists(draw_data, [](ImDrawData* d) { ImGui_ImplDX9_RenderDrawData(d); });      // Viewport and projection from the draw data.
     dev->SetRenderTarget(0, saved);
+    dev->SetDepthStencilSurface(saved_depth);
     if (saved)
         saved->Release();
+    if (saved_depth)
+        saved_depth->Release();
 }
 
 static DWORD g_BlendStack[8] = {};
@@ -657,7 +669,7 @@ IMPLATFORM_API void ImPlatform_PushPremultipliedAlpha(ImDrawList* draw)
     {
         DWORD src = D3DBLEND_SRCALPHA;
         g_GfxData.pDevice->GetRenderState(D3DRS_SRCBLEND, &src);
-        if (g_BlendDepth < IM_ARRAYSIZE(g_BlendStack))
+        if (g_BlendDepth < IM_COUNTOF(g_BlendStack))
             g_BlendStack[g_BlendDepth++] = src;
         g_GfxData.pDevice->SetRenderState(D3DRS_SRCBLEND, D3DBLEND_ONE);    // Alpha already blends ONE, INV_SRC_ALPHA.
     }, NULL);
@@ -690,7 +702,7 @@ IMPLATFORM_API bool ImPlatform_ReadTexture(ImTextureID texture, unsigned int x, 
     if (FAILED(tex->GetSurfaceLevel(0, &src)))
         return false;
     IDirect3DSurface9* lock = src;
-    if (desc.Pool == D3DPOOL_DEFAULT)       // Render targets: copied to system memory first.
+    if (desc.Usage & D3DUSAGE_RENDERTARGET)     // Render targets: copied to system memory first.
     {
         if (FAILED(g_GfxData.pDevice->CreateOffscreenPlainSurface(desc.Width, desc.Height, desc.Format, D3DPOOL_SYSTEMMEM, &sys, NULL))
             || FAILED(g_GfxData.pDevice->GetRenderTargetData(src, sys)))
@@ -796,12 +808,11 @@ struct ImPlatform_BufferData_DX9
     bool drawn;         // Drawn since its last whole write
 };
 
-// Static and Dynamic buffers are in the managed pool: Direct3D keeps a copy of them in system memory, so a lock of a
-// part or of the whole is ordered with the draws around it, and they survive a device reset. Stream buffers are dynamic
-// buffers of the default pool: a whole write discards (the driver hands out memory no issued draw reads); a part is
+// Every buffer is in the default pool (Direct3D 9Ex has no other for them) and stays valid across a device reset.
+// Static and Dynamic buffers are not dynamic ones: a lock of a part or of the whole is ordered with the draws around
+// it. Stream buffers are dynamic: a whole write discards (the driver hands out memory no issued draw reads); a part is
 // written in place, and refused once the buffer has been drawn. Destroyed Stream buffers are kept for the next Stream
 // buffer of a close size, which discards them: buffers created and destroyed every frame create no Direct3D buffer.
-// They are released before a device reset, as the default pool requires.
 struct ImPlatform_StreamBuffer_DX9
 {
     IDirect3DResource9* buffer;
@@ -910,7 +921,7 @@ IMPLATFORM_API bool ImPlatform_CreateVertexInputLayout(ImPlatform_VertexBuffer v
         BYTE index = 0;
         for (unsigned int j = 0; j < i; j++)
             index += strcmp(vb->vb_desc.attributes[j].semantic_name, attr.semantic_name) == 0 ? 1 : 0;
-        D3DVERTEXELEMENT9 e = { 0, (WORD)attr.offset, types[(int)attr.format < IM_ARRAYSIZE(types) ? (int)attr.format : 3],
+        D3DVERTEXELEMENT9 e = { 0, (WORD)attr.offset, types[(int)attr.format < IM_COUNTOF(types) ? (int)attr.format : 3],
                                 D3DDECLMETHOD_DEFAULT, usage, index };
         elements.push_back(e);
     }
@@ -933,7 +944,7 @@ IMPLATFORM_API ImPlatform_VertexBuffer ImPlatform_CreateVertexBuffer(const void*
     if (!d3d_buffer)
     {
         if (FAILED(g_GfxData.pDevice->CreateVertexBuffer(size, stream ? D3DUSAGE_DYNAMIC | D3DUSAGE_WRITEONLY : 0, 0,
-                                                         stream ? D3DPOOL_DEFAULT : D3DPOOL_MANAGED, &d3d_buffer, NULL)))
+                                                         D3DPOOL_DEFAULT, &d3d_buffer, NULL)))
             return NULL;
         ImPlatform_DX9_WriteBuffer(d3d_buffer, vertex_data, 0, size, stream ? D3DLOCK_DISCARD : 0);
     }
@@ -995,7 +1006,7 @@ IMPLATFORM_API ImPlatform_IndexBuffer ImPlatform_CreateIndexBuffer(const void* i
     if (!d3d_buffer)
     {
         if (FAILED(g_GfxData.pDevice->CreateIndexBuffer(size, stream ? D3DUSAGE_DYNAMIC | D3DUSAGE_WRITEONLY : 0, format,
-                                                        stream ? D3DPOOL_DEFAULT : D3DPOOL_MANAGED, &d3d_buffer, NULL)))
+                                                        D3DPOOL_DEFAULT, &d3d_buffer, NULL)))
             return NULL;
         ImPlatform_DX9_WriteBuffer(d3d_buffer, index_data, 0, size, stream ? D3DLOCK_DISCARD : 0);
     }
@@ -1564,6 +1575,7 @@ IMPLATFORM_API void ImPlatform_PopShaderConstants(void* handle)
 struct ImP9_SavedTarget
 {
     IDirect3DSurface9* surface;
+    IDirect3DSurface9* depth;
     D3DVIEWPORT9 viewport;
     RECT scissor;
 };
@@ -1573,16 +1585,19 @@ static int g_P9_TargetDepth = 0;
 IMPLATFORM_API bool ImPlatform_PushRenderTarget(ImTextureID texture, bool clear)
 {
     ImPlatform_RTTracking_DX9* entry = ImPlatform_FindRT_DX9(texture);
-    if (!entry || !g_GfxData.pDevice || g_P9_TargetDepth >= IM_ARRAYSIZE(g_P9_Targets))
+    if (!entry || !g_GfxData.pDevice || g_P9_TargetDepth >= IM_COUNTOF(g_P9_Targets))
         return false;
     LPDIRECT3DDEVICE9 dev = g_GfxData.pDevice;
     ImP9_SavedTarget& saved = g_P9_Targets[g_P9_TargetDepth++];
     dev->GetRenderTarget(0, &saved.surface);
+    saved.depth = NULL;
+    dev->GetDepthStencilSurface(&saved.depth);
     dev->GetViewport(&saved.viewport);
     dev->GetScissorRect(&saved.scissor);
     for (DWORD stage = 0; stage < 9; stage++)
         dev->SetTexture(stage, NULL);
     dev->SetRenderTarget(0, entry->pSurface);       // Also sets the viewport to the whole surface
+    dev->SetDepthStencilSurface(NULL);              // The window's depth buffer may be smaller than the target
     D3DSURFACE_DESC desc;
     entry->pSurface->GetDesc(&desc);
     const RECT scissor = { 0, 0, (LONG)desc.Width, (LONG)desc.Height };
@@ -1598,11 +1613,14 @@ IMPLATFORM_API void ImPlatform_PopRenderTarget(void)
         return;
     ImP9_SavedTarget& saved = g_P9_Targets[--g_P9_TargetDepth];
     g_GfxData.pDevice->SetRenderTarget(0, saved.surface);
+    g_GfxData.pDevice->SetDepthStencilSurface(saved.depth);
     g_GfxData.pDevice->SetViewport(&saved.viewport);
     g_GfxData.pDevice->SetScissorRect(&saved.scissor);
     if (saved.surface)
         saved.surface->Release();
-    saved.surface = NULL;
+    if (saved.depth)
+        saved.depth->Release();
+    saved.surface = saved.depth = NULL;
 }
 
 IMPLATFORM_API bool ImPlatform_BeginRenderToTexture(ImTextureID texture) { return ImPlatform_PushRenderTarget(texture, true); }
@@ -1672,8 +1690,16 @@ IMPLATFORM_API void ImPlatform_DrawQuadNow(ImPlatform_ShaderProgram program, ImV
         { { dst_rect.z, dst_rect.w, 0.0f }, 0xFFFFFFFF, { uv_rect.z, uv_rect.w } },
         { { dst_rect.x, dst_rect.w, 0.0f }, 0xFFFFFFFF, { uv_rect.x, uv_rect.w } },
     };
+    // DrawPrimitiveUP leaves stream 0 unbound, and Dear ImGui binds its vertex buffer once per draw data, not in the
+    // render state its reset callback sets: it is put back here.
+    IDirect3DVertexBuffer9* vb = NULL;
+    UINT vb_offset = 0, vb_stride = 0;
+    g_GfxData.pDevice->GetStreamSource(0, &vb, &vb_offset, &vb_stride);
     g_GfxData.pDevice->SetFVF(D3DFVF_XYZ | D3DFVF_DIFFUSE | D3DFVF_TEX1);
     g_GfxData.pDevice->DrawPrimitiveUP(D3DPT_TRIANGLEFAN, 2, quad, sizeof(Vertex));
+    g_GfxData.pDevice->SetStreamSource(0, vb, vb_offset, vb_stride);
+    if (vb)
+        vb->Release();
 }
 
 #endif // IM_GFX_DIRECTX9

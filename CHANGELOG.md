@@ -33,7 +33,8 @@ Changes since 2.0.0 (the `v2` branch), in progress on the `v3` branch.
   the previous call: pan, pinch zoom and rotation, computed from the finger positions the same way on every platform.
   A trackpad's pinch comes through the same gesture as its zoom (Win32 precision touchpads, macOS with every window
   library, where the two-finger turn is its rotation, SDL 3.4 and later).
-  Demo `--touch-test` (synthetic SDL finger events; the recognizer alone on Win32).
+  Demo `--touch-test` (synthetic SDL finger events; the recognizer alone on Win32), and a "Gestures" window whose
+  square follows the gesture, to try a real trackpad or touch screen.
 - **Drag and drop from other applications**: `ImPlatform_SetDropCallback()` receives every event of a drag over the
   main window: begin, position, one event per dropped file and per dropped text (a URL for a link or an image dragged
   from a browser), end. Win32 (an OLE drop target) and SDL3 report the drag while it hovers; SDL2 and GLFW at the
@@ -78,14 +79,37 @@ Changes since 2.0.0 (the `v2` branch), in progress on the `v3` branch.
   into memory the GPU could still be reading; they now write another version of the buffer and take it back once the
   frames that read it have completed. WebGPU applied an update to the draws already recorded in the frame; it writes
   another buffer too. On DirectX 10 and 11 Dynamic buffers are updated by `UpdateSubresource`, on
-  DirectX 9 they are in the managed pool: a partial update is ordered with the draws as a whole one is. Demo
+  DirectX 9 they are not dynamic buffers: a partial update is ordered with the draws as a whole one is. Demo
   `--buffer-update-test`, `--mesh-stream-test`.
+- **Dear ImGui 1.93.0** (docking) is the version of the `imgui` submodule. ImPlatform needs 1.92.8 or later: it uses
+  `ImGui::GetPlatformIO().DrawCallback_ResetRenderState` and `IM_COUNTOF`.
+- **DirectX 9 creates a Direct3D 9Ex device**: a reset (every resize of the window) keeps the textures, render textures
+  and buffers. Direct3D 9Ex has no managed pool: ImPlatform's textures and buffers are in the default pool, and what an
+  application creates itself on `ImPlatform_GfxData_DX9::pDevice` must be too.
+- DirectX 12: the sampler `s0` of a custom shader program clamps and reads every mip level, as on the other backends
+  (it wrapped and read the first level only).
+- WebGPU: the surface format is chosen in the order of Dear ImGui's example (BGRA8, RGBA8, then their sRGB variants).
+- Demo: frames and grabs are rounded as in Dear ImGui's examples.
 - DirectX 10, 11 and 12 share one HLSL compile function (`ImPlatform_D3DCompileShader` in `ImPlatform_Internal.h`):
   DirectX 10 and 12 print the compile time of a shader as DirectX 11 did.
 - An `IM_GFX_CUSTOM` application also provides `ImPlatform_GetShaderLog()` and `ImPlatform_SetShaderProgramBlend()`.
 - New source file `ImPlatform/ImPlatform_shader_common.cpp` (included by `ImPlatform.h`; listed in `CMakeLists.txt`).
 
 ### Fixed
+- Metal: `ImPlatform_InitGfxAPI()` returned false on every configuration, so no Metal application started. It now
+  creates the device and its layer on GLFW's Cocoa window or on SDL's Metal view, and a frame takes one drawable and
+  one command buffer, presented by `ImPlatform_GfxAPISwapBuffer()`, as Dear ImGui's examples do. `ImPlatform_PopSampler()`
+  restores the linear clamped sampler instead of none. Compiled only: no Mac with a GPU has run it.
+- DirectX 9: resizing the window while a render texture existed failed the device reset (an assertion in debug
+  builds). A render texture larger than the window can be drawn into (the window's depth buffer is unbound meanwhile).
+  `ImPlatform_DrawQuadNow()` left the vertex stream unbound, which dropped the rest of the frame's interface.
+- DirectX 12: `ImPlatform_ShutdownWindow()` forgets the viewport render callback it wrapped, so the device can be
+  initialized again.
+- The DPI callback on GLFW reports the scale Dear ImGui's backend uses (1 on macOS and Wayland, where the framebuffer
+  scale does the scaling) instead of GLFW's raw content scale, which scaled the interface twice there. On SDL2 and
+  SDL3 it is now called when the window moves to a display of another scale.
+- Custom titlebar: the main viewport's work area is shortened by the titlebar's height; it only moved down, so a
+  window fitted to the work area ran past the bottom of the window.
 - The position of a drop is in the space of `ImGui::GetMousePos()`, as documented: with multi-viewports enabled it was
   still relative to the main window.
 - `ImPlatform_UpdateVertexBuffer()` / `ImPlatform_UpdateIndexBuffer()` took their last two arguments as (count, offset)
