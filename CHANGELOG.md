@@ -90,6 +90,9 @@ Changes since 2.0.0 (the `v2` branch), in progress on the `v3` branch.
   (it wrapped and read the first level only).
 - WebGPU: the surface format is chosen in the order of Dear ImGui's example (BGRA8, RGBA8, then their sRGB variants).
 - Demo: frames and grabs are rounded as in Dear ImGui's examples.
+- `ImPlatform_GfxData_Vulkan` (`ImPlatform_Internal.h`) no longer has the members that were never filled (swapchain,
+  render pass, command buffers, semaphores, fences, pipeline cache): they belong to Dear ImGui's
+  `ImGui_ImplVulkanH_Window`.
 - DirectX 10, 11 and 12 share one HLSL compile function (`ImPlatform_D3DCompileShader` in `ImPlatform_Internal.h`):
   DirectX 10 and 12 print the compile time of a shader as DirectX 11 did.
 - An `IM_GFX_CUSTOM` application also provides `ImPlatform_GetShaderLog()` and `ImPlatform_SetShaderProgramBlend()`.
@@ -110,6 +113,25 @@ Changes since 2.0.0 (the `v2` branch), in progress on the `v3` branch.
   SDL3 it is now called when the window moves to a display of another scale.
 - Custom titlebar: the main viewport's work area is shortened by the titlebar's height; it only moved down, so a
   window fitted to the work area ran past the bottom of the window.
+- Vulkan: the pipelines of a custom shader program are kept per target format instead of per render pass. Every
+  resize of the window and every render texture has a render pass of its own, so the pipelines added up, and one could
+  be matched to a new render pass that reused the handle of a destroyed one.
+- Vulkan: creating a texture or a render texture returns 0 once 968 are alive, instead of aborting the application
+  when the descriptor pool shared with Dear ImGui's backend ran out.
+- OpenGL: `ImPlatform_DrawQuadNow()`, `ImPlatform_DrawIndexed()`, `ImPlatform_CopyCurrentTarget()` and
+  `ImPlatform_ReadTexture()` create their vertex array or framebuffer object for the call. They kept one made in the
+  main window's context, which is not valid in the contexts GLFW and SDL give the other platform windows.
+  `ImPlatform_DrawIndexed()` puts back the vertex array object and array buffer bound before it, and creating a vertex
+  or index buffer leaves the bindings as found (inside a draw callback they are Dear ImGui's).
+- DirectX 12: `ImPlatform_PushSampler()` / `ImPlatform_PopSampler()` between `ImPlatform_BeginCustomShader()` and
+  `ImPlatform_EndCustomShader()` bound Dear ImGui's pipeline in place of the program's. The program keeps its sampler,
+  and the pushed one applies from the end of the scope.
+- DirectX 12, Vulkan, WebGPU: `ImPlatform_EndCustomShader()` sets the pushed sampler again; its reset of the render
+  state went back to the linear one.
+- DirectX 9: `ImPlatform_GfxAPIRender()` draws nothing when the frame's `BeginScene` failed; it read draw data that
+  was not rendered.
+- `ImPlatform.h` says what the filter and wrap members of `ImPlatform_TextureDesc` apply to: not to `ImGui::Image()`,
+  which samples with Dear ImGui's sampler (see `ImPlatform_PushSampler()`).
 - The position of a drop is in the space of `ImGui::GetMousePos()`, as documented: with multi-viewports enabled it was
   still relative to the main window.
 - `ImPlatform_UpdateVertexBuffer()` / `ImPlatform_UpdateIndexBuffer()` took their last two arguments as (count, offset)

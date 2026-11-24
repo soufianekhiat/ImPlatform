@@ -301,19 +301,10 @@ struct ImPlatform_GfxData_Vulkan {
     VkDevice device;
     VkQueue queue;
     VkDebugReportCallbackEXT debugReport;
-    VkPipelineCache pipelineCache;
-    VkDescriptorPool descriptorPool;
+    VkDescriptorPool descriptorPool;    // Shared with Dear ImGui's backend
     VkSurfaceKHR surface;
-    VkSwapchainKHR swapchain;
-    VkRenderPass renderPass;
-    VkCommandPool commandPool;
-    VkCommandBuffer* commandBuffers;
-    VkSemaphore imageAcquiredSemaphore;
-    VkSemaphore renderCompleteSemaphore;
-    VkFence* fences;
-    uint32_t imageCount;
-    uint32_t currentFrameIndex;
     int minImageCount;
+    // The swapchain, its render pass and the frames belong to Dear ImGui's ImGui_ImplVulkanH_Window
 };
 #endif
 
@@ -527,6 +518,8 @@ struct ImPlatform_GfxData_WebGPU* ImPlatform_Gfx_GetData_WebGPU(void);
 // use them to implement ImPlatform_PushSampler()/ImPlatform_PopSampler():
 // the filter is honored, the wrap mode stays at the backend default (clamp).
 // The stack is resolved at submission time, restoring Linear (backend default) when empty.
+// 'apply' false records the push or the pop without a callback (DirectX 12 inside a custom shader scope).
+// ImPlatform_EndCustomShader resets the render state, sampler included: it sets the pushed sampler again.
 
 #ifdef __cplusplus
 static inline ImVector<ImDrawCallback>& ImPlatform_StdSamplerStack()
@@ -535,24 +528,31 @@ static inline ImVector<ImDrawCallback>& ImPlatform_StdSamplerStack()
     return stack;
 }
 
-static inline void ImPlatform_PushSampler_StdCallbacks(ImPlatform_TextureFilter filter)
+static inline void ImPlatform_PushSampler_StdCallbacks(ImPlatform_TextureFilter filter, bool apply = true)
 {
     ImGuiPlatformIO& platform_io = ImGui::GetPlatformIO();
     ImDrawCallback callback = (filter == ImPlatform_TextureFilter_Nearest) ? platform_io.DrawCallback_SetSamplerNearest : platform_io.DrawCallback_SetSamplerLinear;
     ImPlatform_StdSamplerStack().push_back(callback);
-    if (callback)
+    if (callback && apply)
         ImGui::GetWindowDrawList()->AddCallback(callback);
 }
 
-static inline void ImPlatform_PopSampler_StdCallbacks(void)
+static inline void ImPlatform_PopSampler_StdCallbacks(bool apply = true)
 {
     ImVector<ImDrawCallback>& stack = ImPlatform_StdSamplerStack();
     if (stack.Size == 0)
         return;
     stack.pop_back();
     ImDrawCallback callback = (stack.Size > 0) ? stack.back() : ImGui::GetPlatformIO().DrawCallback_SetSamplerLinear;
-    if (callback)
+    if (callback && apply)
         ImGui::GetWindowDrawList()->AddCallback(callback);
+}
+
+static inline void ImPlatform_ReapplySampler_StdCallbacks(ImDrawList* draw)
+{
+    const ImVector<ImDrawCallback>& stack = ImPlatform_StdSamplerStack();
+    if (stack.Size > 0 && stack.back())
+        draw->AddCallback(stack.back());
 }
 
 // The ImGui backends set the scissor for regular draws only: a callback that draws by itself (ImPlatform_DrawIndexed,

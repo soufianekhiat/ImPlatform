@@ -532,7 +532,10 @@ typedef enum ImPlatform_TextureWrap {
     ImPlatform_TextureWrap_Mirror,       // Mirror repeat (flips at boundaries)
 } ImPlatform_TextureWrap;
 
-// Texture descriptor - defines texture properties
+// Texture descriptor - defines texture properties.
+// The filter and wrap modes are the texture's own sampling state where the graphics API has one (OpenGL). Dear
+// ImGui's backends draw textures with their own sampler, linear and clamped: ImGui::Image() and the draw lists'
+// images do not follow these four members. ImPlatform_PushSampler() changes that sampler.
 typedef struct ImPlatform_TextureDesc {
     unsigned int width;                   // Texture width in pixels
     unsigned int height;                  // Texture height in pixels
@@ -687,6 +690,8 @@ IMPLATFORM_API void ImPlatform_DestroyTexture(
 // Call ImPlatform_PushSampler() before the image call and ImPlatform_PopSampler() after.
 // Calls may be nested. On DX12, Vulkan and WGPU this relies on the standard backend draw callbacks
 // (ImGuiPlatformIO::DrawCallback_SetSamplerLinear/Nearest): the filter is honored but the wrap mode stays clamp.
+// On DX12 the sampler is part of the pipeline: between ImPlatform_BeginCustomShader() and ImPlatform_EndCustomShader()
+// the program keeps its own (linear, clamped), and a sampler pushed there applies from the end of the scope.
 //
 // Example:
 //   ImPlatform_PushSampler(ImPlatform_TextureFilter_Nearest, ImPlatform_TextureWrap_Clamp);

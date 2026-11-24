@@ -2528,6 +2528,7 @@ IMPLATFORM_API void ImPlatform_EndCustomShader(ImDrawList* draw)
 
     draw->AddCallback([](const ImDrawList*, const ImDrawCmd*) { g_BoundProgram = nullptr; }, NULL);
     draw->AddCallback(ImGui::GetPlatformIO().DrawCallback_ResetRenderState, NULL);
+    ImPlatform_ReapplySampler_StdCallbacks(draw);      // The reset set the linear sampler
 }
 
 // b1 for the draws that follow in this draw callback, and for Dear ImGui's draws after it until a program is bound again.

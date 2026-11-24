@@ -1409,6 +1409,10 @@ IMPLATFORM_API void ImPlatform_BeginCustomShader_Render(ImPlatform_ShaderProgram
                       g_CurrentDrawData ? g_CurrentDrawData : ImGui::GetDrawData(), 0);
 }
 
+// Between ImPlatform_BeginCustomShader and ImPlatform_EndCustomShader, as the draw lists are built: see
+// ImPlatform_PushSampler.
+static bool g_P12_ScopeOpen = false;
+
 IMPLATFORM_API void ImPlatform_BeginCustomShader(ImDrawList* draw, ImPlatform_ShaderProgram shader)
 {
     if (!draw || !shader)
@@ -1416,6 +1420,7 @@ IMPLATFORM_API void ImPlatform_BeginCustomShader(ImDrawList* draw, ImPlatform_Sh
 
     ImPlatform_ScissorBeforeCallbacks(draw);
     draw->AddCallback(&ImPlatform_SetCustomShader, shader);
+    g_P12_ScopeOpen = true;
 }
 
 IMPLATFORM_API void ImPlatform_EndCustomShader(ImDrawList* draw)
@@ -1425,6 +1430,8 @@ IMPLATFORM_API void ImPlatform_EndCustomShader(ImDrawList* draw)
 
     draw->AddCallback([](const ImDrawList*, const ImDrawCmd*) { g_P12_Program = NULL; }, NULL);
     draw->AddCallback(ImGui::GetPlatformIO().DrawCallback_ResetRenderState, NULL);
+    g_P12_ScopeOpen = false;
+    ImPlatform_ReapplySampler_StdCallbacks(draw);
 }
 
 // Premultiplied alpha: blending is part of the pipeline states, so an ImGui-layout program un-premultiplies the texels
@@ -1499,15 +1506,18 @@ static void ImPlatform_ReleaseRenderPasses()
 // ============================================================================
 // Uses the standard DrawCallback_SetSamplerLinear/Nearest callbacks of the ImGui DX12 backend.
 // Only the filter is honored: the wrap mode stays clamp.
+// The sampler is part of the pipeline there: the callbacks bind Dear ImGui's pipeline and root signature, which would
+// take the place of a custom program's. Inside a custom shader scope a push or a pop is recorded only: the program
+// keeps its own sampler (linear, clamped), and the scope's end sets the sampler pushed at that point.
 
 IMPLATFORM_API void ImPlatform_PushSampler(ImPlatform_TextureFilter filter, ImPlatform_TextureWrap /*wrap*/)
 {
-    ImPlatform_PushSampler_StdCallbacks(filter);
+    ImPlatform_PushSampler_StdCallbacks(filter, !g_P12_ScopeOpen);
 }
 
 IMPLATFORM_API void ImPlatform_PopSampler(void)
 {
-    ImPlatform_PopSampler_StdCallbacks();
+    ImPlatform_PopSampler_StdCallbacks(!g_P12_ScopeOpen);
 }
 
 

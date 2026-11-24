@@ -805,6 +805,7 @@ The library has been tested with the following configurations:
 
 - macOS and Metal build and compile in CI but have not run on a Mac with a GPU
 - WebGPU: no readback, and no render-target switch or copy (its render pass encoder belongs to Dear ImGui's backend)
+- Vulkan: at most 968 textures and render textures alive at once (the descriptor pool shared with Dear ImGui's backend); creating one more returns 0
 - DirectX 9 shaders are shader model 3: no integer or bit operations, no texel loads, `nointerpolation` varyings are interpolated
 - OpenGL3 multi-viewport with custom shaders may have minor offset issues in some edge cases
 - Custom titlebar on stock GLFW: the window is moved and resized by ImPlatform, without the system's window snapping (TheCherno's fork with `IM_THE_CHERNO_GLFW3` gives native hit-testing)

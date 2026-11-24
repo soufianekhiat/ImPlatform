@@ -135,6 +135,29 @@ static void check_vk_result(VkResult err)
         abort();
 }
 
+// Textures and render textures take their descriptor set from the pool shared with Dear ImGui's backend, which aborts
+// once the pool is empty. Creating one fails before that, and leaves the backend the sets of its font atlases.
+static const uint32_t g_TexturePoolSize = 1000;
+static uint32_t g_TextureSetCount = 0;
+static VkDescriptorSet ImPlatform_Vulkan_AddTexture(VkImageView image_view, VkImageLayout image_layout)
+{
+    if (g_TextureSetCount + 4 * IMGUI_IMPL_VULKAN_MINIMUM_SAMPLED_IMAGE_POOL_SIZE > g_TexturePoolSize)
+    {
+        fprintf(stderr, "[ImPlatform] Vulkan: no descriptor set left for a texture (%u alive)\n", g_TextureSetCount);
+        return VK_NULL_HANDLE;
+    }
+    const VkDescriptorSet set = ImGui_ImplVulkan_AddTexture(image_view, image_layout);
+    if (set != VK_NULL_HANDLE)
+        g_TextureSetCount++;
+    return set;
+}
+
+static void ImPlatform_Vulkan_RemoveTexture(VkDescriptorSet set)
+{
+    ImGui_ImplVulkan_RemoveTexture(set);
+    g_TextureSetCount--;
+}
+
 #ifdef _DEBUG
 static VKAPI_ATTR VkBool32 VKAPI_CALL debug_report(
     VkDebugReportFlagsEXT flags,
@@ -406,7 +429,7 @@ static bool SetupVulkan(const char** instance_extensions, uint32_t instance_exte
     {
         VkDescriptorPoolSize pool_sizes[] =
         {
-            { VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1000 },
+            { VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, g_TexturePoolSize },
             { VK_DESCRIPTOR_TYPE_SAMPLER, IMGUI_IMPL_VULKAN_MINIMUM_SAMPLER_POOL_SIZE },
             { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1000 },
         };
@@ -420,6 +443,7 @@ static bool SetupVulkan(const char** instance_extensions, uint32_t instance_exte
         pool_info.pPoolSizes = pool_sizes;
         err = vkCreateDescriptorPool(g_GfxData.device, &pool_info, g_Allocator, &g_GfxData.descriptorPool);
         check_vk_result(err);
+        g_TextureSetCount = 0;
     }
 
     // Initialize disk-backed VkPipelineCache so subsequent vkCreateGraphicsPipelines
@@ -1249,7 +1273,7 @@ static ImTextureID ImPlatform_Vk_CreateTexture(const void* pixel_data, const ImP
     // Create descriptor set
     // Since 1.92.8 textures are registered as VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE: the sampler is owned by the ImGui backend
     // (linear by default, switch with ImPlatform_PushSampler()), so desc->min_filter/mag_filter/wrap_u/wrap_v are not baked in.
-    VkDescriptorSet descriptor_set = ImGui_ImplVulkan_AddTexture(image_view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    VkDescriptorSet descriptor_set = ImPlatform_Vulkan_AddTexture(image_view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
     if (descriptor_set == VK_NULL_HANDLE)
     {
         vkDestroyImageView(g_GfxData.device, image_view, g_Allocator);
@@ -1289,7 +1313,7 @@ static ImTextureID ImPlatform_Vk_CreateTexture(const void* pixel_data, const ImP
         if (err != VK_SUCCESS)
         {
             // Cleanup and return null
-            ImGui_ImplVulkan_RemoveTexture(descriptor_set);
+            ImPlatform_Vulkan_RemoveTexture(descriptor_set);
             vkDestroyImageView(g_GfxData.device, image_view, g_Allocator);
             vkFreeMemory(g_GfxData.device, image_memory, g_Allocator);
             vkDestroyImage(g_GfxData.device, image, g_Allocator);
@@ -1551,7 +1575,17 @@ IMPLATFORM_API ImTextureID ImPlatform_CreateRenderTexture(const ImPlatform_Textu
     }
 
     // Register with ImGui for use as a shader input (sampled image, the sampler is owned by the ImGui backend)
-    VkDescriptorSet descriptorSet = ImGui_ImplVulkan_AddTexture(imageView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    VkDescriptorSet descriptorSet = ImPlatform_Vulkan_AddTexture(imageView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    if (descriptorSet == VK_NULL_HANDLE)
+    {
+        vkDestroyCommandPool(g_GfxData.device, commandPool, g_Allocator);   // Frees its command buffer
+        vkDestroyFramebuffer(g_GfxData.device, framebuffer, g_Allocator);
+        vkDestroyRenderPass(g_GfxData.device, renderPass, g_Allocator);
+        vkDestroyImageView(g_GfxData.device, imageView, g_Allocator);
+        vkFreeMemory(g_GfxData.device, imageMemory, g_Allocator);
+        vkDestroyImage(g_GfxData.device, image, g_Allocator);
+        return (ImTextureID)0;
+    }
 
     ImPlatform_RTTracking_Vulkan* entry = new ImPlatform_RTTracking_Vulkan();
     entry->image         = image;
@@ -1921,7 +1955,7 @@ IMPLATFORM_API void ImPlatform_DestroyTexture(ImTextureID texture_id)
 
     // Remove from ImGui's texture registry
     VkDescriptorSet descriptor_set = (VkDescriptorSet)texture_id;
-    ImGui_ImplVulkan_RemoveTexture(descriptor_set);
+    ImPlatform_Vulkan_RemoveTexture(descriptor_set);
     for (ImPlatform_TexReg_Vulkan** e = &g_TexRegHead; *e; e = &(*e)->next)
         if ((*e)->id == descriptor_set)
         {
@@ -2196,7 +2230,7 @@ static const int g_TextureSetMax = 32;     // Per program
 
 struct ImPlatform_PipelineVariant_Vulkan
 {
-    VkRenderPass renderPass;
+    VkFormat     format;        // Of the render pass's color attachment: what makes two of the passes here compatible
     ImGuiID      layout;        // 0: ImDrawVert; else a hash of the vertex buffer layout (ImPlatform_DrawIndexed)
     unsigned int topology;      // ImPlatform_DrawIndexed's primitive type
     unsigned int blend;         // ImPlatform_BlendKey the pipeline was built with
@@ -2208,7 +2242,7 @@ struct ImPlatform_ShaderProgramData_Vulkan
     VkShaderModule vertShaderModule;
     VkShaderModule fragShaderModule;
     int locPos, locUV, locCol;
-    ImVector<ImPlatform_PipelineVariant_Vulkan> pipelines;     // One per render pass and blending the program is drawn with
+    ImVector<ImPlatform_PipelineVariant_Vulkan> pipelines;     // One per target format and blending the program is drawn with
     unsigned int blend;                                         // ImPlatform_BlendKey; 0: Dear ImGui's blending
     VkPipelineLayout pipelineLayout;
     VkDescriptorSetLayout setLayouts[4];                        // ImGui's texture and sampler layouts, b0 / b1, t1..t8
@@ -2482,10 +2516,13 @@ IMPLATFORM_API void ImPlatform_DestroyShader(ImPlatform_Shader shader)
     free(shader_data);
 }
 
-// The program's pipeline for a render pass, created on first use (pipelines are tied to compatible render passes). Without
-// 'vertices' it reads ImDrawVert (Dear ImGui's draws); with them, attribute i of the buffer feeds the shader's location i
-// (Slang numbers the inputs in declaration order), as 'topology' (ImPlatform_DrawIndexed's primitive type).
-static VkPipeline ImPlatform_Vulkan_ProgramPipeline(ImPlatform_ShaderProgramData_Vulkan* program_data, VkRenderPass render_pass,
+// The program's pipeline for a render pass, created on first use. A pipeline serves every render pass compatible with the
+// one it was created for, and outlives it: the passes here have one color attachment, one sample and no depth, so they
+// are compatible when 'format', the attachment's, is the same. Keyed by it, the pipelines of a program do not add up
+// with the render passes a window resize or a render texture creates. Without 'vertices' it reads ImDrawVert (Dear
+// ImGui's draws); with them, attribute i of the buffer feeds the shader's location i (Slang numbers the inputs in
+// declaration order), as 'topology' (ImPlatform_DrawIndexed's primitive type).
+static VkPipeline ImPlatform_Vulkan_ProgramPipeline(ImPlatform_ShaderProgramData_Vulkan* program_data, VkRenderPass render_pass, VkFormat format,
                                                     const ImPlatform_VertexBufferDesc* vertices = NULL, unsigned int topology = 0)
 {
     ImGuiID layout = 0;
@@ -2500,7 +2537,7 @@ static VkPipeline ImPlatform_Vulkan_ProgramPipeline(ImPlatform_ShaderProgramData
     else if (program_data->customLayout)
         return VK_NULL_HANDLE;      // Its inputs are not ImDrawVert's
     for (const ImPlatform_PipelineVariant_Vulkan& v : program_data->pipelines)
-        if (v.renderPass == render_pass && v.layout == layout && v.topology == topology && v.blend == program_data->blend)
+        if (v.format == format && v.layout == layout && v.topology == topology && v.blend == program_data->blend)
             return v.pipeline;
 
     VkPipelineShaderStageCreateInfo stage[2] = {};
@@ -2631,7 +2668,7 @@ static VkPipeline ImPlatform_Vulkan_ProgramPipeline(ImPlatform_ShaderProgramData
     pipeline_info.subpass = 0;
 
     // The global pipeline cache lets the compiled state be reused across runs (see ImPlatform_Vulkan_InitPipelineCache).
-    ImPlatform_PipelineVariant_Vulkan variant = { render_pass, layout, topology, program_data->blend, VK_NULL_HANDLE };
+    ImPlatform_PipelineVariant_Vulkan variant = { format, layout, topology, program_data->blend, VK_NULL_HANDLE };
     VkResult err = vkCreateGraphicsPipelines(g_GfxData.device, g_VulkanPipelineCache, 1, &pipeline_info, g_Allocator, &variant.pipeline);
     if (err != VK_SUCCESS)
     {
@@ -2996,7 +3033,9 @@ static void ImPlatform_Vulkan_BindProgram(ImPlatform_ShaderProgramData_Vulkan* p
 {
     if (!draw_data || cmd == VK_NULL_HANDLE)
         return;
+    // No active pass: a secondary viewport's, which has the main window's format
     VkPipeline pipeline = ImPlatform_Vulkan_ProgramPipeline(program_data, g_CurrentRenderPass ? g_CurrentRenderPass : g_MainWindowData.RenderPass,
+                                                            g_ActivePasses.empty() ? g_MainWindowData.SurfaceFormat.format : g_ActivePasses.back().format,
                                                             vertices, topology);
     if (pipeline == VK_NULL_HANDLE && (vertices || !program_data->customLayout))
         return;
@@ -3081,6 +3120,7 @@ IMPLATFORM_API void ImPlatform_EndCustomShader(ImDrawList* draw)
 
     draw->AddCallback([](const ImDrawList*, const ImDrawCmd*) { g_BoundShaderProgram = NULL; }, NULL);
     draw->AddCallback(ImGui::GetPlatformIO().DrawCallback_ResetRenderState, NULL);
+    ImPlatform_ReapplySampler_StdCallbacks(draw);      // The reset set the linear sampler
 }
 
 // b1 for the draws that follow in this draw callback, and for Dear ImGui's draws after it until a program is bound again
@@ -3359,7 +3399,7 @@ IMPLATFORM_API ImTextureID ImPlatform_CreateStorageTexture(const void* pixel_dat
         ok = false;
     if (staging)
         ImPlatform_Vulkan_DestroyHostBuffer(staging, staging_mem);
-    VkDescriptorSet ds = ok ? ImGui_ImplVulkan_AddTexture(view, VK_IMAGE_LAYOUT_GENERAL) : VK_NULL_HANDLE;
+    VkDescriptorSet ds = ok ? ImPlatform_Vulkan_AddTexture(view, VK_IMAGE_LAYOUT_GENERAL) : VK_NULL_HANDLE;
     if (!ds)
     {
         vkDestroyImageView(g_GfxData.device, view, g_Allocator);

@@ -231,6 +231,8 @@ IMPLATFORM_API void ImPlatform_GfxAPINewFrame(void)
 }
 
 // ImPlatform API - GfxAPIClear
+static bool g_SceneBegun = false;   // BeginScene succeeded for this frame
+
 IMPLATFORM_API bool ImPlatform_GfxAPIClear(ImVec4 const vClearColor)
 {
     // DX9 uses EndFrame before rendering, so this is called before BeginScene
@@ -248,23 +250,22 @@ IMPLATFORM_API bool ImPlatform_GfxAPIClear(ImVec4 const vClearColor)
 
     g_GfxData.pDevice->Clear(0, NULL, D3DCLEAR_TARGET | D3DCLEAR_ZBUFFER, clear_col_dx, 1.0f, 0);
 
-    if (g_GfxData.pDevice->BeginScene() >= 0)
-    {
-        ImGui::Render();
-        return true;
-    }
-
-    return false;
+    ImGui::Render();    // Whether the scene begins or not: the platform windows read the frame's draw data too
+    g_SceneBegun = g_GfxData.pDevice->BeginScene() >= 0;
+    return g_SceneBegun;
 }
 
 // ImPlatform API - GfxAPIRender
 IMPLATFORM_API bool ImPlatform_GfxAPIRender(ImVec4 const vClearColor)
 {
     (void)vClearColor;
+    if (!g_SceneBegun)
+        return false;
 
     ImPlatform_RunRenderPass();
     ImGui_ImplDX9_RenderDrawData(ImGui::GetDrawData());
     g_GfxData.pDevice->EndScene();
+    g_SceneBegun = false;
 
     return true;
 }

@@ -325,8 +325,10 @@ static const ImPlatform_FboFns_GL* ImPlatform_GL_Fbo()
 }
 
 // ImPlatform_DrawQuadNow resources (created on first use)
-static GLuint g_QuadVAO = 0, g_QuadVBO = 0, g_QuadIBO = 0;
-static GLuint g_CopyFbo = 0;
+// Vertex array and framebuffer objects belong to one context, and each platform window of GLFW and SDL has its own
+// (buffers, textures and programs are shared): the direct draws create theirs for one use and delete them after it,
+// as Dear ImGui's backend does with its vertex array object.
+static GLuint g_QuadVBO = 0, g_QuadIBO = 0;
 
 // Cached draw data for custom shader callbacks (needed for multi-viewport support)
 static ImDrawData* g_CurrentDrawData = nullptr;
@@ -1447,9 +1449,9 @@ IMPLATFORM_API bool ImPlatform_CopyCurrentTarget(ImTextureID dst, int src_x, int
     const GLboolean scissorOn = glIsEnabled(GL_SCISSOR_TEST);
     glDisable(GL_SCISSOR_TEST); // blits honour the scissor box
 
-    if (!g_CopyFbo)
-        fbo->Gen(1, &g_CopyFbo);
-    fbo->Bind(GL_DRAW_FRAMEBUFFER, g_CopyFbo);
+    GLuint copyFbo = 0;
+    fbo->Gen(1, &copyFbo);
+    fbo->Bind(GL_DRAW_FRAMEBUFFER, copyFbo);
     fbo->Texture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, dstTex, 0);
     fbo->Bind(GL_READ_FRAMEBUFFER, (GLuint)drawFbo);
     const bool flip = (drawFbo == 0);
@@ -1461,6 +1463,7 @@ IMPLATFORM_API bool ImPlatform_CopyCurrentTarget(ImTextureID dst, int src_x, int
 
     fbo->Bind(GL_DRAW_FRAMEBUFFER, (GLuint)drawFbo);
     fbo->Bind(GL_READ_FRAMEBUFFER, (GLuint)readFbo);
+    fbo->Delete(1, &copyFbo);
     if (scissorOn) glEnable(GL_SCISSOR_TEST);
     return true;
 }
@@ -1551,7 +1554,6 @@ struct ImPlatform_BufferData_GL
 {
     GLuint vbo;                          // Vertex buffer object
     GLuint ibo;                          // Index buffer object
-    GLuint vao;                          // Vertex array object
     ImPlatform_VertexBufferDesc vb_desc; // Vertex buffer descriptor (for updates)
     ImPlatform_IndexBufferDesc ib_desc;  // Index buffer descriptor (for updates)
     ImPlatform_VertexAttribute* attributes; // Cached attribute array
@@ -1629,34 +1631,16 @@ IMPLATFORM_API ImPlatform_VertexBuffer ImPlatform_CreateVertexBuffer(const void*
         buffer->vb_desc.attributes = buffer->attributes;
     }
 
-    // Generate VAO and VBO
-    glGenVertexArrays(1, &buffer->vao);
+    // The binding is left as found: a buffer may be created inside a draw callback, between Dear ImGui's draws.
+    // ImPlatform_DrawIndexed points the attributes.
+    GLint bound = 0;
+    glGetIntegerv(GL_ARRAY_BUFFER_BINDING, &bound);
     glGenBuffers(1, &buffer->vbo);
-
-    glBindVertexArray(buffer->vao);
     glBindBuffer(GL_ARRAY_BUFFER, buffer->vbo);
-
-    // Upload vertex data
     size_t size = desc->vertex_count * desc->vertex_stride;
     GLenum usage = ImPlatform_GetGLBufferUsage(desc->usage);
     glBufferData(GL_ARRAY_BUFFER, size, vertex_data, usage);
-
-    // Setup vertex attributes
-    for (unsigned int i = 0; i < desc->attribute_count; i++)
-    {
-        const ImPlatform_VertexAttribute* attr = &desc->attributes[i];
-
-        GLenum type;
-        GLint size_components;
-        GLboolean normalized;
-        ImPlatform_GetGLVertexFormat(attr->format, &type, &size_components, &normalized);
-
-        glEnableVertexAttribArray(i);
-        glVertexAttribPointer(i, size_components, type, normalized, desc->vertex_stride, (void*)(intptr_t)attr->offset);
-    }
-
-    glBindVertexArray(0);
-    glBindBuffer(GL_ARRAY_BUFFER, 0);
+    glBindBuffer(GL_ARRAY_BUFFER, (GLuint)bound);
 
     return (ImPlatform_VertexBuffer)buffer;
 }
@@ -1689,8 +1673,6 @@ IMPLATFORM_API void ImPlatform_DestroyVertexBuffer(ImPlatform_VertexBuffer buffe
 
     if (buf->vbo)
         glDeleteBuffers(1, &buf->vbo);
-    if (buf->vao)
-        glDeleteVertexArrays(1, &buf->vao);
     if (buf->attributes)
         delete[] buf->attributes;
 
@@ -1706,16 +1688,16 @@ IMPLATFORM_API ImPlatform_IndexBuffer ImPlatform_CreateIndexBuffer(const void* i
     memset(buffer, 0, sizeof(ImPlatform_BufferData_GL));
     buffer->ib_desc = *desc;
 
-    // Generate IBO
+    // Uploaded through the array buffer binding, left as found: the element array binding is part of the bound vertex
+    // array object, Dear ImGui's inside a draw callback.
+    GLint bound = 0;
+    glGetIntegerv(GL_ARRAY_BUFFER_BINDING, &bound);
     glGenBuffers(1, &buffer->ibo);
-    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, buffer->ibo);
-
-    // Upload index data
+    glBindBuffer(GL_ARRAY_BUFFER, buffer->ibo);
     size_t size = desc->index_count * (desc->format == ImPlatform_IndexFormat_UInt16 ? sizeof(uint16_t) : sizeof(uint32_t));
     GLenum usage = ImPlatform_GetGLBufferUsage(desc->usage);
-    glBufferData(GL_ELEMENT_ARRAY_BUFFER, size, index_data, usage);
-
-    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
+    glBufferData(GL_ARRAY_BUFFER, size, index_data, usage);
+    glBindBuffer(GL_ARRAY_BUFFER, (GLuint)bound);
 
     return (ImPlatform_IndexBuffer)buffer;
 }
@@ -1759,19 +1741,9 @@ static ImPlatform_BufferData_GL* g_BoundIndexBuffer = NULL;
 
 IMPLATFORM_API void ImPlatform_BindBuffers(ImPlatform_VertexBuffer vertex_buffer, ImPlatform_IndexBuffer index_buffer)
 {
+    // Bound by ImPlatform_DrawIndexed, in the vertex array object of the draw
     g_BoundVertexBuffer = (ImPlatform_BufferData_GL*)vertex_buffer;
     g_BoundIndexBuffer = (ImPlatform_BufferData_GL*)index_buffer;
-
-    if (g_BoundVertexBuffer)
-    {
-        glBindVertexArray(g_BoundVertexBuffer->vao);
-        if (g_BoundIndexBuffer)
-            glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, g_BoundIndexBuffer->ibo);
-    }
-    else
-    {
-        glBindVertexArray(0);
-    }
 }
 
 // The layout comes from the vertex buffer's attributes at draw time (attribute i at shader location i).
@@ -1800,8 +1772,30 @@ IMPLATFORM_API void ImPlatform_DrawIndexed(unsigned int primitive_type, unsigned
     if (index_count == 0)
         index_count = g_BoundIndexBuffer->ib_desc.index_count;
 
-    // Draw
+    // The vertex array object of this draw (attribute i of the buffer at location i); the one bound before and the
+    // array buffer binding are put back.
+    GLint previous_vao = 0, previous_buffer = 0;
+    glGetIntegerv(GL_VERTEX_ARRAY_BINDING, &previous_vao);
+    glGetIntegerv(GL_ARRAY_BUFFER_BINDING, &previous_buffer);
+    GLuint vao = 0;
+    glGenVertexArrays(1, &vao);
+    glBindVertexArray(vao);
+    glBindBuffer(GL_ARRAY_BUFFER, g_BoundVertexBuffer->vbo);
+    const ImPlatform_VertexBufferDesc& vb = g_BoundVertexBuffer->vb_desc;
+    for (unsigned int i = 0; i < vb.attribute_count; i++)
+    {
+        GLenum type;
+        GLint size_components;
+        GLboolean normalized;
+        ImPlatform_GetGLVertexFormat(vb.attributes[i].format, &type, &size_components, &normalized);
+        glEnableVertexAttribArray(i);
+        glVertexAttribPointer(i, size_components, type, normalized, vb.vertex_stride, (void*)(intptr_t)vb.attributes[i].offset);
+    }
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, g_BoundIndexBuffer->ibo);
     glDrawElements(mode, index_count, index_type, (void*)(intptr_t)(start_index * index_size));
+    glBindVertexArray((GLuint)previous_vao);
+    glBindBuffer(GL_ARRAY_BUFFER, (GLuint)previous_buffer);
+    glDeleteVertexArrays(1, &vao);
 }
 
 // ============================================================================
@@ -2674,14 +2668,15 @@ IMPLATFORM_API bool ImPlatform_ReadTexture(ImTextureID texture, unsigned int x, 
     GLint readFbo = 0, packAlign = 4;
     glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING, &readFbo);
     glGetIntegerv(GL_PACK_ALIGNMENT, &packAlign);
-    if (!g_CopyFbo)
-        fbo->Gen(1, &g_CopyFbo);
-    fbo->Bind(GL_READ_FRAMEBUFFER, g_CopyFbo);
+    GLuint copyFbo = 0;
+    fbo->Gen(1, &copyFbo);
+    fbo->Bind(GL_READ_FRAMEBUFFER, copyFbo);
     fbo->Texture2D(GL_READ_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, tex, 0);
     glPixelStorei(GL_PACK_ALIGNMENT, 1);
     glReadPixels((GLint)x, (GLint)y, (GLsizei)width, (GLsizei)height, format, type, out_pixels); // synchronous
     glPixelStorei(GL_PACK_ALIGNMENT, packAlign);
     fbo->Bind(GL_READ_FRAMEBUFFER, (GLuint)readFbo);
+    fbo->Delete(1, &copyFbo);
     return glGetError() == 0; // GL_NO_ERROR
 }
 
@@ -2851,25 +2846,17 @@ IMPLATFORM_API void ImPlatform_DrawQuadNow(ImPlatform_ShaderProgram program, ImV
 {
     if (!program)
         return;
-    if (!g_QuadVAO)
+    if (!g_QuadVBO)
     {
-        // ImDrawVert; each draw points its attributes at the program's locations
+        // Four ImDrawVert and their indices, uploaded through the array buffer binding (the element array binding is
+        // part of the bound vertex array object, Dear ImGui's here)
         const unsigned short idx[6] = { 0, 1, 2, 0, 2, 3 };
-        glGenVertexArrays(1, &g_QuadVAO);
         glGenBuffers(1, &g_QuadVBO);
         glGenBuffers(1, &g_QuadIBO);
-        glBindVertexArray(g_QuadVAO);
+        glBindBuffer(GL_ARRAY_BUFFER, g_QuadIBO);
+        glBufferData(GL_ARRAY_BUFFER, sizeof(idx), idx, GL_STATIC_DRAW);
         glBindBuffer(GL_ARRAY_BUFFER, g_QuadVBO);
         glBufferData(GL_ARRAY_BUFFER, 4 * sizeof(ImDrawVert), NULL, GL_STREAM_DRAW);
-        glEnableVertexAttribArray(0);
-        glEnableVertexAttribArray(1);
-        glEnableVertexAttribArray(2);
-        glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, sizeof(ImDrawVert), (void*)offsetof(ImDrawVert, pos));
-        glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, sizeof(ImDrawVert), (void*)offsetof(ImDrawVert, uv));
-        glVertexAttribPointer(2, 4, GL_UNSIGNED_BYTE, GL_TRUE, sizeof(ImDrawVert), (void*)offsetof(ImDrawVert, col));
-        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, g_QuadIBO);
-        glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(idx), idx, GL_STATIC_DRAW);
-        glBindVertexArray(0);
     }
 
     // Program, its named uniforms and parameter block
@@ -2905,14 +2892,16 @@ IMPLATFORM_API void ImPlatform_DrawQuadNow(ImPlatform_ShaderProgram program, ImV
     v[1].pos = ImVec2(dst_rect.z, dst_rect.y); v[1].uv = ImVec2(uv_rect.z, uv_rect.y); v[1].col = white;
     v[2].pos = ImVec2(dst_rect.z, dst_rect.w); v[2].uv = ImVec2(uv_rect.z, uv_rect.w); v[2].col = white;
     v[3].pos = ImVec2(dst_rect.x, dst_rect.w); v[3].uv = ImVec2(uv_rect.x, uv_rect.w); v[3].col = white;
-    glBindVertexArray(g_QuadVAO);
+    GLuint vao = 0;     // Of this draw
+    glGenVertexArrays(1, &vao);
+    glBindVertexArray(vao);
     glBindBuffer(GL_ARRAY_BUFFER, g_QuadVBO);
     glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(v), v);
-    for (GLuint i = 0; i < 3; i++)      // The program's own input locations, as for Dear ImGui's draws
-        glDisableVertexAttribArray(i);
-    ImPlatform_GL_PointAttributes(program_data);
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, g_QuadIBO);
+    ImPlatform_GL_PointAttributes(program_data);    // The program's own input locations, as for Dear ImGui's draws
     glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_SHORT, (void*)0);
     glBindVertexArray(0);
+    glDeleteVertexArrays(1, &vao);
 }
 
 // One buffer, re-specified per push: callers may pop before drawing (as on D3D11, where the bound
