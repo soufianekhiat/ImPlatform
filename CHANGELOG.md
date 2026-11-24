@@ -28,6 +28,11 @@ Changes since 2.0.0 (the `v2` branch), in progress on the `v3` branch.
   only on DirectX 12 and Vulkan). Demo `--screenshot-test`, `--screenshot-viewport-test`.
 - **Pen input on SDL3** (Windows, Linux, macOS) from its pen events: pressure, tilt, rotation, eraser, contact. Demo
   `--pen-test` (synthetic events).
+- **macOS without a window library** (`IM_PLATFORM_APPLE` with `IM_GFX_METAL`, configuration `Apple_Metal`): a Cocoa
+  window whose events are polled once per frame, with Dear ImGui's `imgui_impl_osx` for the input and the platform
+  windows. It has the system's titlebar: the custom titlebar, file drop and window state calls are not declared
+  there. The file is Objective-C++ with ARC and needs the GameController framework. `ImPlatform_app_apple.mm` was
+  an unfinished file that no configuration built.
 - **Touch input** (Win32 pointer messages, SDL2 and SDL3 finger events; main window): `ImPlatform_SupportsTouch()`,
   `ImPlatform_GetTouchPoints()` gives the fingers in contact, `ImPlatform_ConsumeTouchGesture()` what they did since
   the previous call: pan, pinch zoom and rotation, computed from the finger positions the same way on every platform.

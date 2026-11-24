@@ -1,135 +1,108 @@
-// dear imgui: Platform Abstraction - Apple (macOS/iOS) Backend
-// This handles Cocoa/UIKit window creation, event handling, and the main loop
+// dear imgui: Platform Abstraction - macOS (Cocoa) Application Backend
+// A Cocoa window made without GLFW or SDL: its events are polled once per frame, and Dear ImGui's imgui_impl_osx
+// reads them (mouse, keyboard, text input, gamepads, the platform windows of multi-viewports).
 //
-// NOTE: Apple platform support requires Objective-C++
-// This file must be compiled as .mm (Objective-C++)
+// Objective-C++ with ARC: this file, and the file that includes it through ImPlatform.h with
+// IMPLATFORM_IMPLEMENTATION, are compiled as such. Link the Cocoa and GameController frameworks (imgui_impl_osx).
+// The window has the system's titlebar: no custom titlebar, file drop or window state calls on this platform.
 
 #include "ImPlatform_Internal.h"
 
-#ifdef IM_PLATFORM_APPLE
+#if defined(IM_CURRENT_PLATFORM) && (IM_CURRENT_PLATFORM == IM_PLATFORM_APPLE)
 
-#include "../imgui.h"
-
-#if TARGET_OS_OSX
-    #include "../backends/imgui_impl_osx.h"
-    #import <Cocoa/Cocoa.h>
-#elif TARGET_OS_IOS
-    #include "../backends/imgui_impl_ios.h"
-    #import <UIKit/UIKit.h>
+#include <TargetConditionals.h>
+#if !TARGET_OS_OSX
+    #error "IM_PLATFORM_APPLE is the macOS platform (Cocoa)"
 #endif
 
-// Global state
-static struct ImPlatform_AppData_Apple {
-#if TARGET_OS_OSX
-    NSWindow* pWindow;
-    NSView* pView;
-#elif TARGET_OS_IOS
-    UIWindow* pWindow;
-    UIView* pView;
-    UIViewController* pViewController;
-#endif
-    float fDpiScale;
-} g_AppData = { 0 };
+#include "../imgui/backends/imgui_impl_osx.h"
+#import <Cocoa/Cocoa.h>
 
-#if TARGET_OS_OSX
-// Internal API - Get NSWindow
+static bool g_Done = false;     // The close button or Quit: ImPlatform_PlatformContinue ends the application's loop
+
+// The window's delegate, and the target of the Quit menu item
+@interface ImPlatformWindowDelegate : NSObject <NSWindowDelegate>
+- (void)quit:(id)sender;
+@end
+
+@implementation ImPlatformWindowDelegate
+// The window stays until ImPlatform_DestroyWindow: the application shuts its graphics down first
+- (BOOL)windowShouldClose:(NSWindow*)sender
+{
+    (void)sender;
+    g_Done = true;
+    return NO;
+}
+
+- (void)quit:(id)sender
+{
+    (void)sender;
+    g_Done = true;
+}
+@end
+
+static NSWindow* g_Window = nil;
+static ImPlatformWindowDelegate* g_Delegate = nil;
+
+// Internal API - the NSWindow* and its content view, the NSView* the graphics backend puts its layer on
 void* ImPlatform_App_GetNSWindow(void)
 {
-    return (__bridge void*)g_AppData.pWindow;
+    return (__bridge void*)g_Window;
 }
 
-// Internal API - Get NSView
 void* ImPlatform_App_GetNSView(void)
 {
-    return (__bridge void*)g_AppData.pView;
-}
-#elif TARGET_OS_IOS
-// Internal API - Get UIWindow
-void* ImPlatform_App_GetUIWindow(void)
-{
-    return (__bridge void*)g_AppData.pWindow;
+    return (__bridge void*)g_Window.contentView;
 }
 
-// Internal API - Get UIView
-void* ImPlatform_App_GetUIView(void)
-{
-    return (__bridge void*)g_AppData.pView;
-}
-#endif
-
-// ImPlatform API - CreateWindow
+// ImPlatform API - CreateWindow. vPos is the top left corner of the content area, from the top left of the main screen.
 IMPLATFORM_API bool ImPlatform_CreateWindow(char const* pWindowsName, ImVec2 const vPos, unsigned int uWidth, unsigned int uHeight)
 {
     @autoreleasepool {
-#if TARGET_OS_OSX
-        // Create macOS window
-        NSRect frame = NSMakeRect(vPos.x, vPos.y, uWidth, uHeight);
+        g_Done = false;
+        g_Delegate = [ImPlatformWindowDelegate new];
 
-        NSWindowStyleMask styleMask = NSWindowStyleMaskTitled |
-                                      NSWindowStyleMaskClosable |
-                                      NSWindowStyleMaskResizable |
-                                      NSWindowStyleMaskMiniaturizable;
+        // An application with a Dock icon and a menu bar, though it has no bundle and no nib (a program started from
+        // a terminal is a background process otherwise). The menu gives it Quit and its shortcut.
+        [NSApplication sharedApplication];
+        [NSApp setActivationPolicy:NSApplicationActivationPolicyRegular];
+        NSMenu* menu_bar = [NSMenu new];
+        NSMenuItem* app_item = [menu_bar addItemWithTitle:@"" action:nil keyEquivalent:@""];
+        NSMenu* app_menu = [NSMenu new];
+        NSMenuItem* quit_item = [app_menu addItemWithTitle:@"Quit" action:@selector(quit:) keyEquivalent:@"q"];
+        quit_item.target = g_Delegate;
+        app_item.submenu = app_menu;
+        NSApp.mainMenu = menu_bar;
+        [NSApp finishLaunching];
 
-        g_AppData.pWindow = [[NSWindow alloc]
-            initWithContentRect:frame
-            styleMask:styleMask
-            backing:NSBackingStoreBuffered
-            defer:NO];
-
-        if (!g_AppData.pWindow)
+        // Cocoa's origin is the bottom left corner of the first screen
+        const CGFloat screen_height = NSScreen.screens.count > 0 ? NSScreen.screens[0].frame.size.height : (CGFloat)uHeight;
+        const NSRect content = NSMakeRect(vPos.x, screen_height - vPos.y - (CGFloat)uHeight, (CGFloat)uWidth, (CGFloat)uHeight);
+        g_Window = [[NSWindow alloc] initWithContentRect:content
+                                               styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable | NSWindowStyleMaskResizable | NSWindowStyleMaskMiniaturizable
+                                                 backing:NSBackingStoreBuffered
+                                                   defer:NO];
+        if (!g_Window)
             return false;
-
-        [g_AppData.pWindow setTitle:[NSString stringWithUTF8String:pWindowsName]];
-        [g_AppData.pWindow makeKeyAndOrderFront:nil];
-
-        // Create content view
-        g_AppData.pView = g_AppData.pWindow.contentView;
-
-        // Query backing scale factor for DPI
-        g_AppData.fDpiScale = (float)[[g_AppData.pWindow screen] backingScaleFactor];
-
+        g_Window.releasedWhenClosed = NO;           // ImPlatform_DestroyWindow closes it and drops the reference
+        g_Window.acceptsMouseMovedEvents = YES;     // imgui_impl_osx reads the mouse position from them
+        g_Window.delegate = g_Delegate;
+        NSString* title = pWindowsName ? [NSString stringWithUTF8String:pWindowsName] : nil;
+        if (title)
+            g_Window.title = title;
         return true;
-
-#elif TARGET_OS_IOS
-        // Create iOS window
-        CGRect bounds = [[UIScreen mainScreen] bounds];
-        g_AppData.pWindow = [[UIWindow alloc] initWithFrame:bounds];
-
-        if (!g_AppData.pWindow)
-            return false;
-
-        // Create view controller
-        g_AppData.pViewController = [[UIViewController alloc] init];
-        g_AppData.pWindow.rootViewController = g_AppData.pViewController;
-
-        // Create view
-        g_AppData.pView = [[UIView alloc] initWithFrame:bounds];
-        g_AppData.pViewController.view = g_AppData.pView;
-
-        [g_AppData.pWindow makeKeyAndVisible];
-
-        // Query screen scale for DPI (2.0 for Retina, 3.0 for Plus models)
-        g_AppData.fDpiScale = (float)[[UIScreen mainScreen] scale];
-
-        return true;
-#else
-        return false;
-#endif
     }
 }
-
-// ImPlatform API - InitGfxAPI
-// Note: This is called from the graphics backend for Apple
 
 // ImPlatform API - ShowWindow
 IMPLATFORM_API bool ImPlatform_ShowWindow(void)
 {
     @autoreleasepool {
-#if TARGET_OS_OSX
-        [g_AppData.pWindow makeKeyAndOrderFront:nil];
-#elif TARGET_OS_IOS
-        [g_AppData.pWindow makeKeyAndVisible];
-#endif
+        if (!g_Window)
+            return false;
+        [g_Window makeKeyAndOrderFront:nil];
+        // Started from a terminal, the application is not the active one and its window would open behind
+        [[NSRunningApplication currentApplication] activateWithOptions:NSApplicationActivateAllWindows];
         return true;
     }
 }
@@ -138,45 +111,35 @@ IMPLATFORM_API bool ImPlatform_ShowWindow(void)
 IMPLATFORM_API bool ImPlatform_InitPlatform(void)
 {
     @autoreleasepool {
-#if TARGET_OS_OSX
-        if (!ImGui_ImplOSX_Init(g_AppData.pView))
-            return false;
-#elif TARGET_OS_IOS
-        if (!ImGui_ImplIOS_Init(g_AppData.pView))
-            return false;
-#endif
-        return true;
+        return g_Window != nil && ImGui_ImplOSX_Init(g_Window.contentView);
     }
 }
 
 // ImPlatform API - PlatformContinue
 IMPLATFORM_API bool ImPlatform_PlatformContinue(void)
 {
-    // Apple apps typically use run loop
-    return true;
+    return !g_Done;
 }
 
-// ImPlatform API - PlatformEvents
+// ImPlatform API - PlatformEvents. The events waiting are handed to the application object, which runs the monitor of
+// imgui_impl_osx and the window's own handling (close, resize, miniaturize).
 IMPLATFORM_API bool ImPlatform_PlatformEvents(void)
 {
     @autoreleasepool {
-#if TARGET_OS_OSX
-        // Process Cocoa events
-        NSEvent* event;
-        while ((event = [NSApp nextEventMatchingMask:NSEventMaskAny
-                                           untilDate:[NSDate distantPast]
-                                              inMode:NSDefaultRunLoopMode
-                                             dequeue:YES]))
+        for (;;)
         {
+            NSEvent* event = [NSApp nextEventMatchingMask:NSEventMaskAny untilDate:[NSDate distantPast] inMode:NSDefaultRunLoopMode dequeue:YES];
+            if (!event)
+                break;
             [NSApp sendEvent:event];
         }
-#elif TARGET_OS_IOS
-        // iOS uses UIApplication run loop - events are handled automatically
-        // Just process pending events
-        [[NSRunLoop currentRunLoop] runMode:NSDefaultRunLoopMode
-                                 beforeDate:[NSDate distantPast]];
-#endif
+        ImPlatform_Native_Pump();
 
+        if (g_Window.miniaturized)
+        {
+            [NSThread sleepForTimeInterval:0.01];
+            return false;   // Skip frame
+        }
         return true;
     }
 }
@@ -185,41 +148,35 @@ IMPLATFORM_API bool ImPlatform_PlatformEvents(void)
 IMPLATFORM_API void ImPlatform_PlatformNewFrame(void)
 {
     @autoreleasepool {
-#if TARGET_OS_OSX
-        ImGui_ImplOSX_NewFrame(g_AppData.pView);
-#elif TARGET_OS_IOS
-        ImGui_ImplIOS_NewFrame();
-#endif
+        ImGui_ImplOSX_NewFrame(g_Window.contentView);
     }
 }
 
-// ImPlatform API - ShutdownPlatform
-IMPLATFORM_API void ImPlatform_ShutdownPlatform(void)
+// ImPlatform API - ShutdownPostGfxAPI
+IMPLATFORM_API void ImPlatform_ShutdownPostGfxAPI(void)
 {
     @autoreleasepool {
-#if TARGET_OS_OSX
         ImGui_ImplOSX_Shutdown();
-
-        if (g_AppData.pWindow)
-        {
-            [g_AppData.pWindow close];
-            g_AppData.pWindow = nil;
-        }
-#elif TARGET_OS_IOS
-        ImGui_ImplIOS_Shutdown();
-
-        if (g_AppData.pWindow)
-        {
-            g_AppData.pWindow = nil;
-        }
-#endif
     }
 }
 
-// Internal API - Get DPI scale
-float ImPlatform_App_GetDpiScale_Apple(void)
+// ImPlatform API - DestroyWindow
+IMPLATFORM_API void ImPlatform_DestroyWindow(void)
 {
-    return g_AppData.fDpiScale > 0.0f ? g_AppData.fDpiScale : 1.0f;
+    @autoreleasepool {
+        ImPlatform_Native_Shutdown();
+        g_Window.delegate = nil;
+        [g_Window close];
+        g_Window = nil;
+        g_Delegate = nil;
+    }
 }
 
-#endif // IM_PLATFORM_APPLE
+// Internal API - Get DPI scale: 1, as Dear ImGui's GLFW and SDL backends report on macOS. The window is sized in
+// points, and io.DisplayFramebufferScale (the backing scale factor) does the scaling.
+float ImPlatform_App_GetDpiScale_Apple(void)
+{
+    return 1.0f;
+}
+
+#endif // IM_CURRENT_PLATFORM == IM_PLATFORM_APPLE

@@ -16,6 +16,7 @@ namespace ImPlatform
             { App.GLFW,  "imgui_impl_glfw.cpp" },
             { App.SDL2,  "imgui_impl_sdl2.cpp" },
             { App.SDL3,  "imgui_impl_sdl3.cpp" },
+            { App.Apple, "imgui_impl_osx.mm" },
         };
 
         private static readonly Dictionary<Gfx, string> s_gfxBackend = new Dictionary<Gfx, string>
@@ -35,6 +36,7 @@ namespace ImPlatform
             { App.GLFW,  "IM_PLATFORM_GLFW" },
             { App.SDL2,  "IM_PLATFORM_SDL2" },
             { App.SDL3,  "IM_PLATFORM_SDL3" },
+            { App.Apple, "IM_PLATFORM_APPLE" },
         };
 
         private static readonly Dictionary<Gfx, string> s_gfxDefine = new Dictionary<Gfx, string>
@@ -232,6 +234,9 @@ namespace ImPlatform
                     break;
                 case App.SDL3:
                     conf.AdditionalLinkerOptions.Add("-lSDL3");
+                    break;
+                case App.Apple:
+                    conf.XcodeSystemFrameworks.Add("GameController");   // imgui_impl_osx.mm
                     break;
             }
 

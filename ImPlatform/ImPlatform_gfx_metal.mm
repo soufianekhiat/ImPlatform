@@ -289,7 +289,7 @@ void ImPlatform_Gfx_CleanupDevice_Metal(ImPlatform_GfxData_Metal* pData)
 }
 
 // ImPlatform API - InitGfxAPI. The layer comes from the window as in Dear ImGui's examples: a layer put on the content
-// view of GLFW's window, the layer of the view SDL adds to its window.
+// view of GLFW's window or of the Cocoa platform's, the layer of the view SDL adds to its window.
 IMPLATFORM_API bool ImPlatform_InitGfxAPI(void)
 {
 #if IM_CURRENT_PLATFORM == IM_PLATFORM_GLFW
@@ -303,6 +303,8 @@ IMPLATFORM_API bool ImPlatform_InitGfxAPI(void)
     if (!g_MetalView)
         return false;
     return ImPlatform_Metal_CreateDevice((__bridge CAMetalLayer*)SDL_Metal_GetLayer((SDL_MetalView)g_MetalView), &g_GfxData) != nullptr;
+#elif IM_CURRENT_PLATFORM == IM_PLATFORM_APPLE
+    return ImPlatform_Gfx_CreateDevice_Metal(ImPlatform_App_GetNSWindow(), &g_GfxData) != nullptr;
 #else
     return false;   // No window to take a layer from
 #endif
@@ -317,6 +319,11 @@ static void ImPlatform_Metal_FramebufferSize(int* width, int* height)
     SDL_GetWindowSizeInPixels(ImPlatform_App_GetSDL2Window(), width, height);
 #elif IM_CURRENT_PLATFORM == IM_PLATFORM_SDL3
     SDL_GetWindowSizeInPixels(ImPlatform_App_GetSDL3Window(), width, height);
+#elif IM_CURRENT_PLATFORM == IM_PLATFORM_APPLE
+    NSView* view = (__bridge NSView*)ImPlatform_App_GetNSView();
+    const NSSize size = [view convertSizeToBacking:view.bounds.size];
+    *width = (int)size.width;
+    *height = (int)size.height;
 #else
     (void)width;
     (void)height;

@@ -1978,6 +1978,7 @@ int main( int argc, char** argv )
 	int renderPassFrame = 0;
 	bool asyncCompiling = false;	// --shader-async-test: its frames are counted once its programs are ready
 #endif
+#if IMPLATFORM_APP_SUPPORT_CUSTOM_TITLEBAR
 	// Configure borderless window with custom titlebar
 	ImPlatform_EnableCustomTitleBar();
 	{
@@ -1989,6 +1990,7 @@ int main( int argc, char** argv )
 		params.allowMove = true;
 		ImPlatform_SetBorderlessParams(&params);
 	}
+#endif
 
 	// Setup for an image
 	int width;

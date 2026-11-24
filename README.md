@@ -535,7 +535,7 @@ IM_PLATFORM_WIN32   // Windows (Win32 API)
 IM_PLATFORM_GLFW    // GLFW (cross-platform)
 IM_PLATFORM_SDL2    // SDL2
 IM_PLATFORM_SDL3    // SDL3
-IM_PLATFORM_APPLE   // macOS/iOS
+IM_PLATFORM_APPLE   // macOS: a Cocoa window, without GLFW or SDL (with IM_GFX_METAL)
 ```
 
 ### Graphics API Targets
@@ -664,7 +664,7 @@ Executables are written to `bin/<platform>/ImPlatformDemo_<Platform>_<Gfx>`. One
 |----|----------------|
 | Windows | `Win32_DX9`, `Win32_DX10`, `Win32_DX11`, `Win32_DX12`, `Win32_OpenGL3`, `Win32_Vulkan`, `GLFW_OpenGL3`, `GLFW_Vulkan`, `SDL2_DX11`, `SDL2_OpenGL3`, `SDL2_Vulkan`, `SDL3_DX11`, `SDL3_OpenGL3`, `SDL3_Vulkan` |
 | Linux | `GLFW_OpenGL3`, `GLFW_Vulkan`, `SDL2_OpenGL3`, `SDL2_Vulkan`, `SDL3_OpenGL3`, `SDL3_Vulkan` |
-| macOS | `GLFW_OpenGL3`, `GLFW_Metal`, `SDL2_OpenGL3`, `SDL2_Metal`, `SDL3_OpenGL3`, `SDL3_Metal` |
+| macOS | `GLFW_OpenGL3`, `GLFW_Metal`, `SDL2_OpenGL3`, `SDL2_Metal`, `SDL3_OpenGL3`, `SDL3_Metal`, `Apple_Metal` |
 
 ```bash
 # Windows (or open the solution in Visual Studio 2022)

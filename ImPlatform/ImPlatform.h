@@ -317,7 +317,7 @@
 #define IM_PLATFORM_GLFW    ( ( 1u << 1u ) << 16u )
 #define IM_PLATFORM_SDL2    ( ( 1u << 2u ) << 16u )
 #define IM_PLATFORM_SDL3    ( ( 1u << 3u ) << 16u )
-#define IM_PLATFORM_APPLE   ( ( 1u << 4u ) << 16u )
+#define IM_PLATFORM_APPLE   ( ( 1u << 4u ) << 16u )     // macOS, a Cocoa window (with IM_GFX_METAL)
 
 #define IM_PLATFORM_MASK    0xFFFF0000u
 

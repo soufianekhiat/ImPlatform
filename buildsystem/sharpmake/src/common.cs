@@ -15,6 +15,7 @@ namespace ImPlatform
         GLFW  = 1 << 1,
         SDL2  = 1 << 2,
         SDL3  = 1 << 3,
+        Apple = 1 << 4,     // macOS: a Cocoa window, without GLFW or SDL
     }
 
     // Graphics backend compiled into a configuration (IM_CONFIG_GFX).
@@ -80,6 +81,7 @@ namespace ImPlatform
                 foreach (Gfx gfx in new[] { Gfx.OpenGL3, Gfx.Metal })
                     targets.Add(new ImPlatformTarget(Platform.mac, DevEnv.xcode, app, gfx));
             }
+            targets.Add(new ImPlatformTarget(Platform.mac, DevEnv.xcode, App.Apple, Gfx.Metal));
 
             return targets.ToArray();
         }

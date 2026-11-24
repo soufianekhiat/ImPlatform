@@ -397,10 +397,8 @@ HWND ImPlatform_App_GetHWND(void);  // Get native HWND from SDL3 window
 #endif
 
 #if defined(IM_CURRENT_PLATFORM) && (IM_CURRENT_PLATFORM == IM_PLATFORM_APPLE)
-void* ImPlatform_App_GetNSWindow(void);     // Returns NSWindow* on macOS
-void* ImPlatform_App_GetNSView(void);       // Returns NSView* on macOS
-void* ImPlatform_App_GetUIWindow(void);     // Returns UIWindow* on iOS
-void* ImPlatform_App_GetUIView(void);       // Returns UIView* on iOS
+void* ImPlatform_App_GetNSWindow(void);     // The NSWindow*
+void* ImPlatform_App_GetNSView(void);       // Its content view, an NSView*
 float ImPlatform_App_GetDpiScale_Apple(void);
 #endif
 

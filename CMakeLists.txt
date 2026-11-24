@@ -154,6 +154,7 @@ set(IMGUI_BACKEND_WIN32      ${IMGUI_DIR}/backends/imgui_impl_win32.cpp)
 set(IMGUI_BACKEND_GLFW       ${IMGUI_DIR}/backends/imgui_impl_glfw.cpp)
 set(IMGUI_BACKEND_SDL2       ${IMGUI_DIR}/backends/imgui_impl_sdl2.cpp)
 set(IMGUI_BACKEND_SDL3       ${IMGUI_DIR}/backends/imgui_impl_sdl3.cpp)
+set(IMGUI_BACKEND_OSX        ${IMGUI_DIR}/backends/imgui_impl_osx.mm)
 set(IMGUI_BACKEND_DX9        ${IMGUI_DIR}/backends/imgui_impl_dx9.cpp)
 set(IMGUI_BACKEND_DX10       ${IMGUI_DIR}/backends/imgui_impl_dx10.cpp)
 set(IMGUI_BACKEND_DX11       ${IMGUI_DIR}/backends/imgui_impl_dx11.cpp)
@@ -169,6 +170,7 @@ if(APPLE)
         ${IMPLATFORM_SRC_APPLE}
         ${IMPLATFORM_SRC_METAL}
         ${IMGUI_BACKEND_METAL}
+        ${IMGUI_BACKEND_OSX}
         PROPERTIES
             LANGUAGE OBJCXX
             COMPILE_FLAGS "-fobjc-arc -x objective-c++"
@@ -204,7 +206,7 @@ function(implatform_add_config TARGET_NAME PLATFORM GFX)
         set(PLATFORM_DEFINE "IM_CURRENT_PLATFORM=IM_PLATFORM_SDL3")
         set(CONFIG_PLATFORM_DEFINE "IM_CONFIG_PLATFORM=IM_PLATFORM_SDL3")
     elseif(PLATFORM STREQUAL "APPLE")
-        list(APPEND SOURCES ${IMPLATFORM_SRC_APPLE})
+        list(APPEND SOURCES ${IMPLATFORM_SRC_APPLE} ${IMGUI_BACKEND_OSX})
         set(PLATFORM_DEFINE "IM_CURRENT_PLATFORM=IM_PLATFORM_APPLE")
         set(CONFIG_PLATFORM_DEFINE "IM_CONFIG_PLATFORM=IM_PLATFORM_APPLE")
     endif()
@@ -279,6 +281,10 @@ function(implatform_add_config TARGET_NAME PLATFORM GFX)
     elseif(PLATFORM STREQUAL "SDL3")
         target_link_libraries(${TARGET_NAME} PUBLIC SDL3::SDL3)
         target_compile_definitions(${TARGET_NAME} PUBLIC SDL_MAIN_HANDLED)
+    elseif(PLATFORM STREQUAL "APPLE")
+        # imgui_impl_osx.mm reads the gamepads
+        find_library(GAMECONTROLLER_FRAMEWORK GameController REQUIRED)
+        target_link_libraries(${TARGET_NAME} PUBLIC ${GAMECONTROLLER_FRAMEWORK})
     endif()
 
     # Graphics-specific dependencies
@@ -443,6 +449,14 @@ if(GLFW_AVAILABLE)
         if(IMPLATFORM_BUILD_DEMO)
             implatform_add_demo(ImPlatformDemo_GLFW_Metal implatform_glfw_metal)
         endif()
+    endif()
+endif()
+
+# macOS without a window library: a Cocoa window and Metal
+if(IMPLATFORM_MACOS)
+    implatform_add_config(implatform_apple_metal APPLE METAL)
+    if(IMPLATFORM_BUILD_DEMO)
+        implatform_add_demo(ImPlatformDemo_Apple_Metal implatform_apple_metal)
     endif()
 endif()
 
