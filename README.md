@@ -730,7 +730,7 @@ Each prints PASS or FAIL and exits with 0 (pass), 1 (fail) or 2 (unsupported by 
 
 `--dump-msl <shader_parts|texture3d|vertex_inputs> <vs|ps>` prints the MSL generated from those tests' shader parts,
 without a window or device, in any configuration. CI compiles it with the offline Metal compiler (`xcrun metal -c`),
-since the hosted macOS runners have no GPU to run the Metal tests.
+next to the Metal self-tests it runs.
 
 ## Project Structure
 
@@ -793,7 +793,7 @@ The library has been tested with the following configurations:
 - **DirectX 12** - Tested (self-tests, Win32)
 - **OpenGL 3** - Tested (self-tests, Windows and Linux)
 - **Vulkan** - Tested (self-tests, Windows and Linux, Win32, GLFW, SDL2, SDL3)
-- **Metal** - Builds in CI and the generated MSL compiles with the offline Metal compiler; not run on hardware yet
+- **Metal** - Tested in CI (self-tests of `GLFW_Metal` and `Apple_Metal` on the hosted macOS runner, a virtual machine); not tried by hand on a Mac
 - **WebGPU** - Basic testing (Emscripten + GLFW in Chrome)
 
 ### Dear ImGui Version
@@ -803,7 +803,7 @@ The library has been tested with the following configurations:
 
 ## Known Limitations
 
-- macOS and Metal build and compile in CI but have not run on a Mac with a GPU
+- macOS: the Metal self-tests run in CI on a virtual machine, with GLFW and with the Cocoa platform. OpenGL gets no pixel format there, the SDL configurations are only built, and nothing has been tried by hand on a Mac
 - WebGPU: no readback, and no render-target switch or copy (its render pass encoder belongs to Dear ImGui's backend)
 - Vulkan: at most 968 textures and render textures alive at once (the descriptor pool shared with Dear ImGui's backend); creating one more returns 0
 - DirectX 9 shaders are shader model 3: no integer or bit operations, no texel loads, `nointerpolation` varyings are interpolated
@@ -812,7 +812,7 @@ The library has been tested with the following configurations:
 - Off Windows, pen input needs SDL3 and touch input SDL2 or SDL3 (GLFW has neither there, SDL2 no pen)
 - On macOS and Wayland, GLFW and SDL2 report a drop at the release (GLFW: files only), and nothing can be dragged out of the application; nor with SDL3 on Linux
 - Clipboard images on Linux need libpng 1.6 and, with GLFW or SDL2, libX11 at run time
-- The macOS theme, clipboard image and trackpad gestures compile in CI but have not run on a Mac with a display
+- The macOS clipboard image test passes in CI; the trackpad gestures compile there but have not been tried on a trackpad
 - A trackpad's pinch is recognized on Windows as the Ctrl-marked wheel messages a precision touchpad sends; it has not been tried on a touchpad. Linux reports one through SDL 3.4+ only
 - `ImPlatform_CopyBackbuffer()` is DirectX 11 only; `ImPlatform_CaptureViewport()` covers DirectX 9, 11, 12, OpenGL and Vulkan (main viewport only on DirectX 12 and Vulkan)
 

@@ -107,7 +107,8 @@ Changes since 2.0.0 (the `v2` branch), in progress on the `v3` branch.
 - Metal: `ImPlatform_InitGfxAPI()` returned false on every configuration, so no Metal application started. It now
   creates the device and its layer on GLFW's Cocoa window or on SDL's Metal view, and a frame takes one drawable and
   one command buffer, presented by `ImPlatform_GfxAPISwapBuffer()`, as Dear ImGui's examples do. `ImPlatform_PopSampler()`
-  restores the linear clamped sampler instead of none. Compiled only: no Mac with a GPU has run it.
+  restores the linear clamped sampler instead of none. The Metal self-tests now run in CI: they were skipped as
+  "no GPU" while the device was never created.
 - DirectX 9: resizing the window while a render texture existed failed the device reset (an assertion in debug
   builds). A render texture larger than the window can be drawn into (the window's depth buffer is unbound meanwhile).
   `ImPlatform_DrawQuadNow()` left the vertex stream unbound, which dropped the rest of the frame's interface.

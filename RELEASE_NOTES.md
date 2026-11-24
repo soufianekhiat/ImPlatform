@@ -71,8 +71,9 @@ without freezing the frame, and report their errors to the application. The full
 
 ## Known limitations
 
-- Metal and macOS build and compile in CI but have not run on a Mac with a GPU; the device creation, the frame and
-  the blending, defines and log changes of this version are untested there.
+- Metal runs its self-tests in CI on the hosted macOS runner (a virtual machine), with GLFW and with the Cocoa
+  platform. It has not been tried by hand on a Mac; macOS OpenGL does not run in CI, and the SDL configurations are
+  only built there.
 - Shaders compile on a worker thread on DirectX 10, 11 and 12 only: elsewhere a job is ready or failed as soon as it
   is created, and Vulkan, DirectX 12 and OpenGL still create pipelines at the first draw or dispatch.
 - An asynchronous dispatch runs on the queue of the frames: a long one still delays the frames submitted after it.
