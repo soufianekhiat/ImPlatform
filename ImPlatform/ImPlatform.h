@@ -1351,7 +1351,7 @@ IMPLATFORM_API void ImPlatform_ReleaseComputeDispatch(ImPlatform_ComputeDispatch
 #if IMPLATFORM_GFX_SUPPORT_DEVICE_CONTROL
 // True once the graphics device has been removed or reset (driver update, TDR, unplugged adapter): every GPU
 // resource is gone and further rendering fails. The application keeps its CPU data and must recreate the device
-// (or restart) to draw again.
+// (or restart) to draw again. On DirectX 12, ImPlatform_GfxCheck() returns false until then: the loop skips its frames.
 IMPLATFORM_API bool ImPlatform_GfxDeviceLost(void);
 // True while a device can be used: after ImPlatform_InitGfx succeeded, and neither removed, being recreated, nor shut
 // down (ImPlatform_ShutdownGfxAPI / ImPlatform_ShutdownWindow). False before initialization, unlike

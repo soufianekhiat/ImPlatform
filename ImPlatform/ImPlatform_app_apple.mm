@@ -101,8 +101,9 @@ IMPLATFORM_API bool ImPlatform_ShowWindow(void)
         if (!g_Window)
             return false;
         [g_Window makeKeyAndOrderFront:nil];
-        // Started from a terminal, the application is not the active one and its window would open behind
-        [[NSRunningApplication currentApplication] activateWithOptions:NSApplicationActivateAllWindows];
+        // Started from a terminal, the application is not the active one and its window would open behind. Same call as
+        // Dear ImGui's example_apple_metal and GLFW: an activation without it waits for the active application to give way.
+        [NSApp activateIgnoringOtherApps:YES];
         return true;
     }
 }

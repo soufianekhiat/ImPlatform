@@ -1437,6 +1437,73 @@ static int ImPlatformDemo_ComputeTest( bool async )
 #endif
 }
 
+#if IMPLATFORM_GFX_SUPPORT_DEVICE_CONTROL
+#include <chrono>
+#endif
+// --device-lost-test: removes the device on purpose after a few frames. ImPlatform_GfxCheck() then skips the frames
+// without stalling the loop, and the teardown that follows the test ends on the lost device. Exit code 0 / 1, 2 where no
+// device can be removed.
+static int ImPlatformDemo_DeviceLostTest()
+{
+#if IMPLATFORM_GFX_SUPPORT_DEVICE_CONTROL
+	if ( ImPlatform_GfxDebugRemoveDevice() )
+	{
+		const std::chrono::steady_clock::time_point start = std::chrono::steady_clock::now();
+		bool skipped = ImPlatform_GfxDeviceLost() && !ImPlatform_GfxDeviceReady();
+		for ( int i = 0; i < 10; i++ )
+			skipped = !ImPlatform_GfxCheck() && skipped;
+		const double seconds = std::chrono::duration<double>( std::chrono::steady_clock::now() - start ).count();
+		const bool pass = skipped && seconds < 1.0;
+		printf( "%s: device lost test (lost and frames skipped %d, ten checks in %.2f s)\n", pass ? "PASS" : "FAIL", (int)skipped, seconds );
+		return pass ? 0 : 1;
+	}
+#endif
+	printf( "SKIP: no device removal on this backend\n" );
+	return 2;
+}
+
+// The second half of --device-lost-test, once everything created on the lost device is destroyed: the device is
+// recreated, and a frame of the new one is captured and read back (the squares of --screenshot-test).
+static int ImPlatformDemo_DeviceRecreateTest( ImVec4 clear_color )
+{
+#if IMPLATFORM_GFX_SUPPORT_DEVICE_CONTROL
+	if ( !ImPlatform_GfxRecreateDevice() || !ImPlatform_GfxDeviceReady() || !ImPlatform_GfxCheck() )
+	{
+		printf( "FAIL: ImPlatform_GfxRecreateDevice\n" );
+		return 1;
+	}
+	bool captured = true;
+	for ( int frame = 0; frame < 3; frame++ )
+	{
+		ImPlatform_GfxAPINewFrame();
+		ImPlatform_PlatformNewFrame();
+		ImGui::NewFrame();
+		if ( frame == 1 )
+			captured = QueueScreenshotTest( ImGui::GetMainViewport() );
+		ImGui::Render();
+		ImPlatform_GfxAPIClear( clear_color );
+		ImPlatform_GfxAPIRender( clear_color );
+#ifdef IMGUI_HAS_VIEWPORT
+		ImPlatform_GfxViewportPre();
+		ImPlatform_GfxViewportPost();
+#endif
+		ImPlatform_GfxAPISwapBuffer();
+	}
+	if ( !captured )
+	{
+		printf( "FAIL: no capture on the recreated device\n" );
+		return 1;
+	}
+	const int result = CheckScreenshotTest();
+	ImPlatform_DestroyTexture( g_Screenshot );
+	g_Screenshot = 0;
+	return result;
+#else
+	(void)clear_color;
+	return 2;
+#endif
+}
+
 // --drag-rect-test: the arithmetic of the borderless GLFW window's software move and resize (ImPlatform_DragRect), without
 // a window: a move, edges that grow, and an edge dragged past the minimum size (the opposite edge stays). Exit code 0 / 1.
 static int ImPlatformDemo_DragRectTest()
@@ -2031,6 +2098,8 @@ int main( int argc, char** argv )
 	const bool renderPassTest = argc > 1 && strcmp( argv[ 1 ], "--render-pass-test" ) == 0;
 	const bool shaderTest = argc > 1 && strcmp( argv[ 1 ], "--shader-test" ) == 0;
 	const bool samplerTest = argc > 1 && strcmp( argv[ 1 ], "--sampler-test" ) == 0;
+	const bool deviceLostTest = argc > 1 && strcmp( argv[ 1 ], "--device-lost-test" ) == 0;
+	int deviceLostFrame = 0;
 	const bool directDrawTest = argc > 1 && strcmp( argv[ 1 ], "--direct-draw-test" ) == 0;
 	const bool partsTest = argc > 1 && strcmp( argv[ 1 ], "--shader-parts-test" ) == 0;
 	const bool texture3DTest = argc > 1 && strcmp( argv[ 1 ], "--texture3d-test" ) == 0;
@@ -2248,6 +2317,12 @@ int main( int argc, char** argv )
 		if ( !ImPlatform_PlatformEvents() )
 		{
 			continue;
+		}
+
+		if ( deviceLostTest && ++deviceLostFrame > 3 )
+		{
+			exitCode = ImPlatformDemo_DeviceLostTest();
+			break;
 		}
 
 		// The self-tests read back what they render: they keep rendering when the window is occluded (screen off or
@@ -2637,6 +2712,8 @@ int main( int argc, char** argv )
 #endif
 #endif
 #endif
+	if ( deviceLostTest && exitCode == 0 )
+		exitCode = ImPlatformDemo_DeviceRecreateTest( clear_color );
 	ImPlatform_ShutdownGfxAPI();
 	ImPlatform_ShutdownWindow();
 	ImPlatform_ShutdownPostGfxAPI();

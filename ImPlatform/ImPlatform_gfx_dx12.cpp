@@ -486,6 +486,14 @@ IMPLATFORM_API bool ImPlatform_InitGfx(void)
 // ImPlatform API - GfxCheck
 IMPLATFORM_API bool ImPlatform_GfxCheck(void)
 {
+    // A lost device draws nothing and its waits take a second each to give up: the frame is skipped, and the loop keeps
+    // pumping messages until the application recreates the device (same as upstream example_win32_directx12)
+    if (g_GfxData.pDevice && FAILED(g_GfxData.pDevice->GetDeviceRemovedReason()))
+    {
+        ::Sleep(10);
+        return false;
+    }
+
     // Handle window screen locked or minimized (flip model swapchains don't report DXGI_STATUS_OCCLUDED when minimized)
     if ((g_GfxData.bSwapChainOccluded && g_GfxData.pSwapChain->Present(0, DXGI_PRESENT_TEST) == DXGI_STATUS_OCCLUDED) || ::IsIconic(ImPlatform_App_GetHWND()))
     {
@@ -656,7 +664,8 @@ IMPLATFORM_API void ImPlatform_ShutdownGfxAPI(void)
 IMPLATFORM_API void ImPlatform_ShutdownWindow(void)
 {
     g_P12_DeviceReady = false;
-    ImGui_ImplDX12_Shutdown();
+    if (ImGui::GetIO().BackendRendererUserData)     // None after an ImPlatform_GfxRecreateDevice that found no device
+        ImGui_ImplDX12_Shutdown();
 #ifdef IMGUI_HAS_VIEWPORT
     g_OriginalRendererRenderWindow = nullptr;   // ImPlatform_GfxViewportPost wraps the callback of the next backend init.
 #endif
@@ -3067,12 +3076,16 @@ static void ImPlatform_DestroySecondaryWindow(ImGuiViewport* viewport)
 {
     if (viewport != ImGui::GetMainViewport() && g_RecreatePlatformDestroy)
         g_RecreatePlatformDestroy(viewport);
+    else
+        viewport->PlatformUserData = nullptr;   // Dear ImGui asserts that a destroyed window has none; the caller puts it back
 }
 
 IMPLATFORM_API bool ImPlatform_GfxRecreateDevice(void)
 {
     // Everything recorded or owned on the old device goes first (a removed device completes its fences at once).
     g_P12_DeviceReady = false;      // Until the new device's InitGfx succeeds.
+    ImPlatform_ReleaseRenderPasses();   // The backend's own program: an object left on the old device keeps it alive, and
+                                        // no new device can be created on the adapter while a removed one is.
     ImPlatform_DX12_ReleaseAll();
     if (g_P12_Timer.heap) g_P12_Timer.heap->Release();
     if (g_P12_Timer.buffer) g_P12_Timer.buffer->Release();

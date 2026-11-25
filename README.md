@@ -708,6 +708,7 @@ ImPlatformDemo_Win32_DX12 --compute-async-test # the same with the shader compil
 ImPlatformDemo_Win32_DX12 --render-pass-test   # render pass target and premultiplied composite
 ImPlatformDemo_Win32_DX12 --shader-test        # shaders/gradient.hlsl drawn into a render pass, read back
 ImPlatformDemo_Win32_DX12 --sampler-test       # nearest and linear samplers on a render pass list; scopes kept across a custom shader
+ImPlatformDemo_Win32_DX12 --device-lost-test   # the device removed on purpose: frames skipped without stalling, then recreated and a frame read back
 ImPlatformDemo_Win32_DX12 --direct-draw-test   # from a draw callback: push a render target, push constants, DrawQuadNow
 ImPlatformDemo_Win32_DX12 --shader-parts-test  # a shader written as parts: parameters in both stages, varying, texture t1
 ImPlatformDemo_Win32_DX12 --texture3d-test     # a 2x2x2 texture at t1, sampled by shaders/volume_test.hlsl and by shader parts

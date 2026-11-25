@@ -98,7 +98,14 @@ Changes since 2.0.0 (the `v2` branch), in progress on the `v3` branch.
   `ImPlatform_BeginCustomShader_Render()` or `ImPlatform_UseShaderProgram()` is for the application's own draws there:
   Dear ImGui's draws would not run its vertex shader. The vertex format of both versions is handled.
 - DirectX 12: the waits on the frame's fence and on the swap chain end when the device is lost, as in Dear ImGui's
-  example, instead of blocking forever.
+  example, instead of blocking forever. `ImPlatform_GfxCheck()` returns false on a lost device: the loop skips its
+  frames and keeps handling the window's messages until `ImPlatform_GfxRecreateDevice()`.
+- DirectX 12: `ImPlatform_GfxRecreateDevice()` works again. It stopped on a Dear ImGui assert (the main viewport
+  kept its platform data while the renderer backend shut down), and it found no device once a premultiplied alpha scope
+  had been drawn: the backend's own program stayed on the removed device, and Direct3D creates no device on an adapter
+  whose removed one is still alive. `ImPlatform_ShutdownWindow()` after a recreation that failed no longer asserts.
+  Demo `--device-lost-test`: the device removed on purpose, the frames skipped, then the device recreated and a frame
+  of it read back.
 - **`ImPlatform_PushSampler()` / `ImPlatform_PopSampler()` are implemented once**, on
   `ImPlatform_PushSamplerEx()` / `ImPlatform_PopSamplerEx()`: an `IM_GFX_CUSTOM` application provides those two
   instead (the same functions with the draw list as first argument, NULL for the current window's).
