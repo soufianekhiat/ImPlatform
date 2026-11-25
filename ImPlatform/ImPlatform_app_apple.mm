@@ -104,6 +104,18 @@ IMPLATFORM_API bool ImPlatform_ShowWindow(void)
         // Started from a terminal, the application is not the active one and its window would open behind. Same call as
         // Dear ImGui's example_apple_metal and GLFW: an activation without it waits for the active application to give way.
         [NSApp activateIgnoringOtherApps:YES];
+
+        // An activation brings the key window in front of the application's other windows, and it ends when its event is
+        // handled: left to the first frame, that would be after the platform windows of that frame are shown, which
+        // then stay behind this one. The events are handled here until it has ended, half a second at most.
+        NSDate* until = [NSDate dateWithTimeIntervalSinceNow:0.5];
+        while (!NSApp.isActive)
+        {
+            NSEvent* event = [NSApp nextEventMatchingMask:NSEventMaskAny untilDate:until inMode:NSDefaultRunLoopMode dequeue:YES];
+            if (!event)
+                break;
+            [NSApp sendEvent:event];
+        }
         return true;
     }
 }

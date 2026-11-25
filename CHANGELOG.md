@@ -147,6 +147,11 @@ Changes since 2.0.0 (the `v2` branch), in progress on the `v3` branch.
   reset of the render state went back to the linear sampler and to straight alpha blending for the draws that followed,
   on every backend. The scopes open on a draw list are recorded as it is built, and the end of a custom shader sets
   the innermost of each again.
+- Metal with multi-viewports: a custom shader drawn in a platform window other than the main one did nothing, and its
+  draws came out with Dear ImGui's pipeline (the font atlas in place of the shader's output). The backend renders
+  those windows itself now, as it does the main one.
+- macOS Cocoa platform: the platform windows opened by the first frame stayed behind the main window. Showing the
+  main window waits for the application's activation, half a second at most.
 - Vulkan: the pipelines of a custom shader program are kept per target format instead of per render pass. Every
   resize of the window and every render texture has a render pass of its own, so the pipelines added up, and one could
   be matched to a new render pass that reused the handle of a destroyed one.

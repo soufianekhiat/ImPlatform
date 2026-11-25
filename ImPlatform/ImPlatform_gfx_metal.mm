@@ -450,12 +450,63 @@ IMPLATFORM_API void ImPlatform_GfxViewportPre(void)
     }
 }
 
+// Dear ImGui's Renderer_RenderWindow records a platform window with a command encoder it keeps to itself, and the
+// custom shader callbacks need the one being recorded (ImPlatform_RenderDrawDataWrapper): without it they did nothing,
+// and their draws came out with Dear ImGui's pipeline. The platform windows are rendered here instead, the same way
+// (ImGui_ImplMetal_RenderWindow in imgui_impl_metal.mm), on the layer the backend has put on the window's content view.
+static void ImPlatform_Metal_RenderWindow(ImGuiViewport* viewport, void*)
+{
+    @autoreleasepool {
+        void* handle = viewport->PlatformHandleRaw ? viewport->PlatformHandleRaw : viewport->PlatformHandle;
+        NSWindow* window = (__bridge NSWindow*)handle;
+        if (!window || ![window.contentView.layer isKindOfClass:[CAMetalLayer class]])
+            return;
+        CAMetalLayer* layer = (CAMetalLayer*)window.contentView.layer;
+        layer.displaySyncEnabled = NO;      // As the backend by default: the frame waits for the display once, in the main window
+
+        // nextDrawable waits about a second on a layer that is hidden: such a window is skipped, but for its first frame
+        static ImGuiStorage rendered;       // By viewport: the layer that has had a frame
+        const bool first_frame = rendered.GetVoidPtr(viewport->ID) != (__bridge void*)layer;
+        if ((window.occlusionState & NSWindowOcclusionStateVisible) == 0 && !first_frame)
+            return;
+        rendered.SetVoidPtr(viewport->ID, (__bridge void*)layer);
+
+        // The layer covers the content view; the window's frame has the title bar too
+        const CGFloat scale = window.backingScaleFactor;
+        const CGSize bounds = window.contentView.bounds.size;
+        const CGSize size = CGSizeMake(bounds.width * scale, bounds.height * scale);
+        layer.contentsScale = scale;
+        if (!CGSizeEqualToSize(layer.drawableSize, size))
+            layer.drawableSize = size;
+
+        id<CAMetalDrawable> drawable = [layer nextDrawable];
+        if (drawable == nil)
+            return;
+
+        MTLRenderPassDescriptor* pass = [MTLRenderPassDescriptor renderPassDescriptor];
+        pass.colorAttachments[0].texture = drawable.texture;
+        pass.colorAttachments[0].clearColor = MTLClearColorMake(0, 0, 0, 0);
+        if ((viewport->Flags & ImGuiViewportFlags_NoRendererClear) == 0)
+            pass.colorAttachments[0].loadAction = MTLLoadActionClear;
+
+        id<MTLCommandBuffer> commandBuffer = [(__bridge id<MTLCommandQueue>)g_GfxData.pCommandQueue commandBuffer];
+        id<MTLRenderCommandEncoder> renderEncoder = [commandBuffer renderCommandEncoderWithDescriptor:pass];
+        ImPlatform_RenderDrawDataWrapper(viewport->DrawData, commandBuffer, renderEncoder);
+        [renderEncoder endEncoding];
+        [commandBuffer presentDrawable:drawable];
+        [commandBuffer commit];
+    }
+}
+
 // ImPlatform API - GfxViewportPost
 IMPLATFORM_API void ImPlatform_GfxViewportPost(void)
 {
     @autoreleasepool {
         if (ImGui::GetIO().ConfigFlags & ImGuiConfigFlags_ViewportsEnable)
         {
+            ImGuiPlatformIO& platform_io = ImGui::GetPlatformIO();
+            if (platform_io.Renderer_RenderWindow)      // Dear ImGui's, which each ImGui_ImplMetal_Init sets again
+                platform_io.Renderer_RenderWindow = ImPlatform_Metal_RenderWindow;
             ImGui::RenderPlatformWindowsDefault();
         }
     }
