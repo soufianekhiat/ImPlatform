@@ -36,6 +36,8 @@ Changes since 2.0.0 (the `v2` branch), in progress on the `v3` branch.
 - **Samplers on any draw list**: `ImPlatform_PushSamplerEx()` / `ImPlatform_PopSamplerEx()` take the draw list, so a
   render pass's list can change its sampler (`ImPlatform_PushSampler()` reaches the current window's only). Demo
   `--sampler-test`: nearest and linear rows read back, on every backend with readback.
+- Demo `--viewports`: multi-viewports with every Dear ImGui window in a platform window of its own, the custom
+  shaders included. The CI screenshots of Linux and macOS show every configuration, as it starts and in that mode.
 - **Touch input** (Win32 pointer messages, SDL2 and SDL3 finger events; main window): `ImPlatform_SupportsTouch()`,
   `ImPlatform_GetTouchPoints()` gives the fingers in contact, `ImPlatform_ConsumeTouchGesture()` what they did since
   the previous call: pan, pinch zoom and rotation, computed from the finger positions the same way on every platform.

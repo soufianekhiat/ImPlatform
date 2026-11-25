@@ -326,8 +326,10 @@ IMPLATFORM_API bool ImPlatform_SetWindowIcon(const unsigned char* rgba, int widt
 {
     if (!g_AppData.pWindow || !rgba || width <= 0 || height <= 0)
         return false;
+#ifndef __APPLE__   // macOS shows the application's icon, and GLFW reports an error for a window's
     const GLFWimage image = { width, height, const_cast<unsigned char*>(rgba) };
     glfwSetWindowIcon(g_AppData.pWindow, 1, &image);
+#endif
     return true;
 }
 #endif // IMPLATFORM_APP_SUPPORT_WINDOW_STATE

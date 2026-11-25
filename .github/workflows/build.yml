@@ -445,19 +445,22 @@ jobs:
               cp "ImPlatformDemo/imgui.ini" "$DEMO_DIR/imgui.ini"
             fi
 
-            # Run demo in background from its directory
-            cd "$DEMO_DIR"
-            "./$DEMO_NAME" &
-            DEMO_PID=$!
-            cd - > /dev/null
-            sleep 3
+            # As it starts, then with every Dear ImGui window in a platform window of its own
+            for ARGS in "" "--viewports"; do
+              # Run demo in background from its directory
+              cd "$DEMO_DIR"
+              "./$DEMO_NAME" $ARGS &
+              DEMO_PID=$!
+              cd - > /dev/null
+              sleep 5
 
-            # Capture screenshot using import (ImageMagick)
-            import -window root "screenshots/screenshot_Linux_${DEMO_NAME}.png" || true
+              # Capture screenshot using import (ImageMagick)
+              import -window root "screenshots/screenshot_Linux_${DEMO_NAME}${ARGS#-}.png" || true
 
-            # The window is gone before the next demo opens its own
-            kill $DEMO_PID 2>/dev/null || true
-            wait $DEMO_PID 2>/dev/null || true
+              # The windows are gone before the next demo opens its own
+              kill $DEMO_PID 2>/dev/null || true
+              wait $DEMO_PID 2>/dev/null || true
+            done
           done
 
           kill $XVFB_PID 2>/dev/null || true
@@ -595,19 +598,22 @@ jobs:
               cp "ImPlatformDemo/imgui.ini" "$DEMO_DIR/imgui.ini"
             fi
 
-            # Run demo in background from its directory
-            cd "$DEMO_DIR"
-            "./$DEMO_NAME" &
-            DEMO_PID=$!
-            cd - > /dev/null
-            sleep 3
+            # As it starts, then with every Dear ImGui window in a platform window of its own
+            for ARGS in "" "--viewports"; do
+              # Run demo in background from its directory
+              cd "$DEMO_DIR"
+              "./$DEMO_NAME" $ARGS &
+              DEMO_PID=$!
+              cd - > /dev/null
+              sleep 5
 
-            # Capture screenshot using screencapture
-            screencapture -x "screenshots/screenshot_macOS_${DEMO_NAME}.png" || true
+              # Capture screenshot using screencapture
+              screencapture -x "screenshots/screenshot_macOS_${DEMO_NAME}${ARGS#-}.png" || true
 
-            # The window is gone before the next demo opens its own
-            kill $DEMO_PID 2>/dev/null || true
-            wait $DEMO_PID 2>/dev/null || true
+              # The windows are gone before the next demo opens its own
+              kill $DEMO_PID 2>/dev/null || true
+              wait $DEMO_PID 2>/dev/null || true
+            done
           done
         continue-on-error: true
 

@@ -2098,6 +2098,7 @@ int main( int argc, char** argv )
 	const bool renderPassTest = argc > 1 && strcmp( argv[ 1 ], "--render-pass-test" ) == 0;
 	const bool shaderTest = argc > 1 && strcmp( argv[ 1 ], "--shader-test" ) == 0;
 	const bool samplerTest = argc > 1 && strcmp( argv[ 1 ], "--sampler-test" ) == 0;
+	const bool viewportsDemo = argc > 1 && strcmp( argv[ 1 ], "--viewports" ) == 0;	// Every window in a platform window of its own
 	const bool deviceLostTest = argc > 1 && strcmp( argv[ 1 ], "--device-lost-test" ) == 0;
 	int deviceLostFrame = 0;
 	const bool directDrawTest = argc > 1 && strcmp( argv[ 1 ], "--direct-draw-test" ) == 0;
@@ -2206,8 +2207,9 @@ int main( int argc, char** argv )
 #endif
 #ifdef IMGUI_HAS_VIEWPORT
 	//io.ConfigFlags |= ImGuiConfigFlags_ViewportsEnable;		// Enable Multi-Viewport / Platform Windows
-	if ( screenshotViewportTest )
+	if ( screenshotViewportTest || viewportsDemo )
 		io.ConfigFlags |= ImGuiConfigFlags_ViewportsEnable;
+	io.ConfigViewportsNoAutoMerge = viewportsDemo;
 	////io.ConfigViewportsNoAutoMerge = true;
 	////io.ConfigViewportsNoTaskBarIcon = true;
 #endif
@@ -2488,9 +2490,10 @@ int main( int argc, char** argv )
 		ImVec2 display_size = io.DisplaySize;
 		float half_width = display_size.x * 0.5f;
 		float half_height = ( display_size.y - grid_top ) * 0.5f;
+		const ImVec2 origin = ImGui::GetMainViewport()->Pos;	// Where the main window is on the screen with multi-viewports; zero without
 
 		// Bottom-right: Dear ImGui Demo
-		ImGui::SetNextWindowPos(ImVec2(half_width, grid_top + half_height), ImGuiCond_Always);
+		ImGui::SetNextWindowPos(origin + ImVec2(half_width, grid_top + half_height), ImGuiCond_Always);
 		ImGui::SetNextWindowSize(ImVec2(half_width, half_height), ImGuiCond_Always);
 		bool show = true;
 		ImGui::ShowDemoWindow( &show );
@@ -2499,7 +2502,7 @@ int main( int argc, char** argv )
 #ifdef IMGUI_HAS_TEXTURES
 		if (img && img_white)
 		{
-			ImGui::SetNextWindowPos(ImVec2(half_width, grid_top), ImGuiCond_Always);
+			ImGui::SetNextWindowPos(origin + ImVec2(half_width, grid_top), ImGuiCond_Always);
 			ImGui::SetNextWindowSize(ImVec2(half_width, half_height), ImGuiCond_Always);
 			ImGui::Begin("ImPlatform Texture API Demo", nullptr, ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove);
 			ImGui::Text("Checkerboard texture created with ImPlatform_CreateTexture:");
@@ -2526,7 +2529,7 @@ int main( int argc, char** argv )
 		// Custom Shader Demo Window 1: Arrow SDF Shape (Top-left)
 		if (arrow_program)
 		{
-			ImGui::SetNextWindowPos(ImVec2(0, grid_top), ImGuiCond_Always);
+			ImGui::SetNextWindowPos(origin + ImVec2(0, grid_top), ImGuiCond_Always);
 			ImGui::SetNextWindowSize(ImVec2(half_width, half_height), ImGuiCond_Always);
 			ImGui::Begin("Custom Shader: Arrow SDF", nullptr, ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove);
 			ImGui::Text("This demonstrates a custom shader with SDF rendering.");
@@ -2549,7 +2552,7 @@ int main( int argc, char** argv )
 		// Custom Shader Demo Window 2: Linear Gradient (Bottom-left)
 		if (gradient_program && !shaderTest && !samplerTest && !directDrawTest && !bufferUpdateTest)		// The tests set their own constants
 		{
-			ImGui::SetNextWindowPos(ImVec2(0, grid_top + half_height), ImGuiCond_Always);
+			ImGui::SetNextWindowPos(origin + ImVec2(0, grid_top + half_height), ImGuiCond_Always);
 			ImGui::SetNextWindowSize(ImVec2(half_width, half_height), ImGuiCond_Always);
 			ImGui::Begin("Custom Shader: Linear Gradient", nullptr, ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove);
 			ImGui::Text("This demonstrates a custom shader with adjustable colors.");
@@ -2583,7 +2586,7 @@ int main( int argc, char** argv )
 		// Show a message when custom shaders are not supported
 		// Top-left and bottom-left combined
 		{
-			ImGui::SetNextWindowPos(ImVec2(0, grid_top), ImGuiCond_Always);
+			ImGui::SetNextWindowPos(origin + ImVec2(0, grid_top), ImGuiCond_Always);
 			ImGui::SetNextWindowSize(ImVec2(half_width, display_size.y - grid_top), ImGuiCond_Always);
 			ImGui::Begin("Custom Shader Support", nullptr, ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove);
 			ImGui::TextColored(ImVec4(1.0f, 0.5f, 0.0f, 1.0f), "Custom Shaders Not Supported");
@@ -2595,6 +2598,16 @@ int main( int argc, char** argv )
 
 		if ( !passTest )		// The tests read the frame back
 			GestureDemo();
+#ifdef IMGUI_HAS_VIEWPORT
+		if ( viewportsDemo )
+		{
+			ImGui::SetNextWindowPos( origin + ImPlatform_EmToVec2( 3.0f, 12.0f ), ImGuiCond_FirstUseEver );
+			ImGui::Begin( "Viewports", nullptr, ImGuiWindowFlags_AlwaysAutoResize );
+			ImGui::Text( "Platform windows: %d", ImGui::GetPlatformIO().Viewports.Size );
+			ImGui::Text( "This window has its own: %s", ImGui::GetWindowViewport() != ImGui::GetMainViewport() ? "yes" : "no" );
+			ImGui::End();
+		}
+#endif
 
 #if defined( IMGUI_HAS_TEXTURES ) && !defined( __EMSCRIPTEN__ )
 		ImGuiViewport* screenshotViewport = ImGui::GetMainViewport();
