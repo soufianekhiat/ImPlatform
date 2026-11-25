@@ -34,6 +34,13 @@ without freezing the frame, and report their errors to the application. The full
   whatever the window library.
 - **Borderless window on stock GLFW**: moved and resized by its edges without TheCherno's fork.
 - **Win32 + Vulkan** is a built and tested configuration.
+- **macOS without a window library**: `IM_PLATFORM_APPLE` with `IM_GFX_METAL` (configuration `Apple_Metal`) is a Cocoa
+  window with Dear ImGui's `imgui_impl_osx`, multi-viewports included.
+- **Samplers on any draw list**: `ImPlatform_PushSamplerEx()` / `ImPlatform_PopSamplerEx()`. A sampler or a
+  premultiplied alpha scope stays in place across a custom shader drawn inside it.
+- **Multi-viewports**: on Metal a custom shader draws in every platform window, not in the main one only.
+- **Device loss on DirectX 12**: the frames of a lost device are skipped instead of stalling, and
+  `ImPlatform_GfxRecreateDevice()` gives a working device again.
 
 ## Upgrading from 2.0.0
 
@@ -44,8 +51,15 @@ without freezing the frame, and report their errors to the application. The full
 - **Dear ImGui**: 1.92.8 or later (the submodule is the docking branch after 1.93.0).
 - **DirectX 9** is a Direct3D 9Ex device: resources an application creates itself on the device go in
   `D3DPOOL_DEFAULT` (there is no managed pool), and they stay valid across a reset.
+- **DirectX 9 with Dear ImGui 1.93.1 and later**: a custom program draws Dear ImGui's vertices when bound with
+  `ImPlatform_BeginCustomShader()` (a draw list scope); one bound with `ImPlatform_BeginCustomShader_Render()` is for
+  the application's own draws.
 - **DirectX 12**: the sampler `s0` of a custom shader program clamps; a shader that relied on it wrapping needs its
   own texture coordinates wrapped (`frac`).
+- **DirectX 12**: `ImPlatform_GfxCheck()` returns false on a lost device. A loop that handled the loss after that call
+  moves the handling before its `continue`.
+- **`ImPlatform_EndCustomShader()`** leaves the sampler and the premultiplied alpha scopes around it in place: code
+  that pushed them again after each custom shader can drop that.
 - **`IM_GFX_CUSTOM` backends** provide two more functions, `ImPlatform_GetShaderLog()` and
   `ImPlatform_SetShaderProgramBlend()`, and the group `IMPLATFORM_GFX_SUPPORT_ASYNC_COMPUTE` (three functions) unless
   they define it to 0. Their `ImPlatform_PushSampler()` / `ImPlatform_PopSampler()` become
@@ -65,17 +79,23 @@ without freezing the frame, and report their errors to the application. The full
 
 - The demo's self-tests, in addition to those of 2.0.0: `--blend-test`, `--shader-async-test`, `--compute-async-test`,
   `--screenshot-test`, `--screenshot-viewport-test`, `--buffer-update-test`, `--mesh-stream-test`, `--pen-test`
-  (synthetic SDL3 pen events), `--touch-test` (synthetic SDL finger events), `--sampler-test`, `--device-lost-test` (DirectX 12), `--drop-test`, `--window-test`, `--window-life-test`, `--clipboard-test` and `--drag-rect-test`. They pass on Windows (Win32 with
-  DirectX 9, 10, 11, 12, OpenGL and Vulkan; GLFW with OpenGL and Vulkan) and on Linux with Mesa (GLFW, SDL2 and SDL3
-  with OpenGL and Vulkan), where the backend has the feature.
-- CI builds every Windows, Linux and macOS configuration with both Sharpmake and CMake and runs the self-tests on
-  Linux and macOS.
+  (synthetic SDL3 pen events), `--touch-test` (synthetic SDL finger events), `--sampler-test`, `--device-lost-test`
+  (DirectX 12), `--drop-test`, `--window-test`, `--window-life-test` (resize, a platform window made and destroyed at
+  run time, close), `--clipboard-test` and `--drag-rect-test`. They pass on the fourteen Windows configurations (Win32
+  with DirectX 9, 10, 11, 12, OpenGL and Vulkan; GLFW with OpenGL and Vulkan; SDL2 and SDL3 with DirectX 11, OpenGL and
+  Vulkan), on Linux with Mesa (GLFW, SDL2 and SDL3 with OpenGL and Vulkan) and on macOS with Metal (GLFW and the Cocoa
+  platform), where the backend has the feature.
+- CI builds every Windows, Linux and macOS configuration with both Sharpmake and CMake, runs the self-tests on
+  Linux and macOS, and uploads a screenshot of every demo, on Linux and macOS also with every Dear ImGui window in a
+  platform window of its own (`--viewports`).
 
 ## Known limitations
 
-- Metal runs its self-tests in CI on the hosted macOS runner (a virtual machine), with GLFW and with the Cocoa
-  platform. It has not been tried by hand on a Mac; macOS OpenGL does not run in CI, and the SDL configurations are
-  only built there.
+- macOS is known from CI only, on the hosted runner (a virtual machine): Metal runs its self-tests there with GLFW
+  and with the Cocoa platform, and every configuration is screenshotted. Nothing has been tried by hand on a Mac. The
+  SDL configurations are not self-tested there, GLFW gets no OpenGL pixel format on that machine, and an SDL demo
+  started from a shell opens without becoming the active application.
+- The Cocoa platform has the system's titlebar and Metal only: no custom titlebar, file drop or window state calls.
 - Shaders compile on a worker thread on DirectX 10, 11 and 12 only: elsewhere a job is ready or failed as soon as it
   is created, and Vulkan, DirectX 12 and OpenGL still create pipelines at the first draw or dispatch.
 - An asynchronous dispatch runs on the queue of the frames: a long one still delays the frames submitted after it.

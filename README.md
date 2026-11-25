@@ -5,18 +5,19 @@ ImPlatform is a platform abstraction layer that simplifies multiplatform develop
 ## Features
 
 - **Clean C API**: Simple, consistent function naming (`ImPlatform_*`)
-- **Multiple Platform Support**: Win32, GLFW, SDL2, SDL3, Apple (macOS/iOS)
+- **Multiple Platform Support**: Win32, GLFW, SDL2, SDL3, Apple (macOS: a Cocoa window, without a window library)
 - **Multiple Graphics API Support**: OpenGL 3, DirectX 9/10/11/12, Vulkan, Metal, WebGPU
 - **Header-Only Implementation**: Single header include with implementation macro
-- **Multi-Viewport Support**: Built-in support for ImGui's multi-viewport and docking features
+- **Multi-Viewport Support**: Built-in support for ImGui's multi-viewport and docking features; custom shaders draw in every platform window
 - **Custom Shader Support**: Render custom shaders with ImGui's vertex/index buffers, written once in HLSL and compiled offline for every backend
 - **Shader Parts**: Shaders written once and generated at run time as HLSL, GLSL or MSL (Direct3D 9 to 12, OpenGL 3, Metal), with their own vertex inputs, varyings and textures
 - **Shader Blending, Permutations and Errors**: per-program blend state on every backend, `#define` permutations of one source, compiler messages returned to the application, and programs compiled without blocking the frame (on a worker thread on DirectX 10/11/12)
 - **Texture Creation API**: Platform-agnostic texture loading and management, 3D textures on every backend
+- **Samplers**: nearest or linear filtering for the images of any draw list, kept across the custom shaders drawn inside the scope
 - **Render Targets and Render Passes**: Nestable render-target stack, and Dear ImGui draw data rendered into a texture before the frame on every backend, with premultiplied alpha
 - **Direct Draws from Draw Callbacks**: switch to a render texture, copy the current target, draw a quad or your own vertex buffers with a custom shader and pushed constants (DirectX 9/11/12, OpenGL 3, Vulkan; DirectX 10 and WebGPU without target switches or copies; Metal draws vertex buffers)
 - **Readback and Compute**: Texture readback (synchronous on every backend but WebGPU, asynchronous on DirectX 11/12) and compute dispatch on DirectX 11/12, Vulkan and OpenGL 4.3+
-- **Depth-Tested Meshes and Device Control**: Depth render textures, meshes with depth / blend / cull states, device loss and recreation (DirectX 11/12)
+- **Depth-Tested Meshes and Device Control**: Depth render textures, meshes with depth / blend / cull states, device loss (DirectX 11/12) and recreation (DirectX 12)
 - **Pen Input**: Pressure, tilt, barrel rotation and eraser (Windows with Win32, GLFW or SDL2, with coalesced samples; SDL3 on Windows, Linux and macOS)
 - **Touch Input**: the fingers on a touch screen and their gesture, pan, pinch zoom and rotation (Windows, SDL2, SDL3); a trackpad's pinch (Windows, macOS, SDL 3.4+)
 - **Drag and Drop with Other Applications**: files and text or URLs dropped on the application, with the drag reported while it hovers (Windows, Linux on X11, SDL3) or at the release (macOS and Wayland with SDL2 or GLFW); files and text dragged out of it (Windows, Linux on X11)
@@ -293,6 +294,26 @@ ImGui::Image(texture, ImVec2(256, 256));
 ImPlatform_DestroyTexture(texture);
 ```
 
+#### Samplers
+
+`ImGui::Image()` samples with the backend's linear sampler, whatever filter the texture was created with. A sampler
+scope changes it for the draws inside, on every backend:
+
+```cpp
+ImPlatform_PushSampler(ImPlatform_TextureFilter_Nearest, ImPlatform_TextureWrap_Clamp);
+ImGui::Image(pixel_art, size);
+ImPlatform_PopSampler();
+
+// The same on any draw list: the one of a render pass, a viewport's background list
+ImPlatform_PushSamplerEx(draw_list, ImPlatform_TextureFilter_Nearest, ImPlatform_TextureWrap_Clamp);
+draw_list->AddImage(pixel_art, p0, p1);
+ImPlatform_PopSamplerEx(draw_list);
+```
+
+Scopes nest, and a custom shader drawn inside one (`ImPlatform_BeginCustomShader()` ... `ImPlatform_EndCustomShader()`)
+leaves it in place for the draws that follow. A premultiplied alpha scope is kept the same way. DirectX 12, Vulkan and WebGPU honor
+the filter and keep the wrap mode clamped. `ImPlatformDemo --sampler-test` checks nearest and linear rows by readback.
+
 #### Readback and Compute (optional capabilities)
 
 ```cpp
@@ -385,6 +406,31 @@ The capture is a render texture, so it can also be drawn (`ImGui::Image`) as a t
 is captured by passing its viewport, except on Vulkan. Writing an image file from the pixels is left to the
 application (`stb_image_write`, for instance). `ImPlatformDemo --screenshot-test` checks a capture of the main
 viewport.
+
+#### Device Loss (when `IMPLATFORM_GFX_SUPPORT_DEVICE_CONTROL` is enabled: DirectX 11 and 12)
+
+A driver update, a GPU reset or an unplugged adapter removes the device: `ImPlatform_GfxDeviceLost()` turns true and
+every GPU resource is gone. On DirectX 12 `ImPlatform_GfxCheck()` then returns false, so the loop skips its frames and
+keeps handling the window's messages, and the device can be created again on the same window:
+
+```cpp
+if (!ImPlatform_GfxCheck())
+{
+    if (ImPlatform_GfxDeviceLost())
+    {
+        // Destroy every texture, shader, program and buffer created on the lost device, then:
+        if (ImPlatform_GfxRecreateDevice())
+        {
+            // Create them again
+        }
+    }
+    continue;
+}
+```
+
+DirectX 11 reports the loss and leaves the restart to the application (`ImPlatform_GfxRecreateDevice()` returns false
+there). `ImPlatformDemo --device-lost-test` removes the device on purpose (`ImPlatform_GfxDebugRemoveDevice()`),
+recreates it and reads a frame back.
 
 #### Pen and Touch Input
 
@@ -547,7 +593,7 @@ IM_GFX_DIRECTX10    // DirectX 10
 IM_GFX_DIRECTX11    // DirectX 11
 IM_GFX_DIRECTX12    // DirectX 12
 IM_GFX_VULKAN       // Vulkan
-IM_GFX_METAL        // Metal (macOS/iOS)
+IM_GFX_METAL        // Metal (macOS)
 IM_GFX_WGPU         // WebGPU
 IM_GFX_CUSTOM       // No built-in backend: the application provides its own
 ```
@@ -696,11 +742,12 @@ cmake --build build --config Release --parallel
   - **GLFW**: on Windows the prebuilt `imgui/examples/libs/glfw/lib-vc2010-64/glfw3.lib`; elsewhere the system package (`libglfw3-dev`, `brew install glfw`)
   - **Vulkan**: Vulkan SDK (`VULKAN_SDK` environment variable on Windows)
   - **SDL2/SDL3**: SDL development package; on Windows set `SDL2_INCLUDE` / `SDL2_LIB` / `SDL3_INCLUDE` / `SDL3_LIB` (environment variables or MSBuild `/p:` properties) and copy the DLL next to the executable
-  - **Apple**: Xcode
+  - **Apple**: Xcode. The Cocoa platform (`IM_PLATFORM_APPLE`) is Objective-C++ with ARC and links the Cocoa and GameController frameworks
 
 ### Self-tests
 
-The demo checks the readback/compute, render pass and custom shader paths of whichever backend it was built with:
+The demo checks the readback/compute, render pass, custom shader, input and window paths of whichever platform and
+backend it was built with:
 
 ```bash
 ImPlatformDemo_Win32_DX12 --compute-test       # dispatch + readback
@@ -731,6 +778,11 @@ ImPlatformDemo_GLFW_OpenGL3 --drag-rect-test   # the move / resize arithmetic of
 ```
 
 Each prints PASS or FAIL and exits with 0 (pass), 1 (fail) or 2 (unsupported by the backend).
+
+CI (`.github/workflows/build.yml`) builds every configuration of the three systems with Sharpmake and with CMake, runs
+the self-tests on Linux (Mesa, under Xvfb) and on macOS (Metal, with GLFW and with the Cocoa platform), and uploads a
+screenshot of every demo as the `Screenshot-*` artifacts of the run: on Linux and macOS as the demo starts and again
+with `--viewports`, which is how the platform windows of a system nobody has at hand get looked at.
 
 `--dump-msl <shader_parts|texture3d|vertex_inputs> <vs|ps>` prints the MSL generated from those tests' shader parts,
 without a window or device, in any configuration. CI compiles it with the offline Metal compiler (`xcrun metal -c`),
@@ -764,8 +816,9 @@ ImPlatform/
 
 ## Migration from Old API
 
-Upgrading from 0.5.0 to 2.0.0: see [RELEASE_NOTES.md](RELEASE_NOTES.md) (main loop, compile-time optional functions,
-shader register convention, build).
+Upgrading from 2.0.0 to 3.0.0, or from 0.5.0 to 2.0.0: see [RELEASE_NOTES.md](RELEASE_NOTES.md) (3.0.0: sources to
+add, DirectX 9 and 12 behavior, `IM_GFX_CUSTOM` functions; 2.0.0: main loop, compile-time optional functions, shader
+register convention, build).
 
 Before 0.5.0, the library was refactored from a C++ namespace API to a clean C API. Key changes:
 
@@ -787,17 +840,18 @@ The library has been tested with the following configurations:
 - **Windows 10/11** (GLFW) - Tested (self-tests)
 - **Windows 10/11** (SDL2) - Tested (self-tests)
 - **Windows 10/11** (SDL3) - Tested (self-tests)
-- **macOS** (GLFW, SDL2, SDL3) - Builds in CI; not run on a Mac with a GPU yet (contributions welcome!)
-- **Linux** (GLFW, SDL2, SDL3) - Tested (self-tests, Ubuntu 24.04 with Mesa)
+- **macOS** (Cocoa, GLFW) - Tested in CI (self-tests and screenshots on the hosted macOS 26 runner, a virtual machine); not tried by hand on a Mac (contributions welcome!)
+- **macOS** (SDL2, SDL3) - Built and screenshotted in CI, not self-tested there
+- **Linux** (GLFW, SDL2, SDL3) - Tested (self-tests and CI screenshots, Ubuntu 24.04 with Mesa)
 
 ### Graphics APIs Tested
 - **DirectX 9** - Tested (self-tests, Win32)
 - **DirectX 10** - Tested (self-tests, Win32)
 - **DirectX 11** - Tested (self-tests, Win32, SDL2, SDL3)
 - **DirectX 12** - Tested (self-tests, Win32)
-- **OpenGL 3** - Tested (self-tests, Windows and Linux)
+- **OpenGL 3** - Tested (self-tests, Windows and Linux; on macOS the SDL2 and SDL3 demos render on the CI screenshots)
 - **Vulkan** - Tested (self-tests, Windows and Linux, Win32, GLFW, SDL2, SDL3)
-- **Metal** - Tested in CI (self-tests of `GLFW_Metal` and `Apple_Metal` on the hosted macOS runner, a virtual machine); not tried by hand on a Mac
+- **Metal** - Tested in CI (self-tests of `GLFW_Metal` and `Apple_Metal` on the hosted macOS runner, a virtual machine; screenshots of the SDL2 and SDL3 demos, and of custom shaders in secondary platform windows); not tried by hand on a Mac
 - **WebGPU** - Basic testing (Emscripten + GLFW in Chrome)
 
 ### Dear ImGui Version
@@ -807,12 +861,14 @@ The library has been tested with the following configurations:
 
 ## Known Limitations
 
-- macOS: the Metal self-tests run in CI on a virtual machine, with GLFW and with the Cocoa platform. OpenGL gets no pixel format there, the SDL configurations are only built, and nothing has been tried by hand on a Mac
+- macOS: everything known comes from CI on a virtual machine (self-tests with GLFW and with the Cocoa platform on Metal, screenshots of every configuration); nothing has been tried by hand on a Mac. GLFW gets no OpenGL pixel format on that machine, so `GLFW_OpenGL3` is not run there
+- macOS with SDL2 or SDL3: on the CI screenshots the window of a demo started from a shell opens without the application becoming the active one
+- The Cocoa platform (`IM_PLATFORM_APPLE`) has the system's titlebar and Metal only: no custom titlebar, file drop or window state calls
+- macOS OpenGL is deprecated by Apple since macOS 10.14 and frozen at 4.1; it is still in the macOS 26 SDK
 - WebGPU: no readback, and no render-target switch or copy (its render pass encoder belongs to Dear ImGui's backend)
 - Vulkan: at most 968 textures and render textures alive at once (the descriptor pool shared with Dear ImGui's backend); creating one more returns 0
 - DirectX 9 with Dear ImGui 1.93.1 and later: a custom program draws Dear ImGui's vertices when bound with `ImPlatform_BeginCustomShader` (a draw list scope); one bound with `ImPlatform_BeginCustomShader_Render` is for the application's own draws
 - DirectX 9 shaders are shader model 3: no integer or bit operations, no texel loads, `nointerpolation` varyings are interpolated
-- OpenGL3 multi-viewport with custom shaders may have minor offset issues in some edge cases
 - Custom titlebar on stock GLFW: the window is moved and resized by ImPlatform, without the system's window snapping (TheCherno's fork with `IM_THE_CHERNO_GLFW3` gives native hit-testing)
 - Off Windows, pen input needs SDL3 and touch input SDL2 or SDL3 (GLFW has neither there, SDL2 no pen)
 - On macOS and Wayland, GLFW and SDL2 report a drop at the release (GLFW: files only), and nothing can be dragged out of the application; nor with SDL3 on Linux
@@ -831,11 +887,11 @@ Contributions are welcome! The author primarily develops and tests on **Windows 
 - macOS testers (Metal, OpenGL3)
 - Linux testers (OpenGL3, Vulkan)
 - SDL2/SDL3 comprehensive testing on all platforms
-- iOS/mobile platform testing
+- A real Mac: the Cocoa window by hand (live resize, trackpad gestures), SDL activation at launch
 
 **Feature Contributors:**
 - Apple Metal backend improvements
-- SDL platform feature parity (custom titlebar, etc.)
+- Cocoa platform feature parity (custom titlebar, file drop, window state)
 - Platform-specific bug fixes and optimizations
 
 **How to Contribute:**
