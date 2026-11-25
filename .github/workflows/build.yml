@@ -561,7 +561,7 @@ jobs:
       - name: Self-tests (Sharpmake builds)
         run: |
           status=0
-          for demo in $(find bin \( -name "ImPlatformDemo_GLFW_*" -o -name "ImPlatformDemo_Apple_*" \) -type f -perm +111); do
+          for demo in $(find bin -name "ImPlatformDemo_*" -type f -perm +111 | sort); do
             for test in compute-test compute-async-test render-pass-test shader-test sampler-test direct-draw-test shader-parts-test texture3d-test vertex-inputs-test buffer-update-test mesh-stream-test blend-test shader-async-test screenshot-test screenshot-viewport-test pen-test touch-test drop-test drag-out-test window-test window-life-test "window-life-test quit" clipboard-test drag-rect-test; do
               set +e
               (cd "$(dirname "$demo")" && perl -e 'alarm 120; exec @ARGV' "./$(basename "$demo")" --$test) > test.log 2>&1
@@ -569,7 +569,7 @@ jobs:
               set -e
               cat test.log
               echo "$demo --$test: exit $code"
-              # The hosted macOS runners are virtual machines without a GPU: no Metal device, no OpenGL pixel format.
+              # The hosted macOS runners are virtual machines: GLFW gets no OpenGL pixel format there.
               if grep -q -e "Cannot initialize the Graphics API" -e "Cannot create window" test.log; then
                 echo "::warning title=$demo --$test::not run: no GPU on this runner"
                 continue
