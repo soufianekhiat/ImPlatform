@@ -780,7 +780,7 @@ ImPlatformDemo_GLFW_OpenGL3 --drag-rect-test   # the move / resize arithmetic of
 Each prints PASS or FAIL and exits with 0 (pass), 1 (fail) or 2 (unsupported by the backend).
 
 CI (`.github/workflows/build.yml`) builds every configuration of the three systems with Sharpmake and with CMake, runs
-the self-tests on Linux (Mesa, under Xvfb) and on macOS (Metal, with GLFW and with the Cocoa platform), and uploads a
+the self-tests on Linux (Mesa, under Xvfb) and on macOS (GLFW, SDL2, SDL3 and the Cocoa platform), and uploads a
 screenshot of every demo as the `Screenshot-*` artifacts of the run: on Linux and macOS as the demo starts and again
 with `--viewports`, which is how the platform windows of a system nobody has at hand get looked at.
 
@@ -841,7 +841,7 @@ The library has been tested with the following configurations:
 - **Windows 10/11** (SDL2) - Tested (self-tests)
 - **Windows 10/11** (SDL3) - Tested (self-tests)
 - **macOS** (Cocoa, GLFW) - Tested in CI (self-tests and screenshots on the hosted macOS 26 runner, a virtual machine); not tried by hand on a Mac (contributions welcome!)
-- **macOS** (SDL2, SDL3) - Built and screenshotted in CI, not self-tested there
+- **macOS** (SDL2, SDL3) - Tested in CI the same way; Homebrew's `sdl2` is sdl2-compat (SDL2's functions over SDL3), so that is what runs there
 - **Linux** (GLFW, SDL2, SDL3) - Tested (self-tests and CI screenshots, Ubuntu 24.04 with Mesa)
 
 ### Graphics APIs Tested
@@ -849,9 +849,9 @@ The library has been tested with the following configurations:
 - **DirectX 10** - Tested (self-tests, Win32)
 - **DirectX 11** - Tested (self-tests, Win32, SDL2, SDL3)
 - **DirectX 12** - Tested (self-tests, Win32)
-- **OpenGL 3** - Tested (self-tests, Windows and Linux; on macOS the SDL2 and SDL3 demos render on the CI screenshots)
+- **OpenGL 3** - Tested (self-tests, Windows and Linux; on macOS in CI with SDL2 and SDL3)
 - **Vulkan** - Tested (self-tests, Windows and Linux, Win32, GLFW, SDL2, SDL3)
-- **Metal** - Tested in CI (self-tests of `GLFW_Metal` and `Apple_Metal` on the hosted macOS runner, a virtual machine; screenshots of the SDL2 and SDL3 demos, and of custom shaders in secondary platform windows); not tried by hand on a Mac
+- **Metal** - Tested in CI (self-tests with GLFW, SDL2, SDL3 and the Cocoa platform on the hosted macOS runner, a virtual machine; screenshots of custom shaders in secondary platform windows); not tried by hand on a Mac
 - **WebGPU** - Basic testing (Emscripten + GLFW in Chrome)
 
 ### Dear ImGui Version
@@ -861,7 +861,7 @@ The library has been tested with the following configurations:
 
 ## Known Limitations
 
-- macOS: everything known comes from CI on a virtual machine (self-tests with GLFW and with the Cocoa platform on Metal, screenshots of every configuration); nothing has been tried by hand on a Mac. GLFW gets no OpenGL pixel format on that machine, so `GLFW_OpenGL3` is not run there
+- macOS: everything known comes from CI on a virtual machine (self-tests and screenshots of every configuration); nothing has been tried by hand on a Mac. GLFW gets no OpenGL pixel format on that machine, so `GLFW_OpenGL3` is the one configuration that does not run there
 - macOS with SDL2 or SDL3: on the CI screenshots the window of a demo started from a shell opens without the application becoming the active one
 - The Cocoa platform (`IM_PLATFORM_APPLE`) has the system's titlebar and Metal only: no custom titlebar, file drop or window state calls
 - macOS OpenGL is deprecated by Apple since macOS 10.14 and frozen at 4.1; it is still in the macOS 26 SDK

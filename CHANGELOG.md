@@ -159,6 +159,10 @@ Changes since 2.0.0 (the `v2` branch), in progress on the `v3` branch.
 - SDL2 with DirectX 11 or `IM_GFX_CUSTOM`: a size the application sets itself (`SDL_SetWindowSize`) reached neither
   the swap chain nor `ImPlatform_Gfx_OnResize_Custom()`, which were told of the user's and the system's resizes only
   (`SDL_WINDOWEVENT_RESIZED`). They follow `SDL_WINDOWEVENT_SIZE_CHANGED` now, sent for every change.
+- CI runs the self-tests of the SDL2 and SDL3 demos on macOS too (they were built and screenshotted only). SDL2 is
+  sdl2-compat there (SDL2's functions over SDL3), which loses the string of a drop event pushed by the
+  application: `--drop-test` exits 2 under it instead of crashing. Drops that come from the system are not
+  concerned.
 - Vulkan: the pipelines of a custom shader program are kept per target format instead of per render pass. Every
   resize of the window and every render texture has a render pass of its own, so the pipelines added up, and one could
   be matched to a new render pass that reused the handle of a destroyed one.

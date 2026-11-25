@@ -1843,6 +1843,15 @@ static int ImPlatformDemo_DropTest()
 	ImPlatform_PlatformEvents();
 	at = g_DropTestPos.x == 30.0f && g_DropTestPos.y == 40.0f;
 #elif !defined( _WIN32 )
+	// sdl2-compat (SDL2's functions over SDL3: what Homebrew installs as sdl2) loses the string of a pushed drop event
+	// and crashes reading it back. It reports a patch version of 50 or more, which SDL2 itself never reaches.
+	SDL_version version;
+	SDL_GetVersion( &version );
+	if ( version.patch >= 50 )
+	{
+		printf( "SKIP: sdl2-compat does not carry pushed drop events\n" );
+		return 2;
+	}
 	const char* want = "B F:a.png T:https://example.com/i.png E ";
 	const struct { Uint32 type; const char* data; } events[ 4 ] = { { SDL_DROPBEGIN, nullptr }, { SDL_DROPFILE, "a.png" },
 		{ SDL_DROPTEXT, "https://example.com/i.png" }, { SDL_DROPCOMPLETE, nullptr } };

@@ -83,18 +83,18 @@ without freezing the frame, and report their errors to the application. The full
   (DirectX 12), `--drop-test`, `--window-test`, `--window-life-test` (resize, a platform window made and destroyed at
   run time, close), `--clipboard-test` and `--drag-rect-test`. They pass on the fourteen Windows configurations (Win32
   with DirectX 9, 10, 11, 12, OpenGL and Vulkan; GLFW with OpenGL and Vulkan; SDL2 and SDL3 with DirectX 11, OpenGL and
-  Vulkan), on Linux with Mesa (GLFW, SDL2 and SDL3 with OpenGL and Vulkan) and on macOS with Metal (GLFW and the Cocoa
-  platform), where the backend has the feature.
+  Vulkan), on Linux with Mesa (GLFW, SDL2 and SDL3 with OpenGL and Vulkan) and on macOS (Metal with GLFW, SDL2, SDL3
+  and the Cocoa platform; OpenGL with SDL2 and SDL3), where the backend has the feature.
 - CI builds every Windows, Linux and macOS configuration with both Sharpmake and CMake, runs the self-tests on
   Linux and macOS, and uploads a screenshot of every demo, on Linux and macOS also with every Dear ImGui window in a
   platform window of its own (`--viewports`).
 
 ## Known limitations
 
-- macOS is known from CI only, on the hosted runner (a virtual machine): Metal runs its self-tests there with GLFW
-  and with the Cocoa platform, and every configuration is screenshotted. Nothing has been tried by hand on a Mac. The
-  SDL configurations are not self-tested there, GLFW gets no OpenGL pixel format on that machine, and an SDL demo
-  started from a shell opens without becoming the active application.
+- macOS is known from CI only, on the hosted runner (a virtual machine): every configuration is screenshotted and
+  runs its self-tests there but `GLFW_OpenGL3` (GLFW gets no OpenGL pixel format on that machine). Nothing has been
+  tried by hand on a Mac. SDL2 is sdl2-compat there (what Homebrew installs: SDL2's functions over SDL3), and an SDL
+  demo started from a shell opens without becoming the active application.
 - The Cocoa platform has the system's titlebar and Metal only: no custom titlebar, file drop or window state calls.
 - Shaders compile on a worker thread on DirectX 10, 11 and 12 only: elsewhere a job is ready or failed as soon as it
   is created, and Vulkan, DirectX 12 and OpenGL still create pipelines at the first draw or dispatch.
