@@ -65,7 +65,7 @@ without freezing the frame, and report their errors to the application. The full
 
 - The demo's self-tests, in addition to those of 2.0.0: `--blend-test`, `--shader-async-test`, `--compute-async-test`,
   `--screenshot-test`, `--screenshot-viewport-test`, `--buffer-update-test`, `--mesh-stream-test`, `--pen-test`
-  (synthetic SDL3 pen events), `--touch-test` (synthetic SDL finger events), `--sampler-test`, `--device-lost-test` (DirectX 12), `--drop-test`, `--window-test`, `--clipboard-test` and `--drag-rect-test`. They pass on Windows (Win32 with
+  (synthetic SDL3 pen events), `--touch-test` (synthetic SDL finger events), `--sampler-test`, `--device-lost-test` (DirectX 12), `--drop-test`, `--window-test`, `--window-life-test`, `--clipboard-test` and `--drag-rect-test`. They pass on Windows (Win32 with
   DirectX 9, 10, 11, 12, OpenGL and Vulkan; GLFW with OpenGL and Vulkan) and on Linux with Mesa (GLFW, SDL2 and SDL3
   with OpenGL and Vulkan), where the backend has the feature.
 - CI builds every Windows, Linux and macOS configuration with both Sharpmake and CMake and runs the self-tests on

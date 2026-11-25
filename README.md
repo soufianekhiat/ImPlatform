@@ -708,6 +708,7 @@ ImPlatformDemo_Win32_DX12 --compute-async-test # the same with the shader compil
 ImPlatformDemo_Win32_DX12 --render-pass-test   # render pass target and premultiplied composite
 ImPlatformDemo_Win32_DX12 --shader-test        # shaders/gradient.hlsl drawn into a render pass, read back
 ImPlatformDemo_Win32_DX12 --sampler-test       # nearest and linear samplers on a render pass list; scopes kept across a custom shader
+ImPlatformDemo_Win32_DX12 --window-life-test   # resized and back, a window moved out of the main one and back, then closed: all by the system's calls
 ImPlatformDemo_Win32_DX12 --viewports          # not a test: every Dear ImGui window in a platform window of its own
 ImPlatformDemo_Win32_DX12 --device-lost-test   # the device removed on purpose: frames skipped without stalling, then recreated and a frame read back
 ImPlatformDemo_Win32_DX12 --direct-draw-test   # from a draw callback: push a render target, push constants, DrawQuadNow

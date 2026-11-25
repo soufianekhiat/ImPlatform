@@ -36,6 +36,10 @@ Changes since 2.0.0 (the `v2` branch), in progress on the `v3` branch.
 - **Samplers on any draw list**: `ImPlatform_PushSamplerEx()` / `ImPlatform_PopSamplerEx()` take the draw list, so a
   render pass's list can change its sampler (`ImPlatform_PushSampler()` reaches the current window's only). Demo
   `--sampler-test`: nearest and linear rows read back, on every backend with readback.
+- Demo `--window-life-test`: the window resized and resized back with the window system's own call (the display size
+  and the back buffer follow), a Dear ImGui window moved across the edge of the main window and back (a platform
+  window made, drawn and destroyed at run time), then the window closed as by its close button, or by the Quit menu
+  item on the Cocoa platform (`--window-life-test quit`). In the CI self-test lists.
 - Demo `--viewports`: multi-viewports with every Dear ImGui window in a platform window of its own, the custom
   shaders included. The CI screenshots of Linux and macOS show every configuration, as it starts and in that mode.
 - **Touch input** (Win32 pointer messages, SDL2 and SDL3 finger events; main window): `ImPlatform_SupportsTouch()`,
@@ -152,6 +156,9 @@ Changes since 2.0.0 (the `v2` branch), in progress on the `v3` branch.
   those windows itself now, as it does the main one.
 - macOS Cocoa platform: the platform windows opened by the first frame stayed behind the main window. Showing the
   main window waits for the application's activation, half a second at most.
+- SDL2 with DirectX 11 or `IM_GFX_CUSTOM`: a size the application sets itself (`SDL_SetWindowSize`) reached neither
+  the swap chain nor `ImPlatform_Gfx_OnResize_Custom()`, which were told of the user's and the system's resizes only
+  (`SDL_WINDOWEVENT_RESIZED`). They follow `SDL_WINDOWEVENT_SIZE_CHANGED` now, sent for every change.
 - Vulkan: the pipelines of a custom shader program are kept per target format instead of per render pass. Every
   resize of the window and every render texture has a render pass of its own, so the pipelines added up, and one could
   be matched to a new render pass that reused the handle of a destroyed one.

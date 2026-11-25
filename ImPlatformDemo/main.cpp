@@ -2060,6 +2060,148 @@ static int ImPlatformDemo_WindowTest()
 #endif
 }
 
+#ifndef __EMSCRIPTEN__
+// --window-life-test: what a user does to the window, done with the window system's own calls while the demo renders.
+// The window is resized and resized back, and the display size and the back buffer follow; with multi-viewports a
+// Dear ImGui window is moved across the edge of the main window and back (a platform window made, drawn and destroyed
+// at run time); then the window is closed as by its close button, and the loop ends. On the Cocoa platform
+// "--window-life-test quit" picks the Quit menu item instead. Exit code: 0 pass, 1 fail.
+static struct
+{
+	int		iteration;			// Of the loop: the window system applies a change within a few of them
+	int		first_w, first_h;	// Display size at the start
+	int		want_w, want_h;		// Display size asked last
+	int		viewports;			// Platform windows before the window is moved out
+	bool	moved;				// The "Moved" window is drawn
+	bool	out;				// ... across the edge of the main window
+	bool	own_viewport;		// ... in a platform window of its own, as of the last frame
+	bool	closing;			// The close was requested: the loop is expected to end
+} g_WindowLife;
+
+static void WindowLifeResize( int w, int h )
+{
+	g_WindowLife.want_w = w;
+	g_WindowLife.want_h = h;
+#if IM_CURRENT_PLATFORM == IM_PLATFORM_WIN32
+	const HWND window = ImPlatform_App_GetHWND();
+	RECT outer = {}, client = {};
+	GetWindowRect( window, &outer );
+	GetClientRect( window, &client );
+	SetWindowPos( window, NULL, 0, 0, w + ( outer.right - outer.left ) - client.right, h + ( outer.bottom - outer.top ) - client.bottom,
+				  SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE );
+#elif IM_CURRENT_PLATFORM == IM_PLATFORM_GLFW
+	glfwSetWindowSize( ImPlatform_App_GetGLFWWindow(), w, h );
+#elif IM_CURRENT_PLATFORM == IM_PLATFORM_SDL2
+	SDL_SetWindowSize( ImPlatform_App_GetSDL2Window(), w, h );
+#elif IM_CURRENT_PLATFORM == IM_PLATFORM_SDL3
+	SDL_SetWindowSize( ImPlatform_App_GetSDL3Window(), w, h );
+#elif IM_CURRENT_PLATFORM == IM_PLATFORM_APPLE
+	[(__bridge NSWindow*)ImPlatform_App_GetNSWindow() setContentSize:NSMakeSize( w, h )];
+#endif
+}
+
+static void WindowLifeClose( bool quit_menu )
+{
+	g_WindowLife.closing = true;
+	(void)quit_menu;
+#if IM_CURRENT_PLATFORM == IM_PLATFORM_WIN32
+	PostMessageW( ImPlatform_App_GetHWND(), WM_CLOSE, 0, 0 );
+#elif IM_CURRENT_PLATFORM == IM_PLATFORM_GLFW
+	glfwSetWindowShouldClose( ImPlatform_App_GetGLFWWindow(), GLFW_TRUE );	// What GLFW does when the window system asks
+#elif IM_CURRENT_PLATFORM == IM_PLATFORM_SDL2
+	SDL_Event e = {};
+	e.type = SDL_WINDOWEVENT;
+	e.window.event = SDL_WINDOWEVENT_CLOSE;
+	e.window.windowID = SDL_GetWindowID( ImPlatform_App_GetSDL2Window() );
+	SDL_PushEvent( &e );
+#elif IM_CURRENT_PLATFORM == IM_PLATFORM_SDL3
+	SDL_Event e = {};
+	e.type = SDL_EVENT_WINDOW_CLOSE_REQUESTED;
+	e.window.windowID = SDL_GetWindowID( ImPlatform_App_GetSDL3Window() );
+	SDL_PushEvent( &e );
+#elif IM_CURRENT_PLATFORM == IM_PLATFORM_APPLE
+	if ( quit_menu )
+		[[[NSApp mainMenu] itemAtIndex:0].submenu performActionForItemAtIndex:0];
+	else
+		[(__bridge NSWindow*)ImPlatform_App_GetNSWindow() performClose:nil];
+#endif
+}
+
+// One iteration of the loop, before its frame. Returns -1 while the test goes on, else its exit code.
+static int WindowLifeStep( bool quit_menu )
+{
+	const ImGuiIO& io = ImGui::GetIO();
+	const int step = ++g_WindowLife.iteration;
+	if ( step == 20 )
+	{
+		g_WindowLife.first_w = (int)io.DisplaySize.x;
+		g_WindowLife.first_h = (int)io.DisplaySize.y;
+		WindowLifeResize( g_WindowLife.first_w - 200, g_WindowLife.first_h - 150 );
+	}
+	if ( step == 80 || step == 140 )
+	{
+		unsigned int bw = 0, bh = 0;
+		ImPlatform_GetBackbufferSize( &bw, &bh );
+		const int fw = (int)( io.DisplaySize.x * io.DisplayFramebufferScale.x + 0.5f ), fh = (int)( io.DisplaySize.y * io.DisplayFramebufferScale.y + 0.5f );
+		if ( abs( (int)io.DisplaySize.x - g_WindowLife.want_w ) > 1 || abs( (int)io.DisplaySize.y - g_WindowLife.want_h ) > 1
+			 || abs( (int)bw - fw ) > 1 || abs( (int)bh - fh ) > 1 )
+		{
+			printf( "FAIL: resized to %dx%d: display size %.0fx%.0f, back buffer %ux%u for %dx%d\n", g_WindowLife.want_w, g_WindowLife.want_h,
+					io.DisplaySize.x, io.DisplaySize.y, bw, bh, fw, fh );
+			return 1;
+		}
+		if ( step == 80 )
+			WindowLifeResize( g_WindowLife.first_w, g_WindowLife.first_h );
+#ifdef IMGUI_HAS_VIEWPORT
+		else if ( ( io.ConfigFlags & ImGuiConfigFlags_ViewportsEnable ) && ( io.BackendFlags & ImGuiBackendFlags_PlatformHasViewports )
+				  && ( io.BackendFlags & ImGuiBackendFlags_RendererHasViewports ) )
+		{
+			g_WindowLife.viewports = ImGui::GetPlatformIO().Viewports.Size;
+			g_WindowLife.moved = g_WindowLife.out = true;
+		}
+#endif
+	}
+#ifdef IMGUI_HAS_VIEWPORT
+	if ( g_WindowLife.moved && ( step == 200 || step == 260 ) )
+	{
+		const int viewports = ImGui::GetPlatformIO().Viewports.Size;
+		const bool out = step == 200;
+		if ( g_WindowLife.own_viewport != out || viewports != g_WindowLife.viewports + ( out ? 1 : 0 ) )
+		{
+			printf( "FAIL: window moved %s: own platform window %d, %d platform windows for %d before\n", out ? "across the edge" : "back inside",
+					(int)g_WindowLife.own_viewport, viewports, g_WindowLife.viewports );
+			return 1;
+		}
+		g_WindowLife.out = false;
+	}
+#endif
+	if ( step == 260 )
+		WindowLifeClose( quit_menu );
+	if ( step > 460 )
+	{
+		printf( "FAIL: the loop goes on after the close request\n" );
+		return 1;
+	}
+	return -1;
+}
+
+// The window the test moves, inside a frame: across the right edge of the main window, or inside it
+static void WindowLifeDraw()
+{
+	if ( !g_WindowLife.moved )
+		return;
+	const ImGuiViewport* main_viewport = ImGui::GetMainViewport();
+	ImGui::SetNextWindowPos( main_viewport->Pos + ImVec2( g_WindowLife.out ? main_viewport->Size.x - 60.0f : 80.0f, 80.0f ) );
+	ImGui::SetNextWindowSize( ImVec2( 240.0f, 160.0f ) );
+	ImGui::Begin( "Moved", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoSavedSettings );
+	ImGui::TextUnformatted( g_WindowLife.out ? "Across the edge" : "Back inside" );
+#ifdef IMGUI_HAS_VIEWPORT
+	g_WindowLife.own_viewport = ImGui::GetWindowViewport() != main_viewport;
+#endif
+	ImGui::End();
+}
+#endif // __EMSCRIPTEN__
+
 // --clipboard-test: an image put on the clipboard with ImPlatform_SetClipboardImage comes back with its size and its
 // pixels; the system theme is printed. It replaces what the clipboard held, and needs no window but on SDL3. Exit
 // code: 0 pass, 1 fail, 2 where the clipboard takes no image.
@@ -2099,6 +2241,10 @@ int main( int argc, char** argv )
 	const bool shaderTest = argc > 1 && strcmp( argv[ 1 ], "--shader-test" ) == 0;
 	const bool samplerTest = argc > 1 && strcmp( argv[ 1 ], "--sampler-test" ) == 0;
 	const bool viewportsDemo = argc > 1 && strcmp( argv[ 1 ], "--viewports" ) == 0;	// Every window in a platform window of its own
+	const bool windowLifeTest = argc > 1 && strcmp( argv[ 1 ], "--window-life-test" ) == 0;
+#ifndef __EMSCRIPTEN__
+	const bool windowLifeQuit = windowLifeTest && argc > 2 && strcmp( argv[ 2 ], "quit" ) == 0;	// Cocoa: by the Quit menu item
+#endif
 	const bool deviceLostTest = argc > 1 && strcmp( argv[ 1 ], "--device-lost-test" ) == 0;
 	int deviceLostFrame = 0;
 	const bool directDrawTest = argc > 1 && strcmp( argv[ 1 ], "--direct-draw-test" ) == 0;
@@ -2207,7 +2353,7 @@ int main( int argc, char** argv )
 #endif
 #ifdef IMGUI_HAS_VIEWPORT
 	//io.ConfigFlags |= ImGuiConfigFlags_ViewportsEnable;		// Enable Multi-Viewport / Platform Windows
-	if ( screenshotViewportTest || viewportsDemo )
+	if ( screenshotViewportTest || viewportsDemo || windowLifeTest )
 		io.ConfigFlags |= ImGuiConfigFlags_ViewportsEnable;
 	io.ConfigViewportsNoAutoMerge = viewportsDemo;
 	////io.ConfigViewportsNoAutoMerge = true;
@@ -2321,6 +2467,17 @@ int main( int argc, char** argv )
 			continue;
 		}
 
+#ifndef __EMSCRIPTEN__
+		if ( windowLifeTest )
+		{
+			const int result = WindowLifeStep( windowLifeQuit );
+			if ( result >= 0 )
+			{
+				exitCode = result;
+				break;
+			}
+		}
+#endif
 		if ( deviceLostTest && ++deviceLostFrame > 3 )
 		{
 			exitCode = ImPlatformDemo_DeviceLostTest();
@@ -2598,6 +2755,10 @@ int main( int argc, char** argv )
 
 		if ( !passTest )		// The tests read the frame back
 			GestureDemo();
+#ifndef __EMSCRIPTEN__
+		if ( windowLifeTest )
+			WindowLifeDraw();
+#endif
 #ifdef IMGUI_HAS_VIEWPORT
 		if ( viewportsDemo )
 		{
@@ -2669,6 +2830,14 @@ int main( int argc, char** argv )
 	}
 #ifdef __EMSCRIPTEN__
 	EMSCRIPTEN_MAINLOOP_END;
+#endif
+
+#ifndef __EMSCRIPTEN__
+	if ( windowLifeTest && exitCode == 0 )	// The loop ended by itself: by the close the test asked for, or too early
+	{
+		exitCode = g_WindowLife.closing ? 0 : 1;
+		printf( exitCode == 0 ? "PASS\n" : "FAIL: the loop ended before the close was requested\n" );
+	}
 #endif
 
 	// Cleanup textures

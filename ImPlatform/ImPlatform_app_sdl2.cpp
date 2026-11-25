@@ -291,9 +291,10 @@ IMPLATFORM_API bool ImPlatform_PlatformEvents(void)
         }
 #endif
 #if defined(IM_CURRENT_GFX) && (IM_CURRENT_GFX == IM_GFX_DIRECTX11)
-        // Notify gfx backend of resize (same as upstream example_sdl2_directx11)
+        // Notify gfx backend of resize. SIZE_CHANGED comes for every change of size; RESIZED, which upstream's
+        // example_sdl2_directx11 reads, only for those made by the user or the system, not for SDL_SetWindowSize.
         if (event.type == SDL_WINDOWEVENT &&
-            event.window.event == SDL_WINDOWEVENT_RESIZED &&
+            event.window.event == SDL_WINDOWEVENT_SIZE_CHANGED &&
             event.window.windowID == SDL_GetWindowID(g_AppData.pWindow))
         {
             ImPlatform_Gfx_OnResize_DX11(ImPlatform_Gfx_GetData_DX11(), (unsigned int)event.window.data1, (unsigned int)event.window.data2);
@@ -301,7 +302,7 @@ IMPLATFORM_API bool ImPlatform_PlatformEvents(void)
 #elif defined(IM_CURRENT_GFX) && (IM_CURRENT_GFX == IM_GFX_CUSTOM)
         // The application's backend owns its swap chain: tell it the window's new size.
         if (event.type == SDL_WINDOWEVENT &&
-            event.window.event == SDL_WINDOWEVENT_RESIZED &&
+            event.window.event == SDL_WINDOWEVENT_SIZE_CHANGED &&
             event.window.windowID == SDL_GetWindowID(g_AppData.pWindow))
         {
             ImPlatform_Gfx_OnResize_Custom((unsigned int)event.window.data1, (unsigned int)event.window.data2);
