@@ -428,10 +428,14 @@ jobs:
         run: |
           mkdir -p screenshots
 
-          # Find first available demo executable
-          DEMO=$(find build -name "ImPlatformDemo_*" -type f -executable | head -1)
+          # Start Xvfb (virtual framebuffer)
+          export DISPLAY=:99
+          Xvfb :99 -screen 0 1280x720x24 &
+          XVFB_PID=$!
+          sleep 2
 
-          if [ -n "$DEMO" ]; then
+          # Every demo executable in turn, one screenshot each
+          for DEMO in $(find build -name "ImPlatformDemo_*" -type f -executable | sort); do
             DEMO_NAME=$(basename "$DEMO")
             DEMO_DIR=$(dirname "$DEMO")
             echo "Starting demo: $DEMO"
@@ -439,14 +443,7 @@ jobs:
             # Copy imgui.ini to executable directory for correct window positions/sizes
             if [ -f "ImPlatformDemo/imgui.ini" ]; then
               cp "ImPlatformDemo/imgui.ini" "$DEMO_DIR/imgui.ini"
-              echo "Copied imgui.ini to $DEMO_DIR"
             fi
-
-            # Start Xvfb (virtual framebuffer)
-            export DISPLAY=:99
-            Xvfb :99 -screen 0 1280x720x24 &
-            XVFB_PID=$!
-            sleep 2
 
             # Run demo in background from its directory
             cd "$DEMO_DIR"
@@ -458,14 +455,12 @@ jobs:
             # Capture screenshot using import (ImageMagick)
             import -window root "screenshots/screenshot_Linux_${DEMO_NAME}.png" || true
 
-            # Cleanup
+            # The window is gone before the next demo opens its own
             kill $DEMO_PID 2>/dev/null || true
-            kill $XVFB_PID 2>/dev/null || true
+            wait $DEMO_PID 2>/dev/null || true
+          done
 
-            echo "Screenshot captured"
-          else
-            echo "No demo executables found"
-          fi
+          kill $XVFB_PID 2>/dev/null || true
         continue-on-error: true
 
       - name: Upload Artifacts
@@ -588,10 +583,9 @@ jobs:
         run: |
           mkdir -p screenshots
 
-          # Find first available demo executable
-          DEMO=$(find build -name "ImPlatformDemo_*" -type f -perm +111 | head -1)
-
-          if [ -n "$DEMO" ]; then
+          # Every demo executable in turn, one screenshot each (the whole screen: a window that opens behind another
+          # application's shows as such)
+          for DEMO in $(find build -name "ImPlatformDemo_*" -type f -perm +111 | sort); do
             DEMO_NAME=$(basename "$DEMO")
             DEMO_DIR=$(dirname "$DEMO")
             echo "Starting demo: $DEMO"
@@ -599,7 +593,6 @@ jobs:
             # Copy imgui.ini to executable directory for correct window positions/sizes
             if [ -f "ImPlatformDemo/imgui.ini" ]; then
               cp "ImPlatformDemo/imgui.ini" "$DEMO_DIR/imgui.ini"
-              echo "Copied imgui.ini to $DEMO_DIR"
             fi
 
             # Run demo in background from its directory
@@ -612,13 +605,10 @@ jobs:
             # Capture screenshot using screencapture
             screencapture -x "screenshots/screenshot_macOS_${DEMO_NAME}.png" || true
 
-            # Cleanup
+            # The window is gone before the next demo opens its own
             kill $DEMO_PID 2>/dev/null || true
-
-            echo "Screenshot captured"
-          else
-            echo "No demo executables found"
-          fi
+            wait $DEMO_PID 2>/dev/null || true
+          done
         continue-on-error: true
 
       - name: Upload Artifacts
