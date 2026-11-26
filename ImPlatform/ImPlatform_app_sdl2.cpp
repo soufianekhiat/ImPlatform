@@ -111,6 +111,7 @@ IMPLATFORM_API bool ImPlatform_CreateWindow(char const* pWindowsName, ImVec2 con
     // Setup SDL
     if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_TIMER | SDL_INIT_GAMECONTROLLER) != 0)
     {
+        fprintf(stderr, "SDL Error: %s\n", SDL_GetError());
         return false;
     }
 
@@ -176,6 +177,7 @@ IMPLATFORM_API bool ImPlatform_CreateWindow(char const* pWindowsName, ImVec2 con
 
     if (g_AppData.pWindow == NULL)
     {
+        fprintf(stderr, "SDL Error: %s\n", SDL_GetError());    // The reason, as GLFW's error callback prints its own
         SDL_Quit();
         return false;
     }
