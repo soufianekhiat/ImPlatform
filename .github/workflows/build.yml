@@ -103,6 +103,7 @@ jobs:
           New-ItemProperty -Path "HKLM:\SOFTWARE\Khronos\Vulkan\Drivers" -Name $icdJson -PropertyType DWord -Value 0 -Force | Out-Null
 
       # The runner has no OpenGL 3 driver: Mesa's opengl32.dll next to the demo is loaded in place of the system's.
+      # The package also holds Mesa's Direct3D 12 driver (d3d12-x64), which is not the one wanted.
       - name: Install Mesa llvmpipe (Software OpenGL)
         if: contains(matrix.config, 'OpenGL')
         shell: powershell
@@ -110,7 +111,7 @@ jobs:
           Invoke-WebRequest -Uri "https://github.com/jakoch/rasterizers/releases/download/20260113/llvmpipe-x64-25.3.3.zip" -OutFile llvmpipe.zip
           Expand-Archive -Path llvmpipe.zip -DestinationPath llvmpipe
           New-Item -ItemType Directory -Force -Path "bin/win64"
-          Get-ChildItem -Path llvmpipe -Recurse -Filter *.dll | Copy-Item -Destination "bin/win64/"
+          Copy-Item "llvmpipe/bin/*.dll" -Destination "bin/win64/"
           Get-ChildItem "bin/win64" | Select-Object Name, Length
 
       - name: Setup .NET (Sharpmake)
