@@ -50,14 +50,17 @@ jobs:
           $vcpkgRoot = $env:VCPKG_INSTALLATION_ROOT
           if (-not $vcpkgRoot) { $vcpkgRoot = "C:\vcpkg" }
 
+          # vcpkg's SDL has no Vulkan support unless the feature is asked for
+          $features = if ("${{ matrix.config }}".EndsWith("Vulkan")) { "[vulkan]" } else { "" }
+
           if ("${{ matrix.config }}".StartsWith("SDL2")) {
-            & "$vcpkgRoot\vcpkg.exe" install sdl2:x64-windows
+            & "$vcpkgRoot\vcpkg.exe" install "sdl2${features}:x64-windows"
             echo "SDL2_INCLUDE=$vcpkgRoot\installed\x64-windows\include\SDL2" >> $env:GITHUB_ENV
             echo "SDL2_LIB=$vcpkgRoot\installed\x64-windows\lib" >> $env:GITHUB_ENV
             New-Item -ItemType Directory -Force -Path "bin/win64"
             Copy-Item "$vcpkgRoot\installed\x64-windows\bin\SDL2.dll" "bin/win64/"
           } else {
-            & "$vcpkgRoot\vcpkg.exe" install sdl3:x64-windows
+            & "$vcpkgRoot\vcpkg.exe" install "sdl3${features}:x64-windows"
             echo "SDL3_INCLUDE=$vcpkgRoot\installed\x64-windows\include" >> $env:GITHUB_ENV
             echo "SDL3_LIB=$vcpkgRoot\installed\x64-windows\lib" >> $env:GITHUB_ENV
             New-Item -ItemType Directory -Force -Path "bin/win64"
@@ -168,10 +171,6 @@ jobs:
             set -e
             cat test.log
             echo "$demo --$test: exit $code"
-            if grep -q -e "Cannot initialize the Graphics API" -e "Cannot create window" test.log; then
-              echo "::warning title=$demo --$test::not run: no device or window on this runner"
-              continue
-            fi
             if [ $code -ne 0 ] && [ $code -ne 2 ]; then
               status=1
               echo "::error title=$demo --$test (exit $code)::$(tail -n 40 test.log | sed 's/%/%25/g' | awk '{printf "%s%%0A", $0}')"
