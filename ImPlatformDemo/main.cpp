@@ -195,7 +195,7 @@ static int CheckRenderPassProbes( const char* what, const unsigned char* px, int
 		const unsigned char* q = px + ( p.y * stride + p.x ) * 4;
 		const int got[ 4 ] = { bgra ? q[ 2 ] : q[ 0 ], q[ 1 ], bgra ? q[ 0 ] : q[ 2 ], q[ 3 ] };
 		for ( int c = 0; c < channels; ++c )
-			if ( abs( got[ c ] - p.rgba[ c ] ) > 3 )
+			if ( abs( got[ c ] - p.rgba[ c ] ) > 4 )	// 4: WARP's Direct3D 9 filters a weight of 0.27 as 0.25 (64 for 68)
 			{
 				printf( "FAIL %s at (%d, %d): got %d %d %d %d, expected %d %d %d %d\n", what, p.x, p.y, got[ 0 ], got[ 1 ], got[ 2 ], got[ 3 ], p.rgba[ 0 ], p.rgba[ 1 ], p.rgba[ 2 ], p.rgba[ 3 ] );
 				++bad;

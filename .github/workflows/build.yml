@@ -99,6 +99,17 @@ jobs:
           Write-Host "SwiftShader ICD: $icdJson"
           echo "VK_ICD_FILENAMES=$icdJson" >> $env:GITHUB_ENV
 
+      # The runner has no OpenGL 3 driver: Mesa's opengl32.dll next to the demo is loaded in place of the system's.
+      - name: Install Mesa llvmpipe (Software OpenGL)
+        if: contains(matrix.config, 'OpenGL')
+        shell: powershell
+        run: |
+          Invoke-WebRequest -Uri "https://github.com/jakoch/rasterizers/releases/download/20260113/llvmpipe-x64-25.3.3.zip" -OutFile llvmpipe.zip
+          Expand-Archive -Path llvmpipe.zip -DestinationPath llvmpipe
+          New-Item -ItemType Directory -Force -Path "bin/win64"
+          Get-ChildItem -Path llvmpipe -Recurse -Filter *.dll | Copy-Item -Destination "bin/win64/"
+          Get-ChildItem "bin/win64" | Select-Object Name, Length
+
       - name: Setup .NET (Sharpmake)
         uses: actions/setup-dotnet@v5
         with:
@@ -161,6 +172,8 @@ jobs:
               status=1
               echo "::error title=$demo --$test (exit $code)::$(tail -n 40 test.log | sed 's/%/%25/g' | awk '{printf "%s%%0A", $0}')"
             fi
+            # A demo that does not end (124) would take two minutes for each of the tests left
+            if [ $code -eq 124 ]; then break; fi
           done
           exit $status
 
