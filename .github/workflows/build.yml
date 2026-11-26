@@ -98,6 +98,9 @@ jobs:
           $icdJson = (Get-ChildItem -Path swiftshader -Recurse -Filter "vk_swiftshader_icd.json").FullName
           Write-Host "SwiftShader ICD: $icdJson"
           echo "VK_ICD_FILENAMES=$icdJson" >> $env:GITHUB_ENV
+          # The loader ignores VK_ICD_FILENAMES in an elevated process, which the runner's are: the registry is read always
+          New-Item -Path "HKLM:\SOFTWARE\Khronos\Vulkan\Drivers" -Force | Out-Null
+          New-ItemProperty -Path "HKLM:\SOFTWARE\Khronos\Vulkan\Drivers" -Name $icdJson -PropertyType DWord -Value 0 -Force | Out-Null
 
       # The runner has no OpenGL 3 driver: Mesa's opengl32.dll next to the demo is loaded in place of the system's.
       - name: Install Mesa llvmpipe (Software OpenGL)

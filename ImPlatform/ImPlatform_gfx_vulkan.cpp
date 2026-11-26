@@ -355,10 +355,15 @@ static bool SetupVulkan(const char** instance_extensions, uint32_t instance_exte
         create_info.enabledExtensionCount = ext_idx;
         create_info.ppEnabledExtensionNames = extensions;
         err = vkCreateInstance(&create_info, g_Allocator, &g_GfxData.instance);
-        check_vk_result(err);
-
         free(properties);
         free(extensions);
+
+        // A machine without a Vulkan driver (VK_ERROR_INCOMPATIBLE_DRIVER) is for the application to report, not an abort
+        if (err != VK_SUCCESS)
+        {
+            fprintf(stderr, "[vulkan] vkCreateInstance failed: VkResult = %d\n", err);
+            return false;
+        }
 
         // Setup debug report callback
 #ifdef _DEBUG
