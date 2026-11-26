@@ -780,7 +780,8 @@ ImPlatformDemo_GLFW_OpenGL3 --drag-rect-test   # the move / resize arithmetic of
 Each prints PASS or FAIL and exits with 0 (pass), 1 (fail) or 2 (unsupported by the backend).
 
 CI (`.github/workflows/build.yml`) builds every configuration of the three systems with Sharpmake and with CMake, runs
-the self-tests on Linux (Mesa, under Xvfb) and on macOS (GLFW, SDL2, SDL3 and the Cocoa platform), and uploads a
+the self-tests on Windows (WARP for Direct3D, SwiftShader for Vulkan, Mesa llvmpipe for OpenGL), on Linux (Mesa,
+under Xvfb) and on macOS (GLFW, SDL2, SDL3 and the Cocoa platform), and uploads a
 screenshot of every demo as the `Screenshot-*` artifacts of the run: on Linux and macOS as the demo starts and again
 with `--viewports`, which is how the platform windows of a system nobody has at hand get looked at.
 
@@ -836,10 +837,10 @@ Before 0.5.0, the library was refactored from a C++ namespace API to a clean C A
 The library has been tested with the following configurations:
 
 ### Platforms Tested
-- **Windows 10/11** (Win32 API) - Tested (self-tests)
-- **Windows 10/11** (GLFW) - Tested (self-tests)
-- **Windows 10/11** (SDL2) - Tested (self-tests)
-- **Windows 10/11** (SDL3) - Tested (self-tests)
+- **Windows 10/11** (Win32 API) - Tested (self-tests, on a GPU and in CI on software renderers)
+- **Windows 10/11** (GLFW) - Tested (self-tests, on a GPU and in CI on software renderers)
+- **Windows 10/11** (SDL2) - Tested (self-tests, on a GPU and in CI on software renderers)
+- **Windows 10/11** (SDL3) - Tested (self-tests, on a GPU and in CI on software renderers)
 - **macOS** (Cocoa, GLFW) - Tested in CI (self-tests and screenshots on the hosted macOS 26 runner, a virtual machine); not tried by hand on a Mac (contributions welcome!)
 - **macOS** (SDL2, SDL3) - Tested in CI the same way; Homebrew's `sdl2` is sdl2-compat (SDL2's functions over SDL3), so that is what runs there
 - **Linux** (GLFW, SDL2, SDL3) - Tested (self-tests and CI screenshots, Ubuntu 24.04 with Mesa)

@@ -85,9 +85,9 @@ without freezing the frame, and report their errors to the application. The full
   with DirectX 9, 10, 11, 12, OpenGL and Vulkan; GLFW with OpenGL and Vulkan; SDL2 and SDL3 with DirectX 11, OpenGL and
   Vulkan), on Linux with Mesa (GLFW, SDL2 and SDL3 with OpenGL and Vulkan) and on macOS (Metal with GLFW, SDL2, SDL3
   and the Cocoa platform; OpenGL with SDL2 and SDL3), where the backend has the feature.
-- CI builds every Windows, Linux and macOS configuration with both Sharpmake and CMake, runs the self-tests on
-  Linux and macOS, and uploads a screenshot of every demo, on Linux and macOS also with every Dear ImGui window in a
-  platform window of its own (`--viewports`).
+- CI builds every Windows, Linux and macOS configuration with both Sharpmake and CMake, runs the self-tests on all
+  three (on Windows with WARP, SwiftShader and Mesa llvmpipe), and uploads a screenshot of every demo, on Linux and
+  macOS also with every Dear ImGui window in a platform window of its own (`--viewports`).
 
 ## Known limitations
 

@@ -163,6 +163,13 @@ Changes since 2.0.0 (the `v2` branch), in progress on the `v3` branch.
   sdl2-compat there (SDL2's functions over SDL3), which loses the string of a drop event pushed by the
   application: `--drop-test` exits 2 under it instead of crashing. Drops that come from the system are not
   concerned.
+- Vulkan: on a machine without a Vulkan driver, `ImPlatform_InitGfxAPI()` returns false instead of calling
+  `abort()` when `vkCreateInstance` fails (`VK_ERROR_INCOMPATIBLE_DRIVER`).
+- SDL2 and SDL3: when SDL cannot be initialized or the window cannot be created, the reason (`SDL_GetError()`)
+  is printed to stderr, as GLFW's errors are.
+- CI runs the self-tests of the fourteen Windows configurations, `--device-lost-test` included: WARP for
+  Direct3D, SwiftShader for Vulkan, Mesa llvmpipe for OpenGL. The probes of the pass tests accept a difference of
+  4 instead of 3: WARP's Direct3D 9 filters a weight of 0.27 as 0.25.
 - Vulkan: the pipelines of a custom shader program are kept per target format instead of per render pass. Every
   resize of the window and every render texture has a render pass of its own, so the pipelines added up, and one could
   be matched to a new render pass that reused the handle of a destroyed one.
