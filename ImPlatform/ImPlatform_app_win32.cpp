@@ -22,6 +22,19 @@ extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg
 
 static DWORD g_FullscreenStyle = 0;     // The window's style before it went fullscreen; 0 while it is not
 
+// ImPlatform_SetLiveResizeCallback(): drawn while a window edge is dragged (Win32's own size loop), not re-entered.
+static void (*g_LiveResize)(void*) = NULL;
+static void* g_LiveResizeData = NULL;
+static bool g_InSizeMove = false, g_InLiveResize = false;
+static void LiveResizeFrame()
+{
+    if (g_LiveResize == NULL || !g_InSizeMove || g_InLiveResize)
+        return;
+    g_InLiveResize = true;
+    g_LiveResize(g_LiveResizeData);
+    g_InLiveResize = false;
+}
+
 // Win32 message handler
 static LRESULT WINAPI WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
 {
@@ -58,7 +71,26 @@ static LRESULT WINAPI WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
             (void)uWidth; (void)uHeight;    // Vulkan and WebGPU read the client size each frame
 #endif
         }
+        LiveResizeFrame();
         return 0;
+
+    case WM_ENTERSIZEMOVE:
+        g_InSizeMove = true;
+        ::SetTimer(hWnd, 0x1A7E, 16, NULL);     // Frames while the edge is held still: animations go on.
+        return 0;
+
+    case WM_EXITSIZEMOVE:
+        g_InSizeMove = false;
+        ::KillTimer(hWnd, 0x1A7E);
+        return 0;
+
+    case WM_TIMER:
+        if (wParam == 0x1A7E)
+        {
+            LiveResizeFrame();
+            return 0;
+        }
+        break;
 
     case WM_SYSCOMMAND:
         if ((wParam & 0xfff0) == SC_KEYMENU) // Disable ALT application menu
@@ -116,10 +148,8 @@ static LRESULT WINAPI WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
 
                 RECT border_thickness = {0, 0, 0, 0};
                 AdjustWindowRectEx(&border_thickness, GetWindowLong(hWnd, GWL_STYLE) & ~WS_CAPTION, FALSE, NULL);
-                border_thickness.left *= -1;
+                border_thickness.left *= -1;    // Left and top come back negative, right and bottom positive.
                 border_thickness.top *= -1;
-                border_thickness.right *= -1;
-                border_thickness.bottom *= -1;
 
                 const int verticalBorderSize = GetSystemMetrics(SM_CYFRAME);
 
@@ -342,6 +372,12 @@ IMPLATFORM_API bool ImPlatform_PlatformContinue(void)
 }
 
 // ImPlatform API - PlatformEvents
+IMPLATFORM_API void ImPlatform_SetLiveResizeCallback(void (*callback)(void* user_data), void* user_data)
+{
+    g_LiveResize = callback;
+    g_LiveResizeData = user_data;
+}
+
 IMPLATFORM_API bool ImPlatform_PlatformEvents(void)
 {
     MSG msg;

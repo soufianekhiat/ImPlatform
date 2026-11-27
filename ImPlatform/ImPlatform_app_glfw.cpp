@@ -195,6 +195,8 @@ IMPLATFORM_API bool ImPlatform_PlatformContinue(void)
 }
 
 // ImPlatform API - PlatformEvents
+IMPLATFORM_API void ImPlatform_SetLiveResizeCallback(void (*)(void*), void*) {}     // Win32 only, see ImPlatform.h.
+
 IMPLATFORM_API bool ImPlatform_PlatformEvents(void)
 {
     glfwPollEvents();

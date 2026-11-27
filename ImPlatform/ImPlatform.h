@@ -1461,6 +1461,12 @@ IMPLATFORM_API bool ImPlatform_PlatformContinue(void);
 // Returns false when the frame should be skipped (quit requested, window minimized)
 IMPLATFORM_API bool ImPlatform_PlatformEvents(void);
 
+// Live resize: while the user drags a window edge, Win32 runs its own message loop and the application's loop waits
+// for the button's release (the last frame is stretched meanwhile). The callback draws a frame then, without
+// ImPlatform_PlatformEvents(): on each size change and every 16 ms while the edge is held. nullptr removes it.
+// shortcut: Win32 only (GLFW, SDL2 and SDL3 keep it and never call it); use their refresh events when needed there.
+IMPLATFORM_API void ImPlatform_SetLiveResizeCallback(void (*callback)(void* user_data), void* user_data);
+
 // Check graphics state (device lost, window occluded, etc.)
 // Returns true if graphics are ready to render
 IMPLATFORM_API bool ImPlatform_GfxCheck(void);
